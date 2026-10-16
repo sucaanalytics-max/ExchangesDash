@@ -1155,7 +1155,7 @@ function buildWeeklyVsMonthEndHTML(exchange, segKey) {
   <div style="margin-top:var(--space-4)">
     <div class="xl-seg-header">${exchange.toUpperCase()} Weekly vs Month-End Expiry <span class="xl-seg-unit">avg of that month's other weekly expiries vs the month-end one · ₹ Cr</span></div>
     <div class="wire-table-scroll" style="margin-top:var(--space-3)">
-      <table class="wire-table">
+      <table class="wire-table wvm-table">
         <thead><tr><th>Month</th><th>Avg Weekly Expiry</th><th>Month-End Expiry</th><th>Difference</th></tr></thead>
         <tbody>${rowsHTML}${summaryHTML}</tbody>
       </table>
@@ -2327,7 +2327,7 @@ function optionsSharePredictorHTML(predictor) {
   const chosenLabel = chosen === 'recent' ? 'Recent (60D)' : 'Long-Term (252D)';
 
   const kpiHTML = `
-  <div class="share-kpi-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-4);margin-bottom:var(--space-4)">
+  <div class="share-kpi-grid">
     ${kpi('Current NSE Options Share', fmtNum(currentShare, 1) + ' %', 'as of ' + asOfDate + ' (5D avg)', '')}
     ${kpi('Rate of Change (NSE)', fmtRatePerMonth(chosenFit.ratePerMonth), chosenLabel + ' · ' + chosenFit.fit + ' fit (R²=' + Math.round(chosenFit.ols.r2 * 100) + '%)', rateSentiment)}
     ${kpi('12M Projected NSE Share', fmtNum(projections[2].nseShare, 1) + ' %', 'assumes trend continues, capped 0–100%', '')}
@@ -2336,7 +2336,7 @@ function optionsSharePredictorHTML(predictor) {
 
   const fitRow = (label, fit, isChosen) => `
     <tr${isChosen ? '' : ' style="color:var(--color-text-muted)"'}>
-      <td>${label} <span style="font-size:10px;color:var(--color-text-muted)">${isChosen ? '(used)' : '(informational)'}</span></td>
+      <td>${label} <span style="font-size:11px;color:var(--color-text-muted)">${isChosen ? '(used)' : '(informational)'}</span></td>
       <td style="text-align:center">${fit.startDate} → ${fit.endDate}</td>
       <td style="text-align:center">${fmtRatePerMonth(fit.ratePerMonth)}</td>
       <td style="text-align:center">${Math.round(fit.ols.r2 * 100)}%</td>
@@ -2697,7 +2697,7 @@ function buildNSEPredictedPnLTable() {
   let isFirst = true;
   for (const [qName, q] of Object.entries(quarters)) {
     const otherIncome = q.total_revenue - q.transaction_rev;
-    const tag = isFirst ? ' <span style="color:var(--color-warning);font-size:10px;font-weight:600">CURRENT</span>' : '';
+    const tag = isFirst ? ' <span style="color:var(--color-warning);font-size:11px;font-weight:600">CURRENT</span>' : '';
     const cls = isFirst ? '' : 'predicted';
     html += `<tr class="${cls}">
       <td>${qName}${tag}</td>
@@ -3714,7 +3714,7 @@ function shareRegressionInfoHTML(reg, predPrice, actualPrice, isLive, asOfDate, 
   const lagPart = activeLag ? ` &nbsp;|&nbsp; Lag: ${activeLag} days (revenue leads)` : '';
 
   const kpiHTML = `
-  <div class="share-kpi-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-4);margin-bottom:var(--space-4)">
+  <div class="share-kpi-grid">
     ${kpi('Model R²',        r2pct + '%',              reg.fit + ' fit',    r2pct > 60 ? 'positive' : r2pct > 30 ? 'neutral' : 'negative')}
     ${kpi('Pearson r',       reg.pearson_r.toFixed(2), 'revenue ↔ price',   '')}
     ${kpi('Predicted Price', '₹' + fmtNum(predPrice, 0), 'model estimate', '')}
@@ -3724,7 +3724,7 @@ function shareRegressionInfoHTML(reg, predPrice, actualPrice, isLive, asOfDate, 
   const eqHTML = `
   <div class="chart-panel" style="margin-bottom:var(--space-4);padding:20px 24px">
     <div class="chart-title">Regression Equation</div>
-    <div style="font-size:20px;font-weight:700;color:var(--color-text);margin:12px 0 8px;font-family:var(--font-mono,monospace)">${reg.equation}</div>
+    <div class="regression-eq">${reg.equation}</div>
     <div style="font-size:12px;color:var(--color-text-muted);display:flex;gap:24px;flex-wrap:wrap">
       <span>R² = ${reg.r_squared.toFixed(3)} &nbsp;|&nbsp; r = ${reg.pearson_r.toFixed(3)} &nbsp;|&nbsp; n = ${nDays} trading days</span>
       <span>MA window: ${activeDma} days${lagPart} &nbsp;|&nbsp; Regression from: ${regStart} &nbsp;|&nbsp; Ticker: ${ticker}</span>
@@ -4372,7 +4372,7 @@ function buildQuickValuationPanel(el, exchange, dailySeries, cmp) {
         <thead><tr><th>Metric</th><th style="text-align:center">Bear</th><th style="text-align:center">Base</th><th style="text-align:center">Bull</th></tr></thead>
         <tbody>
           <tr><td>PE Ratio (x)</td>${scenarioCols}</tr>
-          <tr style="font-weight:600"><td>Target Share Price — ${fyeLabel}<span style="font-weight:400;font-size:10px;color:var(--color-text-muted)"> (full-year forward, not spot)</span></td>${targetCols}</tr>
+          <tr style="font-weight:600"><td>Target Share Price — ${fyeLabel}<span style="font-weight:400;font-size:11px;color:var(--color-text-muted)"> (full-year forward, not spot)</span></td>${targetCols}</tr>
           <tr><td>Upside vs CMP</td>${upsideCols}</tr>
         </tbody>
       </table>
@@ -4531,8 +4531,8 @@ async function buildBSEValuation() {
             <td style="text-align:center">${bseCellInput('adrGrowthBullPct', assumptions.adrGrowthBullPct, '0.5')}</td>
           </tr>
           <tr><td>Projected Total Market ADR (₹ Cr/day)</td><td id="annProjADR-bear" style="text-align:center"></td><td id="annProjADR-base" style="text-align:center"></td><td id="annProjADR-bull" style="text-align:center"></td></tr>
-          <tr style="color:var(--color-text-muted)"><td>BSE Target ADR (₹ Cr/day) — Method 1, 45-day share <span style="font-size:10px">(informational)</span></td><td id="annM1-bear" style="text-align:center"></td><td id="annM1-base" style="text-align:center"></td><td id="annM1-bull" style="text-align:center"></td></tr>
-          <tr><td>BSE Target ADR (₹ Cr/day) — Method 2, 20-day share <span style="font-size:10px;color:var(--color-text-muted)">(used)</span></td><td id="annM2-bear" style="text-align:center"></td><td id="annM2-base" style="text-align:center"></td><td id="annM2-bull" style="text-align:center"></td></tr>
+          <tr style="color:var(--color-text-muted)"><td>BSE Target ADR (₹ Cr/day) — Method 1, 45-day share <span style="font-size:11px">(informational)</span></td><td id="annM1-bear" style="text-align:center"></td><td id="annM1-base" style="text-align:center"></td><td id="annM1-bull" style="text-align:center"></td></tr>
+          <tr><td>BSE Target ADR (₹ Cr/day) — Method 2, 20-day share <span style="font-size:11px;color:var(--color-text-muted)">(used)</span></td><td id="annM2-bear" style="text-align:center"></td><td id="annM2-base" style="text-align:center"></td><td id="annM2-bull" style="text-align:center"></td></tr>
           <tr>
             <td>Other Income — Annual (₹ Cr, same for all scenarios)</td>
             <td colspan="3" style="text-align:center">${bseCellInput('otherIncomeAnnualCr', assumptions.otherIncomeAnnualCr, '1')}</td>
@@ -4571,8 +4571,8 @@ async function buildBSEValuation() {
         <tbody>
           ${bseContextRow('Quarter Total Trading Days', bseCellInput('q1TotalTradingDays', assumptions.q1TotalTradingDays, '1'))}
           ${bseContextRow('Quarter Trading Days Elapsed', `<span id="qtrCtxDaysElapsed"></span>`)}
-          ${bseContextRow('BSE Target ADR (₹ Cr/day) — Method 1, 45-day share <span style="font-size:10px;color:var(--color-text-muted)">(used)</span>', `<span id="qtrM1"></span>`)}
-          ${bseContextRow('BSE Target ADR (₹ Cr/day) — Method 2, 20-day share <span style="font-size:10px;color:var(--color-text-muted)">(informational)</span>', `<span id="qtrM2"></span>`)}
+          ${bseContextRow('BSE Target ADR (₹ Cr/day) — Method 1, 45-day share <span style="font-size:11px;color:var(--color-text-muted)">(used)</span>', `<span id="qtrM1"></span>`)}
+          ${bseContextRow('BSE Target ADR (₹ Cr/day) — Method 2, 20-day share <span style="font-size:11px;color:var(--color-text-muted)">(informational)</span>', `<span id="qtrM2"></span>`)}
           ${bseContextRow('Transaction Revenue (₹ Cr)', `<span id="qtrTxnRev"></span>`)}
           ${bseContextRow('Other Income — Quarter (₹ Cr)', bseCellInput('otherIncomeQuarterlyCr', assumptions.otherIncomeQuarterlyCr, '1'))}
           ${bseContextRow('Total Revenue (₹ Cr)', `<span id="qtrTotalRev"></span>`)}
@@ -5028,7 +5028,7 @@ function renderNSECollecting(el) {
     </tr>`).join('');
 
   el.innerHTML = `
-  <div class="share-kpi-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-4);margin-bottom:var(--space-4)">
+  <div class="share-kpi-grid">
     ${kpi('Days Collected', `${n} / ${need}`, 'regression starts at ' + need + ' trading days', '')}
     ${kpi(lat.is_live ? 'Share Price 🟢 Live' : 'Share Price', '₹' + fmtNum(lat.price_actual, 2), 'ticker ' + s.ticker, '')}
     ${kpi('Since Listing', sinceListing == null ? '—' : fmtPctSigned(sinceListing), 'vs first close ₹' + fmtNum(s.first_price, 2), sinceListing == null ? '' : (sinceListing >= 0 ? 'positive' : 'negative'))}
@@ -5435,7 +5435,7 @@ async function buildIntradayPredictor(exchange, containerId) {
   const latest  = samples.length ? samples[samples.length - 1] : null;
 
   const liveHTML = latest ? `
-  <div class="share-kpi-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-4);margin-bottom:var(--space-4)">
+  <div class="share-kpi-grid">
     ${kpi('Revenue So Far Today', '₹' + fmtNum(latest.total_revenue, 2) + ' Cr',
           `as of ${(latest.captured_ist || '').slice(11, 16)} IST (+${fmtElapsed(latest.elapsed_minutes)})`, '')}
     ${kpi('Predicted EOD Revenue', latest.predicted_eod != null ? '₹' + fmtNum(latest.predicted_eod, 2) + ' Cr' : '—',
@@ -5623,14 +5623,15 @@ function buildMCXValuation() {
   buildQuickValuationPanel(el.querySelector('#mcxQuickValPanel'), 'mcx', mcxSeries, cmp);
 }
 
+// Shared KPI tile; styles live in style.css (.kpi-tile*).
 function kpi(title, value, sub, sentiment) {
-  const col = sentiment === 'positive' ? 'var(--color-positive)'
-            : sentiment === 'negative' ? 'var(--color-negative)'
-            : 'var(--color-text)';
-  return `<div class="chart-panel" style="padding:16px 20px">
-    <div style="font-size:11px;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">${title}</div>
-    <div style="font-size:28px;font-weight:700;color:${col};line-height:1">${value}</div>
-    <div style="font-size:11px;color:var(--color-text-muted);margin-top:6px">${sub}</div>
+  const tone = sentiment === 'positive' ? ' kpi-tile-value--positive'
+             : sentiment === 'negative' ? ' kpi-tile-value--negative'
+             : '';
+  return `<div class="chart-panel kpi-tile">
+    <div class="kpi-tile-label">${title}</div>
+    <div class="kpi-tile-value${tone}">${value}</div>
+    <div class="kpi-tile-sub">${sub}</div>
   </div>`;
 }
 

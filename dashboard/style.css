@@ -287,10 +287,10 @@ html, body {
 
 .sidebar-logo .logo-sub {
   font-family: var(--font-display);
-  font-size: 9px;
+  font-size: 11px;
   color: rgba(255,255,255,0.65);
   font-weight: 600;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em; /* 0.1em at 11px wraps "Trading Intelligence" in the 220px sidebar */
   text-transform: uppercase;
   margin-top: 1px;
 }
@@ -408,7 +408,7 @@ html, body {
   align-items: center;
   gap: var(--space-4);
   font-family: var(--font-display);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.03em;
   color: var(--color-text-muted);
@@ -520,7 +520,7 @@ html, body {
 
 .rev-banner-title {
   font-weight: 700;
-  font-size: 8px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.09em;
   color: var(--color-text-faint);
@@ -540,7 +540,7 @@ html, body {
 }
 
 .rev-banner-label {
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.07em;
   color: var(--color-primary);
@@ -553,12 +553,12 @@ html, body {
 }
 
 .rev-banner-date {
-  font-size: 9px;
+  font-size: 11px;
   color: var(--color-text-faint);
 }
 
 .rev-banner-live {
-  font-size: 8px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
   color: var(--color-positive);
@@ -612,7 +612,7 @@ html, body {
 
 .kpi-label {
   font-family: var(--font-display);
-  font-size: 8px;
+  font-size: 11px;
   color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -633,7 +633,7 @@ html, body {
 
 .kpi-delta {
   font-family: var(--font-display);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   font-variant-numeric: tabular-nums lining-nums;
   display: inline-flex;
@@ -658,6 +658,53 @@ html, body {
   background: var(--color-surface-3);
   color: var(--color-text-muted);
   border: none;
+}
+
+/* Shared KPI tile, rendered by kpi() in app.js (share analysis, valuation,
+   intraday). The value scales from 20px on a 390px phone to 28px at 1440px+. */
+.chart-panel.kpi-tile {
+  padding: 16px 20px;
+}
+
+.kpi-tile-label {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-bottom: 8px;
+}
+
+.kpi-tile-value {
+  font-size: clamp(20px, 0.8vw + 16.5px, 28px);
+  font-weight: 700;
+  color: var(--color-text);
+  line-height: 1;
+}
+
+.kpi-tile-value--positive { color: var(--color-positive); }
+.kpi-tile-value--negative { color: var(--color-negative); }
+
+.kpi-tile-sub {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-top: 6px;
+}
+
+/* Row of kpi() tiles: four across on desktop, wrapping to two (or one) on phones */
+.share-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+/* Share-price regression equation (shareRegressionInfoHTML): 20px desktop, 14px phones */
+.regression-eq {
+  font-size: clamp(14px, 0.8vw + 9px, 20px);
+  font-weight: 700;
+  color: var(--color-text);
+  margin: 12px 0 8px;
+  font-family: var(--font-mono, monospace);
 }
 
 /* =========================
@@ -687,7 +734,7 @@ html, body {
 
 .chart-title {
   font-family: var(--font-display);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   color: #FFFFFF;
   background: var(--color-ink);
@@ -704,7 +751,7 @@ html, body {
 
 
 .chart-title .chart-badge {
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -748,7 +795,7 @@ html, body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  font-size: 9px;
+  font-size: 11px;
   padding: 5px 8px;
   text-align: right;
   border: 1px solid var(--color-ink-2);
@@ -824,7 +871,7 @@ span.neutral {
 .data-table .predicted td:first-child::after {
   content: ' (P)';
   color: var(--color-warning);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 /* =========================
@@ -843,7 +890,7 @@ span.neutral {
 
 .sub-tab {
   font-family: var(--font-display);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   padding: 6px 16px;
   border-radius: 0;
@@ -916,7 +963,7 @@ span.neutral {
 }
 
 .share-dma-label {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.07em;
@@ -1287,7 +1334,7 @@ span.neutral {
   opacity: 0.7;
   letter-spacing: 0.02em;
   text-transform: none;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 /* ── Two-panel row: period table LEFT | DoW table RIGHT ── */
@@ -1327,7 +1374,7 @@ span.neutral {
 .xl-sec-hdr td {
   background: #e8eaed;
   color: var(--color-text-muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -1508,6 +1555,12 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
 .wire-delta.negative { color: #a30c15; background: #ffc7ce; }
 .wire-delta.neutral   { color: #333333; background: #eeeeee; }
 
+/* Weekly vs Month-End Expiry: four columns read badly stretched across a
+   wide screen; cap the width (left-aligned). Narrow screens stay at 100%. */
+.wire-table.wvm-table {
+  max-width: 760px;
+}
+
 .weekday-wire-table th:first-child { width: 48%; }
 .weekday-wire-table th:nth-child(2) { width: 20%; }
 .weekday-wire-table th:nth-child(3),
@@ -1566,7 +1619,7 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
 .ms-seg-label {
   background: #f0f2f5;
   color: var(--color-text-muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -1583,7 +1636,7 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
 .ms-table thead tr th {
   background: #f7f8fa;
   color: var(--color-text-faint);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   padding: 3px 8px;
   border-bottom: 1px solid var(--color-border);
@@ -1638,7 +1691,7 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
 }
 
 .ms-pct {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.01em;
@@ -1683,7 +1736,7 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
 }
 
 .rev-card h4 .rev-badge {
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -1775,7 +1828,7 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
 }
 
 .extrap-card .extrap-label {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -1866,7 +1919,7 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
 }
 
 .param-row label {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   color: var(--color-text-muted);
   text-transform: uppercase;
@@ -2147,7 +2200,7 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
   background: transparent;
   color: #FFFFFF;
   font-family: var(--font-display);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   cursor: pointer;
   transition: all var(--transition-interactive);
@@ -2264,7 +2317,7 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
   color: #FFFFFF;
   border: none;
   border-radius: var(--radius-sm);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   font-family: var(--font-display);
   letter-spacing: 0.06em;
@@ -2286,7 +2339,7 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
   color: var(--color-primary);
   border: 1.5px solid var(--color-primary);
   border-radius: var(--radius-sm);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   font-family: var(--font-display);
   letter-spacing: 0.06em;
@@ -2567,7 +2620,6 @@ span.pr-neu {
 
   .header-meta {
     gap: 4px;
-    font-size: 10px;
   }
 
   /* ── Main padding ── */
@@ -2617,16 +2669,6 @@ span.pr-neu {
   /* ── Live tab: segment cards stack on phones ── */
   .live-seg-grid {
     grid-template-columns: 1fr !important;
-  }
-
-  /* ── BSE Share analytics: 4-col KPI → 2-col ── */
-  .share-kpi-grid {
-    grid-template-columns: repeat(2, 1fr) !important;
-  }
-
-  /* ── Regression equation card: smaller font ── */
-  #bse-share-inner .chart-panel [style*="font-size:20px"] {
-    font-size: 14px !important;
   }
 
   /* ── Excel-style Revenue Summary: tighter padding on phones ── */
@@ -2731,7 +2773,7 @@ span.pr-neu {
 .ov-table thead tr.xl-sec-hdr td {
   background: #f0f2f5;
   color: var(--color-text-muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -2749,7 +2791,7 @@ span.pr-neu {
 .ov-table thead tr.xl-col-hdr th {
   background: #f7f8fa;
   color: var(--color-text-faint);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   padding: 3px 8px;
   border-bottom: 1px solid var(--color-border);
@@ -2827,7 +2869,7 @@ span.pr-neu {
 }
 
 .ms-bar-label {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--color-text-secondary);
   font-weight: 600;
   white-space: nowrap;
