@@ -4490,7 +4490,7 @@ async function buildBSEValuation() {
   <div class="chart-panel" style="margin-bottom:var(--space-4)">
     <div class="chart-title">1 · Triangulated Target Price <span class="chart-badge">Live</span></div>
     <p class="section-desc">Average of the ADR (Annual Predictor Base case), 45-day regression, and analyst-consensus target prices, shown against CMP.</p>
-    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:var(--space-3);margin-top:var(--space-3)">
+    <div class="tri-target-grid">
       ${kpi('ADR Model', `<span id="triAdrModel"></span>`, 'Annual Predictor · Base', '')}
       ${kpi('Regression', `<span id="triRegression"></span>`, '45-day DMA model', '')}
       ${kpi('Analyst Target', `<span id="triAnalyst"></span>`, `avg of ${analystTargets.length} brokers, discounted`, '')}
