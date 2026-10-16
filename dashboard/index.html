@@ -61,26 +61,27 @@
 
   <!-- HEADER -->
   <header class="header">
-    <div style="display:flex;align-items:center;gap:var(--space-3)">
+    <div class="header-left">
       <button class="mobile-nav-toggle" id="mobileNavToggle" aria-label="Toggle navigation">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
       </button>
+      <span class="header-exchange" id="headerExchange">NSE</span>
       <h1 class="header-title" id="headerTitle">Revenue Summary</h1>
     </div>
     <div class="header-right">
       <div class="header-meta">
         <span id="currentQuarterSpan">—</span>
         <span style="color:var(--color-text-faint)">|</span>
-        <span id="lastUpdatedSpan">Last Updated: —</span>
+        <span id="lastUpdatedSpan"><span class="lu-label">Last Updated: </span>—</span>
         <span class="live-dot"></span>
       </div>
-      <button class="btn-download-pdf" id="btnDownloadReport" onclick="downloadWeeklyReport()">
+      <button class="btn-download-pdf" id="btnDownloadReport" onclick="downloadWeeklyReport()" aria-label="Download Report (PDF)">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        Report
+        <span class="btn-label">Report</span>
       </button>
-      <button class="btn-download-mobile" id="btnMobileReport" onclick="downloadMobileReport()">
+      <button class="btn-download-mobile" id="btnMobileReport" onclick="downloadMobileReport()" aria-label="Download Mobile report">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12" y2="18.01"/></svg>
-        Mobile
+        <span class="btn-label">Mobile</span>
       </button>
     </div>
   </header>

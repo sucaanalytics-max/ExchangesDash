@@ -389,12 +389,41 @@ html, body {
   box-shadow: var(--shadow-sm);
 }
 
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
 .header-title {
   font-family: var(--font-display);
   font-size: 15px;
   font-weight: 700;
   color: var(--color-text);
   letter-spacing: -0.01em;
+}
+
+/* Current exchange — only shown when the sidebar (which names it) is hidden */
+.header-exchange {
+  display: none;
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 2px;
+  background: var(--color-ink);
+  color: #FFFFFF;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+@media (max-width: 1024px) {
+  .header-exchange {
+    display: inline-block;
+  }
 }
 
 .header-right {
@@ -1269,6 +1298,33 @@ span.neutral {
   max-width: 60ch;
 }
 
+/* Text and controls directly inside an unpadded .chart-panel get the title
+   bar's 14px inset instead of touching the panel border. Panels that set
+   their own padding inline are left alone (no double padding). */
+.chart-panel:not([style*="padding"]) > .section-desc {
+  padding: 10px 14px 0;
+  max-width: calc(60ch + 28px);
+}
+
+.panel-inset {
+  padding-left: 14px;
+  padding-right: 14px;
+}
+
+.panel-inset--bottom {
+  padding-bottom: 6px;
+}
+
+.chart-panel > .progress-bar-container {
+  padding: 0 14px 14px;
+}
+
+/* Horizontal scroll box for a wide .data-table */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 /* =========================
    HEATMAP
    ========================= */
@@ -1483,6 +1539,11 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
    WIRE TABLES — Day of Week / Quarter comparison,
    exact port of the reference's weekday/quarter tables
    ============================================ */
+
+.wire-table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
 
 .wire-table {
   width: 100%;
@@ -1868,6 +1929,13 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
 
 .predictor-panel {
   background: var(--color-surface);
+  padding-bottom: 14px;
+}
+
+/* Everything below the title bar gets the title's 14px inset */
+.predictor-panel > :not(.chart-title) {
+  padding-left: 14px;
+  padding-right: 14px;
 }
 
 .predictor-input-row {
@@ -2054,8 +2122,13 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
     grid-template-columns: 1fr;
   }
 
+  /* minmax(0, …) so the slider rows can't push the page 5px wider than a phone */
   .pred-controls {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .slider-row input[type="range"] {
+    min-width: 0;
   }
 
   .pred-result {
@@ -2659,12 +2732,8 @@ span.pr-neu {
     flex-shrink: 0;
   }
 
-  /* ── Data tables: horizontal scroll ── */
-  .data-table {
-    display: block;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
+  /* ── Data tables scroll inside their wrapper div (overflow-x:auto / .table-scroll);
+     the table itself stays display:table at width:100% (no nested scroll box) ── */
 
   /* ── Chart panel titles ── */
   .chart-title {
@@ -2746,6 +2815,201 @@ span.pr-neu {
   .tri-target-grid {
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   }
+}
+
+/* ── Wide data tables: the first (label) column stays put while the rest
+   scrolls sideways in its wrapper. Sticky cells need an opaque background
+   matching their row, or the scrolled cells show through underneath:
+   white rows, warm even rows, and the hover tint layered over white.
+   td.positive/.negative and the dark header cells are already opaque.
+   The column may wrap (min 7rem) so a long label can't take the whole screen. */
+@media (max-width: 900px) {
+  .data-table th:first-child,
+  .data-table td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    min-width: 7rem;
+    white-space: normal;
+    box-shadow: inset -1px 0 0 var(--color-border), 4px 0 4px -3px rgba(22, 24, 29, 0.18);
+  }
+
+  .data-table td:first-child {
+    background: var(--color-surface);
+  }
+
+  .data-table tr:nth-child(even) td:first-child {
+    background: var(--color-paper-warm);
+  }
+
+  .data-table tr:hover td:first-child {
+    background: linear-gradient(var(--color-table-hover), var(--color-table-hover)), var(--color-surface);
+  }
+}
+
+/* ── Phone header: one row — hamburger, exchange badge, title (ellipsis),
+   date only, and icon-only 40×40 REPORT / MOBILE buttons ── */
+@media (max-width: 640px) {
+  /* min-width:0 lets the grid track stay at screen width, so a long title
+     ellipsizes instead of widening the header past the screen */
+  .header {
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .header-left {
+    flex: 1 1 auto;
+    gap: var(--space-2);
+  }
+
+  .mobile-nav-toggle {
+    flex-shrink: 0;
+  }
+
+  .header-title {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .header-right {
+    flex-shrink: 0;
+    gap: 4px;
+  }
+
+  .header-exchange {
+    padding: 2px 5px;
+  }
+
+  .lu-label,
+  .btn-label {
+    display: none;
+  }
+
+  .btn-download-pdf,
+  .btn-download-mobile {
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    flex-shrink: 0;
+  }
+
+  .btn-download-pdf svg,
+  .btn-download-mobile svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  /* Label is hidden here, so "Building…" can't show — dim the icon instead */
+  .btn-download-pdf:disabled,
+  .btn-download-mobile:disabled {
+    opacity: 0.55;
+    cursor: progress;
+  }
+}
+
+/* ── Touch screens: every control gets at least a 40×40 hit area, and
+   form fields use 16px text (iOS Safari zooms the page into anything smaller
+   on focus). Mouse/trackpad layouts are untouched. ── */
+@media (pointer: coarse) {
+  .sub-tab,
+  .exchange-btn,
+  .nav-item,
+  .share-range-btn,
+  .scenario-btn,
+  .btn-download-pdf,
+  .btn-download-mobile {
+    min-height: 40px;
+    min-width: 40px;
+  }
+
+  .xl-row-sel,
+  .rev-select,
+  .param-input,
+  .param-row .param-input {
+    font-size: 16px;
+    min-height: 40px;
+  }
+
+  /* Already 17px+ text; only needs the height */
+  .pe-input-group input {
+    min-height: 40px;
+  }
+
+  /* Sliders: 40px-tall touch box, same 4px track drawn in its middle,
+     and a thumb big enough to grab */
+  .slider-row input[type="range"] {
+    height: 40px;
+    background: linear-gradient(var(--color-surface-3), var(--color-surface-3)) center / 100% 4px no-repeat;
+  }
+
+  .slider-row input[type="range"]::-webkit-slider-thumb {
+    width: 22px;
+    height: 22px;
+  }
+
+  /* The period select fills its cell top to bottom, so the row is 40px
+     rather than 40px plus the cell's padding */
+  .xl-period-table td:has(> .xl-row-sel) {
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+}
+
+/* Touch phones: at 16px the longest period label ("FY 2027 September") needs
+   ~173px, so the Revenue Summary tables give their label column more room
+   (and trim side padding) instead of clipping it. Below ~370px the period
+   table keeps a minimum width and scrolls sideways in .xl-main-row. */
+@media (pointer: coarse) and (max-width: 640px) {
+  #subtab-rev-total,
+  #subtab-rev-options,
+  #subtab-rev-futures,
+  #subtab-rev-cash {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  /* 16px text reads heavy next to the 12px figures; regular weight for
+     ordinary rows (the current-period row keeps its 600) */
+  .xl-row-sel {
+    padding-right: 14px;
+    font-weight: 400;
+  }
+
+  .xl-period-table {
+    min-width: 354px;
+  }
+
+  .xl-col-period { width: 49%; }
+  .xl-col-val    { width: 19%; }
+  .xl-col-chg1,
+  .xl-col-chg2   { width: 16%; }
+
+  .xl-period-table td:has(> .xl-row-sel) {
+    padding-left: 8px;
+    padding-right: 4px;
+  }
+
+  /* Bring figures and plain labels closer to the 16px select labels */
+  .xl-period-table tr:not(.xl-col-hdr) td,
+  .xl-period-table tr:not(.xl-col-hdr) td:first-child,
+  .xl-period-table .xl-chg {
+    font-size: 14px;
+  }
+
+  tr.xl-col-hdr td {
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+
+  .expiry-month-table {
+    min-width: 348px;
+  }
+
+  .expiry-month-table th:first-child { width: 50%; }
+  .expiry-quarter-table th:first-child { width: 36%; }
 }
 
 /* =========================

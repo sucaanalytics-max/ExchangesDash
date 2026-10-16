@@ -477,6 +477,14 @@ function initExchangeSwitcher() {
   });
 }
 
+// Phones/tablets hide the sidebar, so the header carries a badge naming the
+// current exchange (same label as its switcher button).
+function updateHeaderExchange(exchange) {
+  const badge = document.getElementById('headerExchange');
+  const btn = document.querySelector(`.exchange-btn[data-exchange="${exchange}"]`);
+  if (badge) badge.textContent = btn ? btn.textContent.trim() : exchange.toUpperCase();
+}
+
 async function switchExchange(exchange) {
   showLoading(exchange);
   // Destroy all existing charts
@@ -486,6 +494,7 @@ async function switchExchange(exchange) {
   // Update logo
   const logoLabels = { nse: 'NSE Analytics', bse: 'BSE Analytics', mcx: 'MCX Analytics', all: 'All Exchanges', nsebse: 'NSE+BSE' };
   document.getElementById('logoText').textContent = logoLabels[exchange] || exchange.toUpperCase() + ' Analytics';
+  updateHeaderExchange(exchange);
   // Update sidebar nav
   buildSidebarNav(exchange);
   // Show/hide exchange-specific content sections
@@ -797,7 +806,7 @@ function updateHeaderInfo() {
     const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const formatted = ('0' + d.getDate()).slice(-2) + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
     const span = document.getElementById('lastUpdatedSpan');
-    if (span) span.textContent = 'Last Updated: ' + formatted;
+    if (span) span.innerHTML = '<span class="lu-label">Last Updated: </span>' + formatted;
   }
   const cq = DATA.summary && DATA.summary.current_quarter;
   if (cq) {
@@ -1169,13 +1178,13 @@ function buildExpiryComparisonHTML(exchange, segKey, mOpts, qOpts) {
     <div class="xl-seg-header">${exchange.toUpperCase()} Month-End Expiry Comparison <span class="xl-seg-unit">last trading day on/before the month's last ${expiryWeekday} · ₹ Cr</span></div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:var(--space-3)">
       <div class="wire-table-scroll" style="flex:1;min-width:260px">
-        <table class="wire-table">
+        <table class="wire-table expiry-month-table">
           <thead><tr><th>Month</th><th>Val (In Cr)</th><th>MoM</th></tr></thead>
           <tbody>${monthRowsHTML}</tbody>
         </table>
       </div>
       <div class="wire-table-scroll" style="flex:1;min-width:260px">
-        <table class="wire-table">
+        <table class="wire-table expiry-quarter-table">
           <thead><tr><th>Quarter</th><th>Val (In Cr)</th><th>QoQ</th><th>YoY</th></tr></thead>
           <tbody>${quarterRowsHTML}</tbody>
         </table>
@@ -2441,8 +2450,9 @@ function optionsSharePredictorHTML(predictor) {
     </tr>`;
 
   const tableHTML = `
-  <div class="chart-panel" style="margin-bottom:var(--space-4);padding:0;overflow-x:auto">
+  <div class="chart-panel" style="margin-bottom:var(--space-4);padding:0">
     <div class="chart-title">Trend Comparison — Long-Term vs Recent</div>
+    <div class="table-scroll">
     <table class="data-table" style="margin:0">
       <thead><tr><th>Window</th><th style="text-align:center">Date Range</th><th style="text-align:center">Rate (NSE)</th><th style="text-align:center">R²</th><th style="text-align:center">Fit</th></tr></thead>
       <tbody>
@@ -2450,6 +2460,7 @@ function optionsSharePredictorHTML(predictor) {
         ${fitRow('Recent (60D, ~3mo)', recentFit, chosen === 'recent')}
       </tbody>
     </table>
+    </div>
   </div>`;
 
   const chartHTML = `
@@ -2466,12 +2477,14 @@ function optionsSharePredictorHTML(predictor) {
     </tr>`).join('');
 
   const projHTML = `
-  <div class="chart-panel" style="padding:0;overflow-x:auto">
+  <div class="chart-panel" style="padding:0">
     <div class="chart-title">Forward Projection</div>
+    <div class="table-scroll">
     <table class="data-table" style="margin:0">
       <thead><tr><th>Horizon</th><th style="text-align:center">NSE Share</th><th style="text-align:center">BSE Share</th></tr></thead>
       <tbody>${projRows}</tbody>
     </table>
+    </div>
     <p class="section-desc" style="padding:10px 14px 14px">Linear extrapolation of the ${chosen === 'recent' ? 'recent (60-day)' : 'long-term (252-day)'} trend; assumes no regime change; clipped to 0–100%.</p>
   </div>`;
 
@@ -4657,7 +4670,7 @@ async function buildBSEValuation() {
         </tbody>
       </table>
     </div>
-    <button class="share-range-btn" id="bseValuationReset" style="margin-top:var(--space-3)">Reset to Excel defaults</button>
+    <button class="share-range-btn" id="bseValuationReset" style="margin:var(--space-3) 14px 14px">Reset to Excel defaults</button>
   </div>
 
   <div class="chart-panel" style="margin-bottom:var(--space-4)">
@@ -4706,11 +4719,11 @@ async function buildBSEValuation() {
     <div class="chart-title">6 (cont.) · Log-Scale DMA Revenue vs Share Price</div>
     <div class="chart-grid chart-grid-2">
       <div>
-        <div style="font-size:12px;font-weight:600;color:var(--color-text-muted);margin-bottom:6px">Jun 2023 onwards</div>
+        <div style="font-size:12px;font-weight:600;color:var(--color-text-muted);margin-bottom:6px;padding:10px 14px 0">Jun 2023 onwards</div>
         <div class="chart-wrapper"><canvas id="chartBseLogLog1"></canvas></div>
       </div>
       <div>
-        <div style="font-size:12px;font-weight:600;color:var(--color-text-muted);margin-bottom:6px">Apr 2024 onwards</div>
+        <div style="font-size:12px;font-weight:600;color:var(--color-text-muted);margin-bottom:6px;padding:10px 14px 0">Apr 2024 onwards</div>
         <div class="chart-wrapper"><canvas id="chartBseLogLog2"></canvas></div>
       </div>
     </div>
@@ -5578,8 +5591,8 @@ async function buildIntradayPredictor(exchange, containerId) {
   <div class="chart-panel" style="margin-bottom:var(--space-4)">
     <div class="chart-title">${exLabel} — Trading Activity by Period of Day</div>
     <p class="section-desc">% of EOD revenue earned within each window, not cumulative — this is what tells you which part of the day is busiest. Based on ${days.length} archived trading day${days.length === 1 ? '' : 's'}; only days with a real intraday poll besides the closing figure contribute (see below).</p>
-    <div style="margin-bottom:var(--space-3)">${toggleHTML}</div>
-    <div id="barsIntradayPeriod${exLabel}"></div>
+    <div class="panel-inset" style="margin-bottom:var(--space-3)">${toggleHTML}</div>
+    <div class="panel-inset panel-inset--bottom" id="barsIntradayPeriod${exLabel}"></div>
   </div>
   <div class="chart-panel" style="margin-bottom:var(--space-4)">
     <div class="chart-title">${exLabel} — % of EOD Revenue Reached, by Time of Day (Cumulative)</div>
@@ -5739,6 +5752,7 @@ function kpi(title, value, sub, sentiment) {
 async function init() {
   showLoading('nse');
   initExchangeSwitcher();
+  updateHeaderExchange('nse');
   buildSidebarNav('nse');
   toggleExchangeContent('nse');
   preloadMarketData().then(() => { if (currentExchange === 'all' || currentExchange === 'nsebse') rebuildAll(); });
@@ -5874,9 +5888,22 @@ function buildAllRegressionChartImgs(shareData, exchangeName) {
 // WEEKLY REPORT PDF DOWNLOAD
 // ========================
 
+// Header REPORT / MOBILE buttons: while a report builds, show "Building…" in
+// the label (hidden on phones, where the button is icon-only) and restore it after.
+function setReportBtnBusy(btn, busy) {
+  if (!btn) return;
+  const label = btn.querySelector('.btn-label');
+  if (label) {
+    if (busy) { btn.dataset.label = label.textContent; label.textContent = 'Building…'; }
+    else if (btn.dataset.label) label.textContent = btn.dataset.label;
+  }
+  btn.disabled = busy;
+  btn.setAttribute('aria-busy', busy ? 'true' : 'false');
+}
+
 async function downloadWeeklyReport() {
   const btn = document.getElementById('btnDownloadReport');
-  if (btn) { btn.textContent = 'Building…'; btn.disabled = true; }
+  setReportBtnBusy(btn, true);
 
   try {
     const [nseEnrich, bseEnrich, mcxEnrich, nseDash, bseDash, bseShare, mcxShare, nseShare] = await Promise.all([
@@ -6202,7 +6229,7 @@ async function downloadWeeklyReport() {
     el.style.display = 'block';
     setTimeout(() => { window.print(); el.style.display = 'none'; }, 150);
   } finally {
-    if (btn) { btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Report'; btn.disabled = false; }
+    setReportBtnBusy(btn, false);
   }
 }
 
@@ -6212,7 +6239,7 @@ async function downloadWeeklyReport() {
 
 async function downloadMobileReport() {
   const btn = document.getElementById('btnMobileReport');
-  if (btn) { btn.textContent = 'Building…'; btn.disabled = true; }
+  setReportBtnBusy(btn, true);
 
   try {
     const [nseEnrich, bseEnrich, mcxEnrich, nseDash, bseDash, bseShare, mcxShare] = await Promise.all([
@@ -6454,7 +6481,7 @@ ${body}
     URL.revokeObjectURL(url);
 
   } finally {
-    if (btn) { btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Mobile'; btn.disabled = false; }
+    setReportBtnBusy(btn, false);
   }
 }
 
