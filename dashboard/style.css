@@ -771,6 +771,18 @@ html, body {
   width: 100% !important;
 }
 
+/* Price-vs-revenue scatters: kept short on small screens; on desktop they grow
+   with the width like other charts (app.js caps every chart at 440px). */
+.chart-wrapper--scatter {
+  max-height: 300px;
+}
+
+@media (min-width: 1024px) {
+  .chart-wrapper--scatter {
+    max-height: 440px;
+  }
+}
+
 /* =========================
    TABLES
    ========================= */

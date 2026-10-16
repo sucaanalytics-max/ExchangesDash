@@ -115,7 +115,68 @@ function getHeatmapRgb() {
   return '0, 113, 227';
 }
 
+// Text size for on-screen chart ticks and axis titles (the base font, legend and
+// tooltip are 11 too). The off-screen report image builders keep their own
+// fixed sizes, since those images are laid out for print.
+const CHART_FONT = { tick: 11, title: 11 };
+
+// Phones: a chart whose canvas is narrower than this hides its axis titles and
+// puts its legend below the plot, so the plot keeps the width. Only the chart's
+// own config copy is changed, and the original values come back once it is
+// wider again. Charts outside a .chart-wrapper (report images) are skipped.
+const COMPACT_CHART_WIDTH = 480;
+let compactPluginRegistered = false;
+
+function setCompactChartLayout(chart, width) {
+  if (!width || !chart.canvas || !chart.canvas.closest('.chart-wrapper')) return;
+  const narrow = width < COMPACT_CHART_WIDTH;
+  if (narrow === Boolean(chart.$compactSaved)) return;
+  // chart.config.options is Chart.js's per-chart copy; it carries edits made
+  // here into every later update until they are undone.
+  const opts = chart.config.options;
+  if (narrow) {
+    const saved = { titles: [], legend: null };
+    Object.entries(opts.scales || {}).forEach(([id, s]) => {
+      if (s && s.title && s.title.display) { s.title.display = false; saved.titles.push(id); }
+    });
+    opts.plugins = opts.plugins || {};
+    const legend = opts.plugins.legend || (opts.plugins.legend = {});
+    if (legend.display !== false && legend.position !== 'bottom') {
+      saved.legend = { had: Object.prototype.hasOwnProperty.call(legend, 'position'), position: legend.position };
+      legend.position = 'bottom';
+    }
+    chart.$compactSaved = saved;
+  } else {
+    const saved = chart.$compactSaved;
+    saved.titles.forEach(id => {
+      const s = opts.scales && opts.scales[id];
+      if (s && s.title) s.title.display = true;
+    });
+    const legend = opts.plugins && opts.plugins.legend;
+    if (saved.legend && legend) {
+      if (saved.legend.had) legend.position = saved.legend.position;
+      else delete legend.position;
+    }
+    chart.$compactSaved = null;
+  }
+}
+
+// `resize` runs just before Chart.js re-lays out for a new size (including the
+// first sizing when the chart attaches), so the edits apply in that same pass.
+// `beforeUpdate` is only a fallback: legend changes made there show from the
+// next update, because the legend reads its position earlier in the cycle.
+const compactOnNarrowPlugin = {
+  id: 'compactOnNarrow',
+  resize(chart, args) { setCompactChartLayout(chart, args.size.width); },
+  afterInit(chart) { setCompactChartLayout(chart, chart.width); },
+  beforeUpdate(chart) { setCompactChartLayout(chart, chart.width); },
+};
+
 function applyChartDefaults() {
+  if (!compactPluginRegistered) {
+    Chart.register(compactOnNarrowPlugin);
+    compactPluginRegistered = true;
+  }
   Chart.defaults.color = getTickColor();
   Chart.defaults.font.family = FONT_FAMILY;
   Chart.defaults.font.size = 11;
@@ -143,10 +204,43 @@ function applyChartDefaults() {
 
 applyChartDefaults();
 
+// Chart heights. Each chart passes the height it has always had; that is its
+// floor. On a wrapper at least CHART_GROW_FROM_WIDTH wide the height follows
+// the width (CHART_HEIGHT_PER_WIDTH, capped at CHART_MAX_HEIGHT), so a
+// full-width desktop chart is no longer a thin strip. Narrower or hidden
+// (width 0) wrappers keep the floor. Charts are responsive with
+// maintainAspectRatio off, so Chart.js follows the wrapper height.
+const CHART_GROW_FROM_WIDTH = 640;
+const CHART_HEIGHT_PER_WIDTH = 0.36;
+const CHART_MAX_HEIGHT = 440;
+
+function sizeChartWrapper(wrapper) {
+  const minH = Number(wrapper.dataset.minH);
+  if (!minH) return;
+  const width = wrapper.clientWidth;
+  const h = width >= CHART_GROW_FROM_WIDTH
+    ? Math.round(Math.max(minH, Math.min(CHART_MAX_HEIGHT, width * CHART_HEIGHT_PER_WIDTH)))
+    : minH;
+  const px = h + 'px';
+  if (wrapper.style.height !== px) wrapper.style.height = px;
+}
+
+function resizeChartWrappers() {
+  document.querySelectorAll('[data-min-h]').forEach(sizeChartWrapper);
+}
+
 function setCanvasHeight(id, h) {
   const c = document.getElementById(id);
-  if (c) c.parentElement.style.height = h + 'px';
+  if (!c) return;
+  c.parentElement.dataset.minH = h;
+  sizeChartWrapper(c.parentElement);
 }
+
+let chartWrapperResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(chartWrapperResizeTimer);
+  chartWrapperResizeTimer = setTimeout(resizeChartWrappers, 150);
+});
 
 // ========================
 // THEME TOGGLE
@@ -320,8 +414,10 @@ function attachTabListeners() {
       // Close mobile nav
       document.getElementById('sidebar').classList.remove('open');
       document.getElementById('sidebarOverlay').classList.remove('open');
-      // Resize charts after tab switch
+      // Resize charts after tab switch: wrappers first (charts built while
+      // hidden only got their minimum height), then the charts
       setTimeout(() => {
+        resizeChartWrappers();
         Object.values(charts).forEach(c => { if (c && c.resize) c.resize(); });
         // Bar charts built while their tab was still display:none never get
         // correct geometry from Chart.js even after a later .resize() — only
@@ -350,6 +446,7 @@ document.addEventListener('click', function(e) {
   const target = document.getElementById('subtab-' + st);
   if (target) target.classList.add('active');
   setTimeout(() => {
+    resizeChartWrappers();
     Object.values(charts).forEach(c => { if (c && c.resize) c.resize(); });
   }, 50);
 });
@@ -2249,7 +2346,7 @@ function buildMarketShareChart(canvasId, rows, field) {
       interaction: { mode: 'index', intersect: false },
       plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + ctx.raw.toFixed(1) + ' %' } } },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         y: { min: 0, max: 100, ticks: { callback: v => v + ' %' } },
       }
     }
@@ -2303,7 +2400,7 @@ function chartOptionsSharePredictor(canvasId, predictor) {
       interaction: { mode: 'index', intersect: false },
       plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + (ctx.raw == null ? '—' : ctx.raw.toFixed(1) + ' %') } } },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         y: { min: 0, max: 100, ticks: { callback: v => v + ' %' } },
       }
     }
@@ -2540,7 +2637,7 @@ function buildNSETemporalCharts() {
     },
     options: {
       scales: {
-        x: { ticks: { maxTicksLimit: 18, maxRotation: 45, font: { size: 9 } } },
+        x: { ticks: { maxTicksLimit: 18, maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -2572,7 +2669,7 @@ function buildNSETemporalCharts() {
     },
     options: {
       scales: {
-        x: { ticks: { maxTicksLimit: 15, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 15, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) } }
       }
     }
@@ -2651,7 +2748,7 @@ function initNSEQuarterCompare() {
           }
         },
         scales: {
-          x: { ticks: { maxTicksLimit: 20, font: { size: 10 } } },
+          x: { ticks: { maxTicksLimit: 20, font: { size: CHART_FONT.tick } } },
           y: { ticks: { callback: v => '\u20b9' + fmtNum(v, 0) + ' Cr' } }
         }
       }
@@ -3074,7 +3171,7 @@ function buildNSEWaterfallChart(txnRev, otherRev, totalRev, totalExp, emp, reg, 
         }
       },
       scales: {
-        x: { ticks: { maxRotation: 45, font: { size: 9 } } },
+        x: { ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { beginAtZero: true, ticks: { callback: v => '₹' + fmtNum(v, 0) } }
       }
     }
@@ -3130,7 +3227,7 @@ function buildNSEPATHistoryChart() {
         }
       },
       scales: {
-        x: { ticks: { maxRotation: 45, font: { size: 10 } } },
+        x: { ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -3200,9 +3297,9 @@ function buildNSEAdvancedCharts() {
       },
       options: {
         scales: {
-          x: { ticks: { maxTicksLimit: 12, font: { size: 10 } } },
-          y1: { position: 'left', title: { display: true, text: 'P/N Ratio (bps)', color: CHART_COLORS[0], font: { size: 10 } } },
-          y2: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'India VIX', color: CHART_COLORS[5], font: { size: 10 } } },
+          x: { ticks: { maxTicksLimit: 12, font: { size: CHART_FONT.tick } } },
+          y1: { position: 'left', title: { display: true, text: 'P/N Ratio (bps)', color: CHART_COLORS[0], font: { size: CHART_FONT.title } } },
+          y2: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'India VIX', color: CHART_COLORS[5], font: { size: CHART_FONT.title } } },
         }
       }
     });
@@ -3224,8 +3321,8 @@ function buildNSEAdvancedCharts() {
       },
       options: {
         scales: {
-          x: { title: { display: true, text: 'India VIX', font: { size: 10 } }, ticks: { font: { size: 10 } } },
-          y: { title: { display: true, text: 'Total Revenue (₹ Cr)', font: { size: 10 } }, ticks: { callback: v => '₹' + fmtNum(v, 0) } },
+          x: { title: { display: true, text: 'India VIX', font: { size: CHART_FONT.title } }, ticks: { font: { size: CHART_FONT.tick } } },
+          y: { title: { display: true, text: 'Total Revenue (₹ Cr)', font: { size: CHART_FONT.title } }, ticks: { callback: v => '₹' + fmtNum(v, 0) } },
         },
         plugins: {
           tooltip: { callbacks: { label: ctx => 'VIX: ' + fmtNum(ctx.raw.x, 1) + ', Rev: ' + fmt(ctx.raw.y) } }
@@ -3260,9 +3357,9 @@ function buildNSEAdvancedCharts() {
     },
     options: {
       scales: {
-        x: { ticks: { maxTicksLimit: 12, font: { size: 10 } } },
-        y1: { position: 'left', title: { display: true, text: 'Revenue (₹ Cr)', color: CHART_COLORS[0], font: { size: 10 } } },
-        y2: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'Contracts (Mn)', color: CHART_COLORS[4], font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 12, font: { size: CHART_FONT.tick } } },
+        y1: { position: 'left', title: { display: true, text: 'Revenue (₹ Cr)', color: CHART_COLORS[0], font: { size: CHART_FONT.title } } },
+        y2: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'Contracts (Mn)', color: CHART_COLORS[4], font: { size: CHART_FONT.title } } },
       }
     }
   });
@@ -3434,7 +3531,7 @@ function buildNSEQuarterlyCharts() {
         }
       },
       scales: {
-        x: { stacked: true, ticks: { maxRotation: 45, font: { size: 10 } } },
+        x: { stacked: true, ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { stacked: true, ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -3458,7 +3555,7 @@ function buildNSEQuarterlyCharts() {
     options: {
       plugins: { tooltip: { callbacks: { label: ctx => 'Total Revenue: ' + fmt(ctx.raw) } } },
       scales: {
-        x: { ticks: { maxRotation: 45, font: { size: 10 } } },
+        x: { ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -3494,7 +3591,7 @@ function buildNSEMonthlyAnalysis() {
     options: {
       plugins: { tooltip: { callbacks: { label: ctx => 'Total Revenue: ' + fmt(ctx.raw) } } },
       scales: {
-        x: { ticks: { maxRotation: 45, font: { size: 10 } } },
+        x: { ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -3522,7 +3619,7 @@ function buildNSEMonthlyAnalysis() {
         }
       },
       scales: {
-        x: { stacked: true, ticks: { maxRotation: 45, font: { size: 10 } } },
+        x: { stacked: true, ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { stacked: true, ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -3583,7 +3680,7 @@ function buildBSEMonthlyAnalysis() {
     options: {
       plugins: { tooltip: { callbacks: { label: ctx => 'Total Revenue: ' + fmt(ctx.raw) } } },
       scales: {
-        x: { ticks: { maxRotation: 45, font: { size: 10 } } },
+        x: { ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -3612,7 +3709,7 @@ function buildBSEMonthlyAnalysis() {
         }
       },
       scales: {
-        x: { stacked: true, ticks: { maxRotation: 45, font: { size: 10 } } },
+        x: { stacked: true, ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { stacked: true, ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -3784,7 +3881,7 @@ function buildBSECharts(viewSer, reg, maWin) {
       interaction: { mode: 'index', intersect: false },
       plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 0) } } },
       scales: {
-        x: { ticks: { maxTicksLimit: 8, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 8, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) } }
       }
     }
@@ -3813,16 +3910,16 @@ function buildBSECharts(viewSer, reg, maWin) {
         }
       },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         yRev: {
           type: 'linear', position: 'left',
-          title: { display: true, text: maWin + '-Day MA Rev (₹ Cr)', font: { size: 10 } },
-          ticks: { callback: v => '₹' + fmtNum(v, 1) + ' Cr', font: { size: 10 } },
+          title: { display: true, text: maWin + '-Day MA Rev (₹ Cr)', font: { size: CHART_FONT.title } },
+          ticks: { callback: v => '₹' + fmtNum(v, 1) + ' Cr', font: { size: CHART_FONT.tick } },
         },
         yPrice: {
           type: 'linear', position: 'right',
-          title: { display: true, text: 'Share Price (₹)', font: { size: 10 } },
-          ticks: { callback: v => '₹' + fmtNum(v, 0), font: { size: 10 } },
+          title: { display: true, text: 'Share Price (₹)', font: { size: CHART_FONT.title } },
+          ticks: { callback: v => '₹' + fmtNum(v, 0), font: { size: CHART_FONT.tick } },
           grid: { drawOnChartArea: false },
         },
       }
@@ -3873,10 +3970,10 @@ function buildBSECharts(viewSer, reg, maWin) {
         }
       },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         y: {
-          ticks: { font: { size: 10 }, callback: v => v.toFixed(0) },
-          title: { display: true, text: 'Price ÷ Rev MA' + maWin, font: { size: 10 } },
+          ticks: { font: { size: CHART_FONT.tick }, callback: v => v.toFixed(0) },
+          title: { display: true, text: 'Price ÷ Rev MA' + maWin, font: { size: CHART_FONT.title } },
         }
       }
     }
@@ -3978,7 +4075,7 @@ function buildBSEShareAnalysis() {
     </div>
     <div class="chart-panel">
       <div class="chart-title">Revenue → Price Scatter</div>
-      <div class="chart-wrapper" style="max-height:300px"><canvas id="chartBseShareScatter"></canvas></div>
+      <div class="chart-wrapper chart-wrapper--scatter"><canvas id="chartBseShareScatter"></canvas></div>
     </div>
   </div>`;
 
@@ -4672,7 +4769,7 @@ function buildBSEDMADiagnosticCharts(bseSeries) {
       interaction: { mode: 'index', intersect: false },
       plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 2) + ' Cr' } } },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -4699,9 +4796,9 @@ function buildBSEDMADiagnosticCharts(bseSeries) {
       options: {
         interaction: { mode: 'index', intersect: false },
         scales: {
-          x: { ticks: { maxTicksLimit: 8, font: { size: 9 } } },
-          yRev:   { type: 'logarithmic', position: 'left',  ticks: { font: { size: 9 }, callback: v => fmtNum(v, 0) } },
-          yPrice: { type: 'logarithmic', position: 'right', ticks: { font: { size: 9 }, callback: v => fmtNum(v, 0) }, grid: { drawOnChartArea: false } },
+          x: { ticks: { maxTicksLimit: 8, font: { size: CHART_FONT.tick } } },
+          yRev:   { type: 'logarithmic', position: 'left',  ticks: { font: { size: CHART_FONT.tick }, callback: v => fmtNum(v, 0) } },
+          yPrice: { type: 'logarithmic', position: 'right', ticks: { font: { size: CHART_FONT.tick }, callback: v => fmtNum(v, 0) }, grid: { drawOnChartArea: false } },
         }
       }
     });
@@ -4734,7 +4831,7 @@ function buildMCXCharts(viewSer, reg, maWin) {
       interaction: { mode: 'index', intersect: false },
       plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 0) } } },
       scales: {
-        x: { ticks: { maxTicksLimit: 8, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 8, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) } }
       }
     }
@@ -4762,16 +4859,16 @@ function buildMCXCharts(viewSer, reg, maWin) {
         }
       },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         yRev: {
           type: 'linear', position: 'left',
-          title: { display: true, text: maWin + '-Day MA Rev (₹ Cr)', font: { size: 10 } },
-          ticks: { callback: v => '₹' + fmtNum(v, 1) + ' Cr', font: { size: 10 } },
+          title: { display: true, text: maWin + '-Day MA Rev (₹ Cr)', font: { size: CHART_FONT.title } },
+          ticks: { callback: v => '₹' + fmtNum(v, 1) + ' Cr', font: { size: CHART_FONT.tick } },
         },
         yPrice: {
           type: 'linear', position: 'right',
-          title: { display: true, text: 'Share Price (₹)', font: { size: 10 } },
-          ticks: { callback: v => '₹' + fmtNum(v, 0), font: { size: 10 } },
+          title: { display: true, text: 'Share Price (₹)', font: { size: CHART_FONT.title } },
+          ticks: { callback: v => '₹' + fmtNum(v, 0), font: { size: CHART_FONT.tick } },
           grid: { drawOnChartArea: false },
         },
       }
@@ -4820,10 +4917,10 @@ function buildMCXCharts(viewSer, reg, maWin) {
         }
       },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         y: {
-          ticks: { font: { size: 10 }, callback: v => v.toFixed(0) },
-          title: { display: true, text: 'Price ÷ Rev MA' + maWin, font: { size: 10 } },
+          ticks: { font: { size: CHART_FONT.tick }, callback: v => v.toFixed(0) },
+          title: { display: true, text: 'Price ÷ Rev MA' + maWin, font: { size: CHART_FONT.title } },
         }
       }
     }
@@ -4924,7 +5021,7 @@ function buildMCXShareAnalysis() {
     </div>
     <div class="chart-panel">
       <div class="chart-title">Revenue → Price Scatter</div>
-      <div class="chart-wrapper" style="max-height:300px"><canvas id="chartMcxShareScatter"></canvas></div>
+      <div class="chart-wrapper chart-wrapper--scatter"><canvas id="chartMcxShareScatter"></canvas></div>
     </div>
   </div>`;
 
@@ -5079,7 +5176,7 @@ function buildNSECharts(viewSer, reg, maWin) {
       interaction: { mode: 'index', intersect: false },
       plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 0) } } },
       scales: {
-        x: { ticks: { maxTicksLimit: 8, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 8, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) } }
       }
     }
@@ -5107,16 +5204,16 @@ function buildNSECharts(viewSer, reg, maWin) {
         }
       },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         yRev: {
           type: 'linear', position: 'left',
-          title: { display: true, text: maWin + '-Day MA Rev (₹ Cr)', font: { size: 10 } },
-          ticks: { callback: v => '₹' + fmtNum(v, 1) + ' Cr', font: { size: 10 } },
+          title: { display: true, text: maWin + '-Day MA Rev (₹ Cr)', font: { size: CHART_FONT.title } },
+          ticks: { callback: v => '₹' + fmtNum(v, 1) + ' Cr', font: { size: CHART_FONT.tick } },
         },
         yPrice: {
           type: 'linear', position: 'right',
-          title: { display: true, text: 'Share Price (₹)', font: { size: 10 } },
-          ticks: { callback: v => '₹' + fmtNum(v, 0), font: { size: 10 } },
+          title: { display: true, text: 'Share Price (₹)', font: { size: CHART_FONT.title } },
+          ticks: { callback: v => '₹' + fmtNum(v, 0), font: { size: CHART_FONT.tick } },
           grid: { drawOnChartArea: false },
         },
       }
@@ -5165,10 +5262,10 @@ function buildNSECharts(viewSer, reg, maWin) {
         }
       },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         y: {
-          ticks: { font: { size: 10 }, callback: v => v.toFixed(0) },
-          title: { display: true, text: 'Price ÷ Rev MA' + maWin, font: { size: 10 } },
+          ticks: { font: { size: CHART_FONT.tick }, callback: v => v.toFixed(0) },
+          title: { display: true, text: 'Price ÷ Rev MA' + maWin, font: { size: CHART_FONT.title } },
         }
       }
     }
@@ -5274,7 +5371,7 @@ function buildNSEShareAnalysis() {
     </div>
     <div class="chart-panel">
       <div class="chart-title">Revenue → Price Scatter</div>
-      <div class="chart-wrapper" style="max-height:300px"><canvas id="chartNseShareScatter"></canvas></div>
+      <div class="chart-wrapper chart-wrapper--scatter"><canvas id="chartNseShareScatter"></canvas></div>
     </div>
   </div>`;
 
