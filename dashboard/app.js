@@ -115,7 +115,68 @@ function getHeatmapRgb() {
   return '0, 113, 227';
 }
 
+// Text size for on-screen chart ticks and axis titles (the base font, legend and
+// tooltip are 11 too). The off-screen report image builders keep their own
+// fixed sizes, since those images are laid out for print.
+const CHART_FONT = { tick: 11, title: 11 };
+
+// Phones: a chart whose canvas is narrower than this hides its axis titles and
+// puts its legend below the plot, so the plot keeps the width. Only the chart's
+// own config copy is changed, and the original values come back once it is
+// wider again. Charts outside a .chart-wrapper (report images) are skipped.
+const COMPACT_CHART_WIDTH = 480;
+let compactPluginRegistered = false;
+
+function setCompactChartLayout(chart, width) {
+  if (!width || !chart.canvas || !chart.canvas.closest('.chart-wrapper')) return;
+  const narrow = width < COMPACT_CHART_WIDTH;
+  if (narrow === Boolean(chart.$compactSaved)) return;
+  // chart.config.options is Chart.js's per-chart copy; it carries edits made
+  // here into every later update until they are undone.
+  const opts = chart.config.options;
+  if (narrow) {
+    const saved = { titles: [], legend: null };
+    Object.entries(opts.scales || {}).forEach(([id, s]) => {
+      if (s && s.title && s.title.display) { s.title.display = false; saved.titles.push(id); }
+    });
+    opts.plugins = opts.plugins || {};
+    const legend = opts.plugins.legend || (opts.plugins.legend = {});
+    if (legend.display !== false && legend.position !== 'bottom') {
+      saved.legend = { had: Object.prototype.hasOwnProperty.call(legend, 'position'), position: legend.position };
+      legend.position = 'bottom';
+    }
+    chart.$compactSaved = saved;
+  } else {
+    const saved = chart.$compactSaved;
+    saved.titles.forEach(id => {
+      const s = opts.scales && opts.scales[id];
+      if (s && s.title) s.title.display = true;
+    });
+    const legend = opts.plugins && opts.plugins.legend;
+    if (saved.legend && legend) {
+      if (saved.legend.had) legend.position = saved.legend.position;
+      else delete legend.position;
+    }
+    chart.$compactSaved = null;
+  }
+}
+
+// `resize` runs just before Chart.js re-lays out for a new size (including the
+// first sizing when the chart attaches), so the edits apply in that same pass.
+// `beforeUpdate` is only a fallback: legend changes made there show from the
+// next update, because the legend reads its position earlier in the cycle.
+const compactOnNarrowPlugin = {
+  id: 'compactOnNarrow',
+  resize(chart, args) { setCompactChartLayout(chart, args.size.width); },
+  afterInit(chart) { setCompactChartLayout(chart, chart.width); },
+  beforeUpdate(chart) { setCompactChartLayout(chart, chart.width); },
+};
+
 function applyChartDefaults() {
+  if (!compactPluginRegistered) {
+    Chart.register(compactOnNarrowPlugin);
+    compactPluginRegistered = true;
+  }
   Chart.defaults.color = getTickColor();
   Chart.defaults.font.family = FONT_FAMILY;
   Chart.defaults.font.size = 11;
@@ -143,10 +204,43 @@ function applyChartDefaults() {
 
 applyChartDefaults();
 
+// Chart heights. Each chart passes the height it has always had; that is its
+// floor. On a wrapper at least CHART_GROW_FROM_WIDTH wide the height follows
+// the width (CHART_HEIGHT_PER_WIDTH, capped at CHART_MAX_HEIGHT), so a
+// full-width desktop chart is no longer a thin strip. Narrower or hidden
+// (width 0) wrappers keep the floor. Charts are responsive with
+// maintainAspectRatio off, so Chart.js follows the wrapper height.
+const CHART_GROW_FROM_WIDTH = 640;
+const CHART_HEIGHT_PER_WIDTH = 0.36;
+const CHART_MAX_HEIGHT = 440;
+
+function sizeChartWrapper(wrapper) {
+  const minH = Number(wrapper.dataset.minH);
+  if (!minH) return;
+  const width = wrapper.clientWidth;
+  const h = width >= CHART_GROW_FROM_WIDTH
+    ? Math.round(Math.max(minH, Math.min(CHART_MAX_HEIGHT, width * CHART_HEIGHT_PER_WIDTH)))
+    : minH;
+  const px = h + 'px';
+  if (wrapper.style.height !== px) wrapper.style.height = px;
+}
+
+function resizeChartWrappers() {
+  document.querySelectorAll('[data-min-h]').forEach(sizeChartWrapper);
+}
+
 function setCanvasHeight(id, h) {
   const c = document.getElementById(id);
-  if (c) c.parentElement.style.height = h + 'px';
+  if (!c) return;
+  c.parentElement.dataset.minH = h;
+  sizeChartWrapper(c.parentElement);
 }
+
+let chartWrapperResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(chartWrapperResizeTimer);
+  chartWrapperResizeTimer = setTimeout(resizeChartWrappers, 150);
+});
 
 // ========================
 // THEME TOGGLE
@@ -320,8 +414,10 @@ function attachTabListeners() {
       // Close mobile nav
       document.getElementById('sidebar').classList.remove('open');
       document.getElementById('sidebarOverlay').classList.remove('open');
-      // Resize charts after tab switch
+      // Resize charts after tab switch: wrappers first (charts built while
+      // hidden only got their minimum height), then the charts
       setTimeout(() => {
+        resizeChartWrappers();
         Object.values(charts).forEach(c => { if (c && c.resize) c.resize(); });
         // Bar charts built while their tab was still display:none never get
         // correct geometry from Chart.js even after a later .resize() — only
@@ -350,6 +446,7 @@ document.addEventListener('click', function(e) {
   const target = document.getElementById('subtab-' + st);
   if (target) target.classList.add('active');
   setTimeout(() => {
+    resizeChartWrappers();
     Object.values(charts).forEach(c => { if (c && c.resize) c.resize(); });
   }, 50);
 });
@@ -380,6 +477,14 @@ function initExchangeSwitcher() {
   });
 }
 
+// Phones/tablets hide the sidebar, so the header carries a badge naming the
+// current exchange (same label as its switcher button).
+function updateHeaderExchange(exchange) {
+  const badge = document.getElementById('headerExchange');
+  const btn = document.querySelector(`.exchange-btn[data-exchange="${exchange}"]`);
+  if (badge) badge.textContent = btn ? btn.textContent.trim() : exchange.toUpperCase();
+}
+
 async function switchExchange(exchange) {
   showLoading(exchange);
   // Destroy all existing charts
@@ -389,6 +494,7 @@ async function switchExchange(exchange) {
   // Update logo
   const logoLabels = { nse: 'NSE Analytics', bse: 'BSE Analytics', mcx: 'MCX Analytics', all: 'All Exchanges', nsebse: 'NSE+BSE' };
   document.getElementById('logoText').textContent = logoLabels[exchange] || exchange.toUpperCase() + ' Analytics';
+  updateHeaderExchange(exchange);
   // Update sidebar nav
   buildSidebarNav(exchange);
   // Show/hide exchange-specific content sections
@@ -700,7 +806,7 @@ function updateHeaderInfo() {
     const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const formatted = ('0' + d.getDate()).slice(-2) + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
     const span = document.getElementById('lastUpdatedSpan');
-    if (span) span.textContent = 'Last Updated: ' + formatted;
+    if (span) span.innerHTML = '<span class="lu-label">Last Updated: </span>' + formatted;
   }
   const cq = DATA.summary && DATA.summary.current_quarter;
   if (cq) {
@@ -1072,13 +1178,13 @@ function buildExpiryComparisonHTML(exchange, segKey, mOpts, qOpts) {
     <div class="xl-seg-header">${exchange.toUpperCase()} Month-End Expiry Comparison <span class="xl-seg-unit">last trading day on/before the month's last ${expiryWeekday} · ₹ Cr</span></div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:var(--space-3)">
       <div class="wire-table-scroll" style="flex:1;min-width:260px">
-        <table class="wire-table">
+        <table class="wire-table expiry-month-table">
           <thead><tr><th>Month</th><th>Val (In Cr)</th><th>MoM</th></tr></thead>
           <tbody>${monthRowsHTML}</tbody>
         </table>
       </div>
       <div class="wire-table-scroll" style="flex:1;min-width:260px">
-        <table class="wire-table">
+        <table class="wire-table expiry-quarter-table">
           <thead><tr><th>Quarter</th><th>Val (In Cr)</th><th>QoQ</th><th>YoY</th></tr></thead>
           <tbody>${quarterRowsHTML}</tbody>
         </table>
@@ -1155,7 +1261,7 @@ function buildWeeklyVsMonthEndHTML(exchange, segKey) {
   <div style="margin-top:var(--space-4)">
     <div class="xl-seg-header">${exchange.toUpperCase()} Weekly vs Month-End Expiry <span class="xl-seg-unit">avg of that month's other weekly expiries vs the month-end one · ₹ Cr</span></div>
     <div class="wire-table-scroll" style="margin-top:var(--space-3)">
-      <table class="wire-table">
+      <table class="wire-table wvm-table">
         <thead><tr><th>Month</th><th>Avg Weekly Expiry</th><th>Month-End Expiry</th><th>Difference</th></tr></thead>
         <tbody>${rowsHTML}${summaryHTML}</tbody>
       </table>
@@ -2249,7 +2355,7 @@ function buildMarketShareChart(canvasId, rows, field) {
       interaction: { mode: 'index', intersect: false },
       plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + ctx.raw.toFixed(1) + ' %' } } },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         y: { min: 0, max: 100, ticks: { callback: v => v + ' %' } },
       }
     }
@@ -2303,7 +2409,7 @@ function chartOptionsSharePredictor(canvasId, predictor) {
       interaction: { mode: 'index', intersect: false },
       plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + (ctx.raw == null ? '—' : ctx.raw.toFixed(1) + ' %') } } },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         y: { min: 0, max: 100, ticks: { callback: v => v + ' %' } },
       }
     }
@@ -2327,7 +2433,7 @@ function optionsSharePredictorHTML(predictor) {
   const chosenLabel = chosen === 'recent' ? 'Recent (60D)' : 'Long-Term (252D)';
 
   const kpiHTML = `
-  <div class="share-kpi-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-4);margin-bottom:var(--space-4)">
+  <div class="share-kpi-grid">
     ${kpi('Current NSE Options Share', fmtNum(currentShare, 1) + ' %', 'as of ' + asOfDate + ' (5D avg)', '')}
     ${kpi('Rate of Change (NSE)', fmtRatePerMonth(chosenFit.ratePerMonth), chosenLabel + ' · ' + chosenFit.fit + ' fit (R²=' + Math.round(chosenFit.ols.r2 * 100) + '%)', rateSentiment)}
     ${kpi('12M Projected NSE Share', fmtNum(projections[2].nseShare, 1) + ' %', 'assumes trend continues, capped 0–100%', '')}
@@ -2336,7 +2442,7 @@ function optionsSharePredictorHTML(predictor) {
 
   const fitRow = (label, fit, isChosen) => `
     <tr${isChosen ? '' : ' style="color:var(--color-text-muted)"'}>
-      <td>${label} <span style="font-size:10px;color:var(--color-text-muted)">${isChosen ? '(used)' : '(informational)'}</span></td>
+      <td>${label} <span style="font-size:11px;color:var(--color-text-muted)">${isChosen ? '(used)' : '(informational)'}</span></td>
       <td style="text-align:center">${fit.startDate} → ${fit.endDate}</td>
       <td style="text-align:center">${fmtRatePerMonth(fit.ratePerMonth)}</td>
       <td style="text-align:center">${Math.round(fit.ols.r2 * 100)}%</td>
@@ -2344,8 +2450,9 @@ function optionsSharePredictorHTML(predictor) {
     </tr>`;
 
   const tableHTML = `
-  <div class="chart-panel" style="margin-bottom:var(--space-4);padding:0;overflow-x:auto">
+  <div class="chart-panel" style="margin-bottom:var(--space-4);padding:0">
     <div class="chart-title">Trend Comparison — Long-Term vs Recent</div>
+    <div class="table-scroll">
     <table class="data-table" style="margin:0">
       <thead><tr><th>Window</th><th style="text-align:center">Date Range</th><th style="text-align:center">Rate (NSE)</th><th style="text-align:center">R²</th><th style="text-align:center">Fit</th></tr></thead>
       <tbody>
@@ -2353,6 +2460,7 @@ function optionsSharePredictorHTML(predictor) {
         ${fitRow('Recent (60D, ~3mo)', recentFit, chosen === 'recent')}
       </tbody>
     </table>
+    </div>
   </div>`;
 
   const chartHTML = `
@@ -2369,12 +2477,14 @@ function optionsSharePredictorHTML(predictor) {
     </tr>`).join('');
 
   const projHTML = `
-  <div class="chart-panel" style="padding:0;overflow-x:auto">
+  <div class="chart-panel" style="padding:0">
     <div class="chart-title">Forward Projection</div>
+    <div class="table-scroll">
     <table class="data-table" style="margin:0">
       <thead><tr><th>Horizon</th><th style="text-align:center">NSE Share</th><th style="text-align:center">BSE Share</th></tr></thead>
       <tbody>${projRows}</tbody>
     </table>
+    </div>
     <p class="section-desc" style="padding:10px 14px 14px">Linear extrapolation of the ${chosen === 'recent' ? 'recent (60-day)' : 'long-term (252-day)'} trend; assumes no regime change; clipped to 0–100%.</p>
   </div>`;
 
@@ -2540,7 +2650,7 @@ function buildNSETemporalCharts() {
     },
     options: {
       scales: {
-        x: { ticks: { maxTicksLimit: 18, maxRotation: 45, font: { size: 9 } } },
+        x: { ticks: { maxTicksLimit: 18, maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -2572,7 +2682,7 @@ function buildNSETemporalCharts() {
     },
     options: {
       scales: {
-        x: { ticks: { maxTicksLimit: 15, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 15, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) } }
       }
     }
@@ -2651,7 +2761,7 @@ function initNSEQuarterCompare() {
           }
         },
         scales: {
-          x: { ticks: { maxTicksLimit: 20, font: { size: 10 } } },
+          x: { ticks: { maxTicksLimit: 20, font: { size: CHART_FONT.tick } } },
           y: { ticks: { callback: v => '\u20b9' + fmtNum(v, 0) + ' Cr' } }
         }
       }
@@ -2697,7 +2807,7 @@ function buildNSEPredictedPnLTable() {
   let isFirst = true;
   for (const [qName, q] of Object.entries(quarters)) {
     const otherIncome = q.total_revenue - q.transaction_rev;
-    const tag = isFirst ? ' <span style="color:var(--color-warning);font-size:10px;font-weight:600">CURRENT</span>' : '';
+    const tag = isFirst ? ' <span style="color:var(--color-warning);font-size:11px;font-weight:600">CURRENT</span>' : '';
     const cls = isFirst ? '' : 'predicted';
     html += `<tr class="${cls}">
       <td>${qName}${tag}</td>
@@ -3074,7 +3184,7 @@ function buildNSEWaterfallChart(txnRev, otherRev, totalRev, totalExp, emp, reg, 
         }
       },
       scales: {
-        x: { ticks: { maxRotation: 45, font: { size: 9 } } },
+        x: { ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { beginAtZero: true, ticks: { callback: v => '₹' + fmtNum(v, 0) } }
       }
     }
@@ -3130,7 +3240,7 @@ function buildNSEPATHistoryChart() {
         }
       },
       scales: {
-        x: { ticks: { maxRotation: 45, font: { size: 10 } } },
+        x: { ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -3200,9 +3310,9 @@ function buildNSEAdvancedCharts() {
       },
       options: {
         scales: {
-          x: { ticks: { maxTicksLimit: 12, font: { size: 10 } } },
-          y1: { position: 'left', title: { display: true, text: 'P/N Ratio (bps)', color: CHART_COLORS[0], font: { size: 10 } } },
-          y2: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'India VIX', color: CHART_COLORS[5], font: { size: 10 } } },
+          x: { ticks: { maxTicksLimit: 12, font: { size: CHART_FONT.tick } } },
+          y1: { position: 'left', title: { display: true, text: 'P/N Ratio (bps)', color: CHART_COLORS[0], font: { size: CHART_FONT.title } } },
+          y2: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'India VIX', color: CHART_COLORS[5], font: { size: CHART_FONT.title } } },
         }
       }
     });
@@ -3224,8 +3334,8 @@ function buildNSEAdvancedCharts() {
       },
       options: {
         scales: {
-          x: { title: { display: true, text: 'India VIX', font: { size: 10 } }, ticks: { font: { size: 10 } } },
-          y: { title: { display: true, text: 'Total Revenue (₹ Cr)', font: { size: 10 } }, ticks: { callback: v => '₹' + fmtNum(v, 0) } },
+          x: { title: { display: true, text: 'India VIX', font: { size: CHART_FONT.title } }, ticks: { font: { size: CHART_FONT.tick } } },
+          y: { title: { display: true, text: 'Total Revenue (₹ Cr)', font: { size: CHART_FONT.title } }, ticks: { callback: v => '₹' + fmtNum(v, 0) } },
         },
         plugins: {
           tooltip: { callbacks: { label: ctx => 'VIX: ' + fmtNum(ctx.raw.x, 1) + ', Rev: ' + fmt(ctx.raw.y) } }
@@ -3260,9 +3370,9 @@ function buildNSEAdvancedCharts() {
     },
     options: {
       scales: {
-        x: { ticks: { maxTicksLimit: 12, font: { size: 10 } } },
-        y1: { position: 'left', title: { display: true, text: 'Revenue (₹ Cr)', color: CHART_COLORS[0], font: { size: 10 } } },
-        y2: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'Contracts (Mn)', color: CHART_COLORS[4], font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 12, font: { size: CHART_FONT.tick } } },
+        y1: { position: 'left', title: { display: true, text: 'Revenue (₹ Cr)', color: CHART_COLORS[0], font: { size: CHART_FONT.title } } },
+        y2: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'Contracts (Mn)', color: CHART_COLORS[4], font: { size: CHART_FONT.title } } },
       }
     }
   });
@@ -3434,7 +3544,7 @@ function buildNSEQuarterlyCharts() {
         }
       },
       scales: {
-        x: { stacked: true, ticks: { maxRotation: 45, font: { size: 10 } } },
+        x: { stacked: true, ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { stacked: true, ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -3458,7 +3568,7 @@ function buildNSEQuarterlyCharts() {
     options: {
       plugins: { tooltip: { callbacks: { label: ctx => 'Total Revenue: ' + fmt(ctx.raw) } } },
       scales: {
-        x: { ticks: { maxRotation: 45, font: { size: 10 } } },
+        x: { ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -3494,7 +3604,7 @@ function buildNSEMonthlyAnalysis() {
     options: {
       plugins: { tooltip: { callbacks: { label: ctx => 'Total Revenue: ' + fmt(ctx.raw) } } },
       scales: {
-        x: { ticks: { maxRotation: 45, font: { size: 10 } } },
+        x: { ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -3522,7 +3632,7 @@ function buildNSEMonthlyAnalysis() {
         }
       },
       scales: {
-        x: { stacked: true, ticks: { maxRotation: 45, font: { size: 10 } } },
+        x: { stacked: true, ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { stacked: true, ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -3583,7 +3693,7 @@ function buildBSEMonthlyAnalysis() {
     options: {
       plugins: { tooltip: { callbacks: { label: ctx => 'Total Revenue: ' + fmt(ctx.raw) } } },
       scales: {
-        x: { ticks: { maxRotation: 45, font: { size: 10 } } },
+        x: { ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -3612,7 +3722,7 @@ function buildBSEMonthlyAnalysis() {
         }
       },
       scales: {
-        x: { stacked: true, ticks: { maxRotation: 45, font: { size: 10 } } },
+        x: { stacked: true, ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
         y: { stacked: true, ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -3714,7 +3824,7 @@ function shareRegressionInfoHTML(reg, predPrice, actualPrice, isLive, asOfDate, 
   const lagPart = activeLag ? ` &nbsp;|&nbsp; Lag: ${activeLag} days (revenue leads)` : '';
 
   const kpiHTML = `
-  <div class="share-kpi-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-4);margin-bottom:var(--space-4)">
+  <div class="share-kpi-grid">
     ${kpi('Model R²',        r2pct + '%',              reg.fit + ' fit',    r2pct > 60 ? 'positive' : r2pct > 30 ? 'neutral' : 'negative')}
     ${kpi('Pearson r',       reg.pearson_r.toFixed(2), 'revenue ↔ price',   '')}
     ${kpi('Predicted Price', '₹' + fmtNum(predPrice, 0), 'model estimate', '')}
@@ -3724,7 +3834,7 @@ function shareRegressionInfoHTML(reg, predPrice, actualPrice, isLive, asOfDate, 
   const eqHTML = `
   <div class="chart-panel" style="margin-bottom:var(--space-4);padding:20px 24px">
     <div class="chart-title">Regression Equation</div>
-    <div style="font-size:20px;font-weight:700;color:var(--color-text);margin:12px 0 8px;font-family:var(--font-mono,monospace)">${reg.equation}</div>
+    <div class="regression-eq">${reg.equation}</div>
     <div style="font-size:12px;color:var(--color-text-muted);display:flex;gap:24px;flex-wrap:wrap">
       <span>R² = ${reg.r_squared.toFixed(3)} &nbsp;|&nbsp; r = ${reg.pearson_r.toFixed(3)} &nbsp;|&nbsp; n = ${nDays} trading days</span>
       <span>MA window: ${activeDma} days${lagPart} &nbsp;|&nbsp; Regression from: ${regStart} &nbsp;|&nbsp; Ticker: ${ticker}</span>
@@ -3784,7 +3894,7 @@ function buildBSECharts(viewSer, reg, maWin) {
       interaction: { mode: 'index', intersect: false },
       plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 0) } } },
       scales: {
-        x: { ticks: { maxTicksLimit: 8, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 8, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) } }
       }
     }
@@ -3813,16 +3923,16 @@ function buildBSECharts(viewSer, reg, maWin) {
         }
       },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         yRev: {
           type: 'linear', position: 'left',
-          title: { display: true, text: maWin + '-Day MA Rev (₹ Cr)', font: { size: 10 } },
-          ticks: { callback: v => '₹' + fmtNum(v, 1) + ' Cr', font: { size: 10 } },
+          title: { display: true, text: maWin + '-Day MA Rev (₹ Cr)', font: { size: CHART_FONT.title } },
+          ticks: { callback: v => '₹' + fmtNum(v, 1) + ' Cr', font: { size: CHART_FONT.tick } },
         },
         yPrice: {
           type: 'linear', position: 'right',
-          title: { display: true, text: 'Share Price (₹)', font: { size: 10 } },
-          ticks: { callback: v => '₹' + fmtNum(v, 0), font: { size: 10 } },
+          title: { display: true, text: 'Share Price (₹)', font: { size: CHART_FONT.title } },
+          ticks: { callback: v => '₹' + fmtNum(v, 0), font: { size: CHART_FONT.tick } },
           grid: { drawOnChartArea: false },
         },
       }
@@ -3873,10 +3983,10 @@ function buildBSECharts(viewSer, reg, maWin) {
         }
       },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         y: {
-          ticks: { font: { size: 10 }, callback: v => v.toFixed(0) },
-          title: { display: true, text: 'Price ÷ Rev MA' + maWin, font: { size: 10 } },
+          ticks: { font: { size: CHART_FONT.tick }, callback: v => v.toFixed(0) },
+          title: { display: true, text: 'Price ÷ Rev MA' + maWin, font: { size: CHART_FONT.title } },
         }
       }
     }
@@ -3978,7 +4088,7 @@ function buildBSEShareAnalysis() {
     </div>
     <div class="chart-panel">
       <div class="chart-title">Revenue → Price Scatter</div>
-      <div class="chart-wrapper" style="max-height:300px"><canvas id="chartBseShareScatter"></canvas></div>
+      <div class="chart-wrapper chart-wrapper--scatter"><canvas id="chartBseShareScatter"></canvas></div>
     </div>
   </div>`;
 
@@ -4372,7 +4482,7 @@ function buildQuickValuationPanel(el, exchange, dailySeries, cmp) {
         <thead><tr><th>Metric</th><th style="text-align:center">Bear</th><th style="text-align:center">Base</th><th style="text-align:center">Bull</th></tr></thead>
         <tbody>
           <tr><td>PE Ratio (x)</td>${scenarioCols}</tr>
-          <tr style="font-weight:600"><td>Target Share Price — ${fyeLabel}<span style="font-weight:400;font-size:10px;color:var(--color-text-muted)"> (full-year forward, not spot)</span></td>${targetCols}</tr>
+          <tr style="font-weight:600"><td>Target Share Price — ${fyeLabel}<span style="font-weight:400;font-size:11px;color:var(--color-text-muted)"> (full-year forward, not spot)</span></td>${targetCols}</tr>
           <tr><td>Upside vs CMP</td>${upsideCols}</tr>
         </tbody>
       </table>
@@ -4531,8 +4641,8 @@ async function buildBSEValuation() {
             <td style="text-align:center">${bseCellInput('adrGrowthBullPct', assumptions.adrGrowthBullPct, '0.5')}</td>
           </tr>
           <tr><td>Projected Total Market ADR (₹ Cr/day)</td><td id="annProjADR-bear" style="text-align:center"></td><td id="annProjADR-base" style="text-align:center"></td><td id="annProjADR-bull" style="text-align:center"></td></tr>
-          <tr style="color:var(--color-text-muted)"><td>BSE Target ADR (₹ Cr/day) — Method 1, 45-day share <span style="font-size:10px">(informational)</span></td><td id="annM1-bear" style="text-align:center"></td><td id="annM1-base" style="text-align:center"></td><td id="annM1-bull" style="text-align:center"></td></tr>
-          <tr><td>BSE Target ADR (₹ Cr/day) — Method 2, 20-day share <span style="font-size:10px;color:var(--color-text-muted)">(used)</span></td><td id="annM2-bear" style="text-align:center"></td><td id="annM2-base" style="text-align:center"></td><td id="annM2-bull" style="text-align:center"></td></tr>
+          <tr style="color:var(--color-text-muted)"><td>BSE Target ADR (₹ Cr/day) — Method 1, 45-day share <span style="font-size:11px">(informational)</span></td><td id="annM1-bear" style="text-align:center"></td><td id="annM1-base" style="text-align:center"></td><td id="annM1-bull" style="text-align:center"></td></tr>
+          <tr><td>BSE Target ADR (₹ Cr/day) — Method 2, 20-day share <span style="font-size:11px;color:var(--color-text-muted)">(used)</span></td><td id="annM2-bear" style="text-align:center"></td><td id="annM2-base" style="text-align:center"></td><td id="annM2-bull" style="text-align:center"></td></tr>
           <tr>
             <td>Other Income — Annual (₹ Cr, same for all scenarios)</td>
             <td colspan="3" style="text-align:center">${bseCellInput('otherIncomeAnnualCr', assumptions.otherIncomeAnnualCr, '1')}</td>
@@ -4560,7 +4670,7 @@ async function buildBSEValuation() {
         </tbody>
       </table>
     </div>
-    <button class="share-range-btn" id="bseValuationReset" style="margin-top:var(--space-3)">Reset to Excel defaults</button>
+    <button class="share-range-btn" id="bseValuationReset" style="margin:var(--space-3) 14px 14px">Reset to Excel defaults</button>
   </div>
 
   <div class="chart-panel" style="margin-bottom:var(--space-4)">
@@ -4571,8 +4681,8 @@ async function buildBSEValuation() {
         <tbody>
           ${bseContextRow('Quarter Total Trading Days', bseCellInput('q1TotalTradingDays', assumptions.q1TotalTradingDays, '1'))}
           ${bseContextRow('Quarter Trading Days Elapsed', `<span id="qtrCtxDaysElapsed"></span>`)}
-          ${bseContextRow('BSE Target ADR (₹ Cr/day) — Method 1, 45-day share <span style="font-size:10px;color:var(--color-text-muted)">(used)</span>', `<span id="qtrM1"></span>`)}
-          ${bseContextRow('BSE Target ADR (₹ Cr/day) — Method 2, 20-day share <span style="font-size:10px;color:var(--color-text-muted)">(informational)</span>', `<span id="qtrM2"></span>`)}
+          ${bseContextRow('BSE Target ADR (₹ Cr/day) — Method 1, 45-day share <span style="font-size:11px;color:var(--color-text-muted)">(used)</span>', `<span id="qtrM1"></span>`)}
+          ${bseContextRow('BSE Target ADR (₹ Cr/day) — Method 2, 20-day share <span style="font-size:11px;color:var(--color-text-muted)">(informational)</span>', `<span id="qtrM2"></span>`)}
           ${bseContextRow('Transaction Revenue (₹ Cr)', `<span id="qtrTxnRev"></span>`)}
           ${bseContextRow('Other Income — Quarter (₹ Cr)', bseCellInput('otherIncomeQuarterlyCr', assumptions.otherIncomeQuarterlyCr, '1'))}
           ${bseContextRow('Total Revenue (₹ Cr)', `<span id="qtrTotalRev"></span>`)}
@@ -4609,11 +4719,11 @@ async function buildBSEValuation() {
     <div class="chart-title">6 (cont.) · Log-Scale DMA Revenue vs Share Price</div>
     <div class="chart-grid chart-grid-2">
       <div>
-        <div style="font-size:12px;font-weight:600;color:var(--color-text-muted);margin-bottom:6px">Jun 2023 onwards</div>
+        <div style="font-size:12px;font-weight:600;color:var(--color-text-muted);margin-bottom:6px;padding:10px 14px 0">Jun 2023 onwards</div>
         <div class="chart-wrapper"><canvas id="chartBseLogLog1"></canvas></div>
       </div>
       <div>
-        <div style="font-size:12px;font-weight:600;color:var(--color-text-muted);margin-bottom:6px">Apr 2024 onwards</div>
+        <div style="font-size:12px;font-weight:600;color:var(--color-text-muted);margin-bottom:6px;padding:10px 14px 0">Apr 2024 onwards</div>
         <div class="chart-wrapper"><canvas id="chartBseLogLog2"></canvas></div>
       </div>
     </div>
@@ -4672,7 +4782,7 @@ function buildBSEDMADiagnosticCharts(bseSeries) {
       interaction: { mode: 'index', intersect: false },
       plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 2) + ' Cr' } } },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
@@ -4699,9 +4809,9 @@ function buildBSEDMADiagnosticCharts(bseSeries) {
       options: {
         interaction: { mode: 'index', intersect: false },
         scales: {
-          x: { ticks: { maxTicksLimit: 8, font: { size: 9 } } },
-          yRev:   { type: 'logarithmic', position: 'left',  ticks: { font: { size: 9 }, callback: v => fmtNum(v, 0) } },
-          yPrice: { type: 'logarithmic', position: 'right', ticks: { font: { size: 9 }, callback: v => fmtNum(v, 0) }, grid: { drawOnChartArea: false } },
+          x: { ticks: { maxTicksLimit: 8, font: { size: CHART_FONT.tick } } },
+          yRev:   { type: 'logarithmic', position: 'left',  ticks: { font: { size: CHART_FONT.tick }, callback: v => fmtNum(v, 0) } },
+          yPrice: { type: 'logarithmic', position: 'right', ticks: { font: { size: CHART_FONT.tick }, callback: v => fmtNum(v, 0) }, grid: { drawOnChartArea: false } },
         }
       }
     });
@@ -4734,7 +4844,7 @@ function buildMCXCharts(viewSer, reg, maWin) {
       interaction: { mode: 'index', intersect: false },
       plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 0) } } },
       scales: {
-        x: { ticks: { maxTicksLimit: 8, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 8, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) } }
       }
     }
@@ -4762,16 +4872,16 @@ function buildMCXCharts(viewSer, reg, maWin) {
         }
       },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         yRev: {
           type: 'linear', position: 'left',
-          title: { display: true, text: maWin + '-Day MA Rev (₹ Cr)', font: { size: 10 } },
-          ticks: { callback: v => '₹' + fmtNum(v, 1) + ' Cr', font: { size: 10 } },
+          title: { display: true, text: maWin + '-Day MA Rev (₹ Cr)', font: { size: CHART_FONT.title } },
+          ticks: { callback: v => '₹' + fmtNum(v, 1) + ' Cr', font: { size: CHART_FONT.tick } },
         },
         yPrice: {
           type: 'linear', position: 'right',
-          title: { display: true, text: 'Share Price (₹)', font: { size: 10 } },
-          ticks: { callback: v => '₹' + fmtNum(v, 0), font: { size: 10 } },
+          title: { display: true, text: 'Share Price (₹)', font: { size: CHART_FONT.title } },
+          ticks: { callback: v => '₹' + fmtNum(v, 0), font: { size: CHART_FONT.tick } },
           grid: { drawOnChartArea: false },
         },
       }
@@ -4820,10 +4930,10 @@ function buildMCXCharts(viewSer, reg, maWin) {
         }
       },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         y: {
-          ticks: { font: { size: 10 }, callback: v => v.toFixed(0) },
-          title: { display: true, text: 'Price ÷ Rev MA' + maWin, font: { size: 10 } },
+          ticks: { font: { size: CHART_FONT.tick }, callback: v => v.toFixed(0) },
+          title: { display: true, text: 'Price ÷ Rev MA' + maWin, font: { size: CHART_FONT.title } },
         }
       }
     }
@@ -4924,7 +5034,7 @@ function buildMCXShareAnalysis() {
     </div>
     <div class="chart-panel">
       <div class="chart-title">Revenue → Price Scatter</div>
-      <div class="chart-wrapper" style="max-height:300px"><canvas id="chartMcxShareScatter"></canvas></div>
+      <div class="chart-wrapper chart-wrapper--scatter"><canvas id="chartMcxShareScatter"></canvas></div>
     </div>
   </div>`;
 
@@ -5028,7 +5138,7 @@ function renderNSECollecting(el) {
     </tr>`).join('');
 
   el.innerHTML = `
-  <div class="share-kpi-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-4);margin-bottom:var(--space-4)">
+  <div class="share-kpi-grid">
     ${kpi('Days Collected', `${n} / ${need}`, 'regression starts at ' + need + ' trading days', '')}
     ${kpi(lat.is_live ? 'Share Price 🟢 Live' : 'Share Price', '₹' + fmtNum(lat.price_actual, 2), 'ticker ' + s.ticker, '')}
     ${kpi('Since Listing', sinceListing == null ? '—' : fmtPctSigned(sinceListing), 'vs first close ₹' + fmtNum(s.first_price, 2), sinceListing == null ? '' : (sinceListing >= 0 ? 'positive' : 'negative'))}
@@ -5079,7 +5189,7 @@ function buildNSECharts(viewSer, reg, maWin) {
       interaction: { mode: 'index', intersect: false },
       plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 0) } } },
       scales: {
-        x: { ticks: { maxTicksLimit: 8, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 8, font: { size: CHART_FONT.tick } } },
         y: { ticks: { callback: v => '₹' + fmtNum(v, 0) } }
       }
     }
@@ -5107,16 +5217,16 @@ function buildNSECharts(viewSer, reg, maWin) {
         }
       },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         yRev: {
           type: 'linear', position: 'left',
-          title: { display: true, text: maWin + '-Day MA Rev (₹ Cr)', font: { size: 10 } },
-          ticks: { callback: v => '₹' + fmtNum(v, 1) + ' Cr', font: { size: 10 } },
+          title: { display: true, text: maWin + '-Day MA Rev (₹ Cr)', font: { size: CHART_FONT.title } },
+          ticks: { callback: v => '₹' + fmtNum(v, 1) + ' Cr', font: { size: CHART_FONT.tick } },
         },
         yPrice: {
           type: 'linear', position: 'right',
-          title: { display: true, text: 'Share Price (₹)', font: { size: 10 } },
-          ticks: { callback: v => '₹' + fmtNum(v, 0), font: { size: 10 } },
+          title: { display: true, text: 'Share Price (₹)', font: { size: CHART_FONT.title } },
+          ticks: { callback: v => '₹' + fmtNum(v, 0), font: { size: CHART_FONT.tick } },
           grid: { drawOnChartArea: false },
         },
       }
@@ -5165,10 +5275,10 @@ function buildNSECharts(viewSer, reg, maWin) {
         }
       },
       scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } },
+        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         y: {
-          ticks: { font: { size: 10 }, callback: v => v.toFixed(0) },
-          title: { display: true, text: 'Price ÷ Rev MA' + maWin, font: { size: 10 } },
+          ticks: { font: { size: CHART_FONT.tick }, callback: v => v.toFixed(0) },
+          title: { display: true, text: 'Price ÷ Rev MA' + maWin, font: { size: CHART_FONT.title } },
         }
       }
     }
@@ -5274,7 +5384,7 @@ function buildNSEShareAnalysis() {
     </div>
     <div class="chart-panel">
       <div class="chart-title">Revenue → Price Scatter</div>
-      <div class="chart-wrapper" style="max-height:300px"><canvas id="chartNseShareScatter"></canvas></div>
+      <div class="chart-wrapper chart-wrapper--scatter"><canvas id="chartNseShareScatter"></canvas></div>
     </div>
   </div>`;
 
@@ -5435,7 +5545,7 @@ async function buildIntradayPredictor(exchange, containerId) {
   const latest  = samples.length ? samples[samples.length - 1] : null;
 
   const liveHTML = latest ? `
-  <div class="share-kpi-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-4);margin-bottom:var(--space-4)">
+  <div class="share-kpi-grid">
     ${kpi('Revenue So Far Today', '₹' + fmtNum(latest.total_revenue, 2) + ' Cr',
           `as of ${(latest.captured_ist || '').slice(11, 16)} IST (+${fmtElapsed(latest.elapsed_minutes)})`, '')}
     ${kpi('Predicted EOD Revenue', latest.predicted_eod != null ? '₹' + fmtNum(latest.predicted_eod, 2) + ' Cr' : '—',
@@ -5481,8 +5591,8 @@ async function buildIntradayPredictor(exchange, containerId) {
   <div class="chart-panel" style="margin-bottom:var(--space-4)">
     <div class="chart-title">${exLabel} — Trading Activity by Period of Day</div>
     <p class="section-desc">% of EOD revenue earned within each window, not cumulative — this is what tells you which part of the day is busiest. Based on ${days.length} archived trading day${days.length === 1 ? '' : 's'}; only days with a real intraday poll besides the closing figure contribute (see below).</p>
-    <div style="margin-bottom:var(--space-3)">${toggleHTML}</div>
-    <div id="barsIntradayPeriod${exLabel}"></div>
+    <div class="panel-inset" style="margin-bottom:var(--space-3)">${toggleHTML}</div>
+    <div class="panel-inset panel-inset--bottom" id="barsIntradayPeriod${exLabel}"></div>
   </div>
   <div class="chart-panel" style="margin-bottom:var(--space-4)">
     <div class="chart-title">${exLabel} — % of EOD Revenue Reached, by Time of Day (Cumulative)</div>
@@ -5623,14 +5733,15 @@ function buildMCXValuation() {
   buildQuickValuationPanel(el.querySelector('#mcxQuickValPanel'), 'mcx', mcxSeries, cmp);
 }
 
+// Shared KPI tile; styles live in style.css (.kpi-tile*).
 function kpi(title, value, sub, sentiment) {
-  const col = sentiment === 'positive' ? 'var(--color-positive)'
-            : sentiment === 'negative' ? 'var(--color-negative)'
-            : 'var(--color-text)';
-  return `<div class="chart-panel" style="padding:16px 20px">
-    <div style="font-size:11px;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">${title}</div>
-    <div style="font-size:28px;font-weight:700;color:${col};line-height:1">${value}</div>
-    <div style="font-size:11px;color:var(--color-text-muted);margin-top:6px">${sub}</div>
+  const tone = sentiment === 'positive' ? ' kpi-tile-value--positive'
+             : sentiment === 'negative' ? ' kpi-tile-value--negative'
+             : '';
+  return `<div class="chart-panel kpi-tile">
+    <div class="kpi-tile-label">${title}</div>
+    <div class="kpi-tile-value${tone}">${value}</div>
+    <div class="kpi-tile-sub">${sub}</div>
   </div>`;
 }
 
@@ -5641,6 +5752,7 @@ function kpi(title, value, sub, sentiment) {
 async function init() {
   showLoading('nse');
   initExchangeSwitcher();
+  updateHeaderExchange('nse');
   buildSidebarNav('nse');
   toggleExchangeContent('nse');
   preloadMarketData().then(() => { if (currentExchange === 'all' || currentExchange === 'nsebse') rebuildAll(); });
@@ -5776,9 +5888,22 @@ function buildAllRegressionChartImgs(shareData, exchangeName) {
 // WEEKLY REPORT PDF DOWNLOAD
 // ========================
 
+// Header REPORT / MOBILE buttons: while a report builds, show "Building…" in
+// the label (hidden on phones, where the button is icon-only) and restore it after.
+function setReportBtnBusy(btn, busy) {
+  if (!btn) return;
+  const label = btn.querySelector('.btn-label');
+  if (label) {
+    if (busy) { btn.dataset.label = label.textContent; label.textContent = 'Building…'; }
+    else if (btn.dataset.label) label.textContent = btn.dataset.label;
+  }
+  btn.disabled = busy;
+  btn.setAttribute('aria-busy', busy ? 'true' : 'false');
+}
+
 async function downloadWeeklyReport() {
   const btn = document.getElementById('btnDownloadReport');
-  if (btn) { btn.textContent = 'Building…'; btn.disabled = true; }
+  setReportBtnBusy(btn, true);
 
   try {
     const [nseEnrich, bseEnrich, mcxEnrich, nseDash, bseDash, bseShare, mcxShare, nseShare] = await Promise.all([
@@ -6104,7 +6229,7 @@ async function downloadWeeklyReport() {
     el.style.display = 'block';
     setTimeout(() => { window.print(); el.style.display = 'none'; }, 150);
   } finally {
-    if (btn) { btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Report'; btn.disabled = false; }
+    setReportBtnBusy(btn, false);
   }
 }
 
@@ -6114,7 +6239,7 @@ async function downloadWeeklyReport() {
 
 async function downloadMobileReport() {
   const btn = document.getElementById('btnMobileReport');
-  if (btn) { btn.textContent = 'Building…'; btn.disabled = true; }
+  setReportBtnBusy(btn, true);
 
   try {
     const [nseEnrich, bseEnrich, mcxEnrich, nseDash, bseDash, bseShare, mcxShare] = await Promise.all([
@@ -6356,7 +6481,7 @@ ${body}
     URL.revokeObjectURL(url);
 
   } finally {
-    if (btn) { btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Mobile'; btn.disabled = false; }
+    setReportBtnBusy(btn, false);
   }
 }
 
