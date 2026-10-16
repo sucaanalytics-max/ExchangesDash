@@ -21,6 +21,7 @@ Dashboard: `dashboard/index.html` + `app.js` (vanilla JS, Chart.js) + `style.css
 - Live samples are keyed on the exchange's trade date, never the wall clock; EOD is 16:00 IST (SEBI closing auction).
 - Expiry weekday changed over time (NSE Thu→Tue Sep 2025; BSE Fri→Tue→Thu). Code still hardcodes the current weekday — Phase 1 replaces this with a dated calendar.
 - Timestamps written by pollers are UTC with a `Z` suffix.
+- Supabase writes from this repo are off unless the repository variable `ENABLE_SUPABASE_WRITES` is `true` (Excel sync: `ENABLE_EXCEL_SYNC`). Keep both off while the old repo `Research-Tusk/nse-cloud-pipeline` still writes the same tables; `scripts/compare_parallel_run.py` checks parity.
 
 ## Working here efficiently
 

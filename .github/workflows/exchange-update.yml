@@ -56,10 +56,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Supabase writes are off until the repository variable ENABLE_SUPABASE_WRITES
+      # is 'true'. While the old repo (Research-Tusk/nse-cloud-pipeline) still
+      # writes the same tables, this repo must run without credentials: the
+      # pipelines then fetch from the exchange and write JSON only (shadow mode).
       - name: Run NSE pipeline
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: ${{ vars.ENABLE_SUPABASE_WRITES == 'true' && secrets.SUPABASE_URL || '' }}
+          SUPABASE_KEY: ${{ vars.ENABLE_SUPABASE_WRITES == 'true' && secrets.SUPABASE_SERVICE_KEY || '' }}
         run: python scripts/nse_pipeline.py
 
       - name: Check if new data was added
@@ -118,10 +122,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Same ENABLE_SUPABASE_WRITES gate as the NSE pipeline above.
       - name: Run BSE pipeline
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL: ${{ vars.ENABLE_SUPABASE_WRITES == 'true' && secrets.SUPABASE_URL || '' }}
+          SUPABASE_KEY: ${{ vars.ENABLE_SUPABASE_WRITES == 'true' && secrets.SUPABASE_SERVICE_KEY || '' }}
         run: python scripts/bse_pipeline.py
 
       - name: Check if new data was added
