@@ -1,0 +1,73 @@
+name: MCX Live Stock Price Poll
+
+on:
+  schedule:
+    # Every 5 minutes, 3:25–11:00 UTC = 8:55 AM–4:30 PM IST (Mon–Fri).
+    # Offset +4min from NSE/BSE's identical schedule so all three live pollers
+    # don't queue at the exact same instant (GitHub Actions' scheduler is
+    # already best-effort under load; stacking 3 simultaneous cron triggers
+    # on one account only makes drops/delays worse).
+    - cron: '4-59/5 3-10 * * 1-5'
+    - cron: '4,9,14,19,24,29,34 11 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# One run at a time: a late scheduled run overlapping a dispatched one used to
+# rebase-conflict on the same JSON and drop that poll. Extra runs queue instead.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-live-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-live-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run MCX live poller
+        run: python scripts/mcx_live_poller.py
+
+      - name: Commit data file
+        run: |
+          git config user.name "Research-Tusk"
+          git config user.email "research@tuskinvest.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git add dashboard/data/mcx_live.json
+          git diff --cached --quiet && echo "No changes" || \
+            git commit -m "📡 MCX Live update: $(date -u +%Y-%m-%d\ %H:%M\ UTC)"
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            echo "Push rejected (concurrent job likely pushed first) — retrying with rebase, attempt $i…"
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; echo "::error::Rebase conflict with origin/main"; exit 1; }
+            sleep $((RANDOM % 5 + 1))
+          done
+          echo "::error::Push still rejected after 5 attempts — data was NOT published"
+          exit 1
+
+      - name: Summary
+        run: |
+          SIZE=$(wc -c < dashboard/data/mcx_live.json 2>/dev/null || echo "?")
+          echo "### MCX Live Poll" >> $GITHUB_STEP_SUMMARY
+          echo "- **Time:** $(date -u +%Y-%m-%d\ %H:%M\ UTC)" >> $GITHUB_STEP_SUMMARY
+          echo "- **File size:** ${SIZE} bytes" >> $GITHUB_STEP_SUMMARY

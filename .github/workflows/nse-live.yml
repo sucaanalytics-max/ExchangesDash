@@ -1,0 +1,76 @@
+name: NSE Live Turnover Poll
+
+on:
+  schedule:
+    # Every 5 minutes, 3:25–11:00 UTC = 8:55 AM–4:30 PM IST (Mon–Fri)
+    # Covers pre-open (9:00) through SEBI's Closing Auction Session / post-close
+    # (cash segment's effective close is now 4:00 PM IST, not 3:30 PM — see
+    # MARKET_TOTAL_MIN in scripts/live_common.py).
+    # Kept at offset 0; BSE/MCX are offset +2min/+4min so the three live
+    # pollers don't all queue at the exact same instant.
+    - cron: '*/5 3-10 * * 1-5'
+    - cron: '0,5,10,15,20,25,30 11 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# One run at a time: a late scheduled run overlapping a dispatched one used to
+# rebase-conflict on the same JSON and drop that poll. Extra runs queue instead.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-live-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-live-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # No Supabase credentials: the nse_live_snapshots insert has failed on every
+      # run (table never created). Phase 2 adds a proper live_samples table.
+      - name: Run NSE live poller
+        run: python scripts/nse_live_poller.py
+
+      - name: Commit data files
+        run: |
+          git config user.name "Research-Tusk"
+          git config user.email "research@tuskinvest.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git add dashboard/data/nse_live.json dashboard/data/nse_live_hourly.json dashboard/data/nse_hourly_history.json
+          git diff --cached --quiet && echo "No changes" || \
+            git commit -m "📡 Live update: $(date -u +%Y-%m-%d\ %H:%M\ UTC)"
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            echo "Push rejected (concurrent job likely pushed first) — retrying with rebase, attempt $i…"
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; echo "::error::Rebase conflict with origin/main"; exit 1; }
+            sleep $((RANDOM % 5 + 1))
+          done
+          echo "::error::Push still rejected after 5 attempts — data was NOT published"
+          exit 1
+
+      - name: Summary
+        run: |
+          SIZE=$(wc -c < dashboard/data/nse_live.json 2>/dev/null || echo "?")
+          echo "### NSE Live Poll" >> $GITHUB_STEP_SUMMARY
+          echo "- **Time:** $(date -u +%Y-%m-%d\ %H:%M\ UTC)" >> $GITHUB_STEP_SUMMARY
+          echo "- **File size:** ${SIZE} bytes" >> $GITHUB_STEP_SUMMARY

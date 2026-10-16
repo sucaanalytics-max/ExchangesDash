@@ -1,0 +1,38 @@
+name: Checks
+
+# Fast static checks on every human push and pull request. Bot data commits
+# use GITHUB_TOKEN, which does not trigger workflows, so this stays quiet.
+on:
+  push:
+    branches: ['**']
+    paths-ignore:
+      - 'dashboard/data/**'
+      - 'data/**'
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Take rates match between Python and /api/revenue
+        run: python scripts/check_take_rates.py
+
+      - name: Python scripts compile
+        run: python -m py_compile scripts/*.py
+
+      - name: Dashboard JS parses
+        run: |
+          for f in dashboard/app.js dashboard/api/*.js; do
+            node -e "new (require('vm').Script)(require('fs').readFileSync('$f','utf8'), {filename: '$f'})"
+          done
+          echo "JS OK"
+
+      - name: Vercel config is valid JSON
+        run: python -m json.tool dashboard/vercel.json > /dev/null

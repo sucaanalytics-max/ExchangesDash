@@ -1,0 +1,9 @@
+{
+  "updated_at": "2026-05-18",
+  "targets": [
+    { "broker": "Haitong", "date": "2026-05-08", "rating": "Outperform", "target_price": 4360, "methodology": "SoTP: 40x FY28E core EPS + CDSL ₹80 + net cash ₹200" },
+    { "broker": "UBS", "date": "2026-05-18", "rating": "Neutral (downgrade from Buy)", "target_price": 4500, "methodology": "Residual income + CDSL; 46x FY28E P/E" },
+    { "broker": "HDFC/HSIE", "date": "2026-05-08", "rating": "ADD", "target_price": 4300, "methodology": "40x core FY28E PAT + CDSL + net cash ex-SGF" },
+    { "broker": "MOSL", "date": "2026-05-08", "rating": "Neutral", "target_price": 4400, "methodology": "40x FY28E EPS" }
+  ]
+}

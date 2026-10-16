@@ -1,0 +1,4 @@
+# Keep search tools (ripgrep and Claude Code's Grep/Glob) out of generated data.
+# Files stay in git; this only stops them flooding search results.
+dashboard/data/
+data/

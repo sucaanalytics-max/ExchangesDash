@@ -1,0 +1,408 @@
+name: Exchange Daily Update
+
+on:
+  schedule:
+    # 6:00 AM IST = 00:30 UTC — picks up yesterday's confirmed data
+    - cron: '30 0 * * 1-5'
+    # 6:00 PM IST = 12:30 UTC — picks up today's data after market close (3:30 PM IST)
+    - cron: '30 12 * * 1-5'
+    # 9:00 PM IST = 15:30 UTC — late retry in case MCX Supabase data arrives after 6 PM run
+    - cron: '30 15 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      exchange:
+        description: 'Which exchange to update'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - nse
+          - bse
+          - mcx
+
+permissions:
+  contents: write
+
+# One run at a time, so delayed scheduled runs cannot race each other's pushes.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  nse-update:
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'nse' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      new_days: ${{ steps.check_new.outputs.new_days }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run NSE pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/nse_pipeline.py
+
+      - name: Check if new data was added
+        id: check_new
+        run: |
+          NEW_DAYS=$(cat .new_days_count 2>/dev/null || echo "0")
+          echo "new_days=$NEW_DAYS" >> $GITHUB_OUTPUT
+          echo "NSE new trading days: $NEW_DAYS"
+
+      - name: Commit NSE data
+        # Manual runs always publish, so a code fix can regenerate the JSON without a new trading day
+        if: steps.check_new.outputs.new_days != '0' || github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "Research-Tusk"
+          git config user.email "research@tuskinvest.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git add data/dashboard_data.json data/enriched_data.json dashboard/data/nse_dashboard_data.json dashboard/data/nse_enriched_data.json
+          git diff --cached --quiet || git commit -m "📊 NSE update: $(date +%Y-%m-%d) — ${{ steps.check_new.outputs.new_days }} new day(s)"
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            echo "Push rejected (concurrent job likely pushed first) — retrying with rebase, attempt $i…"
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; echo "::error::Rebase conflict with origin/main"; exit 1; }
+            sleep $((RANDOM % 5 + 1))
+          done
+          echo "::error::Push still rejected after 5 attempts — data was NOT published"
+          exit 1
+
+  bse-update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [nse-update]
+    if: ${{ always() && (github.event_name == 'schedule' || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'bse') }}
+    outputs:
+      new_days: ${{ steps.check_new.outputs.new_days }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Pull latest in case NSE job pushed changes
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run BSE pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/bse_pipeline.py
+
+      - name: Check if new data was added
+        id: check_new
+        run: |
+          NEW_DAYS=$(cat .new_bse_days_count 2>/dev/null || echo "0")
+          echo "new_days=$NEW_DAYS" >> $GITHUB_OUTPUT
+          echo "BSE new trading days: $NEW_DAYS"
+
+      - name: Commit BSE data
+        # Manual runs always publish, so a code fix can regenerate the JSON without a new trading day
+        if: steps.check_new.outputs.new_days != '0' || github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "Research-Tusk"
+          git config user.email "research@tuskinvest.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git add data/bse_dashboard_data.json data/bse_enriched_data.json dashboard/data/bse_dashboard_data.json dashboard/data/bse_enriched_data.json
+          git diff --cached --quiet || git commit -m "📊 BSE update: $(date +%Y-%m-%d) — ${{ steps.check_new.outputs.new_days }} new day(s)"
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            echo "Push rejected (concurrent job likely pushed first) — retrying with rebase, attempt $i…"
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; echo "::error::Rebase conflict with origin/main"; exit 1; }
+            sleep $((RANDOM % 5 + 1))
+          done
+          echo "::error::Push still rejected after 5 attempts — data was NOT published"
+          exit 1
+
+  mcx-update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [bse-update]
+    if: ${{ always() && (github.event_name == 'schedule' || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'mcx') }}
+    outputs:
+      new_days: ${{ steps.check_new.outputs.new_days }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run MCX pipeline
+        env:
+          MCX_SUPABASE_KEY: ${{ secrets.MCX_SUPABASE_KEY }}
+        run: python scripts/mcx_pipeline.py
+
+      - name: Check if new data was added
+        id: check_new
+        run: |
+          NEW_DAYS=$(cat .new_mcx_days_count 2>/dev/null || echo "0")
+          echo "new_days=$NEW_DAYS" >> $GITHUB_OUTPUT
+          echo "MCX new trading days: $NEW_DAYS"
+
+      - name: Commit MCX data
+        # Manual runs always publish, so a code fix can regenerate the JSON without a new trading day
+        if: steps.check_new.outputs.new_days != '0' || github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "Research-Tusk"
+          git config user.email "research@tuskinvest.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git add data/mcx_dashboard_data.json data/mcx_enriched_data.json dashboard/data/mcx_dashboard_data.json dashboard/data/mcx_enriched_data.json
+          git diff --cached --quiet || git commit -m "📊 MCX update: $(date +%Y-%m-%d) — ${{ steps.check_new.outputs.new_days }} new day(s)"
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            echo "Push rejected (concurrent job likely pushed first) — retrying with rebase, attempt $i…"
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; echo "::error::Rebase conflict with origin/main"; exit 1; }
+            sleep $((RANDOM % 5 + 1))
+          done
+          echo "::error::Push still rejected after 5 attempts — data was NOT published"
+          exit 1
+
+  excel-sync:
+    needs: [nse-update, bse-update]
+    # Off until the repository variable ENABLE_EXCEL_SYNC is 'true' — set it only
+    # after the old repo's sync is disabled, or rows are appended to OneDrive twice.
+    if: ${{ always() && vars.ENABLE_EXCEL_SYNC == 'true' && (github.event_name == 'workflow_dispatch' || needs.nse-update.outputs.new_days != '0' || needs.bse-update.outputs.new_days != '0') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Sync to OneDrive Excel
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          MSGRAPH_TENANT_ID: ${{ secrets.MSGRAPH_TENANT_ID }}
+          MSGRAPH_CLIENT_ID: ${{ secrets.MSGRAPH_CLIENT_ID }}
+          MSGRAPH_CLIENT_SECRET: ${{ secrets.MSGRAPH_CLIENT_SECRET }}
+          ONEDRIVE_USER: ${{ secrets.ONEDRIVE_USER }}
+          EXCEL_FILE_PATH: ${{ secrets.EXCEL_FILE_PATH }}
+        run: python scripts/excel_sync.py
+
+  bse-share-analysis:
+    needs: [bse-update]
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.bse-update.outputs.new_days != '0') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run BSE share price analysis
+        run: python scripts/bse_share_analysis.py
+
+      - name: Commit analysis
+        run: |
+          git config user.name "Research-Tusk"
+          git config user.email "research@tuskinvest.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git add dashboard/data/bse_share_analysis.json
+          git diff --cached --quiet || git commit -m "📈 BSE share analysis: $(date +%Y-%m-%d)"
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            echo "Push rejected (concurrent job likely pushed first) — retrying with rebase, attempt $i…"
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; echo "::error::Rebase conflict with origin/main"; exit 1; }
+            sleep $((RANDOM % 5 + 1))
+          done
+          echo "::error::Push still rejected after 5 attempts — data was NOT published"
+          exit 1
+
+  nse-share-analysis:
+    needs: [nse-update]
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.nse-update.outputs.new_days != '0') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run NSE share price analysis
+        run: python scripts/nse_share_analysis.py
+
+      - name: Commit analysis
+        run: |
+          git config user.name "Research-Tusk"
+          git config user.email "research@tuskinvest.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git add dashboard/data/nse_share_analysis.json
+          git diff --cached --quiet || git commit -m "📈 NSE share analysis: $(date +%Y-%m-%d)"
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            echo "Push rejected (concurrent job likely pushed first) — retrying with rebase, attempt $i…"
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; echo "::error::Rebase conflict with origin/main"; exit 1; }
+            sleep $((RANDOM % 5 + 1))
+          done
+          echo "::error::Push still rejected after 5 attempts — data was NOT published"
+          exit 1
+
+  mcx-share-analysis:
+    needs: [mcx-update]
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.mcx-update.outputs.new_days != '0') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run MCX share price analysis
+        run: python scripts/mcx_share_analysis.py
+
+      - name: Commit analysis
+        run: |
+          git config user.name "Research-Tusk"
+          git config user.email "research@tuskinvest.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git add dashboard/data/mcx_share_analysis.json
+          git diff --cached --quiet || git commit -m "📈 MCX share analysis: $(date +%Y-%m-%d)"
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            echo "Push rejected (concurrent job likely pushed first) — retrying with rebase, attempt $i…"
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; echo "::error::Rebase conflict with origin/main"; exit 1; }
+            sleep $((RANDOM % 5 + 1))
+          done
+          echo "::error::Push still rejected after 5 attempts — data was NOT published"
+          exit 1
+
+  summary:
+    # Vercel's GitHub integration deploys each pushed commit; no deploy hook needed.
+    needs: [nse-update, bse-update, mcx-update, nse-share-analysis, bse-share-analysis, mcx-share-analysis]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Summary
+        run: |
+          echo "### Exchange Pipeline Run Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Date:** $(date +%Y-%m-%d)" >> $GITHUB_STEP_SUMMARY
+          echo "- **NSE:** ${{ needs.nse-update.result }}, new days ${{ needs.nse-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **BSE:** ${{ needs.bse-update.result }}, new days ${{ needs.bse-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **MCX:** ${{ needs.mcx-update.result }}, new days ${{ needs.mcx-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Share analysis:** NSE ${{ needs.nse-share-analysis.result }}, BSE ${{ needs.bse-share-analysis.result }}, MCX ${{ needs.mcx-share-analysis.result }}" >> $GITHUB_STEP_SUMMARY

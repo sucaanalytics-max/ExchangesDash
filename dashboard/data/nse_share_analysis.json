@@ -1,0 +1,731 @@
+{
+  "updated_at": "2026-10-15T17:17:19",
+  "ticker": "NSE.BO",
+  "status": "collecting",
+  "listing_date": "2026-09-24",
+  "min_days_required": 20,
+  "limited_data": true,
+  "ma_window": 45,
+  "regression_start": "2026-09-24",
+  "n_days": 15,
+  "first_price": 1818.0,
+  "ma_window_comparison": {},
+  "regression": null,
+  "latest": {
+    "date": "2026-10-15",
+    "revenue_cr": 48.0369,
+    "rev_ma": 47.1038,
+    "price_actual": 1773.85,
+    "price_pred": null,
+    "error_pct": null
+  },
+  "series": [
+    {
+      "date": "2026-09-24",
+      "revenue_cr": 47.1986,
+      "rev_ma": 43.7394,
+      "price": 1818.0,
+      "price_pred": null
+    },
+    {
+      "date": "2026-09-25",
+      "revenue_cr": 58.5779,
+      "rev_ma": 44.0249,
+      "price": 1792.65,
+      "price_pred": null
+    },
+    {
+      "date": "2026-09-28",
+      "revenue_cr": 66.7927,
+      "rev_ma": 44.0139,
+      "price": 1762.7,
+      "price_pred": null
+    },
+    {
+      "date": "2026-09-29",
+      "revenue_cr": 92.1381,
+      "rev_ma": 44.7315,
+      "price": 1769.3,
+      "price_pred": null
+    },
+    {
+      "date": "2026-09-30",
+      "revenue_cr": 42.9081,
+      "rev_ma": 44.2432,
+      "price": 1763.05,
+      "price_pred": null
+    },
+    {
+      "date": "2026-10-01",
+      "revenue_cr": 49.9136,
+      "rev_ma": 44.5906,
+      "price": 1741.3,
+      "price_pred": null
+    },
+    {
+      "date": "2026-10-05",
+      "revenue_cr": 68.0874,
+      "rev_ma": 45.3765,
+      "price": 1723.5,
+      "price_pred": null
+    },
+    {
+      "date": "2026-10-06",
+      "revenue_cr": 60.4478,
+      "rev_ma": 45.7483,
+      "price": 1749.85,
+      "price_pred": null
+    },
+    {
+      "date": "2026-10-07",
+      "revenue_cr": 43.5933,
+      "rev_ma": 45.7454,
+      "price": 1743.35,
+      "price_pred": null
+    },
+    {
+      "date": "2026-10-08",
+      "revenue_cr": 43.2772,
+      "rev_ma": 45.3229,
+      "price": 1724.6,
+      "price_pred": null
+    },
+    {
+      "date": "2026-10-09",
+      "revenue_cr": 57.8481,
+      "rev_ma": 45.6786,
+      "price": 1730.9,
+      "price_pred": null
+    },
+    {
+      "date": "2026-10-12",
+      "revenue_cr": 59.7182,
+      "rev_ma": 46.2178,
+      "price": 1729.45,
+      "price_pred": null
+    },
+    {
+      "date": "2026-10-13",
+      "revenue_cr": 77.1275,
+      "rev_ma": 46.9781,
+      "price": 1752.0,
+      "price_pred": null
+    },
+    {
+      "date": "2026-10-14",
+      "revenue_cr": 47.8407,
+      "rev_ma": 47.0832,
+      "price": 1762.65,
+      "price_pred": null
+    },
+    {
+      "date": "2026-10-15",
+      "revenue_cr": 48.0369,
+      "rev_ma": 47.1038,
+      "price": 1773.85,
+      "price_pred": null
+    }
+  ],
+  "revenue_prefix": [
+    {
+      "date": "2026-02-13",
+      "revenue_cr": 55.412
+    },
+    {
+      "date": "2026-02-16",
+      "revenue_cr": 56.8312
+    },
+    {
+      "date": "2026-02-17",
+      "revenue_cr": 69.0231
+    },
+    {
+      "date": "2026-02-18",
+      "revenue_cr": 43.8089
+    },
+    {
+      "date": "2026-02-19",
+      "revenue_cr": 54.9145
+    },
+    {
+      "date": "2026-02-20",
+      "revenue_cr": 80.7805
+    },
+    {
+      "date": "2026-02-23",
+      "revenue_cr": 78.9248
+    },
+    {
+      "date": "2026-02-24",
+      "revenue_cr": 90.3696
+    },
+    {
+      "date": "2026-02-25",
+      "revenue_cr": 49.7459
+    },
+    {
+      "date": "2026-02-26",
+      "revenue_cr": 43.8613
+    },
+    {
+      "date": "2026-02-27",
+      "revenue_cr": 64.9305
+    },
+    {
+      "date": "2026-03-02",
+      "revenue_cr": 101.5813
+    },
+    {
+      "date": "2026-03-04",
+      "revenue_cr": 70.6447
+    },
+    {
+      "date": "2026-03-05",
+      "revenue_cr": 60.4877
+    },
+    {
+      "date": "2026-03-06",
+      "revenue_cr": 71.3343
+    },
+    {
+      "date": "2026-03-09",
+      "revenue_cr": 93.0388
+    },
+    {
+      "date": "2026-03-10",
+      "revenue_cr": 85.5597
+    },
+    {
+      "date": "2026-03-11",
+      "revenue_cr": 56.9946
+    },
+    {
+      "date": "2026-03-12",
+      "revenue_cr": 55.2689
+    },
+    {
+      "date": "2026-03-13",
+      "revenue_cr": 85.1959
+    },
+    {
+      "date": "2026-03-16",
+      "revenue_cr": 96.5977
+    },
+    {
+      "date": "2026-03-17",
+      "revenue_cr": 93.9884
+    },
+    {
+      "date": "2026-03-18",
+      "revenue_cr": 52.9623
+    },
+    {
+      "date": "2026-03-19",
+      "revenue_cr": 56.627
+    },
+    {
+      "date": "2026-03-20",
+      "revenue_cr": 84.8455
+    },
+    {
+      "date": "2026-03-23",
+      "revenue_cr": 93.4994
+    },
+    {
+      "date": "2026-03-24",
+      "revenue_cr": 115.8126
+    },
+    {
+      "date": "2026-03-25",
+      "revenue_cr": 65.9775
+    },
+    {
+      "date": "2026-03-27",
+      "revenue_cr": 89.2008
+    },
+    {
+      "date": "2026-03-30",
+      "revenue_cr": 110.6944
+    },
+    {
+      "date": "2026-04-01",
+      "revenue_cr": 55.2629
+    },
+    {
+      "date": "2026-04-02",
+      "revenue_cr": 53.807
+    },
+    {
+      "date": "2026-04-06",
+      "revenue_cr": 83.2236
+    },
+    {
+      "date": "2026-04-07",
+      "revenue_cr": 85.9508
+    },
+    {
+      "date": "2026-04-08",
+      "revenue_cr": 56.6633
+    },
+    {
+      "date": "2026-04-09",
+      "revenue_cr": 47.5012
+    },
+    {
+      "date": "2026-04-10",
+      "revenue_cr": 60.4122
+    },
+    {
+      "date": "2026-04-13",
+      "revenue_cr": 75.4573
+    },
+    {
+      "date": "2026-04-15",
+      "revenue_cr": 45.2846
+    },
+    {
+      "date": "2026-04-16",
+      "revenue_cr": 45.5453
+    },
+    {
+      "date": "2026-04-17",
+      "revenue_cr": 54.5771
+    },
+    {
+      "date": "2026-04-20",
+      "revenue_cr": 62.4635
+    },
+    {
+      "date": "2026-04-21",
+      "revenue_cr": 63.9407
+    },
+    {
+      "date": "2026-04-22",
+      "revenue_cr": 45.8812
+    },
+    {
+      "date": "2026-04-23",
+      "revenue_cr": 49.5211
+    },
+    {
+      "date": "2026-04-24",
+      "revenue_cr": 68.1192
+    },
+    {
+      "date": "2026-04-27",
+      "revenue_cr": 70.7908
+    },
+    {
+      "date": "2026-04-28",
+      "revenue_cr": 80.2214
+    },
+    {
+      "date": "2026-04-29",
+      "revenue_cr": 46.5949
+    },
+    {
+      "date": "2026-04-30",
+      "revenue_cr": 45.8249
+    },
+    {
+      "date": "2026-05-04",
+      "revenue_cr": 75.4101
+    },
+    {
+      "date": "2026-05-05",
+      "revenue_cr": 76.9324
+    },
+    {
+      "date": "2026-05-06",
+      "revenue_cr": 56.9274
+    },
+    {
+      "date": "2026-05-07",
+      "revenue_cr": 47.5937
+    },
+    {
+      "date": "2026-05-08",
+      "revenue_cr": 59.4854
+    },
+    {
+      "date": "2026-05-11",
+      "revenue_cr": 64.7269
+    },
+    {
+      "date": "2026-05-12",
+      "revenue_cr": 76.1001
+    },
+    {
+      "date": "2026-05-13",
+      "revenue_cr": 54.1683
+    },
+    {
+      "date": "2026-05-14",
+      "revenue_cr": 49.3543
+    },
+    {
+      "date": "2026-05-15",
+      "revenue_cr": 65.4372
+    },
+    {
+      "date": "2026-05-18",
+      "revenue_cr": 74.873
+    },
+    {
+      "date": "2026-05-19",
+      "revenue_cr": 72.9305
+    },
+    {
+      "date": "2026-05-20",
+      "revenue_cr": 48.1218
+    },
+    {
+      "date": "2026-05-21",
+      "revenue_cr": 51.5604
+    },
+    {
+      "date": "2026-05-22",
+      "revenue_cr": 64.4893
+    },
+    {
+      "date": "2026-05-25",
+      "revenue_cr": 61.9654
+    },
+    {
+      "date": "2026-05-26",
+      "revenue_cr": 75.3617
+    },
+    {
+      "date": "2026-05-27",
+      "revenue_cr": 36.2297
+    },
+    {
+      "date": "2026-05-29",
+      "revenue_cr": 71.2079
+    },
+    {
+      "date": "2026-06-01",
+      "revenue_cr": 62.7554
+    },
+    {
+      "date": "2026-06-02",
+      "revenue_cr": 83.0789
+    },
+    {
+      "date": "2026-06-03",
+      "revenue_cr": 55.1435
+    },
+    {
+      "date": "2026-06-04",
+      "revenue_cr": 41.05
+    },
+    {
+      "date": "2026-06-05",
+      "revenue_cr": 67.6238
+    },
+    {
+      "date": "2026-06-08",
+      "revenue_cr": 59.2704
+    },
+    {
+      "date": "2026-06-09",
+      "revenue_cr": 67.6033
+    },
+    {
+      "date": "2026-06-10",
+      "revenue_cr": 42.2974
+    },
+    {
+      "date": "2026-06-11",
+      "revenue_cr": 38.1097
+    },
+    {
+      "date": "2026-06-12",
+      "revenue_cr": 62.9437
+    },
+    {
+      "date": "2026-06-15",
+      "revenue_cr": 62.321
+    },
+    {
+      "date": "2026-06-16",
+      "revenue_cr": 57.5816
+    },
+    {
+      "date": "2026-06-17",
+      "revenue_cr": 36.7311
+    },
+    {
+      "date": "2026-06-18",
+      "revenue_cr": 35.2725
+    },
+    {
+      "date": "2026-06-19",
+      "revenue_cr": 52.7471
+    },
+    {
+      "date": "2026-06-22",
+      "revenue_cr": 40.0611
+    },
+    {
+      "date": "2026-06-23",
+      "revenue_cr": 69.7442
+    },
+    {
+      "date": "2026-06-24",
+      "revenue_cr": 53.6281
+    },
+    {
+      "date": "2026-06-25",
+      "revenue_cr": 51.5324
+    },
+    {
+      "date": "2026-06-29",
+      "revenue_cr": 77.6427
+    },
+    {
+      "date": "2026-06-30",
+      "revenue_cr": 83.6424
+    },
+    {
+      "date": "2026-07-01",
+      "revenue_cr": 37.8037
+    },
+    {
+      "date": "2026-07-02",
+      "revenue_cr": 34.1729
+    },
+    {
+      "date": "2026-07-03",
+      "revenue_cr": 45.9712
+    },
+    {
+      "date": "2026-07-06",
+      "revenue_cr": 42.362
+    },
+    {
+      "date": "2026-07-07",
+      "revenue_cr": 58.9426
+    },
+    {
+      "date": "2026-07-08",
+      "revenue_cr": 52.9613
+    },
+    {
+      "date": "2026-07-09",
+      "revenue_cr": 38.428
+    },
+    {
+      "date": "2026-07-10",
+      "revenue_cr": 46.7228
+    },
+    {
+      "date": "2026-07-13",
+      "revenue_cr": 59.0364
+    },
+    {
+      "date": "2026-07-14",
+      "revenue_cr": 66.0163
+    },
+    {
+      "date": "2026-07-15",
+      "revenue_cr": 39.4309
+    },
+    {
+      "date": "2026-07-16",
+      "revenue_cr": 34.0994
+    },
+    {
+      "date": "2026-07-17",
+      "revenue_cr": 53.1433
+    },
+    {
+      "date": "2026-07-20",
+      "revenue_cr": 53.9048
+    },
+    {
+      "date": "2026-07-21",
+      "revenue_cr": 54.5044
+    },
+    {
+      "date": "2026-07-22",
+      "revenue_cr": 38.6123
+    },
+    {
+      "date": "2026-07-23",
+      "revenue_cr": 45.7333
+    },
+    {
+      "date": "2026-07-24",
+      "revenue_cr": 67.2837
+    },
+    {
+      "date": "2026-07-27",
+      "revenue_cr": 59.85
+    },
+    {
+      "date": "2026-07-28",
+      "revenue_cr": 64.882
+    },
+    {
+      "date": "2026-07-29",
+      "revenue_cr": 34.2803
+    },
+    {
+      "date": "2026-07-30",
+      "revenue_cr": 32.7182
+    },
+    {
+      "date": "2026-07-31",
+      "revenue_cr": 43.7201
+    },
+    {
+      "date": "2026-08-03",
+      "revenue_cr": 43.7225
+    },
+    {
+      "date": "2026-08-04",
+      "revenue_cr": 62.2898
+    },
+    {
+      "date": "2026-08-05",
+      "revenue_cr": 41.8425
+    },
+    {
+      "date": "2026-08-06",
+      "revenue_cr": 35.4512
+    },
+    {
+      "date": "2026-08-07",
+      "revenue_cr": 42.9164
+    },
+    {
+      "date": "2026-08-10",
+      "revenue_cr": 43.1108
+    },
+    {
+      "date": "2026-08-11",
+      "revenue_cr": 47.1075
+    },
+    {
+      "date": "2026-08-12",
+      "revenue_cr": 36.0548
+    },
+    {
+      "date": "2026-08-13",
+      "revenue_cr": 28.1154
+    },
+    {
+      "date": "2026-08-14",
+      "revenue_cr": 35.93
+    },
+    {
+      "date": "2026-08-17",
+      "revenue_cr": 41.0873
+    },
+    {
+      "date": "2026-08-18",
+      "revenue_cr": 47.7215
+    },
+    {
+      "date": "2026-08-19",
+      "revenue_cr": 32.1693
+    },
+    {
+      "date": "2026-08-20",
+      "revenue_cr": 36.8725
+    },
+    {
+      "date": "2026-08-21",
+      "revenue_cr": 41.2166
+    },
+    {
+      "date": "2026-08-24",
+      "revenue_cr": 49.9919
+    },
+    {
+      "date": "2026-08-25",
+      "revenue_cr": 63.2707
+    },
+    {
+      "date": "2026-08-26",
+      "revenue_cr": 30.6551
+    },
+    {
+      "date": "2026-08-27",
+      "revenue_cr": 29.1714
+    },
+    {
+      "date": "2026-08-28",
+      "revenue_cr": 39.2068
+    },
+    {
+      "date": "2026-08-31",
+      "revenue_cr": 51.7838
+    },
+    {
+      "date": "2026-09-01",
+      "revenue_cr": 64.6653
+    },
+    {
+      "date": "2026-09-02",
+      "revenue_cr": 36.2661
+    },
+    {
+      "date": "2026-09-03",
+      "revenue_cr": 31.7839
+    },
+    {
+      "date": "2026-09-04",
+      "revenue_cr": 41.5687
+    },
+    {
+      "date": "2026-09-07",
+      "revenue_cr": 39.8264
+    },
+    {
+      "date": "2026-09-08",
+      "revenue_cr": 51.6273
+    },
+    {
+      "date": "2026-09-09",
+      "revenue_cr": 38.2503
+    },
+    {
+      "date": "2026-09-10",
+      "revenue_cr": 29.1879
+    },
+    {
+      "date": "2026-09-11",
+      "revenue_cr": 53.603
+    },
+    {
+      "date": "2026-09-15",
+      "revenue_cr": 64.7091
+    },
+    {
+      "date": "2026-09-16",
+      "revenue_cr": 37.9637
+    },
+    {
+      "date": "2026-09-17",
+      "revenue_cr": 33.8698
+    },
+    {
+      "date": "2026-09-18",
+      "revenue_cr": 41.9064
+    },
+    {
+      "date": "2026-09-21",
+      "revenue_cr": 37.7904
+    },
+    {
+      "date": "2026-09-22",
+      "revenue_cr": 57.6893
+    },
+    {
+      "date": "2026-09-23",
+      "revenue_cr": 32.2124
+    }
+  ]
+}

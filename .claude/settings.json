@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./dashboard/data/*_dashboard_data.json)",
+      "Read(./dashboard/data/*_share_analysis.json)",
+      "Read(./dashboard/data/*_hourly*.json)",
+      "Read(./data/**)"
+    ]
+  }
+}
