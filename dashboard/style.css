@@ -3162,3 +3162,242 @@ span.pr-neu {
     gap: var(--space-4);
   }
 }
+
+/* ── Valuation provenance: a tag beside each input says where its value
+   comes from (data, Excel model, owner assumption, placeholder, edited) ── */
+.prov-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+  padding: 0 5px;
+  margin-left: 4px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+  vertical-align: 1px;
+  cursor: help;
+}
+.prov-tag--data        { color: var(--color-positive, #176C2E); }
+.prov-tag--model       { color: var(--color-info, #2563EB); }
+.prov-tag--assumed     { color: var(--color-text-muted); }
+.prov-tag--placeholder { color: var(--color-warning); background: var(--color-warning-bg, rgba(255, 214, 10, 0.12)); }
+.prov-tag--edited      { color: var(--color-primary); }
+
+.prov-note {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+}
+
+.prov-warning,
+.tri-asof {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  margin: 0 14px var(--space-3);
+  max-width: 72ch;
+}
+.prov-warning,
+.tri-asof--stale {
+  color: var(--color-warning);
+  background: var(--color-warning-bg, rgba(255, 214, 10, 0.12));
+  border-left: 3px solid var(--color-warning);
+  padding: 6px 10px;
+}
+.prov-warning[hidden] { display: none; }
+.tri-asof { margin-top: var(--space-3); }
+
+.chart-title .chart-badge.chart-badge--warn {
+  background: #ffd60a;
+  color: #16181D;
+}
+
+.target-age {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+.target-age--stale {
+  color: var(--color-warning);
+  font-weight: 700;
+}
+.target-age--stale::before { content: '⚠ '; }
+
+/* ── Mixed-snapshot notice: a view combines exchanges whose latest data
+   dates differ (bots commit each exchange separately) ── */
+.snapshot-notice {
+  font-size: var(--text-xs);
+  color: var(--color-warning);
+  background: var(--color-warning-bg, rgba(255, 214, 10, 0.12));
+  border-left: 3px solid var(--color-warning);
+  padding: 6px 10px;
+  margin-bottom: var(--space-3);
+}
+.snapshot-notice::before { content: '⚠ '; }
+.snapshot-notice[hidden] { display: none; }
+
+/* ── Fee basis: header toggle (NSE/BSE revenue as charged vs at today's
+   rates), the "est." / "modelled" markers and the definitions note ── */
+.fee-toggle {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  font-family: var(--font-display);
+}
+.fee-toggle-label {
+  margin-right: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+}
+.fee-opt {
+  padding: 4px 9px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--transition-interactive), color var(--transition-interactive);
+}
+.fee-opt + .fee-opt { border-left: none; }
+.fee-opt:first-of-type { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.fee-opt:last-of-type { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.fee-opt:hover { color: var(--color-text); }
+.fee-opt.active {
+  background: var(--color-ink);
+  border-color: var(--color-ink);
+  color: #FFFFFF;
+}
+.fee-opt:focus-visible,
+.fee-compact:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+/* MCX alone: the setting does not apply (MCX is source values) */
+.fee-toggle--na .fee-opt,
+.fee-toggle--na .fee-compact { opacity: 0.55; }
+
+/* Narrow headers: one button showing the current setting; tap to switch */
+.fee-compact {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 40px;
+  padding: 0;
+  border: 1.5px solid var(--color-ink);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-family: var(--font-display);
+  line-height: 1.1;
+  cursor: pointer;
+}
+.fee-compact-k {
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+.fee-compact-v {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* Below 1280px the header has no room for the full control */
+@media (max-width: 1280px) {
+  .fee-toggle-label,
+  .fee-opt { display: none; }
+  .fee-compact { display: flex; }
+}
+
+/* "est." (slab-era flat estimate / provisional BSE cash rate) and
+   "modelled" (MCX history before 2 Sep 2024) markers beside a value */
+.fee-est,
+.mcx-modelled {
+  display: inline-block;
+  margin-left: 3px;
+  padding: 0 3px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 700;
+  font-style: normal;
+  letter-spacing: 0.02em;
+  line-height: 1.35;
+  vertical-align: 1px;
+  text-transform: none;
+  white-space: nowrap;
+  cursor: help;
+}
+.fee-est      { color: var(--color-warning); }
+.mcx-modelled { color: #6D28D9; }
+/* A comparison left out because a side contains modelled MCX days */
+.cmp-na { cursor: help; }
+/* Period-table cells clip with an ellipsis; one holding a marker wraps it
+   below its figure instead (phones: the value column is ~70px) */
+.xl-period-table td:has(> .fee-est),
+.xl-period-table td:has(> .mcx-modelled) {
+  white-space: normal;
+  line-height: 1.2;
+}
+
+.fee-note {
+  margin: var(--space-4) 0 0;
+  max-width: 110ch;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  color: var(--color-text-muted);
+}
+.fee-note strong { color: var(--color-text); font-weight: 600; }
+.fee-note[hidden] { display: none; }
+
+.fee-chart-note {
+  margin: 0;
+  padding: 0 14px 12px;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+/* Printed weekly report */
+.pr-flag {
+  display: inline-block;
+  margin-left: 3px;
+  padding: 0 2px;
+  border: 1px solid #A56000;
+  border-radius: 2px;
+  color: #A56000;
+  font-size: 7px;
+  font-weight: 700;
+  line-height: 1.3;
+  vertical-align: 1px;
+}
+.pr-flag--modelled { border-color: #6D28D9; color: #6D28D9; }
+.pr-fee-line {
+  font-size: 8.5px;
+  color: #555;
+  margin: 0 0 8px;
+  line-height: 1.4;
+}
+
+/* Phones: room for the fee button — the header date drops its year and the
+   pulse dot, and the fee button is the same 40×40 as REPORT / MOBILE */
+@media (max-width: 640px) {
+  .lu-year,
+  .header-meta .live-dot { display: none; }
+  .fee-compact { width: 40px; }
+  .fee-compact-v { font-size: 9px; letter-spacing: 0; }
+  .header { gap: 4px; }
+  .header-left { gap: 6px; }
+}

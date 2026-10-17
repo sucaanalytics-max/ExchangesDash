@@ -4,6 +4,11 @@ Fetches MCX.NS share prices from yfinance and merges with daily revenue from
 the MCX pipeline JSON. Runs OLS regression of price ~ revenue_MA to model
 the revenue-driven fair value of MCX stock.
 
+Days flagged `modelled` in the revenue file (the pre-2024-09-02 historical
+backfill, see mcx_pipeline.py) never enter a regression fit: a row is left out
+when its own date or any day in its revenue moving-average window is modelled.
+They stay in the output series, flagged, for the chart.
+
 Outputs: dashboard/data/mcx_share_analysis.json
 
 Run:  python scripts/mcx_share_analysis.py
@@ -51,15 +56,15 @@ FIXED_MA         = 45
 # ---------------------------------------------------------------------------
 
 def load_revenue(path):
-    """Returns {date_str: total_rev_cr} from mcx_dashboard_data.json."""
+    """Returns ({date_str: total_rev_cr}, {modelled date_str}) from
+    mcx_dashboard_data.json."""
     with open(path) as f:
         raw = json.load(f)
-    daily = raw.get("daily_all") or raw.get("daily", [])
-    return {
-        r["date"]: r["total_rev"]
-        for r in daily
-        if r.get("total_rev") is not None
-    }
+    daily = [r for r in (raw.get("daily_all") or raw.get("daily", []))
+             if r.get("total_rev") is not None]
+    revenue = {r["date"]: r["total_rev"] for r in daily}
+    modelled = {r["date"] for r in daily if r.get("modelled")}
+    return revenue, modelled
 
 
 def fetch_yfinance_prices(start_date_str):
@@ -96,6 +101,18 @@ def build_dataset(revenue, prices):
 # Statistics
 # ---------------------------------------------------------------------------
 
+def window_has_modelled(flags, window):
+    """Per row: True when any of the last `window` rows (itself included) is
+    modelled, i.e. its moving average is built partly from modelled revenue."""
+    out, run = [], 0
+    for i, f in enumerate(flags):
+        run += f
+        if i >= window:
+            run -= flags[i - window]
+        out.append(run > 0)
+    return out
+
+
 def rolling_ma(values, window):
     """Returns list of MA values; None for the first (window-1) entries."""
     result = []
@@ -123,8 +140,9 @@ def main():
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     print(f"[{now_utc}] MCX share analysis starting…")
 
-    revenue = load_revenue(REVENUE_FILE)
-    print(f"Revenue: {len(revenue)} rows  ({min(revenue)} → {max(revenue)})")
+    revenue, modelled = load_revenue(REVENUE_FILE)
+    print(f"Revenue: {len(revenue)} rows  ({min(revenue)} → {max(revenue)}), "
+          f"{len(modelled)} modelled")
 
     # Fetch prices from yfinance for the full revenue range
     yf_start = min(revenue)
@@ -144,16 +162,22 @@ def main():
     print(f"Combined: {len(all_rows)} rows  ({all_rows[0]['date']} → {all_rows[-1]['date']})")
 
     revenues = [r["revenue_cr"] for r in all_rows]
+    is_modelled = [r["date"] in modelled for r in all_rows]
 
     # ── Try every MA window, score on regression-window R² ──
-    print(f"\nMA window comparison (regression from {REGRESSION_START}):")
+    print(f"\nMA window comparison (regression from {REGRESSION_START}, modelled days excluded):")
     window_results = {}
+    excluded = {}
     for window in MA_WINDOWS:
         mas = rolling_ma(revenues, window)
+        tainted = window_has_modelled(is_modelled, window)
+        in_window = [i for i, r in enumerate(all_rows)
+                     if r["date"] >= REGRESSION_START and mas[i] is not None]
+        excluded[window] = sum(tainted[i] for i in in_window)
         reg = [
-            {"date": r["date"], "rev_ma": mas[i], "price": r["price"], "revenue_cr": r["revenue_cr"]}
-            for i, r in enumerate(all_rows)
-            if r["date"] >= REGRESSION_START and mas[i] is not None
+            {"date": all_rows[i]["date"], "rev_ma": mas[i], "price": all_rows[i]["price"],
+             "revenue_cr": all_rows[i]["revenue_cr"]}
+            for i in in_window if not tainted[i]
         ]
         if len(reg) < 10:
             continue
@@ -163,6 +187,7 @@ def main():
         window_results[window] = {
             "slope": slope, "intercept": intercept,
             "r2": r2, "pearson_r": pearson_r, "n": len(reg),
+            "modelled_excluded": excluded[window],
         }
         marker = " ← fixed" if window == FIXED_MA else ""
         print(f"  MA{window:2d}: R²={r2:.4f}  r={pearson_r:.4f}  n={len(reg)}{marker}")
@@ -181,7 +206,8 @@ def main():
 
     # ── Build full series with best window ──
     mas = rolling_ma(revenues, best_window)
-    series = []
+    tainted = window_has_modelled(is_modelled, best_window)
+    series, reg_series = [], []
     for i, row in enumerate(all_rows):
         if mas[i] is None:
             continue
@@ -192,9 +218,11 @@ def main():
             "rev_ma":     round(mas[i], 4),
             "price":      row["price"],
             "price_pred": round(pred, 2),
+            "modelled":   is_modelled[i],
         })
+        if row["date"] >= REGRESSION_START and not tainted[i]:
+            reg_series.append(series[-1])
 
-    reg_series = [r for r in series if r["date"] >= REGRESSION_START]
     latest     = reg_series[-1] if reg_series else series[-1]
     error_pct  = round(
         abs(latest["price_pred"] - latest["price"]) / latest["price"] * 100, 1
@@ -207,11 +235,13 @@ def main():
         "ma_window":        best_window,
         "regression_start": REGRESSION_START,
         "n_days":           len(reg_series),
+        "modelled_excluded": best["modelled_excluded"],
         "ma_window_comparison": {
             str(w): {
                 "r_squared":  round(v["r2"],       4),
                 "pearson_r":  round(v["pearson_r"], 4),
                 "n":          v["n"],
+                "modelled_excluded": v["modelled_excluded"],
             }
             for w, v in window_results.items()
         },
