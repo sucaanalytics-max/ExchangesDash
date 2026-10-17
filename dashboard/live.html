@@ -201,9 +201,42 @@ function RevenueHero({ revenue, pulse }) {
 // ---------------------------------------------------------------------------
 // Hourly progression table + prediction chart
 // ---------------------------------------------------------------------------
+// The poller writes every poll as a sample ({captured_ist, elapsed_minutes,
+// *_revenue, predicted_eod}); see scripts/live_common.py. Rows are the last
+// real sample at or before each reference checkpoint (same checkpoints as
+// REFERENCE_CHECKPOINTS there), plus the latest sample, labelled with the
+// time it was actually captured — never interpolated values.
+const HOURLY_CHECKPOINTS = [45, 105, 165, 225, 285, 345, 405]; // 10:00 … 16:00 IST
+
+function hourlyRowsFromSamples(samples) {
+  const intraday = (samples || [])
+    .filter(s => s.elapsed_minutes >= 0 && s.total_revenue != null)
+    .sort((a, b) => a.elapsed_minutes - b.elapsed_minutes);
+  if (!intraday.length) return [];
+  const picked = new Set();
+  for (const cp of HOURLY_CHECKPOINTS) {
+    let best = -1;
+    intraday.forEach((s, i) => { if (s.elapsed_minutes <= cp) best = i; });
+    if (best >= 0) picked.add(best);
+  }
+  picked.add(intraday.length - 1);
+  return [...picked].sort((a, b) => a - b).map(i => {
+    const s = intraday[i];
+    return {
+      hour_label:      (s.captured_ist || "").slice(11, 16),
+      has_data:        true,
+      total_revenue:   s.total_revenue,
+      futures_revenue: s.futures_revenue,
+      options_revenue: s.options_revenue,
+      cash_revenue:    s.cash_revenue,
+      predicted_eod:   s.predicted_eod,
+    };
+  });
+}
+
 function HourlySection({ hourly, currentRevenue }) {
-  if (!hourly || !hourly.snapshots?.length) return null;
-  const snaps = hourly.snapshots;
+  const snaps = hourly?.snapshots?.length ? hourly.snapshots : hourlyRowsFromSamples(hourly?.samples);
+  if (!snaps.length) return null;
 
   // Chart data: predicted EOD at each snapshot
   const chartData = snaps
@@ -217,7 +250,9 @@ function HourlySection({ hourly, currentRevenue }) {
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3 mb-5">
         <div>
           <div className="text-xs text-zinc-500 uppercase tracking-widest">Intraday Progression</div>
-          <div className="text-xs text-zinc-600 mt-1">Hourly revenue + linear end-of-day projection</div>
+          <div className="text-xs text-zinc-600 mt-1">
+            {hourly?.date ? `${hourly.weekday_name || ""} ${hourly.date} · ` : ""}Revenue at each hour (actual poll time) + predicted end of day
+          </div>
         </div>
         {lastPred && (
           <div className="sm:text-right">
@@ -244,7 +279,7 @@ function HourlySection({ hourly, currentRevenue }) {
           {snaps.map((s, i) => {
             const isLast = i === snaps.length - 1;
             return (
-              <tr key={s.hour_label} className={`border-b border-zinc-800/40 ${isLast ? "text-white" : "text-zinc-400"}`}>
+              <tr key={`${s.hour_label}-${i}`} className={`border-b border-zinc-800/40 ${isLast ? "text-white" : "text-zinc-400"}`}>
                 <td className="sticky left-0 z-10 bg-black py-1.5 pr-4 tabular-nums">{s.hour_label}</td>
                 <td className="py-1.5 pr-4 text-right tabular-nums font-semibold">
                   {s.has_data ? fmtCr(s.total_revenue, 1) : "—"}
