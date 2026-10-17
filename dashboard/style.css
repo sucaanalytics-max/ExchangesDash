@@ -2363,6 +2363,32 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
   font-weight: 500;
 }
 
+/* Failed load: message, Retry and Back instead of the spinner */
+.loading-overlay.is-error .loading-spinner { display: none; }
+.loading-overlay.is-error .loading-content {
+  max-width: min(420px, calc(100vw - 32px));
+  padding: var(--space-6);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-solid);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+  text-align: center;
+}
+.loading-overlay.is-error .loading-text { color: var(--color-text); font-size: var(--text-base); }
+.loading-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-3); }
+.loading-actions[hidden] { display: none; }
+.loading-btn {
+  min-height: 44px;
+  padding: 0 var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.loading-btn--primary { border-color: var(--color-primary); background: var(--color-primary); color: #fff; }
+
 /* ===========================
    BSE PREDICTOR CARDS
    =========================== */

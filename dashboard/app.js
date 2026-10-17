@@ -308,11 +308,20 @@ function updateChartsForTheme() {
 function showLoading(exchange) {
   const overlay = document.getElementById('loadingOverlay');
   document.getElementById('loadingText').textContent = 'Loading ' + exchange.toUpperCase() + ' data...';
+  clearLoadError();
   overlay.classList.add('visible');
 }
 
 function hideLoading() {
+  clearLoadError();
   document.getElementById('loadingOverlay').classList.remove('visible');
+}
+
+function clearLoadError() {
+  document.getElementById('loadingOverlay').classList.remove('is-error');
+  const actions = document.getElementById('loadingActions');
+  actions.hidden = true;
+  actions.innerHTML = '';
 }
 
 // ========================
@@ -538,7 +547,17 @@ function updateHeaderExchange(exchange) {
   if (badge) badge.textContent = btn ? btn.textContent.trim() : exchange.toUpperCase();
 }
 
+let switchSeq = 0;          // latest exchange load; an older one still in flight yields to it
+let shownExchange = null;  // last exchange whose views were built, for "Back to …" after a failed load
+
+// Loads an exchange and builds its views. A switch made while this one is
+// still loading takes over (the older load never touches the page). If the
+// data cannot be loaded, the overlay says so and offers Retry, and a way back
+// to the exchange shown before, instead of spinning forever. Resolves to true
+// once the views are built.
 async function switchExchange(exchange) {
+  const seq = ++switchSeq;
+  const owns = () => seq === switchSeq;
   showLoading(exchange);
   // Destroy all existing charts
   Object.values(charts).forEach(c => { if (c && c.destroy) c.destroy(); });
@@ -547,21 +566,50 @@ async function switchExchange(exchange) {
   // Update logo
   const logoLabels = { nse: 'NSE Analytics', bse: 'BSE Analytics', mcx: 'MCX Analytics', all: 'All Exchanges', nsebse: 'NSE+BSE' };
   document.getElementById('logoText').textContent = logoLabels[exchange] || exchange.toUpperCase() + ' Analytics';
+  document.querySelectorAll('.exchange-btn').forEach(b => b.classList.toggle('active', b.dataset.exchange === exchange));
   updateHeaderExchange(exchange);
   // Update sidebar nav
   buildSidebarNav(exchange);
   // Show/hide exchange-specific content sections
   toggleExchangeContent(exchange);
-  // Load data
-  await loadExchangeData(exchange);
+  try {
+    if (!await loadExchangeData(exchange, owns)) return false;
+  } catch (err) {
+    console.error(`Loading ${exchange} failed:`, err);
+    if (owns()) showLoadError(exchange, err);
+    return false;
+  }
   // Update header info
   updateHeaderInfo();
   // Build all visualizations
   rebuildAll();
+  shownExchange = exchange;
   hideLoading();
   // Activate first tab
   const firstNavItem = document.querySelector('.nav-item[data-tab]');
   if (firstNavItem) firstNavItem.click();
+  return true;
+}
+
+// The loading overlay's failure state: what failed, Retry, and (after a
+// switch) Back to the exchange shown before.
+function showLoadError(exchange, err) {
+  const overlay = document.getElementById('loadingOverlay');
+  const name = exchange === 'all' ? 'All Exchanges' : exchange === 'nsebse' ? 'NSE+BSE' : exchange.toUpperCase();
+  const status = err && err.status ? ` (HTTP ${err.status})` : '';
+  const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  document.getElementById('loadingText').textContent = offline
+    ? `Couldn't load ${name} data: you appear to be offline.`
+    : `Couldn't load ${name} data${status}. The data files may be updating; try again in a moment.`;
+  const actions = document.getElementById('loadingActions');
+  const back = shownExchange && shownExchange !== exchange ? shownExchange : null;
+  actions.innerHTML = `<button type="button" class="loading-btn loading-btn--primary" data-act="retry">Retry</button>`
+    + (back ? `<button type="button" class="loading-btn" data-act="back">Back to ${back === 'all' ? 'All Exchanges' : back === 'nsebse' ? 'NSE+BSE' : back.toUpperCase()}</button>` : '');
+  actions.hidden = false;
+  actions.querySelector('[data-act="retry"]').onclick = () => switchExchange(exchange);
+  if (back) actions.querySelector('[data-act="back"]').onclick = () => switchExchange(back);
+  overlay.classList.add('visible', 'is-error');
+  actions.querySelector('[data-act="retry"]').focus();
 }
 
 function toggleExchangeContent(exchange) {
@@ -638,9 +686,8 @@ async function fetchLiveFile(exchange) {
   const bust = Date.now();
   for (const url of [`/api/live?exchange=${exchange}&file=live`, `./data/${exchange}_live.json?t=${bust}`]) {
     try {
-      const res = await fetch(url);
-      if (!res.ok) continue;
-      const live = await res.json().catch(() => null);
+      // The live reading is an extra on each view: a slow source must not hold it up
+      const live = await fetchWithTimeout(url, 8000, res => (res.ok ? res.json().catch(() => null) : null));
       if (live) return live;
     } catch (e) { /* try the next source */ }
   }
@@ -701,10 +748,26 @@ function textSignature(text) {
 // Concurrent requests for one file share a download (init fetches the NSE
 // files for both the view and the cache); each caller parses its own copy.
 const TEXT_INFLIGHT = {};
+// A stalled request fails after this long rather than keeping the overlay up
+const FETCH_TIMEOUT_MS = 45 * 1000;
+
+// fetch() that rejects once `ms` pass without the body arriving
+function fetchWithTimeout(url, ms, read) {
+  const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = ctrl && setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, ctrl ? { signal: ctrl.signal } : undefined)
+    .then(read)
+    .finally(() => clearTimeout(timer));
+}
+
 function fetchText(url) {
   if (!TEXT_INFLIGHT[url]) {
-    TEXT_INFLIGHT[url] = fetch(url).then(res => {
-      if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+    TEXT_INFLIGHT[url] = fetchWithTimeout(url, FETCH_TIMEOUT_MS, res => {
+      if (!res.ok) {
+        const err = new Error(`${url}: HTTP ${res.status}`);
+        err.status = res.status;
+        throw err;
+      }
       return res.text();
     }).finally(() => { delete TEXT_INFLIGHT[url]; });
   }
@@ -800,19 +863,30 @@ async function commitExchangeFiles(f) {
   }
 }
 
-async function loadExchangeData(exchange) {
-  VIEW_BUILT_FROM = {};
+// Fills DATA / ENRICHED_DATA / SHARE_DATA for an exchange. With `owns`, a load
+// overtaken by a newer one while fetching leaves them alone and resolves to
+// false. Rejects if the exchange's revenue files cannot be loaded.
+async function loadExchangeData(exchange, owns = () => true) {
   const combined = COMBINED_VIEWS[exchange];
   if (combined) {
     await ensureFreshMarketData(combined);
+    if (!owns()) return false;
+    // preloadMarketData drops a failed fetch silently; the views need every exchange
+    const missing = combined.filter(ex => !MARKET_RAW[ex] || !MARKET_DATA[ex]);
+    if (missing.length) throw new Error(`no data for ${missing.join(', ')}`);
+    VIEW_BUILT_FROM = {};
     DATA = buildCombinedRawData(combined);
     ENRICHED_DATA = buildCombinedEnrichedData(combined);
     SHARE_DATA = null;
     VIEW_LOADED = null;
     combined.forEach(ex => { VIEW_BUILT_FROM[ex] = marketSig(ex); });
-    return;
+    return true;
   }
-  await commitExchangeFiles(await fetchExchangeFiles(exchange));
+  const files = await fetchExchangeFiles(exchange);
+  if (!owns()) return false;
+  VIEW_BUILT_FROM = {};
+  await commitExchangeFiles(files);
+  return owns();
 }
 
 // Fills MARKET_DATA / MARKET_RAW (the cache the combined views and the BSE
@@ -1718,43 +1792,31 @@ function rebuildAll() {
     const sources = DATA.components.map(c => ({ ex: c.exchange, date: lastTradeDate(c.daily_all) }));
     (EXCHANGE_TABS[currentExchange] || []).forEach(t => { VIEW_SOURCES[t.id] = sources; });
   }
-  updateSnapshotNotice();
-  updateFeeNotice();
-  updateFeeToggle();
-  buildFeeNote();
+  const common = [updateSnapshotNotice, updateFeeNotice, updateFeeToggle, buildFeeNote, buildRevenueSummary];
+  const byExchange = {
+    nsebse: [() => buildMarketSharePanel(['nse', 'bse']), buildMarketShareTrend],
+    all:    [() => buildMarketSharePanel(['nse', 'bse', 'mcx'])],
+    nse:    [buildNSEExtrapolationKPIs, buildNSEPredictedPnLTable, initNSEPATPredictor, initNSEPEValuation,
+             initNSEPrediction, buildNSEValuation, buildNSEShareAnalysis,
+             () => buildIntradayPredictor('nse', 'nseIntradayContent')],
+    bse:    [buildBSERevenuePredictor, buildBSEShareAnalysis, buildBSEValuation,
+             () => buildIntradayPredictor('bse', 'bseIntradayContent')],
+    mcx:    [buildMCXRevenuePredictor, buildMCXShareAnalysis, buildMCXValuation],
+  };
+  runSections(common.concat(byExchange[currentExchange] || []));
+}
 
-  buildRevenueSummary();
-
-  if (currentExchange === 'nsebse') {
-    buildMarketSharePanel(['nse', 'bse']);
-    buildMarketShareTrend();
-    return;
-  }
-
-  if (currentExchange === 'all') {
-    buildMarketSharePanel(['nse', 'bse', 'mcx']);
-    return;
-  }
-
-  if (currentExchange === 'nse') {
-    buildNSEExtrapolationKPIs();
-    buildNSEPredictedPnLTable();
-    initNSEPATPredictor();
-    initNSEPEValuation();
-    initNSEPrediction();
-    buildNSEValuation();
-    buildNSEShareAnalysis();
-    buildIntradayPredictor('nse', 'nseIntradayContent');
-  } else if (currentExchange === 'bse') {
-    buildBSERevenuePredictor();
-    buildBSEShareAnalysis();
-    buildBSEValuation();
-    buildIntradayPredictor('bse', 'bseIntradayContent');
-  } else if (currentExchange === 'mcx') {
-    buildMCXRevenuePredictor();
-    buildMCXShareAnalysis();
-    buildMCXValuation();
-  }
+// Runs each section builder on its own: one that throws (an unexpected gap in
+// a data file) leaves that section empty and is logged, instead of stopping
+// every section after it and leaving the loading overlay up.
+function runSections(builders) {
+  builders.forEach(build => {
+    try {
+      build();
+    } catch (err) {
+      console.error(`Section ${build.name || 'builder'} failed:`, err);
+    }
+  });
 }
 
 // ========================
@@ -7307,16 +7369,13 @@ async function init() {
   if (GLANCE_MEDIA.matches && glancePref() !== 'full') enterGlance(false);
   if (GLANCE_MEDIA.addEventListener) GLANCE_MEDIA.addEventListener('change', m => { if (!m.matches) exitGlance(false); });
   setInterval(() => { if (glanceActive() && !document.hidden) renderGlance(); }, 5 * 60 * 1000);
-  preloadMarketData().then(() => { if (currentExchange === 'all' || currentExchange === 'nsebse') rebuildAll(); });
-  await loadExchangeData('nse');
-  updateHeaderInfo();
-  rebuildAll();
-  hideLoading();
+  preloadMarketData().then(() => {
+    if ((currentExchange === 'all' || currentExchange === 'nsebse') && shownExchange === currentExchange) rebuildAll();
+  });
+  // Loads NSE and opens its first tab; a failure shows the overlay's Retry
+  await switchExchange('nse');
   updateLatestRevBanner();
   setInterval(updateLatestRevBanner, 5 * 60 * 1000);
-  // Activate first tab
-  const firstNavItem = document.querySelector('.nav-item[data-tab]');
-  if (firstNavItem) firstNavItem.click();
 }
 
 
