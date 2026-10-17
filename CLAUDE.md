@@ -19,7 +19,7 @@ Dashboard: `dashboard/index.html` + `app.js` (vanilla JS, Chart.js) + `style.css
 - Indian FY runs Apr–Mar; labels look like `Q3 FY 2027` (Oct–Dec 2026). Sort quarters with `quarter_sort_key` (Python) / `quarterSortKey` (JS), never by label text.
 - Take rates live only in `scripts/take_rates.py`; `dashboard/api/revenue.js` keeps a JS copy checked by `scripts/check_take_rates.py`.
 - Live samples are keyed on the exchange's trade date, never the wall clock; EOD is 16:00 IST (SEBI closing auction).
-- Expiry weekday changed over time (NSE Thu→Tue Sep 2025; BSE Fri→Tue→Thu). Code still hardcodes the current weekday — Phase 1 replaces this with a dated calendar.
+- Expiry weekday changed over time (NSE Thu→Tue from 2025-09-01; BSE Fri→Tue from 2025-01-06, Tue→Thu from 2025-09-01); the monthly expiry is the month's last such weekday. The effective-dated rules live only in `scripts/expiry_calendar.py` (used by `live_common.classify_day`); `dashboard/app.js` keeps a JS copy, `EXPIRY_RULES`, checked by `scripts/check_expiry_calendar.py`. A holiday on the scheduled day moves expiry to the previous trading day (handled by the callers, from observed trading dates).
 - Timestamps written by pollers are UTC with a `Z` suffix.
 - Supabase writes from this repo are off unless the repository variable `ENABLE_SUPABASE_WRITES` is `true` (Excel sync: `ENABLE_EXCEL_SYNC`). Keep both off while the old repo `Research-Tusk/nse-cloud-pipeline` still writes the same tables; `scripts/compare_parallel_run.py` checks parity.
 
@@ -33,6 +33,7 @@ Dashboard: `dashboard/index.html` + `app.js` (vanilla JS, Chart.js) + `style.css
 ## Verify before pushing
 
 - `python3 scripts/check_take_rates.py`
+- `python3 scripts/check_expiry_calendar.py`
 - `python3 -m pyflakes scripts/<changed>.py`
 - `node -e "new (require('vm').Script)(require('fs').readFileSync('dashboard/app.js','utf8'))"`
 - UI changes: serve `dashboard/` with `python3 -m http.server` and check in Playwright (Chromium at `/opt/pw-browsers`) at 1440 and 390 px; `/api/*` must be stubbed locally.

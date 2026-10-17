@@ -571,6 +571,16 @@ function istDateOf(ts) {
   return isNaN(d.getTime()) ? null : d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 }
 
+// "2026-10-16" → "16 Oct", or "Fri 16 Oct" with weekday. Reads the trade date
+// as a calendar date, independent of the viewer's time zone.
+function fmtTradeDate(iso, withWeekday) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+  if (!m) return iso || '';
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  const day = d.getUTCDate() + ' ' + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()];
+  return withWeekday ? ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getUTCDay()] + ' ' + day : day;
+}
+
 async function fetchLiveFile(exchange) {
   const bust = Date.now();
   for (const url of [`/api/live?exchange=${exchange}&file=live`, `./data/${exchange}_live.json?t=${bust}`]) {
@@ -669,6 +679,8 @@ async function preloadMarketData() {
 // so the combined value is a true sum-of-daily-averages regardless of each
 // exchange having a different number of trading days in a period.
 // days=1 is stored so computeQuarterMetrics / getMAvg return the value as-is.
+// Longer or differently cut periods (FY, weekday × quarter, 125 days) are not
+// averages of these rows: they are summed per exchange from DATA.components.
 // "Q2 FY 2027" → chronological sort key. Indian FY: Q1=Apr-Jun, Q2=Jul-Sep,
 // Q3=Oct-Dec, Q4=Jan-Mar (of the FY-ending year) — Q1..Q4 within "FY N" already
 // climbs in the right order, so year*10+quarter sorts correctly across years too.
@@ -688,8 +700,9 @@ function monthSortKey(label) {
 }
 
 function buildCombinedRawData(exList) {
-  const raws = exList.map(ex => MARKET_RAW[ex]).filter(Boolean);
-  if (!raws.length) return { quarterly: [], monthly: [], daily: [], daily_all: [] };
+  const present = exList.filter(ex => MARKET_RAW[ex]);
+  const raws = present.map(ex => MARKET_RAW[ex]);
+  if (!raws.length) return { quarterly: [], monthly: [], daily: [], daily_all: [], components: [] };
 
   const segFields = ['total_rev', 'opt_rev', 'fut_rev', 'cash_rev'];
 
@@ -728,7 +741,16 @@ function buildCombinedRawData(exList) {
     return out;
   });
 
-  return { quarterly, monthly, daily: [], daily_all: []};
+  // Each exchange's own rows, for the figures that cannot be read off the
+  // summed rows above: FY, weekday × quarter and 125-day averages (see
+  // revenueSources), and the header's last trading date.
+  const components = present.map(ex => ({
+    exchange:  ex,
+    quarterly: MARKET_RAW[ex].quarterly || [],
+    daily_all: MARKET_RAW[ex].daily_all || [],
+  }));
+
+  return { quarterly, monthly, daily: [], daily_all: [], components };
 }
 
 // ── Build combined ENRICHED_DATA from pre-loaded enriched JSONs ───────────────
@@ -799,14 +821,31 @@ function buildCombinedEnrichedData(exList) {
 // ========================
 
 function updateHeaderInfo() {
-  const dailyAll = DATA.daily_all || DATA.daily;
-  if (dailyAll && dailyAll.length > 0) {
-    const lastDate = dailyAll[dailyAll.length - 1].date;
-    const d = new Date(lastDate + 'T00:00:00');
-    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    const formatted = ('0' + d.getDate()).slice(-2) + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
-    const span = document.getElementById('lastUpdatedSpan');
-    if (span) span.innerHTML = '<span class="lu-label">Last Updated: </span>' + formatted;
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const fmtDay = iso => {
+    const d = new Date(iso + 'T00:00:00');
+    return ('0' + d.getDate()).slice(-2) + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
+  };
+  const span = document.getElementById('lastUpdatedSpan');
+  if (DATA.components) {
+    // Combined view: show the earliest of the exchanges' last trading dates,
+    // so one exchange lagging behind the others is not hidden.
+    const lasts = DATA.components
+      .map(c => ({ ex: c.exchange.toUpperCase(), date: c.daily_all.length ? c.daily_all[c.daily_all.length - 1].date : null }))
+      .filter(c => c.date);
+    if (span && lasts.length) {
+      const earliest = lasts.reduce((mn, c) => (c.date < mn ? c.date : mn), lasts[0].date);
+      const differ = lasts.some(c => c.date !== earliest);
+      span.innerHTML = '<span class="lu-label">Last Updated: </span>' + fmtDay(earliest);
+      span.title = (differ ? 'Earliest of the exchanges\' last trading dates — ' : 'Last trading date — ')
+        + lasts.map(c => `${c.ex} ${fmtDay(c.date)}`).join(', ');
+    }
+  } else {
+    const dailyAll = DATA.daily_all || DATA.daily;
+    if (span && dailyAll && dailyAll.length > 0) {
+      span.innerHTML = '<span class="lu-label">Last Updated: </span>' + fmtDay(dailyAll[dailyAll.length - 1].date);
+      span.removeAttribute('title');
+    }
   }
   const cq = DATA.summary && DATA.summary.current_quarter;
   if (cq) {
@@ -983,13 +1022,58 @@ function getYoYQuarter(qLabel) {
   return m[1] + ' FY ' + (parseInt(m[2]) - 1);
 }
 
+// ── Expiry calendar (NSE & BSE only) ─────────────────────────────────────────
+// Copy of EXPIRY_RULES in scripts/expiry_calendar.py, the source of truth (the
+// circular behind each rule is noted there); scripts/check_expiry_calendar.py
+// fails CI if the two drift. The weekly expiry falls on `weekday`, the monthly
+// on the month's last `weekday`. Dates are inclusive, null = open-ended, and
+// boundaries sit on Monday/Sunday so each Mon–Sun week has one expiry day.
+const EXPIRY_RULES = [
+  { exchange: 'nse', effective_from: null,         effective_to: '2025-08-31', weekday: 'Thursday' },
+  { exchange: 'nse', effective_from: '2025-09-01', effective_to: null,         weekday: 'Tuesday' },
+  { exchange: 'bse', effective_from: null,         effective_to: '2025-01-05', weekday: 'Friday' },
+  { exchange: 'bse', effective_from: '2025-01-06', effective_to: '2025-08-31', weekday: 'Tuesday' },
+  { exchange: 'bse', effective_from: '2025-09-01', effective_to: null,         weekday: 'Thursday' },
+];
+const EXPIRY_DOW_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function expiryRuleFor(exchange, dateStr) {
+  return EXPIRY_RULES.find(r => r.exchange === exchange
+    && (r.effective_from === null || dateStr >= r.effective_from)
+    && (r.effective_to === null || dateStr <= r.effective_to)) || null;
+}
+
+// True when dateStr ('YYYY-MM-DD') falls on the expiry weekday of the rule in
+// force on that same date — so across a rule change each candidate day is
+// judged by its own rule (e.g. NSE Aug 2025 → last Thursday, Sep → last Tuesday).
+function isScheduledExpiry(exchange, dateStr) {
+  const rule = expiryRuleFor(exchange, dateStr);
+  return !!rule && EXPIRY_DOW_NAMES[new Date(dateStr + 'T00:00:00Z').getUTCDay()] === rule.weekday;
+}
+
+// Header wording for the month-end tables: "Tuesday" while one rule covers the
+// data, otherwise the history, e.g. "expiry weekday (Thu → Tue from Sep 2025)".
+function monthEndExpiryWeekdayLabel(exchange, dailyAll) {
+  const first = dailyAll.reduce((mn, r) => (!mn || r.date < mn ? r.date : mn), '');
+  const last = dailyAll.reduce((mx, r) => (r.date > mx ? r.date : mx), '');
+  const rules = EXPIRY_RULES.filter(r => r.exchange === exchange
+    && (r.effective_to === null || r.effective_to >= first)
+    && (r.effective_from === null || r.effective_from <= last));
+  if (rules.length <= 1) return rules.length ? rules[0].weekday : 'expiry weekday';
+  const mon = s => new Date(s + 'T00:00:00Z').toLocaleString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' });
+  const steps = rules.map((r, i) => i === 0 || !r.effective_from
+    ? r.weekday.slice(0, 3)
+    : `${r.weekday.slice(0, 3)} from ${mon(r.effective_from)}`);
+  return `expiry weekday (${steps.join(' → ')})`;
+}
+
 // ── Month-end expiry comparison (NSE & BSE only) ──────────────────────────────
 // Derived purely from observed trading dates in DATA.daily_all — no separate
-// holiday calendar needed. Expiry = the calendar month's last Tuesday (NSE) /
-// Thursday (BSE); if that exact date isn't an actual trading day (holiday),
-// walk back one calendar day at a time until landing on one that is.
+// holiday calendar needed. Expiry = the calendar month's last scheduled expiry
+// day per EXPIRY_RULES (last Tuesday for NSE since Sep 2025, last Thursday
+// before; see the table for BSE); if that exact date isn't an actual trading
+// day (holiday), walk back one calendar day at a time until landing on one that is.
 function computeMonthExpiryDates(dailyAll, exchange) {
-  const targetDow = exchange === 'bse' ? 4 : 2; // Thu=4, Tue=2 (Sun=0 .. Sat=6)
   const tradingDates = new Set(dailyAll.map(r => r.date));
   const monthsSet = new Set(dailyAll.map(r => r.date.slice(0, 7)));
   const lastDataDate = dailyAll.reduce((mx, r) => (r.date > mx ? r.date : mx), '');
@@ -1001,7 +1085,12 @@ function computeMonthExpiryDates(dailyAll, exchange) {
     const [y, m] = monthKey.split('-').map(Number);
     const lastDayNum = new Date(Date.UTC(y, m, 0)).getUTCDate(); // last calendar day of month m
     const cursor = new Date(Date.UTC(y, m - 1, lastDayNum));
-    while (cursor.getUTCDay() !== targetDow) cursor.setUTCDate(cursor.getUTCDate() - 1);
+    // Latest day of the month that is a scheduled expiry under the rule in
+    // force on that day. A month straddling a rule change therefore ends on
+    // the new rule's last weekday if that falls on/after the change, else on
+    // the old rule's (BSE Jan 2025: Friday rule to 5 Jan, then Tuesday → 28 Jan).
+    while (cursor.getUTCDate() > 1 && !isScheduledExpiry(exchange, toStr(cursor))) cursor.setUTCDate(cursor.getUTCDate() - 1);
+    if (!isScheduledExpiry(exchange, toStr(cursor))) return; // no rule covers this month
 
     // Expiry still in the future (e.g. this month's last Tuesday hasn't happened
     // yet): skip it. Otherwise the holiday walk-back below would misread the
@@ -1020,11 +1109,11 @@ function computeMonthExpiryDates(dailyAll, exchange) {
 }
 
 // Same idea as computeMonthExpiryDates but scoped to each ISO week instead of
-// each calendar month: that week's Tuesday (NSE) / Thursday (BSE), or the
-// nearest earlier trading day if that's a holiday — bounded to not walk back
-// past that week's own Monday (a holiday-shift never borrows from last week).
+// each calendar month: that week's scheduled expiry day per EXPIRY_RULES
+// (Tuesday NSE / Thursday BSE today), or the nearest earlier trading day if
+// that's a holiday — bounded to not walk back past that week's own Monday (a
+// holiday-shift never borrows from last week).
 function computeWeekExpiryDates(dailyAll, exchange) {
-  const targetDow = exchange === 'bse' ? 4 : 2; // Thu=4, Tue=2 (Sun=0 .. Sat=6)
   const tradingDates = new Set(dailyAll.map(r => r.date));
   const pad2 = n => String(n).padStart(2, '0');
   const toStr = d => `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
@@ -1044,8 +1133,16 @@ function computeWeekExpiryDates(dailyAll, exchange) {
   const results = [];
   weeksSet.forEach(weekStartStr => {
     const monday = parseUTC(weekStartStr);
-    const target = new Date(monday);
-    target.setUTCDate(monday.getUTCDate() + (targetDow - 1)); // Monday=1 in this offset scheme
+    // The week's scheduled expiry: the day (Mon–Fri) whose weekday matches the
+    // rule in force on that day. Rule boundaries are Mondays, so exactly one
+    // day qualifies; the latest is taken should a mid-week change ever qualify two.
+    let target = null;
+    for (let i = 4; i >= 0 && !target; i--) {
+      const c = new Date(monday);
+      c.setUTCDate(monday.getUTCDate() + i);
+      if (isScheduledExpiry(exchange, toStr(c))) target = c;
+    }
+    if (!target) return;
     // Same future-expiry guard as computeMonthExpiryDates: this week's expiry
     // day may not have happened yet.
     if (toStr(target) > lastDataDate) return;
@@ -1172,7 +1269,7 @@ function buildExpiryComparisonHTML(exchange, segKey, mOpts, qOpts) {
       <td id="expiryQYoy${r}-${segKey}"></td>
     </tr>`).join('');
 
-  const expiryWeekday = exchange === 'bse' ? 'Thursday' : 'Tuesday';
+  const expiryWeekday = monthEndExpiryWeekdayLabel(exchange, dailyAll);
   return `
   <div style="margin-top:var(--space-4)">
     <div class="xl-seg-header">${exchange.toUpperCase()} Month-End Expiry Comparison <span class="xl-seg-unit">last trading day on/before the month's last ${expiryWeekday} · ₹ Cr</span></div>
@@ -1372,14 +1469,32 @@ function wireDeltaTd(val) {
   return `<td class="wire-delta ${cls}">${pct}%</td>`;
 }
 
+// ── Per-exchange sources ──────────────────────────────────────────────────────
+// A combined view's daily average for any period is the sum of each
+// exchange's own daily average for it (that exchange's revenue ÷ its own
+// trading days). Single-exchange views have one source, DATA itself, so the
+// sum is just that exchange's figure. An exchange with no rows for the
+// period adds nothing (e.g. MCX alone before NSE/BSE data starts in FY 2024).
+function revenueSources() {
+  return DATA.components || [{ quarterly: DATA.quarterly || [], daily_all: DATA.daily_all || [] }];
+}
+
+function sumOverSources(perSource) {
+  const vals = revenueSources().map(perSource).filter(v => v != null);
+  return vals.length ? vals.reduce((a, v) => a + v, 0) : null;
+}
+
 // ── Simple avg getters (no derived comparisons) ───────────────────────────────
 function getFYAvg(fyStr, segKey) {
   const rf = getRevFieldObj(segKey);
-  const quarters = DATA.quarterly.filter(q => q.quarter.endsWith(fyStr));
-  if (!quarters.length) return null;
-  const rev  = quarters.reduce((s, q) => s + (q[rf.qField] || 0), 0);
-  const days = quarters.reduce((s, q) => s + (q.days || q.trading_days || 1), 0);
-  return { label: fyStr, value: rev / days };
+  const value = sumOverSources(src => {
+    const quarters = src.quarterly.filter(q => q.quarter.endsWith(fyStr));
+    if (!quarters.length) return null;
+    const rev  = quarters.reduce((s, q) => s + (q[rf.qField] || 0), 0);
+    const days = quarters.reduce((s, q) => s + (q.days || q.trading_days || 1), 0);
+    return rev / days;
+  });
+  return value == null ? null : { label: fyStr, value };
 }
 
 function getQAvg(qIdx, segKey) {
@@ -1398,16 +1513,24 @@ function getMAvg(mIdx, segKey) {
   return { label: m.month, value: m[rf.mField] / days };
 }
 
+// "Avg 6M (125 days)": average of the last 125 trading days ending at the
+// month's last trading day — the pipelines' avg_6m (seg_summary in
+// scripts/*_pipeline.py), so for the latest month it equals the enriched
+// value. Not an average of six calendar-month averages, which would weight a
+// partial month like a full one.
+const AVG_6M_LABEL = 'Avg 6M (125 days)';
+
 function getM6mAvg(mIdx, segKey) {
-  const rf   = getRevFieldObj(segKey);
-  const allM = DATA.monthly;
-  let sum = 0, cnt = 0;
-  for (let i = Math.max(0, mIdx - 5); i <= mIdx; i++) {
-    const d = allM[i].trading_days || allM[i].days || 1;
-    sum += allM[i][rf.mField] / d;
-    cnt++;
-  }
-  return cnt > 0 ? sum / cnt : null;
+  const rf = getRevFieldObj(segKey);
+  const m  = DATA.monthly[mIdx];
+  if (!m) return null;
+  return sumOverSources(src => {
+    const daily  = src.daily_all;
+    const endIdx = daily.reduce((last, r, i) => r.fy_month === m.month ? i : last, -1);
+    if (endIdx < 0) return null;
+    const window = daily.slice(Math.max(0, endIdx - 124), endIdx + 1);
+    return window.reduce((s, r) => s + (r[rf.dField] || 0), 0) / window.length;
+  });
 }
 
 // ── Per-row render functions ──────────────────────────────────────────────────
@@ -1446,7 +1569,8 @@ function renderMRow(rowNum, mIdx, segKey) {
   if (chgEl) {
     if (rowNum === 0) {
       chgEl.innerHTML = '';
-      // Recompute Avg 6M (always anchored to row 0's month)
+      // Recompute Avg 6M (125 days ending at row 0's month); its % chg is
+      // row 0's month vs that average, like the pipelines' mo6m
       const avg = getM6mAvg(mIdx, segKey);
       const avgValEl = document.getElementById('xlMAvgVal-' + segKey);
       const avgChgEl = document.getElementById('xlMAvgChg-' + segKey);
@@ -1495,9 +1619,11 @@ function getWeekdayQAvg(weekday, qIdx, segKey) {
   const rf = getRevFieldObj(segKey);
   const q  = DATA.quarterly[qIdx];
   if (!q) return null;
-  const rows = (DATA.daily_all || []).filter(r => r.day === weekday && r.fy_quarter === q.quarter);
-  if (!rows.length) return null;
-  return rows.reduce((s, r) => s + (r[rf.dField] || 0), 0) / rows.length;
+  return sumOverSources(src => {
+    const rows = src.daily_all.filter(r => r.day === weekday && r.fy_quarter === q.quarter);
+    if (!rows.length) return null;
+    return rows.reduce((s, r) => s + (r[rf.dField] || 0), 0) / rows.length;
+  });
 }
 
 function renderWireQRow(weekday, rowNum, qIdx, segKey) {
@@ -1611,7 +1737,7 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
       <td></td>
     </tr>`).join('');
 
-  // Month: 2 selectable rows + 1 static Avg 6M row
+  // Month: 2 selectable rows + 1 Avg 6M (125 days) row
   const mRows = [0, 1].map(r => `
     <tr${r === 0 ? ' class="xl-r-cur"' : ''}>
       <td>${mkSel('xlM' + r + '-' + segKey, mOpts)}</td>
@@ -1620,7 +1746,7 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
       <td></td>
     </tr>`).join('') + `
     <tr>
-      <td style="color:var(--color-text-secondary);font-size:11.5px">Avg 6 Months</td>
+      <td style="color:var(--color-text-secondary);font-size:11.5px">${AVG_6M_LABEL}</td>
       <td id="xlMAvgVal-${segKey}"></td>
       <td id="xlMAvgChg-${segKey}"></td>
       <td></td>
@@ -1701,8 +1827,12 @@ function xlStaticSegmentBlock(st, label) {
   const dow = st.day_of_week   || {};
   const dayFull  = ['Monday','Tuesday','Wednesday','Thursday','Friday'];
 
-  const curFYLabel  = (q.current?.label  || '').match(/FY \d{4}/)?.[0] || 'Current FY';
-  const prevFYLabel = (q.previous?.label || '').match(/FY \d{4}/)?.[0] || 'Prev FY';
+  // fy.current is the FY of the latest trading day (the current quarter's FY)
+  // and fy.previous the FY before it, so label them FY N and FY N-1 — not by
+  // the previous quarter's label, which is still FY N except in Q1.
+  const curFYNum    = +((q.current?.label || m.current?.label || '').match(/FY (\d{4})/)?.[1] || 0);
+  const curFYLabel  = curFYNum ? `FY ${curFYNum}`     : 'Current FY';
+  const prevFYLabel = curFYNum ? `FY ${curFYNum - 1}` : 'Prev FY';
 
   const fyRows = `
     <tr class="xl-r-cur"><td>${curFYLabel}</td><td>${xlValPlain(fy.current, 2)}</td><td>${wireChg(fy.yoy)}</td><td></td></tr>
@@ -1717,7 +1847,7 @@ function xlStaticSegmentBlock(st, label) {
   const mRows = `
     <tr class="xl-r-cur"><td>${m.current?.label  || '—'}</td><td>${xlValPlain(m.current?.value, 2)}</td><td>${wireChg(m.current?.mom)}</td><td></td></tr>
     <tr><td>${m.previous?.label || '—'}</td><td>${xlValPlain(m.previous?.value, 2)}</td><td></td><td></td></tr>
-    <tr><td>${m.avg_6m?.label   || 'Avg 6 Months'}</td><td>${xlValPlain(m.avg_6m?.value, 2)}</td><td>${wireChg(m.current?.mo6m)}</td><td></td></tr>`;
+    <tr><td>${AVG_6M_LABEL}</td><td>${xlValPlain(m.avg_6m?.value, 2)}</td><td>${wireChg(m.current?.mo6m)}</td><td></td></tr>`;
 
   const wRows = `
     <tr class="xl-r-cur"><td>Last 5 Days</td><td>${xlValPlain(wl5.value, 2)}</td><td>${wireChg(wl5.wow)}</td><td>${wireChg(wl5.wo10w)}</td></tr>
@@ -2154,7 +2284,7 @@ function buildMarketSharePanel(exList) {
       ...(yoyQLabel && yoyQLabel !== prevQLabel && yoyQLabel !== prev2QLabel ? [{ lbl: yoyQLabel, vals: exList.map(ex => qAvg(ex, yoyQLabel, key)) }] : []),
       { lbl: refED.monthly?.current?.label  || 'Cur Month',  vals: exList.map(ex => ed(ex)[key]?.monthly?.current?.value  || 0) },
       { lbl: refED.monthly?.previous?.label || 'Prev Month', vals: exList.map(ex => ed(ex)[key]?.monthly?.previous?.value || 0) },
-      { lbl: 'Avg 6 Months',  vals: exList.map(ex => ed(ex)[key]?.monthly?.avg_6m?.value  || 0) },
+      { lbl: AVG_6M_LABEL,    vals: exList.map(ex => ed(ex)[key]?.monthly?.avg_6m?.value  || 0) },
       { lbl: 'Last 5 Days',   vals: exList.map(ex => ed(ex)[key]?.weekly?.last5?.value    || 0) },
       { lbl: 'Prev 5 Days',   vals: exList.map(ex => ed(ex)[key]?.weekly?.prev5?.value    || 0) },
       { lbl: 'Last 45 Days',  vals: exList.map(ex => ed(ex)[key]?.weekly?.last45?.value   || 0) },
@@ -2776,62 +2906,174 @@ function initNSEQuarterCompare() {
 // ========================
 // NSE: PAT PREDICTION ENGINE
 // ========================
+// One default forecast: the pipeline's ratio model (ENRICHED_DATA
+// .pnl_forecast_model / .pnl_predicted_quarters / .pnl_predictor). The custom
+// predictor, the sliders and the manual nse_pnl forecast rows are scenarios and
+// are labelled as such. EBITDA on this tab is operating EBITDA (nse_pnl rows:
+// ENRICHED_DATA.pnl_operating). An enriched file written before these fields
+// existed shows "—" rather than a differently defined EBITDA.
+
+const NSE_EBITDA_DEF = 'Operating EBITDA = revenue from operations − operating expenses, before depreciation, excluding other (non-operating) income.';
+const NSE_ONE_OFF_LABELS = { sebi_settlement: 'SEBI settlement' };
+
+function nseForecastModel() {
+  const m = ENRICHED_DATA.pnl_forecast_model;
+  return m && m.name ? m : null;
+}
+
+// Quarters the default forecast's ratios come from: the last two actual nse_pnl quarters.
+function nseBaseQuarters() {
+  const m = nseForecastModel();
+  if (m && Array.isArray(m.base_quarters) && m.base_quarters.length) return m.base_quarters;
+  return (DATA.pnl || []).filter(r => !r.is_predicted).slice(-2).map(r => r.quarter);
+}
+
+// Scenario cost ratios: DATA.cost_ratios averaged over those actual quarters,
+// never a forecast quarter's row (the table also holds Q4 FY 2026+ forecasts).
+function nseActualCostRatios() {
+  const rows = nseBaseQuarters().map(q => (DATA.cost_ratios || {})[q]).filter(Boolean);
+  const avg = k => {
+    const v = rows.map(r => r[k]).filter(x => x != null && !isNaN(x)).map(Number);
+    return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+  };
+  return {
+    employee_pct: avg('employee_pct'), regulatory_pct: avg('regulatory_pct'),
+    technology_pct: avg('technology_pct'), depreciation_pct: avg('depreciation_pct'),
+    other_income_ratio: avg('other_income_ratio'),
+  };
+}
+
+function nseQuarterRange(qs) {
+  return qs.length > 1 ? `${qs[0]} – ${qs[qs.length - 1]}` : (qs[0] || '');
+}
+
+function nseOneOffText(oneOffs) {
+  return Object.entries(oneOffs || {})
+    .map(([k, v]) => `${NSE_ONE_OFF_LABELS[k] || k.replace(/_/g, ' ')} ${fmt(v, 0)}`).join(', ');
+}
+
+// nse_pnl quarters that have ended (before the quarter now trading) but are
+// still manual forecasts because their actuals have not been entered.
+function nsePendingActualQuarters() {
+  const q = DATA.quarterly || [];
+  const cq = ENRICHED_DATA.pnl_predictor?.quarter || (q.length ? q[q.length - 1].quarter : null);
+  if (!cq) return [];
+  return (DATA.pnl || []).filter(r => r.is_predicted && quarterSortKey(r.quarter) < quarterSortKey(cq)).map(r => r.quarter);
+}
+
+// Panel titles live in index.html; find the panel from an element inside it.
+function setNSEPanelTitle(innerId, html) {
+  const el = document.getElementById(innerId);
+  const panel = el && el.closest('.chart-panel');
+  const title = panel && panel.querySelector('.chart-title');
+  if (title) title.innerHTML = html;
+}
+
+// Create or update a note paragraph placed right after `anchor`.
+function setNSENote(id, anchor, html) {
+  if (!anchor) return;
+  let n = document.getElementById(id);
+  if (!n) {
+    n = document.createElement('p');
+    n.id = id;
+    n.className = 'section-desc';
+    anchor.insertAdjacentElement('afterend', n);
+  }
+  n.innerHTML = html;
+}
 
 function buildNSEExtrapolationKPIs() {
   const p = ENRICHED_DATA.pnl_predictor;
   if (!p) return;
+  const m = nseForecastModel();
   const otherIncome = p.total_revenue_predicted - p.transaction_rev_extrapolated;
+  const eps = p.eps_predicted ?? ENRICHED_DATA.pnl_predicted_quarters?.[p.quarter]?.eps;
 
   const kpis = [
     { label: 'Daily Avg Txn Rev', value: fmt(p.daily_avg_rev) },
     { label: 'Trading Days (Actual / Expected)', value: `${p.q4_fy2026_trading_days_so_far || p.trading_days_so_far} / ${p.q4_fy2025_total_trading_days || p.expected_trading_days}` },
     { label: 'Extrapolated Qtr Txn Rev', value: fmt(p.transaction_rev_extrapolated) },
-    { label: `Other Income (${fmtPct(p.other_income_ratio)} of Txn Rev)`, value: fmt(otherIncome) },
+    { label: `Other Revenue + Other Income (${fmtPct(p.other_income_ratio)} of Txn Rev)`, value: fmt(otherIncome) },
     { label: 'Total Revenue (Predicted)', value: fmt(p.total_revenue_predicted), highlight: true },
-    { label: 'Predicted PAT', value: fmt(p.pat_predicted), highlight: true },
+    { label: `${m ? 'Default Forecast PAT' : 'Forecast PAT (previous model)'} · ${p.quarter || 'Current Qtr'}`, value: fmt(p.pat_predicted),
+      sub: eps != null ? `EPS ₹ ${fmtNum(eps, 2)}` : '', highlight: true },
   ];
 
-  document.getElementById('extrapKpis').innerHTML = kpis.map(k => `
+  const kpiEl = document.getElementById('extrapKpis');
+  kpiEl.innerHTML = kpis.map(k => `
     <div class="extrap-card${k.highlight ? ' highlight' : ''}">
       <div class="extrap-label">${k.label}</div>
       <div class="extrap-value">${k.value}</div>
+      ${k.sub ? `<div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${k.sub}</div>` : ''}
     </div>
   `).join('');
+
+  const pending = nsePendingActualQuarters();
+  const pendingTxt = pending.length
+    ? ` ${pending.join(', ')} ${pending.length > 1 ? 'have ended but are still manual forecasts' : 'has ended but is still a manual forecast'} in nse_pnl (actuals not yet entered), so the ratios stay on the last actual quarters.`
+    : '';
+  let note = `Forecast model details appear after the next NSE pipeline run.${pendingTxt}`;
+  if (m) {
+    const excl = Object.entries(m.one_offs_excluded || {}).map(([q, o]) => `${nseOneOffText(o)} in ${q}`).join('; ');
+    const skipped = m.tax_rate_quarters.length < m.base_quarters.length ? '; quarters with material one-offs skipped' : '';
+    note = `<strong>Default forecast — ratio model.</strong> Ratios from actual ${nseQuarterRange(m.base_quarters)}` +
+      `${excl ? `, one-offs excluded (${excl})` : ''}: other operating revenue ${fmtPct(m.other_operating_revenue_ratio)}` +
+      ` and other income ${fmtPct(m.non_operating_income_ratio)} of transaction revenue; operating expenses` +
+      ` ${fmtPct(m.operating_expense_ratio)} and depreciation ${fmtPct(m.depreciation_ratio)} of operating revenue;` +
+      ` associates ${fmt(m.share_profit_associates)}; tax ${fmtPct(m.tax_rate)} (${m.tax_rate_quarters.join(', ')} effective rate${skipped}).` +
+      ` Forecasts include no one-offs.${pendingTxt}`;
+  }
+  setNSENote('nseForecastModelNote', kpiEl, note);
 }
 
 function buildNSEPredictedPnLTable() {
   const quarters = ENRICHED_DATA.pnl_predicted_quarters;
   if (!quarters) return;
-  let html = '<thead><tr><th>Quarter</th><th>Txn Rev</th><th>Other Income</th><th>Total Rev</th><th>Total Exp</th><th>EBITDA</th><th>EBITDA %</th><th>PAT</th><th>PAT %</th><th>EPS</th></tr></thead><tbody>';
+  setNSEPanelTitle('tablePredictedPnL', 'Default Forecast — Ratio Model <span class="chart-badge">Predicted Quarterly P&amp;L</span>');
+  let html = `<thead><tr><th>Quarter</th><th>Txn Rev</th><th>Operating Rev</th><th>Other Income</th><th>Total Rev</th><th>Op. Expenses</th><th title="${NSE_EBITDA_DEF}">Op. EBITDA</th><th title="${NSE_EBITDA_DEF}">EBITDA %</th><th>PAT</th><th>PAT %</th><th>EPS</th></tr></thead><tbody>`;
 
   let isFirst = true;
   for (const [qName, q] of Object.entries(quarters)) {
-    const otherIncome = q.total_revenue - q.transaction_rev;
     const tag = isFirst ? ' <span style="color:var(--color-warning);font-size:11px;font-weight:600">CURRENT</span>' : '';
     const cls = isFirst ? '' : 'predicted';
+    // operating_* only: an older file's `ebitda` is post-depreciation incl. other income.
     html += `<tr class="${cls}">
       <td>${qName}${tag}</td>
       <td>${fmt(q.transaction_rev)}</td>
-      <td>${fmt(otherIncome)}</td>
+      <td>${fmt(q.operating_revenue)}</td>
+      <td>${fmt(q.non_operating_income)}</td>
       <td>${fmt(q.total_revenue)}</td>
-      <td>${fmt(q.total_expense)}</td>
-      <td>${fmt(q.ebitda)}</td>
-      <td>${fmtPct(q.ebitda_margin)}</td>
+      <td>${fmt(q.operating_expenses)}</td>
+      <td>${fmt(q.operating_ebitda)}</td>
+      <td>${fmtPct(q.operating_ebitda_margin)}</td>
       <td style="font-weight:600">${fmt(q.pat)}</td>
       <td>${fmtPct(q.pat_margin)}</td>
-      <td>₹ ${fmtNum(q.eps)}</td>
+      <td>₹ ${fmtNum(q.eps, 2)}</td>
     </tr>`;
     isFirst = false;
   }
   html += '</tbody>';
-  document.getElementById('tablePredictedPnL').innerHTML = html;
+  const table = document.getElementById('tablePredictedPnL');
+  table.innerHTML = html;
+  setNSENote('nsePredictedPnLNote', table.parentElement,
+    `Op. EBITDA: ${NSE_EBITDA_DEF} Other Income = non-operating (investment) income. Forecast rows carry no one-offs.` +
+    ' The custom-input predictor, the sliders and the manual nse_pnl rows below are scenarios, not this forecast.');
 }
 
 function initNSEPATPredictor() {
   const p = ENRICHED_DATA.pnl_predictor;
   if (!p || !DATA.cost_ratios) return;
-  const lastCostQ = Object.keys(DATA.cost_ratios).pop();
-  const cr = DATA.cost_ratios[lastCostQ];
+  const cr = nseActualCostRatios();
+
+  setNSEPanelTitle('inputDailyRev', 'Scenario — Custom Inputs <span class="chart-badge">Not the Default Forecast</span>');
+  const desc = document.querySelector('#nsePredictionContent .predictor-panel .section-desc');
+  if (desc) {
+    desc.textContent = 'Scenario: enter your own average daily trading revenue. Costs start from actual ' +
+      nseQuarterRange(nseBaseQuarters()) + ' cost ratios (% of total revenue) plus 3.5 % CSR & other; tax and shares as entered.' +
+      (p.pat_predicted != null ? ' The default forecast for ' + (p.quarter || 'this quarter') + ' is ' + fmt(p.pat_predicted) + ' PAT.' : '');
+  }
+  const peHead = document.querySelector('#nsePredictionContent .predictor-pe-section h4');
+  if (peHead) peHead.textContent = 'Scenario Target Share Price';
 
   const dailyRevInput = document.getElementById('inputDailyRev');
   const tradingDaysInput = document.getElementById('inputTradingDays');
@@ -2891,7 +3133,7 @@ function initNSEPATPredictor() {
         <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${fmt(dailyRev)}/day × ${tradingDays} days</div>
       </div>
       <div class="pred-card">
-        <div class="pred-label">Other Income</div>
+        <div class="pred-label">Other Revenue + Other Income</div>
         <div class="pred-value">${fmt(otherIncome)}</div>
         <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${(otherIncomeRatio * 100).toFixed(1)}% of Txn Rev</div>
       </div>
@@ -2905,12 +3147,12 @@ function initNSEPATPredictor() {
         <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${fmtPct(totalExp / totalRev)} of revenue</div>
       </div>
       <div class="pred-card highlight">
-        <div class="pred-label">Quarterly PAT</div>
+        <div class="pred-label">Scenario PAT</div>
         <div class="pred-value" style="color:var(--color-success)">${fmt(pat)}</div>
         <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${fmtPct(pat / totalRev)} margin</div>
       </div>
       <div class="pred-card">
-        <div class="pred-label">EPS (Quarterly)</div>
+        <div class="pred-label">Scenario EPS (Quarterly)</div>
         <div class="pred-value">₹ ${qtrEPS.toFixed(2)}</div>
         <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">Annualized: ₹ ${annualEPS.toFixed(2)}</div>
       </div>
@@ -2971,6 +3213,7 @@ function initNSEPEValuation() {
 
     const quarterlyEPS = cqData.eps;
     const annualizedEPS = quarterlyEPS * 4;
+    setNSEPanelTitle('peResults', `Valuation — Default Forecast EPS <span class="chart-badge"><span class="js-current-quarter">${cqName}</span> EPS × 4</span>`);
 
     const bearPE = Number(bearInput.value) || 25;
     const basePE = Number(baseInput.value) || 35;
@@ -2993,6 +3236,8 @@ function initNSEPEValuation() {
         <div class="pe-price">${fmtPrice(bullPE * annualizedEPS)}</div>
       </div>
     `;
+    setNSENote('nsePEValuationNote', document.getElementById('peResults'),
+      `Annualised EPS ₹ ${fmtNum(annualizedEPS, 2)} = default forecast EPS ₹ ${fmtNum(quarterlyEPS, 2)} for ${cqName} × 4.`);
   }
 
   bearInput.addEventListener('input', updatePEResults);
@@ -3005,10 +3250,13 @@ let predState = {};
 
 function initNSEPrediction() {
   if (!DATA.pnl || !DATA.cost_ratios) return;
-  const actualPnl = DATA.pnl.filter(p => !p.is_predicted);
-  const lastActual = actualPnl[actualPnl.length - 1];
-  const lastQ = lastActual.quarter;
-  const cr = DATA.cost_ratios[lastQ] || Object.values(DATA.cost_ratios)[Object.values(DATA.cost_ratios).length - 1];
+  const cr = nseActualCostRatios();
+  const desc = document.getElementById('scenarioButtons')?.previousElementSibling;
+  if (desc && desc.classList.contains('section-desc')) {
+    desc.innerHTML = '<strong>Scenario — sliders.</strong> Adjust revenue and cost assumptions to explore PAT. Starts from the' +
+      ' current-quarter run-rate and actual ' + nseQuarterRange(nseBaseQuarters()) + ' cost ratios; not the default forecast.';
+  }
+  setNSEPanelTitle('chartWaterfall', 'P&amp;L Waterfall <span class="chart-badge">Slider Scenario</span>');
 
   const cq = DATA.quarterly[DATA.quarterly.length - 1];
   const days = cq.days || 62;
@@ -3103,8 +3351,13 @@ function updateNSEPrediction() {
   const csrOther = totalRev * 0.035;
   const totalExp = empCost + regCost + techCost + depCost + csrOther;
 
-  const ebitda = totalRev - totalExp + depCost;
-  const ebitdaMargin = ebitda / totalRev;
+  // Operating EBITDA. The slider's other revenue lumps other operating revenue
+  // with non-operating income; split it in the default model's proportions.
+  const m = nseForecastModel();
+  const otherSum = m ? m.other_operating_revenue_ratio + m.non_operating_income_ratio : 0;
+  const opRev = otherSum > 0 ? transactionRev + otherRev * (m.other_operating_revenue_ratio / otherSum) : null;
+  const ebitda = opRev != null ? opRev - (empCost + regCost + techCost + csrOther) : null;
+  const ebitdaMargin = opRev ? ebitda / opRev : null;
   const pbt = totalRev - totalExp;
   const tax = pbt * 0.252;
   const pat = pbt - tax;
@@ -3116,18 +3369,18 @@ function updateNSEPrediction() {
       <div class="pred-label">Total Revenue</div>
       <div class="pred-value">${fmt(totalRev)}</div>
     </div>
-    <div class="pred-card">
-      <div class="pred-label">EBITDA</div>
+    <div class="pred-card" title="${NSE_EBITDA_DEF}">
+      <div class="pred-label">Op. EBITDA</div>
       <div class="pred-value">${fmt(ebitda)}</div>
-      <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${fmtPct(ebitdaMargin)} margin</div>
+      <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${ebitdaMargin != null ? fmtPct(ebitdaMargin) + ' of operating revenue' : 'after the next pipeline run'}</div>
     </div>
     <div class="pred-card highlight">
-      <div class="pred-label">Predicted PAT</div>
+      <div class="pred-label">Scenario PAT</div>
       <div class="pred-value" style="color:var(--color-primary-hover)">${fmt(pat)}</div>
       <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${fmtPct(patMargin)} margin</div>
     </div>
     <div class="pred-card">
-      <div class="pred-label">EPS (est.)</div>
+      <div class="pred-label">Scenario EPS</div>
       <div class="pred-value">₹ ${(pat / 247.5).toFixed(2)}</div>
       <div style="font-size:var(--text-xs);color:var(--color-text-faint);margin-top:4px">~247.5 Cr shares</div>
     </div>
@@ -3185,7 +3438,8 @@ function buildNSEWaterfallChart(txnRev, otherRev, totalRev, totalExp, emp, reg, 
       },
       scales: {
         x: { ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
-        y: { beginAtZero: true, ticks: { callback: v => '₹' + fmtNum(v, 0) } }
+        // lineWidth explicit (see buildNSEPATHistoryChart): bars from 0 vanish otherwise.
+        y: { beginAtZero: true, grid: { color: getGridColor(), lineWidth: 1 }, ticks: { callback: v => '₹' + fmtNum(v, 0) } }
       }
     }
   });
@@ -3195,13 +3449,23 @@ function buildNSEPATHistoryChart() {
   const p = DATA.pnl;
   if (!p || p.length === 0) return;
   setCanvasHeight('chartPATHistory', 300);
+  setNSEPanelTitle('chartPATHistory', 'PAT — Actuals, Manual Forecasts &amp; Default Forecast');
 
-  const allLabels = p.map(x => {
-    const parts = x.quarter.split(' ');
+  // Bars: nse_pnl rows (actuals and manual forecasts). Diamonds: the default
+  // forecast, whose quarters may run past the last nse_pnl row.
+  const fc = ENRICHED_DATA.pnl_predicted_quarters || {};
+  const byQ = new Map(p.map(x => [x.quarter, x]));
+  const quarters = [...new Set([...p.map(x => x.quarter), ...Object.keys(fc)])]
+    .sort((a, b) => quarterSortKey(a) - quarterSortKey(b));
+  const rows = quarters.map(q => byQ.get(q) || null);
+  const allLabels = quarters.map(q => {
+    const parts = q.split(' ');
     return parts[0] + " '" + parts[2].slice(2);
   });
-  const barColors = p.map(x => x.is_predicted ? CHART_COLORS[5] : CHART_COLORS[0]);
-  const patValues = p.map(x => x.pat);
+  const barColors = rows.map(x => x && x.is_predicted ? CHART_COLORS[5] : CHART_COLORS[0]);
+  const patValues = rows.map(x => x ? x.pat : null);
+  const fcValues = quarters.map(q => fc[q] ? fc[q].pat : null);
+  const fcColor = CHART_COLORS[1];
 
   if (charts.patHistory) charts.patHistory.destroy();
   charts.patHistory = new Chart(document.getElementById('chartPATHistory'), {
@@ -3215,33 +3479,53 @@ function buildNSEPATHistoryChart() {
         borderColor: barColors,
         borderWidth: 1,
         borderRadius: 3,
+        order: 1,
+      }, {
+        type: 'line',
+        label: 'Default forecast (ratio model)',
+        data: fcValues,
+        showLine: false,
+        pointStyle: 'rectRot',
+        pointRadius: 7,
+        pointHoverRadius: 8,
+        backgroundColor: fcColor,
+        borderColor: fcColor,
+        order: 0,
       }]
     },
     options: {
+      interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: {
           display: true,
+          onClick: () => {},
           labels: {
+            usePointStyle: true,
             generateLabels: function() {
               return [
-                { text: 'Actual PAT', fillStyle: CHART_COLORS[0], strokeStyle: CHART_COLORS[0], lineWidth: 0, hidden: false },
-                { text: 'Predicted PAT', fillStyle: CHART_COLORS[5], strokeStyle: CHART_COLORS[5], lineWidth: 0, hidden: false },
+                { text: 'Actual PAT', fillStyle: CHART_COLORS[0], strokeStyle: CHART_COLORS[0], pointStyle: 'rect', lineWidth: 0, hidden: false },
+                { text: 'Manual forecast (nse_pnl)', fillStyle: CHART_COLORS[5], strokeStyle: CHART_COLORS[5], pointStyle: 'rect', lineWidth: 0, hidden: false },
+                { text: 'Default forecast (ratio model)', fillStyle: fcColor, strokeStyle: fcColor, pointStyle: 'rectRot', lineWidth: 0, hidden: false },
               ];
             }
           }
         },
         tooltip: {
+          filter: ctx => ctx.raw != null,
           callbacks: {
             label: ctx => {
-              const isPred = DATA.pnl[ctx.dataIndex].is_predicted;
-              return (isPred ? 'Predicted: ' : 'Actual: ') + fmt(ctx.raw);
+              if (ctx.datasetIndex === 1) return 'Default forecast (ratio model): ' + fmt(ctx.raw);
+              const r = rows[ctx.dataIndex];
+              return (r && r.is_predicted ? 'Manual forecast (nse_pnl): ' : 'Actual: ') + fmt(ctx.raw);
             }
           }
         }
       },
       scales: {
         x: { ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
-        y: { ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
+        // lineWidth explicit: the global scale.grid default carries none, and
+        // Chart.js then computes NaN bar bases on the zero gridline (no bars drawn).
+        y: { grid: { color: getGridColor(), lineWidth: 1 }, ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
   });
@@ -3250,23 +3534,53 @@ function buildNSEPATHistoryChart() {
 function buildNSEPnLTable() {
   const p = DATA.pnl;
   if (!p) return;
-  let html = '<thead><tr><th>Quarter</th><th>Txn Rev</th><th>Total Rev</th><th>Total Exp</th><th>EBITDA</th><th>EBITDA %</th><th>PAT</th><th>PAT %</th><th>EPS</th></tr></thead><tbody>';
+  setNSEPanelTitle('tablePnL', 'P&amp;L Comparison Table <span class="chart-badge">nse_pnl Actuals &amp; Manual Forecasts</span>');
+  const ops = new Map((ENRICHED_DATA.pnl_operating || []).map(v => [v.quarter, v]));
+  const pending = new Set(nsePendingActualQuarters());
+  const footnotes = [];
+  let html = `<thead><tr><th>Quarter</th><th>Status</th><th>Txn Rev</th><th>Operating Rev</th><th>Total Rev</th><th>Op. Expenses</th><th title="${NSE_EBITDA_DEF}">Op. EBITDA</th><th title="${NSE_EBITDA_DEF}">EBITDA %</th><th>PAT</th><th>PAT %</th><th>EPS</th></tr></thead><tbody>`;
   for (const q of p) {
-    const cls = q.is_predicted ? 'predicted' : '';
-    html += `<tr class="${cls}">
+    const v = ops.get(q.quarter);
+    const status = !q.is_predicted ? 'Actual'
+      : pending.has(q.quarter) ? 'Manual forecast<br><span style="font-size:11px">actuals not yet entered</span>' : 'Manual forecast';
+    let ebitdaCell = '—', marginCell = '—', ebitdaTitle = '';
+    if (v && v.operating_ebitda != null) {
+      ebitdaCell = fmt(v.operating_ebitda);
+      marginCell = fmtPct(v.operating_ebitda_margin);
+      if (v.one_offs && Object.keys(v.one_offs).length) {
+        ebitdaTitle = `${q.quarter} includes one-off ${nseOneOffText(v.one_offs)}; ex one-offs ${fmt(v.operating_ebitda_ex_one_offs)} (${fmtPct(v.operating_ebitda_margin_ex_one_offs)})`;
+        footnotes.push(ebitdaTitle);
+        ebitdaCell += '<sup style="line-height:0">†</sup>';
+        marginCell += '<sup style="line-height:0">†</sup>';
+      }
+    } else if (v && !v.revenue_split_available) {
+      ebitdaTitle = 'This manual forecast row does not separate revenue from operations from other income';
+    }
+    const style = q.is_predicted ? ' style="font-style:italic;opacity:0.8"' : '';
+    html += `<tr${style}>
       <td>${q.quarter}</td>
+      <td>${status}</td>
       <td>${fmt(q.transaction_rev)}</td>
+      <td>${fmt(v ? v.operating_revenue : null)}</td>
       <td>${fmt(q.total_revenue)}</td>
-      <td>${fmt(q.total_expense)}</td>
-      <td>${fmt(q.ebitda)}</td>
-      <td>${fmtPct(q.ebitda_margin)}</td>
+      <td>${fmt(v ? v.operating_expenses : null)}</td>
+      <td${ebitdaTitle ? ` title="${ebitdaTitle}"` : ''}>${ebitdaCell}</td>
+      <td>${marginCell}</td>
       <td style="font-weight:600">${fmt(q.pat)}</td>
       <td>${fmtPct(q.pat_margin)}</td>
-      <td>₹ ${fmtNum(q.eps)}</td>
+      <td>₹ ${fmtNum(q.eps, 2)}</td>
     </tr>`;
   }
   html += '</tbody>';
-  document.getElementById('tablePnL').innerHTML = html;
+  const table = document.getElementById('tablePnL');
+  table.innerHTML = html;
+  const notes = [`Op. EBITDA: ${NSE_EBITDA_DEF} Actual quarters are on the reported basis.`];
+  if (footnotes.length) notes.push('† ' + footnotes.join('. ') + '.');
+  notes.push(ops.size
+    ? 'Manual forecast rows (entered in nse_pnl) are scenarios, not the default forecast; they put all non-transaction revenue in one line, so Op. EBITDA is not shown for them.'
+    : 'Op. EBITDA appears after the next NSE pipeline run.');
+  notes.push('Actual PAT is as reported, including exceptional items such as gains on sale of investments.');
+  setNSENote('nsePnLNote', table.parentElement, notes.join(' '));
 }
 
 // ========================
@@ -4598,7 +4912,7 @@ async function buildBSEValuation() {
   el.innerHTML = `
   <div id="bseQuickValPanel"></div>
   <div class="chart-panel" style="margin-bottom:var(--space-4)">
-    <div class="chart-title">1 · Triangulated Target Price <span class="chart-badge">Live</span></div>
+    <div class="chart-title">1 · Triangulated Target Price <span class="chart-badge">${SHARE_DATA?.latest?.is_live ? 'Live' : 'Latest close'}</span></div>
     <p class="section-desc">Average of the ADR (Annual Predictor Base case), 45-day regression, and analyst-consensus target prices, shown against CMP.</p>
     <div class="tri-target-grid">
       ${kpi('ADR Model', `<span id="triAdrModel"></span>`, 'Annual Predictor · Base', '')}
@@ -5541,17 +5855,32 @@ async function buildIntradayPredictor(exchange, containerId) {
   const exLabel = exchange.toUpperCase();
 
   // ── Live KPI row ──
-  const samples = (hourly && hourly.samples) || [];
-  const latest  = samples.length ? samples[samples.length - 1] : null;
+  // Only polls after the 09:15 open (elapsed_minutes > 0) describe the session:
+  // pre-open polls still repeat the previous session's totals.
+  const samples  = (hourly && hourly.samples) || [];
+  const intraday = samples.filter(s => s.elapsed_minutes > 0);
+  const latest   = intraday.length ? intraday[intraday.length - 1] : null;
+  // The file holds one trade date's polls. After the close, at weekends and on
+  // holidays it is still the last session's, so it must not be labelled today.
+  const isToday   = !!hourly?.date && hourly.date === istDateOf();
+  const sessLong  = fmtTradeDate(hourly?.date, true);   // "Fri 16 Oct"
+  const sessShort = fmtTradeDate(hourly?.date, false);  // "16 Oct"
+  const asOf = latest
+    ? `as of ${(latest.captured_ist || '').slice(11, 16)} IST (+${fmtElapsed(latest.elapsed_minutes)})`
+    : 'no poll since the 09:15 open';
+  const revTitle  = isToday ? 'Revenue So Far Today' : 'Revenue — Last Session';
+  const revSub    = isToday ? asOf : [sessLong, asOf].filter(Boolean).join(' · ');
+  const predTitle = isToday ? 'Predicted EOD Revenue' : 'Predicted EOD — Last Session';
+  const predSub   = latest ? intradayMethodLabel(latest.pred_method) : '—';
+  const pollTitle = isToday ? 'Polls Landed Today' : `Polls Landed${sessShort ? ` (${sessShort})` : ''}`;
 
-  const liveHTML = latest ? `
+  const liveHTML = samples.length ? `
   <div class="share-kpi-grid">
-    ${kpi('Revenue So Far Today', '₹' + fmtNum(latest.total_revenue, 2) + ' Cr',
-          `as of ${(latest.captured_ist || '').slice(11, 16)} IST (+${fmtElapsed(latest.elapsed_minutes)})`, '')}
-    ${kpi('Predicted EOD Revenue', latest.predicted_eod != null ? '₹' + fmtNum(latest.predicted_eod, 2) + ' Cr' : '—',
-          intradayMethodLabel(latest.pred_method), 'positive')}
+    ${kpi(revTitle, latest ? '₹' + fmtNum(latest.total_revenue, 2) + ' Cr' : '—', revSub, '')}
+    ${kpi(predTitle, latest?.predicted_eod != null ? '₹' + fmtNum(latest.predicted_eod, 2) + ' Cr' : '—',
+          isToday || !sessLong ? predSub : `${sessLong} · ${predSub}`, 'positive')}
     ${kpi('Day Type', (hourly.day_type || '—').replace('_', '-'), hourly.weekday_name || '', '')}
-    ${kpi('Polls Landed Today', String(samples.length), samples.length === 1 ? 'sample' : 'samples', '')}
+    ${kpi(pollTitle, String(intraday.length), `${intraday.length === 1 ? 'sample' : 'samples'} after the 09:15 open`, '')}
   </div>` : `
   <div class="chart-panel" style="text-align:center;padding:32px;color:var(--color-text-muted);margin-bottom:var(--space-4)">
     <div style="font-size:14px;font-weight:600">No live poll recorded yet today</div>
@@ -5971,7 +6300,7 @@ async function downloadWeeklyReport() {
           <tr class="pr-group-label"><td colspan="3">Monthly</td></tr>
           <tr><td>${mc.label || 'Current Month'}</td><td>${n(mc.value)}</td><td>${prFmt(mc.mom)}</td></tr>
           <tr><td>${mp.label || 'Prev Month'}</td><td>${n(mp.value)}</td><td>—</td></tr>
-          <tr><td>6-Month Avg</td><td>${n(m6.value)}</td><td>${prFmt(mc.mo6m)}</td></tr>
+          <tr><td>${AVG_6M_LABEL}</td><td>${n(m6.value)}</td><td>${prFmt(mc.mo6m)}</td></tr>
           <tr class="pr-separator"><td colspan="3"></td></tr>
           <tr class="pr-group-label"><td colspan="3">Quarterly</td></tr>
           <tr><td>${qc.label || 'Current Q'}</td><td>${n(qc.value)}</td><td>${prFmt(qc.qoq)}</td></tr>
@@ -6094,7 +6423,7 @@ async function downloadWeeklyReport() {
         return `<tr style="font-weight:700"><td>Last ${nMonths} Months Avg</td><td>${n(avgWeekly)}</td><td>${n(avgMonthEnd)}</td><td>${prFmt(diff)}</td></tr>`;
       }).join('');
 
-      const expiryWeekday = exchange === 'bse' ? 'Thursday' : 'Tuesday';
+      const expiryWeekday = monthEndExpiryWeekdayLabel(exchange, dailyAll);
       return `
       <div class="pr-sub-header">Month-End Expiry Comparison (Total Rev, ₹ Cr) — last trading day on/before month's last ${expiryWeekday}</div>
       <table class="pr-table" style="margin-bottom:8px">

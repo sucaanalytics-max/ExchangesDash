@@ -19,7 +19,8 @@ zero then). A day is archived — and its checkpoints computed — the next time
 a new day's first sample arrives, using whatever samples were collected as
 long as the last one is late enough in the session to trust as an EOD proxy.
 
-Weekday classification per exchange:
+Weekday classification per exchange (expiry weekday from the effective-dated
+calendar in scripts/expiry_calendar.py; the rules in force today are):
   NSE: Tuesday = expiry day. If Tuesday is a holiday, Monday becomes expiry.
        Monday (before a Tuesday expiry) = pre-expiry.
   BSE: Thursday = expiry day. If Thursday is a holiday, Wednesday becomes expiry.
@@ -61,6 +62,8 @@ import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from expiry_calendar import is_scheduled_expiry, next_scheduled_expiry
+
 MARKET_OPEN_MIN  = 9 * 60 + 15   # 9:15 AM IST
 # SEBI's Closing Auction Session (effective 2026-08-03) moved the cash segment's
 # effective close from 3:30 PM to 4:00 PM: CAS runs 3:15-3:35pm, then a
@@ -89,11 +92,6 @@ REFERENCE_CHECKPOINTS = [
 SESSION_START_MIN = 8 * 60 + 55
 SESSION_END_MIN   = 16 * 60 + 30
 
-# NSE expiry = Tuesday (1); BSE expiry = Thursday (3)
-EXPIRY_WEEKDAY = {"nse": 1, "bse": 3}
-# Pre-expiry = day before expiry
-PRE_EXPIRY_WEEKDAY = {"nse": 0, "bse": 2}
-
 
 # ---------------------------------------------------------------------------
 # Day-type classification
@@ -106,15 +104,17 @@ def classify_day(d: date, exchange: str, market_dates: set = None) -> str:
     market_dates: optional set of YYYY-MM-DD strings of known trading days.
     Used to detect holiday shifts (e.g. Tuesday holiday → Monday becomes expiry).
     When not provided, uses simple weekday rules.
+
+    The expiry weekday comes from scripts/expiry_calendar.py, asked for the
+    rule in force on each candidate day, so dates before a rule change
+    classify against the weekday of their own time.
     """
-    wd = d.weekday()   # 0=Mon … 4=Fri
-    exp_wd = EXPIRY_WEEKDAY.get(exchange, -1)
-    pre_wd = PRE_EXPIRY_WEEKDAY.get(exchange, -1)
+    # Canonical expiry: the first scheduled expiry day on or after d
+    canonical_expiry = next_scheduled_expiry(exchange, d)
+    if canonical_expiry is None:   # no calendar for this exchange (e.g. MCX)
+        return "normal"
 
     if market_dates:
-        # Find the canonical expiry day of the same week
-        days_to_exp = (exp_wd - wd) % 7
-        canonical_expiry = d + timedelta(days=days_to_exp)
         canonical_str = canonical_expiry.strftime("%Y-%m-%d")
 
         # Only apply holiday-shift logic if the canonical expiry is in the past
@@ -138,7 +138,7 @@ def classify_day(d: date, exchange: str, market_dates: set = None) -> str:
             if d == pre_shifted:
                 return "pre_expiry"
         else:
-            if wd == exp_wd:
+            if d == canonical_expiry:
                 return "expiry"
             # Pre-expiry = closest trading day before canonical expiry
             pre = canonical_expiry - timedelta(days=1)
@@ -147,10 +147,10 @@ def classify_day(d: date, exchange: str, market_dates: set = None) -> str:
             if d == pre:
                 return "pre_expiry"
     else:
-        # Simple weekday rule (no holiday awareness)
-        if wd == exp_wd:
+        # Simple weekday rule (no holiday awareness): pre-expiry = the day before
+        if d == canonical_expiry:
             return "expiry"
-        if wd == pre_wd:
+        if is_scheduled_expiry(exchange, d + timedelta(days=1)):
             return "pre_expiry"
 
     return "normal"

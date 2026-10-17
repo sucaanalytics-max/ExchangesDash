@@ -24,6 +24,9 @@ jobs:
       - name: Take rates match between Python and /api/revenue
         run: python scripts/check_take_rates.py
 
+      - name: Expiry calendar matches between Python and the dashboard
+        run: python scripts/check_expiry_calendar.py
+
       - name: Python scripts compile
         run: python -m py_compile scripts/*.py
 

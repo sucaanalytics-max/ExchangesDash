@@ -537,49 +537,191 @@ def _next_quarter(quarter_name):
     return f"Q{q_num + 1} FY {fy_year}"
 
 
-def compute_predicted_quarters(pnl_predictor, pnl_history, quarterly):
-    """Build the pnl_predicted_quarters dict using live predictor + historical cost ratios.
+# ── NSE P&L definitions ──
+# Checked against every actual nse_pnl quarter: total_revenue is exactly the sum
+# of the operating and non-operating revenue lines below, and total_expense is
+# exactly the sum of all expense lines INCLUDING depreciation and
+# sebi_settlement. The stored `ebitda` column is total_revenue − total_expense:
+# after depreciation and including non-operating income, so it is not EBITDA.
+# pbt = that + share_profit_associates + profit_sale_investment +
+# discontinued_operations (Q3 FY 2026 is ₹126 Cr below that sum: an item no
+# column captures; it is reported below as unreconciled_pbt_gap).
+PNL_OPERATING_REVENUE = (
+    "transaction_rev", "listing_income", "data_centre", "data_feed",
+    "index_licensing", "clearing_settlement", "operating_investment", "other_operating",
+)
+PNL_NON_OPERATING_INCOME = ("investment_income", "other_non_operating")
+# Non-recurring items inside total_expense: shown on the reported basis for
+# actual quarters (and footnoted), left out of the forecast ratios.
+PNL_ONE_OFF_EXPENSES = ("sebi_settlement",)
+# Non-recurring items between EBITDA and PBT; forecasts never include them.
+PNL_EXCEPTIONAL_ITEMS = ("profit_sale_investment", "discontinued_operations")
+# A base quarter whose one-offs exceed this share of PBT is skipped for the tax
+# rate: nse_pnl does not report the tax effect of a one-off (Q2 FY 2026, with the
+# ₹1,297 Cr settlement and a ₹1,201 Cr investment gain, shows a 31 % rate).
+ONE_OFF_TAX_MATERIALITY = 0.10
+EBITDA_DEFINITION = ("Operating EBITDA = revenue from operations − operating expenses, "
+                     "before depreciation, excluding other (non-operating) income.")
 
-    Returns a dict with two entries:
-      - current quarter (label "CURRENT" in the dashboard)
-      - next quarter (YoY-growth projection)
-    Both are derived from pnl_predictor values with cost ratios inferred from
-    the most recent 2 actual (non-predicted) historical P&L quarters.
+
+def _pnl_num(row, key):
+    v = row.get(key)
+    return float(v) if v is not None else 0.0
+
+
+def _pnl_has_revenue_split(row):
+    """Manual forecast rows leave the non-operating lines empty and put all
+    non-transaction revenue in operating_investment, so operating revenue
+    cannot be separated from other income there."""
+    return all(row.get(k) is not None for k in PNL_NON_OPERATING_INCOME)
+
+
+def pnl_operating_view(row):
+    """Operating EBITDA for one nse_pnl row, on the reported basis (any one-off
+    in that quarter included), with the one-offs listed for footnotes."""
+    dep = _pnl_num(row, "depreciation")
+    op_exp = _pnl_num(row, "total_expense") - dep
+    one_offs = {k: round(_pnl_num(row, k), 2) for k in PNL_ONE_OFF_EXPENSES if _pnl_num(row, k)}
+    reported_pre_items = _pnl_num(row, "total_revenue") - _pnl_num(row, "total_expense")
+    exceptional = {k: round(_pnl_num(row, k), 2) for k in PNL_EXCEPTIONAL_ITEMS if _pnl_num(row, k)}
+    gap = _pnl_num(row, "pbt") - (reported_pre_items + _pnl_num(row, "share_profit_associates")
+                                  + sum(_pnl_num(row, k) for k in PNL_EXCEPTIONAL_ITEMS))
+    if row.get("pbt") is not None and abs(gap) >= 0.5:
+        exceptional["unreconciled_pbt_gap"] = round(gap, 2)
+    view = {
+        "quarter": row.get("quarter"),
+        "is_predicted": bool(row.get("is_predicted")),
+        "revenue_split_available": _pnl_has_revenue_split(row),
+        "operating_revenue": None,
+        "non_operating_income": None,
+        "operating_expenses": round(op_exp, 2),
+        "depreciation": round(dep, 2),
+        "operating_ebitda": None,
+        "operating_ebitda_margin": None,
+        "one_offs": one_offs,
+        "operating_ebitda_ex_one_offs": None,
+        "operating_ebitda_margin_ex_one_offs": None,
+        "exceptional_items": exceptional,
+    }
+    if view["revenue_split_available"]:
+        op_rev = sum(_pnl_num(row, k) for k in PNL_OPERATING_REVENUE)
+        ebitda = op_rev - op_exp
+        ebitda_ex = ebitda + sum(one_offs.values())
+        view.update({
+            "operating_revenue": round(op_rev, 2),
+            "non_operating_income": round(sum(_pnl_num(row, k) for k in PNL_NON_OPERATING_INCOME), 2),
+            "operating_ebitda": round(ebitda, 2),
+            "operating_ebitda_margin": round(ebitda / op_rev, 4) if op_rev else None,
+            "operating_ebitda_ex_one_offs": round(ebitda_ex, 2),
+            "operating_ebitda_margin_ex_one_offs": round(ebitda_ex / op_rev, 4) if op_rev else None,
+        })
+    return view
+
+
+def nse_ratio_model(pnl_history):
+    """Assumptions of the default NSE forecast (the "ratio model"): ratios from
+    the last two actual nse_pnl quarters, with one-off items removed.
+
+    Revenue lines are ratios to transaction revenue, costs ratios to operating
+    revenue; associates' share is the average ₹ Cr amount; the tax rate skips a
+    base quarter whose one-offs are material (falls back to both if all are)."""
+    base = [r for r in (pnl_history or [])
+            if not r.get("is_predicted") and _pnl_has_revenue_split(r)
+            and _pnl_num(r, "transaction_rev") > 0][-2:]
+    if not base:
+        return None
+
+    def mean(vals):
+        vals = [v for v in vals if v is not None]
+        return sum(vals) / len(vals) if vals else None
+
+    per_q = []
+    for r in base:
+        v = pnl_operating_view(r)
+        txn, op_rev, pbt, pat = (_pnl_num(r, "transaction_rev"), v["operating_revenue"],
+                                 _pnl_num(r, "pbt"), _pnl_num(r, "pat"))
+        one_off = sum(v["one_offs"].values())
+        items = abs(one_off) + sum(abs(x) for x in v["exceptional_items"].values())
+        per_q.append({
+            "quarter": r.get("quarter"),
+            "one_offs": v["one_offs"],
+            "other_operating_revenue_ratio": (op_rev - txn) / txn,
+            "non_operating_income_ratio": v["non_operating_income"] / txn,
+            "operating_expense_ratio": (v["operating_expenses"] - one_off) / op_rev if op_rev else None,
+            "depreciation_ratio": v["depreciation"] / op_rev if op_rev else None,
+            "share_profit_associates": _pnl_num(r, "share_profit_associates"),
+            "tax_rate": _pnl_num(r, "income_tax") / pbt if pbt > 0 else None,
+            "material_one_offs": pbt <= 0 or items > ONE_OFF_TAX_MATERIALITY * pbt,
+            "eps_per_pat": _pnl_num(r, "eps") / pat if pat else None,
+        })
+
+    tax_q = [q for q in per_q if not q["material_one_offs"] and q["tax_rate"] is not None] \
+        or [q for q in per_q if q["tax_rate"] is not None]
+    model = {k: mean(q[k] for q in per_q) for k in (
+        "other_operating_revenue_ratio", "non_operating_income_ratio", "operating_expense_ratio",
+        "depreciation_ratio", "share_profit_associates", "eps_per_pat")}
+    model["tax_rate"] = mean(q["tax_rate"] for q in tax_q)
+    if any(v is None for v in model.values()):
+        return None
+    return {
+        "name": "ratio",
+        "label": "Default forecast — ratio model",
+        "ebitda_definition": EBITDA_DEFINITION,
+        "base_quarters": [q["quarter"] for q in per_q],
+        "one_offs_excluded": {q["quarter"]: q["one_offs"] for q in per_q if q["one_offs"]},
+        "tax_rate_quarters": [q["quarter"] for q in tax_q],
+        **model,
+    }
+
+
+def compute_predicted_quarters(pnl_predictor, pnl_history, quarterly):
+    """Build the pnl_predicted_quarters dict: the default NSE forecast (ratio
+    model, see nse_ratio_model) for
+
+      - the current quarter (label "CURRENT" in the dashboard), from the
+        transaction revenue extrapolated by pnl_predictor
+      - the next quarter, that transaction revenue grown at the current
+        quarter's YoY per-day rate
+
+    EBITDA is operating EBITDA (EBITDA_DEFINITION); forecasts carry no one-offs.
     """
     if not pnl_predictor or not pnl_history:
         return {}
-
-    actual_pnl = [p for p in pnl_history if not p.get("is_predicted")]
-    if not actual_pnl:
+    m = nse_ratio_model(pnl_history)
+    if not m:
         return {}
 
-    recent = actual_pnl[-2:] if len(actual_pnl) >= 2 else actual_pnl
-
-    def avg_ratio(num_key, den_key):
-        vals = [float(q[num_key]) / float(q[den_key])
-                for q in recent
-                if q.get(num_key) is not None and float(q.get(den_key, 0) or 0) > 0]
-        return sum(vals) / len(vals) if vals else None
-
-    exp_ratio     = avg_ratio("total_expense", "total_revenue") or 0.25
-    pat_ratio     = avg_ratio("pat",           "total_revenue") or 0.567
-    eps_pat_ratio = avg_ratio("eps",           "pat")           or 0.004
-
-    def build_entry(txn_rev, total_rev):
-        pat           = total_rev * pat_ratio
-        total_expense = total_rev * exp_ratio
-        ebitda        = total_rev - total_expense
-        ebitda_margin = ebitda / total_rev if total_rev else 0
-        eps           = pat * eps_pat_ratio
+    def build_entry(txn_rev):
+        op_rev  = txn_rev * (1 + m["other_operating_revenue_ratio"])
+        non_op  = txn_rev * m["non_operating_income_ratio"]
+        total   = op_rev + non_op
+        op_exp  = op_rev * m["operating_expense_ratio"]
+        ebitda  = op_rev - op_exp
+        dep     = op_rev * m["depreciation_ratio"]
+        pbt     = ebitda - dep + non_op + m["share_profit_associates"]
+        tax     = pbt * m["tax_rate"]
+        pat     = pbt - tax
+        margin  = round(ebitda / op_rev, 4) if op_rev else 0
         return {
-            "transaction_rev": round(txn_rev, 2),
-            "total_revenue":   round(total_rev, 2),
-            "total_expense":   round(total_expense, 2),
-            "ebitda":          round(ebitda, 2),
-            "ebitda_margin":   round(ebitda_margin, 4),
-            "pat":             round(pat, 2),
-            "pat_margin":      round(pat / total_rev, 4) if total_rev else 0,
-            "eps":             round(eps, 2),
+            "transaction_rev":         round(txn_rev, 2),
+            "operating_revenue":       round(op_rev, 2),
+            "non_operating_income":    round(non_op, 2),
+            "total_revenue":           round(total, 2),
+            "operating_expenses":      round(op_exp, 2),
+            "depreciation":            round(dep, 2),
+            "total_expense":           round(op_exp + dep, 2),
+            "operating_ebitda":        round(ebitda, 2),
+            "operating_ebitda_margin": margin,
+            # Legacy keys, same operating definition.
+            "ebitda":                  round(ebitda, 2),
+            "ebitda_margin":           margin,
+            "share_profit_associates": round(m["share_profit_associates"], 2),
+            "pbt":                     round(pbt, 2),
+            "income_tax":              round(tax, 2),
+            "pat":                     round(pat, 2),
+            "pat_margin":              round(pat / total, 4) if total else 0,
+            "eps":                     round(pat * m["eps_per_pat"], 2),
+            "one_offs":                {},
         }
 
     result = {}
@@ -587,10 +729,7 @@ def compute_predicted_quarters(pnl_predictor, pnl_history, quarterly):
     # Current quarter: from live trading data via pnl_predictor. Named from the
     # data (latest quarter with trading days), not the wall clock.
     cq_name = quarterly[-1]["quarter"] if quarterly else date_to_fy_quarter(datetime.now())
-    result[cq_name] = build_entry(
-        pnl_predictor["transaction_rev_extrapolated"],
-        pnl_predictor["total_revenue_predicted"],
-    )
+    result[cq_name] = build_entry(pnl_predictor["transaction_rev_extrapolated"])
 
     # Next quarter: YoY-growth projection
     nq_name = _next_quarter(cq_name)
@@ -612,9 +751,7 @@ def compute_predicted_quarters(pnl_predictor, pnl_history, quarterly):
     else:
         yoy_growth = 0.10
 
-    next_total_rev = pnl_predictor["total_revenue_predicted"] * (1 + yoy_growth)
-    next_txn_rev   = next_total_rev / (1 + float(pnl_predictor.get("other_income_ratio", 0.47)))
-    result[nq_name] = build_entry(next_txn_rev, next_total_rev)
+    result[nq_name] = build_entry(pnl_predictor["transaction_rev_extrapolated"] * (1 + yoy_growth))
 
     return result
 
@@ -627,24 +764,25 @@ def compute_enriched(daily, quarterly, pnl):
         "seg_cash":      seg_summary(daily, "cash_rev"),
     }
 
+    model = nse_ratio_model(pnl)
     cq = quarterly[-1] if quarterly else None
     if cq and pnl:
-        actual_pnl = [p for p in pnl if not p.get("is_predicted")]
-        last_pnl = actual_pnl[-1] if actual_pnl else None
         days_so_far = cq["days"]
         expected_days = 62
         daily_avg = float(cq["total_rev"]) / max(days_so_far, 1)
+        # All non-transaction revenue (other operating revenue + non-operating
+        # income) per ₹ of transaction revenue, from the ratio model.
         other_income_ratio = 0.4714
-        if last_pnl and float(last_pnl.get("transaction_rev", 0) or 0) > 0:
-            other_income_ratio = (float(last_pnl.get("total_revenue", 0)) - float(last_pnl.get("transaction_rev", 0))) / float(last_pnl["transaction_rev"])
-        txn_rev_extrap = daily_avg * expected_days
+        if model:
+            other_income_ratio = model["other_operating_revenue_ratio"] + model["non_operating_income_ratio"]
+        txn_rev_extrap = round(daily_avg * expected_days, 2)
         total_rev_pred = txn_rev_extrap * (1 + other_income_ratio)
         enriched["pnl_predictor"] = {
             "quarter": cq["quarter"],
             "daily_avg_rev": round(daily_avg, 4),
             "trading_days_so_far": days_so_far,
             "expected_trading_days": expected_days,
-            "transaction_rev_extrapolated": round(txn_rev_extrap, 2),
+            "transaction_rev_extrapolated": txn_rev_extrap,
             "other_income_ratio": round(other_income_ratio, 4),
             "total_revenue_predicted": round(total_rev_pred, 2),
         }
@@ -654,11 +792,17 @@ def compute_enriched(daily, quarterly, pnl):
     enriched["pnl_predicted_quarters"] = compute_predicted_quarters(
         enriched.get("pnl_predictor"), pnl, quarterly
     )
-    # One PAT figure: the current quarter's row of the predicted P&L, which uses
-    # cost ratios from the latest actual quarters (was a hardcoded 0.567).
+    # One PAT/EPS figure: the current quarter's row of the default forecast.
     cq_pred = enriched["pnl_predicted_quarters"].get(cq["quarter"]) if cq else None
     if cq_pred:
         enriched["pnl_predictor"]["pat_predicted"] = cq_pred["pat"]
+        enriched["pnl_predictor"]["eps_predicted"] = cq_pred["eps"]
+    enriched["pnl_forecast_model"] = {
+        k: (round(v, 6) if isinstance(v, float) else v) for k, v in model.items()
+    } if model else {}
+    # Operating EBITDA for every nse_pnl row (actuals on the reported basis, with
+    # one-offs listed; manual forecast rows have no revenue split -> None).
+    enriched["pnl_operating"] = [pnl_operating_view(r) for r in (pnl or [])]
     return enriched
 
 
