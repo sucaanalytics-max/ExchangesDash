@@ -2,7 +2,7 @@
 NSE Live Market Poller — GitHub Actions script
 Fetches live turnover from NSE's homepage Next.js API (getMarketTurnoverSummary),
 computes exchange revenue, writes dashboard/data/nse_live.json,
-and stores snapshots in Supabase nse_live_snapshots.
+and stores each intraday sample in Supabase live_samples (live_common).
 
 Primary API (same source as NSE website live widget):
   /api/NextApi/apiClient?functionName=getMarketTurnoverSummary
@@ -13,7 +13,8 @@ Fallback (for history / when primary is empty):
   /api/historicalOR/cm/tbg/daily?month=Apr&year=26
 
 Run: python scripts/nse_live_poller.py
-Env: SUPABASE_URL, SUPABASE_KEY  (optional — writes JSON regardless)
+Env: SUPABASE_URL, SUPABASE_KEY  (optional — each sample is also stored in
+     Supabase live_samples, see live_common.store_live_sample)
 """
 
 import json
@@ -267,33 +268,6 @@ def _fetch_historical_month(session):
 
 
 # ---------------------------------------------------------------------------
-# Supabase
-# ---------------------------------------------------------------------------
-
-def get_supabase():
-    url = os.environ.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_KEY", "")
-    if not url or not key:
-        print("WARNING: SUPABASE_URL / SUPABASE_KEY not set — skipping Supabase writes")
-        return None
-    from supabase import create_client
-    return create_client(url, key)
-
-
-def supabase_upsert(sb, ts_iso, market_status, revenue):
-    try:
-        sb.table("nse_live_snapshots").insert({
-            "captured_at":   ts_iso,
-            "market_status": market_status,
-            "raw_turnover":  None,
-            "revenue":       revenue,
-            "has_data":      bool(revenue and revenue.get("has_data")),
-        }).execute()
-        print("Supabase insert OK")
-    except Exception as e:
-        print(f"Supabase insert ERROR: {e}")
-
-
 # save_hourly_snapshot imported from live_common (handles archiving + prediction)
 
 
@@ -382,11 +356,6 @@ def main():
     # ── 5. Hourly snapshot + archive ──
     if revenue and not revenue.get("stale_since"):
         save_hourly_snapshot(revenue, now_ist, HOURLY_FILE, HISTORY_FILE, exchange="nse")
-
-    # ── 7. Supabase ──
-    sb = get_supabase()
-    if sb:
-        supabase_upsert(sb, ts_iso, market_status, revenue)
 
     # ── 7b. NSE's own share price ──
     print("Stock price:")

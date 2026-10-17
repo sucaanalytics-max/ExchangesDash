@@ -18,7 +18,8 @@ Revenue take rates (both-side transaction charge):
   Futures        : none          (see scripts/take_rates.py)
 
 Run: python scripts/bse_live_poller.py
-Env: SUPABASE_URL, SUPABASE_KEY  (optional)
+Env: SUPABASE_URL, SUPABASE_KEY  (optional — each sample is also stored in
+     Supabase live_samples, see live_common.store_live_sample)
 """
 
 import json

@@ -45,6 +45,11 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run BSE live poller
+        # Each sample is also upserted into Supabase live_samples once the table
+        # exists (live_samples_schema.sql) and ENABLE_LIVE_SAMPLES is 'true'.
+        env:
+          SUPABASE_URL: ${{ vars.ENABLE_LIVE_SAMPLES == 'true' && secrets.SUPABASE_URL || '' }}
+          SUPABASE_KEY: ${{ vars.ENABLE_LIVE_SAMPLES == 'true' && secrets.SUPABASE_SERVICE_KEY || '' }}
         run: python scripts/bse_live_poller.py
 
       - name: Commit data files

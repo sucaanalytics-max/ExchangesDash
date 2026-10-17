@@ -58,8 +58,11 @@ Live file: dashboard/data/{exchange}_live_hourly.json
 """
 
 import json
+import os
 import re
-from datetime import date, datetime, timedelta
+import urllib.error
+import urllib.request
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from expiry_calendar import is_scheduled_expiry, next_scheduled_expiry
@@ -478,7 +481,7 @@ def save_hourly_snapshot(revenue, now_ist, hourly_file: Path, history_file: Path
     pred, method = predict_eod_live(elapsed, total_rev, history_file, day_type, weekday)
 
     samples = existing.get("samples", [])
-    samples.append({
+    sample = {
         "captured_ist":    now_ist.strftime("%Y-%m-%dT%H:%M:%S"),
         "elapsed_minutes": elapsed,
         "total_revenue":   total_rev,
@@ -487,11 +490,65 @@ def save_hourly_snapshot(revenue, now_ist, hourly_file: Path, history_file: Path
         "futures_revenue": round(float(revenue.get("futures_revenue")  or 0), 2),
         "predicted_eod":   pred,
         "pred_method":     method,
-    })
+    }
+    samples.append(sample)
     samples.sort(key=lambda s: s["elapsed_minutes"])
     existing["samples"] = samples
 
     hourly_file.parent.mkdir(parents=True, exist_ok=True)
     hourly_file.write_text(json.dumps(existing, indent=2))
+    store_live_sample(exchange, today_str, day_type, sample, revenue, now_ist)
     print(f"  [{WEEKDAY_NAMES[weekday]}/{day_type}] +{elapsed}min — "
           f"₹{total_rev} Cr, pred EOD ₹{pred} Cr [{method}]")
+
+
+# ---------------------------------------------------------------------------
+# Public: durable copy of each sample in Supabase (live_samples)
+# ---------------------------------------------------------------------------
+
+LIVE_SAMPLE_FIELDS = ("total_revenue", "cash_revenue", "options_revenue",
+                      "futures_revenue", "predicted_eod", "pred_method")
+
+
+def live_sample_row(exchange, trade_date, day_type, sample, revenue, now_ist):
+    """The live_samples row for one poll (see live_samples_schema.sql)."""
+    captured = now_ist.replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    row = {
+        "exchange":        exchange,
+        "trade_date":      trade_date,
+        "elapsed_minutes": sample["elapsed_minutes"],
+        "captured_at":     captured.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "day_type":        day_type,
+        "raw":             revenue,
+    }
+    row.update({k: sample.get(k) for k in LIVE_SAMPLE_FIELDS})
+    return row
+
+
+def store_live_sample(exchange, trade_date, day_type, sample, revenue, now_ist):
+    """Upsert this poll into Supabase live_samples, keyed on (exchange,
+    trade_date, elapsed_minutes) so a retried poll overwrites itself. Runs only
+    when the workflow passes SUPABASE_URL / SUPABASE_KEY (repository variable
+    ENABLE_LIVE_SAMPLES). Never raises: the JSON files stay the source of truth
+    until the dashboard reads from Supabase."""
+    url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    key = os.environ.get("SUPABASE_KEY", "")
+    if not url or not key:
+        return False
+    row = live_sample_row(exchange, trade_date, day_type, sample, revenue, now_ist)
+    req = urllib.request.Request(
+        f"{url}/rest/v1/live_samples?on_conflict=exchange,trade_date,elapsed_minutes",
+        data=json.dumps(row, allow_nan=False).encode(),
+        method="POST",
+        headers={"apikey": key, "Authorization": f"Bearer {key}",
+                 "Content-Type": "application/json",
+                 "Prefer": "resolution=merge-duplicates,return=minimal"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            ok = 200 <= resp.status < 300
+    except (urllib.error.URLError, ValueError, OSError) as e:
+        detail = e.read().decode(errors="replace")[:200] if isinstance(e, urllib.error.HTTPError) else ""
+        print(f"  live_samples: write FAILED ({e}) {detail}")
+        return False
+    print(f"  live_samples: {'stored' if ok else 'unexpected status'} {exchange} {trade_date} +{row['elapsed_minutes']}min")
+    return ok
