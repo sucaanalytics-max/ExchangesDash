@@ -105,38 +105,54 @@ def _drive_item_url():
     return f"{GRAPH_BASE}/users/{ONEDRIVE_USER}/drive/root:{EXCEL_FILE_PATH}:"
 
 
+class ExcelChanged(Exception):
+    """The workbook changed on OneDrive between download and upload."""
+
+
 def download_excel(token):
-    """Download the Excel file from OneDrive. Returns bytes or None if not found."""
-    url = f"{_drive_item_url()}/content"
-    resp = requests.get(url, headers=_graph_headers(token), timeout=60)
-    if resp.status_code == 200:
-        print(f"Downloaded existing Excel ({len(resp.content)} bytes).")
-        return resp.content
-    if resp.status_code == 404:
+    """Download the Excel file from OneDrive. Returns (bytes, eTag), or
+    (None, None) if the file does not exist yet. The eTag is read first, so a
+    concurrent edit makes the upload's If-Match fail rather than be lost."""
+    meta = requests.get(_drive_item_url(), headers=_graph_headers(token), timeout=60)
+    if meta.status_code == 404:
         print("Excel file not found on OneDrive -- will create a new one.")
-        return None
+        return None, None
+    if meta.status_code != 200:
+        print(f"ERROR: Metadata request failed ({meta.status_code}): {meta.text}")
+        sys.exit(1)
+    etag = meta.json().get("eTag")
+    resp = requests.get(f"{_drive_item_url()}/content", headers=_graph_headers(token), timeout=60)
+    if resp.status_code == 200:
+        print(f"Downloaded existing Excel ({len(resp.content)} bytes, eTag {etag}).")
+        return resp.content, etag
     print(f"ERROR: Download failed ({resp.status_code}): {resp.text}")
     sys.exit(1)
 
 
-def upload_excel(token, file_bytes, retry=True):
-    """Upload (create or replace) the Excel file on OneDrive."""
+def upload_excel(token, file_bytes, etag=None, retry=True):
+    """Upload (create or replace) the Excel file on OneDrive. With `etag`, the
+    replace only succeeds if the file is still the version downloaded
+    (If-Match); otherwise ExcelChanged is raised and nothing is overwritten.
+    A new file is created with If-None-Match: * for the same reason."""
     url = f"{_drive_item_url()}/content"
     headers = {**_graph_headers(token), "Content-Type": "application/octet-stream"}
+    headers["If-Match" if etag else "If-None-Match"] = etag or "*"
     resp = requests.put(url, headers=headers, data=file_bytes, timeout=60)
     if resp.status_code in (200, 201):
         print(f"Uploaded Excel ({len(file_bytes)} bytes) to OneDrive.")
         return
+    if resp.status_code == 412:
+        raise ExcelChanged("the workbook changed on OneDrive since it was downloaded")
     if resp.status_code == 429 and retry:
         wait = int(resp.headers.get("Retry-After", 5))
         print(f"Rate limited -- waiting {wait}s before retry...")
         time.sleep(wait)
-        return upload_excel(token, file_bytes, retry=False)
+        return upload_excel(token, file_bytes, etag, retry=False)
     print(f"ERROR: Upload failed ({resp.status_code}): {resp.text}")
     if retry:
         print("Retrying upload in 2s...")
         time.sleep(2)
-        return upload_excel(token, file_bytes, retry=False)
+        return upload_excel(token, file_bytes, etag, retry=False)
     sys.exit(1)
 
 
@@ -256,14 +272,7 @@ def main():
     # 1. Authenticate with Microsoft Graph
     token = get_graph_token()
 
-    # 2. Download existing Excel or create new
-    content = download_excel(token)
-    if content:
-        wb = load_workbook(io.BytesIO(content))
-    else:
-        wb = create_new_workbook()
-
-    # 3. Fetch all daily records from Supabase
+    # 2. Fetch all daily records from Supabase
     print("Connecting to Supabase...")
     supabase = get_supabase_client()
 
@@ -274,6 +283,22 @@ def main():
     print("Fetching BSE daily records...")
     bse_records = fetch_all_daily(supabase, "bse_daily")
     print(f"  Fetched {len(bse_records)} BSE records from Supabase.")
+
+    # 3–5. Download, append, upload. If someone edits the workbook in between,
+    # the If-Match upload is refused; start again from their version once.
+    for attempt in (1, 2):
+        try:
+            return sync_workbook(token, nse_records, bse_records)
+        except ExcelChanged as e:
+            if attempt == 2:
+                print(f"ERROR: {e}, twice -- not overwriting; re-run the sync.")
+                sys.exit(1)
+            print(f"{e} -- downloading it again and re-applying the new rows.")
+
+
+def sync_workbook(token, nse_records, bse_records):
+    content, etag = download_excel(token)
+    wb = load_workbook(io.BytesIO(content)) if content else create_new_workbook()
 
     # 4. Append new rows to each sheet
     ws_nse = ensure_sheet(wb, "NSE Daily", NSE_COLUMNS)
@@ -291,7 +316,7 @@ def main():
 
     buf = io.BytesIO()
     wb.save(buf)
-    upload_excel(token, buf.getvalue())
+    upload_excel(token, buf.getvalue(), etag)
 
     print(f"Done. Synced {nse_added + bse_added} new rows to OneDrive.")
 

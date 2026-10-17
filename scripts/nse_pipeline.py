@@ -26,6 +26,9 @@ except ImportError:
 # ── Config ──
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+# Tags the rows this pipeline writes (column pipeline_source, see
+# supabase_cutover.sql) so two writers can be told apart. Unset = no tag.
+PIPELINE_SOURCE = os.environ.get("PIPELINE_SOURCE", "").strip()
 
 SCRIPT_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent
@@ -281,7 +284,8 @@ def upsert_daily_records(supabase, records):
     # Upsert in batches of 50
     inserted = 0
     for i in range(0, len(clean), 50):
-        batch = clean[i:i+50]
+        batch = [dict(r, pipeline_source=PIPELINE_SOURCE) if PIPELINE_SOURCE else r
+                 for r in clean[i:i+50]]
         supabase.table("nse_daily").upsert(batch, on_conflict="date").execute()
         inserted += len(batch)
 
@@ -343,7 +347,7 @@ def log_pipeline_run(supabase, new_days, latest_date, status="success", details=
         "latest_date": latest_date,
         "status": status,
         "details": details,
-        "source": "github_actions"
+        "source": PIPELINE_SOURCE or "github_actions"
     }).execute()
 
 

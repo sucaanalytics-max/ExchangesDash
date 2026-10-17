@@ -27,6 +27,9 @@ except ImportError:
 # ── Config ──
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+# Tags the rows this pipeline writes (column pipeline_source, see
+# supabase_cutover.sql) so two writers can be told apart. Unset = no tag.
+PIPELINE_SOURCE = os.environ.get("PIPELINE_SOURCE", "").strip()
 
 SCRIPT_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent
@@ -146,8 +149,10 @@ def fetch_bse_fo_data():
         return None
 
 
-def fetch_bse_cash_data():
-    """Fetch BSE Cash/Equity market daily data via REST JSON API."""
+def fetch_bse_cash_data(extra_dates=()):
+    """Fetch BSE Cash/Equity market daily data via REST JSON API: the months
+    covering the last 45 days, plus the months of `extra_dates` (stored days
+    whose cash figure is still missing, so they can be corrected)."""
     session = _make_bse_session()
 
     # Warm up with the equity page for correct origin cookies
@@ -180,6 +185,9 @@ def fetch_bse_cash_data():
         cur += timedelta(days=28)
     fy = end_dt.year if end_dt.month >= 4 else end_dt.year - 1
     months_to_fetch.add((fy, end_dt.month))
+    for d in extra_dates:
+        dt = datetime.strptime(d, "%Y-%m-%d")
+        months_to_fetch.add((dt.year if dt.month >= 4 else dt.year - 1, dt.month))
 
     all_rows = []
     cash_errors = 0
@@ -401,13 +409,63 @@ def get_existing_dates(supabase):
     result = supabase.table("bse_daily").select("date").execute()
     return {row["date"] for row in result.data}
 
-def fetch_zero_fo_dates(supabase):
-    """Get dates that exist in DB but have zero F&O revenue (data-posting lag)."""
+# ── Incomplete days ─────────────────────────────────────────────────────────
+# BSE posts the derivatives and the cash files separately. A day stored with
+# one of them missing used to stay that way: only zero-F&O days were ever
+# re-fetched, so a day whose cash had not posted kept cash_rev = 0 for good
+# (2026-06-15 and 2026-09-08). Recent days without cash are now held back,
+# and stored days missing either part are corrected when it appears.
+CASH_HOLD_BACK_DAYS = 7   # older than this, store the F&O day and correct cash later
+
+
+def missing_parts(row):
+    """'fo' for a cash-only day, 'cash' for an F&O day with no cash, else None."""
+    if not float(row.get("fo_rev") or 0):
+        return "fo"
+    if not float(row.get("cash_rev") or 0):
+        return "cash"
+    return None
+
+
+def zero_cash_dates(rows):
+    """Stored F&O days whose cash figure is missing."""
+    return sorted(r["date"] for r in rows if missing_parts(r) == "cash")
+
+
+def hold_back_missing_cash(new_parsed, cash_dates, today):
+    """Drop recent F&O days whose cash file has not posted yet; they are
+    stored on a later run. Older ones are kept (cash corrected later)."""
+    kept, held = [], []
+    for r in new_parsed:
+        recent = (today - datetime.strptime(r["date"], "%Y-%m-%d")).days <= CASH_HOLD_BACK_DAYS
+        if float(r.get("fo_rev") or 0) and r["date"] not in cash_dates and recent:
+            held.append(r["date"])
+        else:
+            kept.append(r)
+    if held:
+        print(f"WARNING: holding back {sorted(held)}: F&O posted but cash not yet — stored once BSE publishes it")
+    return kept
+
+
+def corrections(existing_rows, new_parsed):
+    """Dates already stored with a missing part that the fresh fetch now has."""
+    by_date = {r["date"]: missing_parts(r) for r in existing_rows}
+    out = set()
+    for r in new_parsed:
+        gap = by_date.get(r["date"])
+        if gap and missing_parts(r) is None:
+            out.add(r["date"])
+    return out
+
+
+def fetch_incomplete_rows(supabase):
+    """Stored rows missing their F&O or their cash part."""
     result = (supabase.table("bse_daily")
-              .select("date")
-              .eq("fo_rev", 0)
+              .select("date, fo_rev, cash_rev")
+              .or_("fo_rev.eq.0,cash_rev.eq.0")
               .execute())
-    return {row["date"] for row in result.data}
+    return result.data
+
 
 def upsert_daily_records(supabase, records):
     """Upsert parsed daily records into Supabase."""
@@ -416,7 +474,8 @@ def upsert_daily_records(supabase, records):
     clean = [{k: v for k, v in r.items() if k != "_dt"} for r in records]
     inserted = 0
     for i in range(0, len(clean), 50):
-        batch = clean[i:i+50]
+        batch = [dict(r, pipeline_source=PIPELINE_SOURCE) if PIPELINE_SOURCE else r
+                 for r in clean[i:i+50]]
         supabase.table("bse_daily").upsert(batch, on_conflict="date").execute()
         inserted += len(batch)
     return inserted
@@ -454,7 +513,7 @@ def log_pipeline_run(supabase, new_days, latest_date, status="success", details=
         "latest_date": latest_date,
         "status": status,
         "details": details,
-        "source": "github_actions"
+        "source": PIPELINE_SOURCE or "github_actions"
     }).execute()
 
 
@@ -752,9 +811,23 @@ def main():
     print(f"Run time: {datetime.utcnow().isoformat()}Z")
     print("=" * 60)
 
+    # Step 0: stored days still missing their cash figure (their months are
+    # re-fetched below so they can be corrected)
+    supabase = get_supabase_client() if SUPABASE_URL and SUPABASE_KEY else None
+    if supabase:
+        incomplete = fetch_incomplete_rows(supabase)
+    else:
+        existing_path = DATA_DIR / "bse_dashboard_data.json"
+        existing_doc = json.loads(existing_path.read_text()) if existing_path.exists() else {}
+        incomplete = trading_calendar.merge_special(
+            existing_doc.get("daily_all", []), existing_doc.get("special_sessions"))
+    refetch = zero_cash_dates(incomplete)
+    if refetch:
+        print(f"Stored days missing cash, re-fetching their months: {refetch}")
+
     # Step 1: Fetch from BSE
     fo_rows = fetch_bse_fo_data()
-    cash_rows = fetch_bse_cash_data()
+    cash_rows = fetch_bse_cash_data(refetch)
 
     if fo_rows is None or cash_rows is None:
         # Fail the run (red in Actions) instead of exiting green with stale data
@@ -776,6 +849,7 @@ def main():
             continue
 
     new_parsed = []
+    cash_dates = set(cash_by_date)
     for rec in fo_rows:
         try:
             parsed = parse_fo_record(rec)
@@ -826,6 +900,7 @@ def main():
               f"{len(cash_rows)} record(s). Likely a data-posting delay — "
               "re-run pipeline after BSE publishes F&O data.")
 
+    new_parsed = hold_back_missing_cash(new_parsed, cash_dates, datetime.now())
     print(f"Parsed {len(new_parsed)} records from BSE")
 
     # Known BSE trading holidays whose data must never enter the DB.
@@ -837,12 +912,9 @@ def main():
     # Step 3: Supabase operations
     to_insert = new_parsed  # default
     holidays_deleted = 0
-    if not SUPABASE_URL or not SUPABASE_KEY:
+    if not supabase:
         print("WARNING: Supabase credentials not set. Writing local files only.")
-        supabase = None
     else:
-        supabase = get_supabase_client()
-
         # One-time cleanup: remove any previously inserted holiday records
         for bad_date in BSE_HOLIDAY_EXCLUSIONS:
             result = supabase.table("bse_daily").delete().eq("date", bad_date).execute()
@@ -851,11 +923,11 @@ def main():
                 holidays_deleted += 1
 
         existing_dates = get_existing_dates(supabase)
-        zero_fo_dates = fetch_zero_fo_dates(supabase)
+        fixed = corrections(incomplete, new_parsed)
         to_insert = [r for r in new_parsed
-                     if r["date"] not in existing_dates or r["date"] in zero_fo_dates]
+                     if r["date"] not in existing_dates or r["date"] in fixed]
         print(f"Existing dates in DB: {len(existing_dates)}, "
-              f"Zero-F&O dates to re-upsert: {len(zero_fo_dates & {r['date'] for r in new_parsed})}, "
+              f"Incomplete dates now corrected: {sorted(fixed)}, "
               f"Records to upsert: {len(to_insert)}")
 
         if to_insert:
@@ -875,14 +947,12 @@ def main():
             all_daily = trading_calendar.merge_special(
                 existing.get("daily_all", []), existing.get("special_sessions"))
             existing_dates_local = {d["date"] for d in all_daily}
-            # Dates previously recorded with no F&O data (cash-only fallback from a
-            # data-posting lag, see "Also handle cash-only dates" above) — if freshly
-            # fetched data now has F&O for that date, replace the stale record instead
-            # of skipping it forever. Mirrors fetch_zero_fo_dates() in the Supabase path.
-            zero_fo_dates_local = {d["date"] for d in all_daily if not d.get("fo_rev")}
-            correctable = {r["date"] for r in new_parsed if r["date"] in zero_fo_dates_local and r.get("fo_rev")}
+            # Stored days missing their F&O or cash part (posting lag) are
+            # replaced once the fresh fetch has both. Same rule as the
+            # Supabase path (corrections()).
+            correctable = corrections(all_daily, new_parsed)
             if correctable:
-                print(f"Correcting {len(correctable)} previously cash-only date(s) now that F&O data has posted: {sorted(correctable)}")
+                print(f"Correcting {len(correctable)} incomplete date(s) now that both parts have posted: {sorted(correctable)}")
                 all_daily = [d for d in all_daily if d["date"] not in correctable]
             new_local = [r for r in new_parsed if r["date"] not in existing_dates_local or r["date"] in correctable]
             all_daily = sorted(all_daily + new_local, key=lambda x: x["date"])

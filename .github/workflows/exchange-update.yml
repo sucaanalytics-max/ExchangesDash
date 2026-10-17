@@ -64,6 +64,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ vars.ENABLE_SUPABASE_WRITES == 'true' && secrets.SUPABASE_URL || '' }}
           SUPABASE_KEY: ${{ vars.ENABLE_SUPABASE_WRITES == 'true' && secrets.SUPABASE_SERVICE_KEY || '' }}
+          PIPELINE_SOURCE: ${{ vars.PIPELINE_SOURCE }}
         run: python scripts/nse_pipeline.py
 
       - name: Check if new data was added
@@ -128,6 +129,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ vars.ENABLE_SUPABASE_WRITES == 'true' && secrets.SUPABASE_URL || '' }}
           SUPABASE_KEY: ${{ vars.ENABLE_SUPABASE_WRITES == 'true' && secrets.SUPABASE_SERVICE_KEY || '' }}
+          PIPELINE_SOURCE: ${{ vars.PIPELINE_SOURCE }}
         run: python scripts/bse_pipeline.py
 
       - name: Check if new data was added
