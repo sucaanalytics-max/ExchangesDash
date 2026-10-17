@@ -3,6 +3,15 @@ MCX Pipeline — Daily Updater
 Reads MCX daily revenue from Supabase, recomputes all aggregates,
 writes mcx_dashboard_data.json + mcx_enriched_data.json for the dashboard.
 
+Modelled history: mcx_daily_revenue rows before 2024-09-02 are a historical
+backfill written by the mcx-vercel repo (source = mcx_historical_backfill,
+is_actual = false): futures/options revenue scaled to reported quarters with a
+derived options split, plus a flat ₹0.95 Cr/day of non-transaction revenue in
+total_rev_cr. Those rows stay in the series flagged `modelled: true` (and are
+counted per period as `modelled_days`) so the dashboard can keep them out of
+YoY and segment-mix comparisons; total_rev is always fut + opt + cash, never
+total_rev_cr, so the non-transaction amount is not counted.
+
 Environment variables:
   MCX_SUPABASE_URL   — Supabase project URL  (defaults to MCX project)
   MCX_SUPABASE_KEY   — read key for the MCX project (required; GitHub secret)
@@ -39,6 +48,8 @@ DASHBOARD_DIR = PROJECT_ROOT / "dashboard" / "data"
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
         "Saturday", "Sunday"]
 
+MODELLED_SOURCES = {"mcx_historical_backfill"}
+
 
 # ═══════════════════════════════════════════════════════════════
 # SECTION 1: SUPABASE FETCH
@@ -68,7 +79,7 @@ def fetch_mcx_daily():
     """Fetch all rows from mcx_daily_revenue, ordered by date."""
     rows = _sb_get(
         "mcx_daily_revenue"
-        "?select=trading_date,fut_rev_cr,opt_rev_cr,total_rev_cr"
+        "?select=trading_date,fut_rev_cr,opt_rev_cr,total_rev_cr,source,is_actual"
         "&order=trading_date.asc"
     )
     return rows
@@ -104,23 +115,32 @@ def _fy_month(dt):
     return f"{fy} {dt.strftime('%B')}"
 
 
+def is_modelled(row):
+    """True for rows the mcx-vercel repo modelled rather than measured."""
+    return row.get("is_actual") is False or row.get("source") in MODELLED_SOURCES
+
+
 def transform_rows(raw_rows):
     """Convert Supabase rows to the same daily record format as NSE/BSE.
-    MCX has Futures and Options only — cash_rev is always 0.
+    MCX has Futures and Options only — cash_rev is always 0. total_rev is
+    transaction revenue (fut + opt + cash); total_rev_cr is ignored because
+    the modelled rows add ₹0.95 Cr/day of non-transaction revenue to it.
     """
     records = []
+    non_txn = 0
     for r in raw_rows:
         try:
             dt = datetime.strptime(r["trading_date"], "%Y-%m-%d")
         except (ValueError, TypeError):
             continue
-        fut_rev   = float(r.get("fut_rev_cr")   or 0)
-        opt_rev   = float(r.get("opt_rev_cr")   or 0)
-        total_rev = float(r.get("total_rev_cr") or 0)
-        if total_rev <= 0 and (fut_rev + opt_rev) <= 0:
+        fut_rev  = float(r.get("fut_rev_cr") or 0)
+        opt_rev  = float(r.get("opt_rev_cr") or 0)
+        cash_rev = 0.0
+        if fut_rev + opt_rev <= 0:
             continue
-        if total_rev <= 0:
-            total_rev = fut_rev + opt_rev
+        total_rev = fut_rev + opt_rev + cash_rev
+        if r.get("total_rev_cr") is not None and abs(float(r["total_rev_cr"]) - total_rev) > 0.0005:
+            non_txn += 1
 
         records.append({
             "date":        dt.strftime("%Y-%m-%d"),
@@ -130,10 +150,26 @@ def transform_rows(raw_rows):
             "fy_month":    _fy_month(dt),
             "fut_rev":     round(fut_rev,   4),
             "opt_rev":     round(opt_rev,   4),
-            "cash_rev":    0.0,
+            "cash_rev":    cash_rev,
             "total_rev":   round(total_rev, 4),
+            "modelled":    is_modelled(r),
         })
+    if non_txn:
+        print(f"  {non_txn} rows had total_rev_cr != fut + opt (non-transaction revenue, not counted)")
     return records
+
+
+def modelled_history(daily):
+    """Summary of the modelled rows, for the top of both JSON documents."""
+    rows = [d for d in daily if d.get("modelled")]
+    return {
+        "days": len(rows),
+        "first_date": rows[0]["date"] if rows else None,
+        "last_date": rows[-1]["date"] if rows else None,
+        "note": ("Historical backfill (mcx_historical_backfill, is_actual=false): futures/"
+                 "options revenue scaled to reported quarters with a derived options split. "
+                 "Kept in the series; exclude from YoY and segment-mix comparisons."),
+    }
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -146,10 +182,12 @@ def recompute_quarterly(daily):
         q = d["fy_quarter"]
         if q not in quarters:
             quarters[q] = {"quarter": q, "opt_rev": 0.0, "fut_rev": 0.0,
-                           "cash_rev": 0.0, "total_rev": 0.0, "days": 0}
+                           "cash_rev": 0.0, "total_rev": 0.0, "days": 0,
+                           "modelled_days": 0}
         for k in ["opt_rev", "fut_rev", "cash_rev", "total_rev"]:
             quarters[q][k] += float(d.get(k, 0) or 0)
         quarters[q]["days"] += 1
+        quarters[q]["modelled_days"] += bool(d.get("modelled"))
     return [{k: round(v, 4) if isinstance(v, float) else v
              for k, v in q.items()} for q in quarters.values()]
 
@@ -160,10 +198,12 @@ def recompute_monthly(daily):
         m = d["fy_month"]
         if m not in months:
             months[m] = {"month": m, "opt_rev": 0.0, "fut_rev": 0.0,
-                         "cash_rev": 0.0, "total_rev": 0.0, "days": 0}
+                         "cash_rev": 0.0, "total_rev": 0.0, "days": 0,
+                         "modelled_days": 0}
         for k in ["opt_rev", "fut_rev", "cash_rev", "total_rev"]:
             months[m][k] += float(d.get(k, 0) or 0)
         months[m]["days"] += 1
+        months[m]["modelled_days"] += bool(d.get("modelled"))
     return [{k: round(v, 4) if isinstance(v, float) else v
              for k, v in m.items()} for m in months.values()]
 
@@ -196,15 +236,20 @@ def seg_summary(daily_data, rev_key):
     pq_avg  = float(pq[rev_key])  / max(pq["days"], 1)  if pq  else 0
     yoy_avg = float(yoy_q[rev_key]) / max(yoy_q["days"], 1) if yoy_q else 0
 
+    # modelled_days: rows in that period from the modelled backfill; a
+    # comparison against a period with modelled_days > 0 is not like for like.
     quarterly_data = {
         "current":  {"label": cq["quarter"] if cq else "",
                      "value": round(cq_avg, 4),
                      "qoq": round((cq_avg - pq_avg) / pq_avg, 4) if pq_avg else 0,
-                     "yoy": round((cq_avg - yoy_avg) / yoy_avg, 4) if yoy_avg else 0},
+                     "yoy": round((cq_avg - yoy_avg) / yoy_avg, 4) if yoy_avg else 0,
+                     "modelled_days": cq["modelled_days"] if cq else 0},
         "previous": {"label": pq["quarter"] if pq else "",
-                     "value": round(pq_avg, 4)},
+                     "value": round(pq_avg, 4),
+                     "modelled_days": pq["modelled_days"] if pq else 0},
         "prev2":    {"label": yoy_q["quarter"] if yoy_q else "",
-                     "value": round(yoy_avg, 4)},
+                     "value": round(yoy_avg, 4),
+                     "modelled_days": yoy_q["modelled_days"] if yoy_q else 0},
     }
 
     m = recompute_monthly(daily_data)
@@ -223,9 +268,11 @@ def seg_summary(daily_data, rev_key):
         "current":  {"label": cm["month"] if cm else "",
                      "value": round(cm_avg, 4),
                      "mom":  round((cm_avg - pm_avg) / pm_avg, 4) if pm_avg else 0,
-                     "mo6m": round((cm_avg - avg_6m) / avg_6m, 4) if avg_6m else 0},
+                     "mo6m": round((cm_avg - avg_6m) / avg_6m, 4) if avg_6m else 0,
+                     "modelled_days": cm["modelled_days"] if cm else 0},
         "previous": {"label": pm["month"] if pm else "",
-                     "value": round(pm_avg, 4)},
+                     "value": round(pm_avg, 4),
+                     "modelled_days": pm["modelled_days"] if pm else 0},
         "avg_6m":   {"label": "Avg Of Last 6 Months",
                      "value": round(avg_6m, 4)},
     }
@@ -301,9 +348,10 @@ def seg_summary(daily_data, rev_key):
     for d in daily_data:
         f = d["fy"]
         if f not in fy_groups:
-            fy_groups[f] = {"sum": 0.0, "count": 0}
+            fy_groups[f] = {"sum": 0.0, "count": 0, "modelled": 0}
         fy_groups[f]["sum"]   += float(d.get(rev_key, 0) or 0)
         fy_groups[f]["count"] += 1
+        fy_groups[f]["modelled"] += bool(d.get("modelled"))
     fy_list = list(fy_groups.values())
     curr_fy_avg = fy_list[-1]["sum"] / max(fy_list[-1]["count"], 1) if fy_list else 0
     prev_fy_avg = fy_list[-2]["sum"] / max(fy_list[-2]["count"], 1) if len(fy_list) > 1 else 0
@@ -319,6 +367,8 @@ def seg_summary(daily_data, rev_key):
             "current":  round(curr_fy_avg, 4),
             "previous": round(prev_fy_avg, 4),
             "yoy":      round(fy_yoy,      4),
+            "current_modelled_days":  fy_list[-1]["modelled"] if fy_list else 0,
+            "previous_modelled_days": fy_list[-2]["modelled"] if len(fy_list) > 1 else 0,
         },
     }
 
@@ -350,6 +400,7 @@ def compute_enriched(daily, quarterly):
     else:
         enriched["pnl_predictor"] = {}
 
+    enriched["modelled_history"] = modelled_history(daily)
     return enriched
 
 
@@ -426,6 +477,7 @@ def main():
         "monthly":   monthly,
         "quarterly": quarterly,
         "summary":   summary,
+        "modelled_history": modelled_history(daily),
     }
 
     for out_dir in [DATA_DIR, DASHBOARD_DIR]:
