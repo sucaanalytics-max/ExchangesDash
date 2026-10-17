@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-10-17T12:43:32Z",
+  "updated_at": "2026-10-17T13:37:46Z",
   "ticker": "BSE.NS",
   "ma_window": 45,
   "regression_start": "2025-03-01",
@@ -550,7 +550,7 @@
       "revenue_cr": 0.7043,
       "rev_ma": 0.8954,
       "price": 427.6957,
-      "price_pred": 1138.5
+      "price_pred": 1138.49
     },
     {
       "date": "2023-09-15",
@@ -1488,7 +1488,7 @@
       "revenue_cr": 3.6816,
       "rev_ma": 3.9509,
       "price": 903.291,
-      "price_pred": 1534.7
+      "price_pred": 1534.71
     },
     {
       "date": "2024-04-02",
