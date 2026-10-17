@@ -45,9 +45,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # No Supabase credentials: the nse_live_snapshots insert has failed on every
-      # run (table never created). Phase 2 adds a proper live_samples table.
       - name: Run NSE live poller
+        # Each sample is also upserted into Supabase live_samples once the table
+        # exists (live_samples_schema.sql) and ENABLE_LIVE_SAMPLES is 'true'.
+        env:
+          SUPABASE_URL: ${{ vars.ENABLE_LIVE_SAMPLES == 'true' && secrets.SUPABASE_URL || '' }}
+          SUPABASE_KEY: ${{ vars.ENABLE_LIVE_SAMPLES == 'true' && secrets.SUPABASE_SERVICE_KEY || '' }}
         run: python scripts/nse_live_poller.py
 
       - name: Commit data files

@@ -72,3 +72,68 @@ class Snapshots(unittest.TestCase):
         pred, method = lc.predict_eod_live(135, 20.0, self.history)
         self.assertEqual(method, "linear")
         self.assertAlmostEqual(pred, round(20.0 * lc.MARKET_TOTAL_MIN / 135, 2))
+
+
+class LiveSamplesWriter(unittest.TestCase):
+    """live_common.store_live_sample: the Supabase copy of each poll."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.sent = []
+        self._urlopen = lc.urllib.request.urlopen
+        self._env = {k: lc.os.environ.get(k) for k in ("SUPABASE_URL", "SUPABASE_KEY")}
+
+        class Resp:
+            status = 201
+            def __enter__(s): return s
+            def __exit__(s, *a): return False
+
+        def fake_urlopen(req, timeout=None):
+            self.sent.append(req)
+            return Resp()
+        lc.urllib.request.urlopen = fake_urlopen
+
+    def tearDown(self):
+        lc.urllib.request.urlopen = self._urlopen
+        for k, v in self._env.items():
+            if v is None:
+                lc.os.environ.pop(k, None)
+            else:
+                lc.os.environ[k] = v
+
+    def poll(self):
+        rev = {"has_data": True, "trade_date": "19-Oct-2026", "total_revenue": 12.0,
+               "cash_revenue": 1, "options_revenue": 10, "futures_revenue": 1}
+        lc.save_hourly_snapshot(rev, datetime(2026, 10, 19, 10, 15), self.tmp / "h.json",
+                                self.tmp / "nse_hourly_history.json", "nse")
+
+    def test_off_without_credentials(self):
+        lc.os.environ.pop("SUPABASE_URL", None)
+        lc.os.environ.pop("SUPABASE_KEY", None)
+        self.poll()
+        self.assertEqual(self.sent, [])
+
+    def test_upsert_payload(self):
+        lc.os.environ["SUPABASE_URL"] = "https://example.supabase.co/"
+        lc.os.environ["SUPABASE_KEY"] = "service-key"
+        self.poll()
+        self.assertEqual(len(self.sent), 1)
+        req = self.sent[0]
+        self.assertEqual(req.full_url, "https://example.supabase.co/rest/v1/live_samples"
+                                       "?on_conflict=exchange,trade_date,elapsed_minutes")
+        self.assertIn("resolution=merge-duplicates", req.get_header("Prefer"))
+        row = json.loads(req.data)
+        self.assertEqual((row["exchange"], row["trade_date"], row["elapsed_minutes"]), ("nse", "2026-10-19", 60))
+        self.assertEqual(row["captured_at"], "2026-10-19T04:45:00Z")   # 10:15 IST in UTC
+        self.assertEqual(row["total_revenue"], 12.0)
+        self.assertEqual(row["raw"]["trade_date"], "19-Oct-2026")
+
+    def test_failure_never_raises(self):
+        lc.os.environ["SUPABASE_URL"] = "https://example.supabase.co"
+        lc.os.environ["SUPABASE_KEY"] = "k"
+
+        def boom(req, timeout=None):
+            raise lc.urllib.error.URLError("down")
+        lc.urllib.request.urlopen = boom
+        self.poll()                                     # JSON path still completes
+        self.assertTrue((self.tmp / "h.json").exists())
