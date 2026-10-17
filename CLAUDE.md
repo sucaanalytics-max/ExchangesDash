@@ -6,7 +6,7 @@ Exchange revenue analytics for NSE, BSE and MCX: Python pipelines on GitHub Acti
 
 | Writer | Schedule | Reads | Writes |
 |---|---|---|---|
-| `scripts/nse_pipeline.py`, `bse_pipeline.py` | `exchange-update.yml`, 00:30 / 12:30 / 15:30 UTC Mon–Fri | NSE/BSE archive APIs (curl_cffi) | Supabase `nse_daily` / `bse_daily` (+ aggregates), `dashboard/data/{nse,bse}_{dashboard,enriched}_data.json`, copies in `data/` |
+| `scripts/nse_pipeline.py`, `bse_pipeline.py` | `exchange-update.yml`, 00:30 / 12:30 / 15:30 UTC Mon–Fri | NSE/BSE archive APIs (curl_cffi) | Supabase `nse_daily` / `bse_daily` (+ aggregates), `dashboard/data/{nse,bse}_{dashboard,enriched}_data.json` (copies in `data/`) and `…_data_eff.json` |
 | `scripts/mcx_pipeline.py` | same workflow | **separate** Supabase project `mcx_daily_revenue`, written by the `sucaanalytics-max/mcx-vercel` repo | `dashboard/data/mcx_*` |
 | `scripts/*_share_analysis.py` | after each daily job | yfinance, screener.in fallback | `dashboard/data/*_share_analysis.json` (OLS price vs revenue MA) |
 | `scripts/*_live_poller.py` + `live_common.py` | `*-live.yml`, dispatched every 5 min by an external cron via `dashboard/api/trigger-live-polls.js`; no-op outside Mon–Fri 08:55–16:30 IST | NSE/BSE live turnover, yfinance quote | `dashboard/data/*_live.json`, `*_live_hourly.json`, `*_hourly_history.json` (committed to `main`) |
@@ -17,7 +17,9 @@ Dashboard: `dashboard/index.html` + `app.js` (vanilla JS, Chart.js) + `style.css
 ## Business rules
 
 - Indian FY runs Apr–Mar; labels look like `Q3 FY 2027` (Oct–Dec 2026). Sort quarters with `quarter_sort_key` (Python) / `quarterSortKey` (JS), never by label text.
-- Take rates live only in `scripts/take_rates.py`; `dashboard/api/revenue.js` keeps a JS copy checked by `scripts/check_take_rates.py`.
+- Every fee rate lives only in `scripts/fee_register.py`: effective-dated rules (₹/Cr per side; revenue = 2 × rate × turnover; futures on notional, options on premium, cash on traded value; IPFT excluded), each with a basis (`flat`, `slab_estimate`, `calibrated`, `calibrated_provisional`) and source (circular or results filing). `scripts/take_rates.py` derives today's statutory constants from it; `dashboard/api/revenue.js` keeps a JS copy checked by `scripts/check_take_rates.py`, which also validates the register. BSE cash is under-billed by the statutory 375 (special-rate scrip groups pay more), so the date-effective variant uses per-quarter rates calibrated to BSE's reported cash transaction income: when BSE reports a quarter, add its row to `BSE_CASH_CALIBRATED_QUARTERS` and recompute `BSE_CASH_PROVISIONAL_RATE`.
+- NSE/BSE JSON comes in two variants. `{nse,bse}_{dashboard,enriched}_data.json` price every day at today's statutory rates (the same rows Supabase holds). `…_data_eff.json` re-price each day at the rules then in force (the default dashboard view): same schema plus `fee_basis` / `fee_basis_by_product` on each daily row and quarterly/monthly/weekly period, and top-level `fee_mode: "date_effective"` and `fee_rules`. Slab-era periods (NSE to 2024-09-30, BSE options 2023-11-01–2024-09-30) are flat estimates and must be labelled as such.
+- MCX rows before 2024-09-02 are modelled (`mcx_historical_backfill`, `is_actual = false`: scaled to reported quarters, derived options split). They carry `modelled: true` (`modelled_days` per period) and must stay out of YoY, segment-mix comparisons and regressions. MCX `total_rev` is fut + opt; `total_rev_cr` is never used (it adds ₹0.95 Cr/day of non-transaction revenue to modelled rows).
 - Live samples are keyed on the exchange's trade date, never the wall clock; EOD is 16:00 IST (SEBI closing auction).
 - Expiry weekday changed over time (NSE Thu→Tue from 2025-09-01; BSE Fri→Tue from 2025-01-06, Tue→Thu from 2025-09-01); the monthly expiry is the month's last such weekday. The effective-dated rules live only in `scripts/expiry_calendar.py` (used by `live_common.classify_day`); `dashboard/app.js` keeps a JS copy, `EXPIRY_RULES`, checked by `scripts/check_expiry_calendar.py`. A holiday on the scheduled day moves expiry to the previous trading day (handled by the callers, from observed trading dates).
 - Timestamps written by pollers are UTC with a `Z` suffix.
@@ -25,7 +27,7 @@ Dashboard: `dashboard/index.html` + `app.js` (vanilla JS, Chart.js) + `style.css
 
 ## Working here efficiently
 
-- Do not read `dashboard/data/*.json` or `data/*.json` whole (up to 760 KB each). Query them: `python3 -I -c "import json; d=json.load(open('dashboard/data/nse_dashboard_data.json')); print(d.keys())"`.
+- Do not read `dashboard/data/*.json` or `data/*.json` whole (up to ~850 KB each). Query them: `python3 -I -c "import json; d=json.load(open('dashboard/data/nse_dashboard_data.json')); print(d.keys())"`.
 - `app.js` is ~6,300 lines: grep for the function, then read only that range.
 - Most commits are bot data updates. For human history: `git log --invert-grep --grep='📡' --grep='📈' --grep='📊'`.
 - Never edit committed live/data JSON by hand on a branch: bots rewrite those files on `main` every few minutes. Fix the generating code instead.
