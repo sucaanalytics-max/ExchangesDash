@@ -679,6 +679,8 @@ async function preloadMarketData() {
 // so the combined value is a true sum-of-daily-averages regardless of each
 // exchange having a different number of trading days in a period.
 // days=1 is stored so computeQuarterMetrics / getMAvg return the value as-is.
+// Longer or differently cut periods (FY, weekday × quarter, 125 days) are not
+// averages of these rows: they are summed per exchange from DATA.components.
 // "Q2 FY 2027" → chronological sort key. Indian FY: Q1=Apr-Jun, Q2=Jul-Sep,
 // Q3=Oct-Dec, Q4=Jan-Mar (of the FY-ending year) — Q1..Q4 within "FY N" already
 // climbs in the right order, so year*10+quarter sorts correctly across years too.
@@ -698,8 +700,9 @@ function monthSortKey(label) {
 }
 
 function buildCombinedRawData(exList) {
-  const raws = exList.map(ex => MARKET_RAW[ex]).filter(Boolean);
-  if (!raws.length) return { quarterly: [], monthly: [], daily: [], daily_all: [] };
+  const present = exList.filter(ex => MARKET_RAW[ex]);
+  const raws = present.map(ex => MARKET_RAW[ex]);
+  if (!raws.length) return { quarterly: [], monthly: [], daily: [], daily_all: [], components: [] };
 
   const segFields = ['total_rev', 'opt_rev', 'fut_rev', 'cash_rev'];
 
@@ -738,7 +741,16 @@ function buildCombinedRawData(exList) {
     return out;
   });
 
-  return { quarterly, monthly, daily: [], daily_all: []};
+  // Each exchange's own rows, for the figures that cannot be read off the
+  // summed rows above: FY, weekday × quarter and 125-day averages (see
+  // revenueSources), and the header's last trading date.
+  const components = present.map(ex => ({
+    exchange:  ex,
+    quarterly: MARKET_RAW[ex].quarterly || [],
+    daily_all: MARKET_RAW[ex].daily_all || [],
+  }));
+
+  return { quarterly, monthly, daily: [], daily_all: [], components };
 }
 
 // ── Build combined ENRICHED_DATA from pre-loaded enriched JSONs ───────────────
@@ -809,14 +821,31 @@ function buildCombinedEnrichedData(exList) {
 // ========================
 
 function updateHeaderInfo() {
-  const dailyAll = DATA.daily_all || DATA.daily;
-  if (dailyAll && dailyAll.length > 0) {
-    const lastDate = dailyAll[dailyAll.length - 1].date;
-    const d = new Date(lastDate + 'T00:00:00');
-    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    const formatted = ('0' + d.getDate()).slice(-2) + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
-    const span = document.getElementById('lastUpdatedSpan');
-    if (span) span.innerHTML = '<span class="lu-label">Last Updated: </span>' + formatted;
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const fmtDay = iso => {
+    const d = new Date(iso + 'T00:00:00');
+    return ('0' + d.getDate()).slice(-2) + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
+  };
+  const span = document.getElementById('lastUpdatedSpan');
+  if (DATA.components) {
+    // Combined view: show the earliest of the exchanges' last trading dates,
+    // so one exchange lagging behind the others is not hidden.
+    const lasts = DATA.components
+      .map(c => ({ ex: c.exchange.toUpperCase(), date: c.daily_all.length ? c.daily_all[c.daily_all.length - 1].date : null }))
+      .filter(c => c.date);
+    if (span && lasts.length) {
+      const earliest = lasts.reduce((mn, c) => (c.date < mn ? c.date : mn), lasts[0].date);
+      const differ = lasts.some(c => c.date !== earliest);
+      span.innerHTML = '<span class="lu-label">Last Updated: </span>' + fmtDay(earliest);
+      span.title = (differ ? 'Earliest of the exchanges\' last trading dates — ' : 'Last trading date — ')
+        + lasts.map(c => `${c.ex} ${fmtDay(c.date)}`).join(', ');
+    }
+  } else {
+    const dailyAll = DATA.daily_all || DATA.daily;
+    if (span && dailyAll && dailyAll.length > 0) {
+      span.innerHTML = '<span class="lu-label">Last Updated: </span>' + fmtDay(dailyAll[dailyAll.length - 1].date);
+      span.removeAttribute('title');
+    }
   }
   const cq = DATA.summary && DATA.summary.current_quarter;
   if (cq) {
@@ -1382,14 +1411,32 @@ function wireDeltaTd(val) {
   return `<td class="wire-delta ${cls}">${pct}%</td>`;
 }
 
+// ── Per-exchange sources ──────────────────────────────────────────────────────
+// A combined view's daily average for any period is the sum of each
+// exchange's own daily average for it (that exchange's revenue ÷ its own
+// trading days). Single-exchange views have one source, DATA itself, so the
+// sum is just that exchange's figure. An exchange with no rows for the
+// period adds nothing (e.g. MCX alone before NSE/BSE data starts in FY 2024).
+function revenueSources() {
+  return DATA.components || [{ quarterly: DATA.quarterly || [], daily_all: DATA.daily_all || [] }];
+}
+
+function sumOverSources(perSource) {
+  const vals = revenueSources().map(perSource).filter(v => v != null);
+  return vals.length ? vals.reduce((a, v) => a + v, 0) : null;
+}
+
 // ── Simple avg getters (no derived comparisons) ───────────────────────────────
 function getFYAvg(fyStr, segKey) {
   const rf = getRevFieldObj(segKey);
-  const quarters = DATA.quarterly.filter(q => q.quarter.endsWith(fyStr));
-  if (!quarters.length) return null;
-  const rev  = quarters.reduce((s, q) => s + (q[rf.qField] || 0), 0);
-  const days = quarters.reduce((s, q) => s + (q.days || q.trading_days || 1), 0);
-  return { label: fyStr, value: rev / days };
+  const value = sumOverSources(src => {
+    const quarters = src.quarterly.filter(q => q.quarter.endsWith(fyStr));
+    if (!quarters.length) return null;
+    const rev  = quarters.reduce((s, q) => s + (q[rf.qField] || 0), 0);
+    const days = quarters.reduce((s, q) => s + (q.days || q.trading_days || 1), 0);
+    return rev / days;
+  });
+  return value == null ? null : { label: fyStr, value };
 }
 
 function getQAvg(qIdx, segKey) {
@@ -1408,16 +1455,24 @@ function getMAvg(mIdx, segKey) {
   return { label: m.month, value: m[rf.mField] / days };
 }
 
+// "Avg 6M (125 days)": average of the last 125 trading days ending at the
+// month's last trading day — the pipelines' avg_6m (seg_summary in
+// scripts/*_pipeline.py), so for the latest month it equals the enriched
+// value. Not an average of six calendar-month averages, which would weight a
+// partial month like a full one.
+const AVG_6M_LABEL = 'Avg 6M (125 days)';
+
 function getM6mAvg(mIdx, segKey) {
-  const rf   = getRevFieldObj(segKey);
-  const allM = DATA.monthly;
-  let sum = 0, cnt = 0;
-  for (let i = Math.max(0, mIdx - 5); i <= mIdx; i++) {
-    const d = allM[i].trading_days || allM[i].days || 1;
-    sum += allM[i][rf.mField] / d;
-    cnt++;
-  }
-  return cnt > 0 ? sum / cnt : null;
+  const rf = getRevFieldObj(segKey);
+  const m  = DATA.monthly[mIdx];
+  if (!m) return null;
+  return sumOverSources(src => {
+    const daily  = src.daily_all;
+    const endIdx = daily.reduce((last, r, i) => r.fy_month === m.month ? i : last, -1);
+    if (endIdx < 0) return null;
+    const window = daily.slice(Math.max(0, endIdx - 124), endIdx + 1);
+    return window.reduce((s, r) => s + (r[rf.dField] || 0), 0) / window.length;
+  });
 }
 
 // ── Per-row render functions ──────────────────────────────────────────────────
@@ -1456,7 +1511,8 @@ function renderMRow(rowNum, mIdx, segKey) {
   if (chgEl) {
     if (rowNum === 0) {
       chgEl.innerHTML = '';
-      // Recompute Avg 6M (always anchored to row 0's month)
+      // Recompute Avg 6M (125 days ending at row 0's month); its % chg is
+      // row 0's month vs that average, like the pipelines' mo6m
       const avg = getM6mAvg(mIdx, segKey);
       const avgValEl = document.getElementById('xlMAvgVal-' + segKey);
       const avgChgEl = document.getElementById('xlMAvgChg-' + segKey);
@@ -1505,9 +1561,11 @@ function getWeekdayQAvg(weekday, qIdx, segKey) {
   const rf = getRevFieldObj(segKey);
   const q  = DATA.quarterly[qIdx];
   if (!q) return null;
-  const rows = (DATA.daily_all || []).filter(r => r.day === weekday && r.fy_quarter === q.quarter);
-  if (!rows.length) return null;
-  return rows.reduce((s, r) => s + (r[rf.dField] || 0), 0) / rows.length;
+  return sumOverSources(src => {
+    const rows = src.daily_all.filter(r => r.day === weekday && r.fy_quarter === q.quarter);
+    if (!rows.length) return null;
+    return rows.reduce((s, r) => s + (r[rf.dField] || 0), 0) / rows.length;
+  });
 }
 
 function renderWireQRow(weekday, rowNum, qIdx, segKey) {
@@ -1621,7 +1679,7 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
       <td></td>
     </tr>`).join('');
 
-  // Month: 2 selectable rows + 1 static Avg 6M row
+  // Month: 2 selectable rows + 1 Avg 6M (125 days) row
   const mRows = [0, 1].map(r => `
     <tr${r === 0 ? ' class="xl-r-cur"' : ''}>
       <td>${mkSel('xlM' + r + '-' + segKey, mOpts)}</td>
@@ -1630,7 +1688,7 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
       <td></td>
     </tr>`).join('') + `
     <tr>
-      <td style="color:var(--color-text-secondary);font-size:11.5px">Avg 6 Months</td>
+      <td style="color:var(--color-text-secondary);font-size:11.5px">${AVG_6M_LABEL}</td>
       <td id="xlMAvgVal-${segKey}"></td>
       <td id="xlMAvgChg-${segKey}"></td>
       <td></td>
@@ -1731,7 +1789,7 @@ function xlStaticSegmentBlock(st, label) {
   const mRows = `
     <tr class="xl-r-cur"><td>${m.current?.label  || '—'}</td><td>${xlValPlain(m.current?.value, 2)}</td><td>${wireChg(m.current?.mom)}</td><td></td></tr>
     <tr><td>${m.previous?.label || '—'}</td><td>${xlValPlain(m.previous?.value, 2)}</td><td></td><td></td></tr>
-    <tr><td>${m.avg_6m?.label   || 'Avg 6 Months'}</td><td>${xlValPlain(m.avg_6m?.value, 2)}</td><td>${wireChg(m.current?.mo6m)}</td><td></td></tr>`;
+    <tr><td>${AVG_6M_LABEL}</td><td>${xlValPlain(m.avg_6m?.value, 2)}</td><td>${wireChg(m.current?.mo6m)}</td><td></td></tr>`;
 
   const wRows = `
     <tr class="xl-r-cur"><td>Last 5 Days</td><td>${xlValPlain(wl5.value, 2)}</td><td>${wireChg(wl5.wow)}</td><td>${wireChg(wl5.wo10w)}</td></tr>
@@ -2168,7 +2226,7 @@ function buildMarketSharePanel(exList) {
       ...(yoyQLabel && yoyQLabel !== prevQLabel && yoyQLabel !== prev2QLabel ? [{ lbl: yoyQLabel, vals: exList.map(ex => qAvg(ex, yoyQLabel, key)) }] : []),
       { lbl: refED.monthly?.current?.label  || 'Cur Month',  vals: exList.map(ex => ed(ex)[key]?.monthly?.current?.value  || 0) },
       { lbl: refED.monthly?.previous?.label || 'Prev Month', vals: exList.map(ex => ed(ex)[key]?.monthly?.previous?.value || 0) },
-      { lbl: 'Avg 6 Months',  vals: exList.map(ex => ed(ex)[key]?.monthly?.avg_6m?.value  || 0) },
+      { lbl: AVG_6M_LABEL,    vals: exList.map(ex => ed(ex)[key]?.monthly?.avg_6m?.value  || 0) },
       { lbl: 'Last 5 Days',   vals: exList.map(ex => ed(ex)[key]?.weekly?.last5?.value    || 0) },
       { lbl: 'Prev 5 Days',   vals: exList.map(ex => ed(ex)[key]?.weekly?.prev5?.value    || 0) },
       { lbl: 'Last 45 Days',  vals: exList.map(ex => ed(ex)[key]?.weekly?.last45?.value   || 0) },
@@ -6000,7 +6058,7 @@ async function downloadWeeklyReport() {
           <tr class="pr-group-label"><td colspan="3">Monthly</td></tr>
           <tr><td>${mc.label || 'Current Month'}</td><td>${n(mc.value)}</td><td>${prFmt(mc.mom)}</td></tr>
           <tr><td>${mp.label || 'Prev Month'}</td><td>${n(mp.value)}</td><td>—</td></tr>
-          <tr><td>6-Month Avg</td><td>${n(m6.value)}</td><td>${prFmt(mc.mo6m)}</td></tr>
+          <tr><td>${AVG_6M_LABEL}</td><td>${n(m6.value)}</td><td>${prFmt(mc.mo6m)}</td></tr>
           <tr class="pr-separator"><td colspan="3"></td></tr>
           <tr class="pr-group-label"><td colspan="3">Quarterly</td></tr>
           <tr><td>${qc.label || 'Current Q'}</td><td>${n(qc.value)}</td><td>${prFmt(qc.qoq)}</td></tr>
