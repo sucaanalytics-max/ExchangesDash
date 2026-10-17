@@ -571,6 +571,16 @@ function istDateOf(ts) {
   return isNaN(d.getTime()) ? null : d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 }
 
+// "2026-10-16" → "16 Oct", or "Fri 16 Oct" with weekday. Reads the trade date
+// as a calendar date, independent of the viewer's time zone.
+function fmtTradeDate(iso, withWeekday) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+  if (!m) return iso || '';
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  const day = d.getUTCDate() + ' ' + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()];
+  return withWeekday ? ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getUTCDay()] + ' ' + day : day;
+}
+
 async function fetchLiveFile(exchange) {
   const bust = Date.now();
   for (const url of [`/api/live?exchange=${exchange}&file=live`, `./data/${exchange}_live.json?t=${bust}`]) {
@@ -1701,8 +1711,12 @@ function xlStaticSegmentBlock(st, label) {
   const dow = st.day_of_week   || {};
   const dayFull  = ['Monday','Tuesday','Wednesday','Thursday','Friday'];
 
-  const curFYLabel  = (q.current?.label  || '').match(/FY \d{4}/)?.[0] || 'Current FY';
-  const prevFYLabel = (q.previous?.label || '').match(/FY \d{4}/)?.[0] || 'Prev FY';
+  // fy.current is the FY of the latest trading day (the current quarter's FY)
+  // and fy.previous the FY before it, so label them FY N and FY N-1 — not by
+  // the previous quarter's label, which is still FY N except in Q1.
+  const curFYNum    = +((q.current?.label || m.current?.label || '').match(/FY (\d{4})/)?.[1] || 0);
+  const curFYLabel  = curFYNum ? `FY ${curFYNum}`     : 'Current FY';
+  const prevFYLabel = curFYNum ? `FY ${curFYNum - 1}` : 'Prev FY';
 
   const fyRows = `
     <tr class="xl-r-cur"><td>${curFYLabel}</td><td>${xlValPlain(fy.current, 2)}</td><td>${wireChg(fy.yoy)}</td><td></td></tr>
@@ -4598,7 +4612,7 @@ async function buildBSEValuation() {
   el.innerHTML = `
   <div id="bseQuickValPanel"></div>
   <div class="chart-panel" style="margin-bottom:var(--space-4)">
-    <div class="chart-title">1 · Triangulated Target Price <span class="chart-badge">Live</span></div>
+    <div class="chart-title">1 · Triangulated Target Price <span class="chart-badge">${SHARE_DATA?.latest?.is_live ? 'Live' : 'Latest close'}</span></div>
     <p class="section-desc">Average of the ADR (Annual Predictor Base case), 45-day regression, and analyst-consensus target prices, shown against CMP.</p>
     <div class="tri-target-grid">
       ${kpi('ADR Model', `<span id="triAdrModel"></span>`, 'Annual Predictor · Base', '')}
@@ -5541,17 +5555,32 @@ async function buildIntradayPredictor(exchange, containerId) {
   const exLabel = exchange.toUpperCase();
 
   // ── Live KPI row ──
-  const samples = (hourly && hourly.samples) || [];
-  const latest  = samples.length ? samples[samples.length - 1] : null;
+  // Only polls after the 09:15 open (elapsed_minutes > 0) describe the session:
+  // pre-open polls still repeat the previous session's totals.
+  const samples  = (hourly && hourly.samples) || [];
+  const intraday = samples.filter(s => s.elapsed_minutes > 0);
+  const latest   = intraday.length ? intraday[intraday.length - 1] : null;
+  // The file holds one trade date's polls. After the close, at weekends and on
+  // holidays it is still the last session's, so it must not be labelled today.
+  const isToday   = !!hourly?.date && hourly.date === istDateOf();
+  const sessLong  = fmtTradeDate(hourly?.date, true);   // "Fri 16 Oct"
+  const sessShort = fmtTradeDate(hourly?.date, false);  // "16 Oct"
+  const asOf = latest
+    ? `as of ${(latest.captured_ist || '').slice(11, 16)} IST (+${fmtElapsed(latest.elapsed_minutes)})`
+    : 'no poll since the 09:15 open';
+  const revTitle  = isToday ? 'Revenue So Far Today' : 'Revenue — Last Session';
+  const revSub    = isToday ? asOf : [sessLong, asOf].filter(Boolean).join(' · ');
+  const predTitle = isToday ? 'Predicted EOD Revenue' : 'Predicted EOD — Last Session';
+  const predSub   = latest ? intradayMethodLabel(latest.pred_method) : '—';
+  const pollTitle = isToday ? 'Polls Landed Today' : `Polls Landed${sessShort ? ` (${sessShort})` : ''}`;
 
-  const liveHTML = latest ? `
+  const liveHTML = samples.length ? `
   <div class="share-kpi-grid">
-    ${kpi('Revenue So Far Today', '₹' + fmtNum(latest.total_revenue, 2) + ' Cr',
-          `as of ${(latest.captured_ist || '').slice(11, 16)} IST (+${fmtElapsed(latest.elapsed_minutes)})`, '')}
-    ${kpi('Predicted EOD Revenue', latest.predicted_eod != null ? '₹' + fmtNum(latest.predicted_eod, 2) + ' Cr' : '—',
-          intradayMethodLabel(latest.pred_method), 'positive')}
+    ${kpi(revTitle, latest ? '₹' + fmtNum(latest.total_revenue, 2) + ' Cr' : '—', revSub, '')}
+    ${kpi(predTitle, latest?.predicted_eod != null ? '₹' + fmtNum(latest.predicted_eod, 2) + ' Cr' : '—',
+          isToday || !sessLong ? predSub : `${sessLong} · ${predSub}`, 'positive')}
     ${kpi('Day Type', (hourly.day_type || '—').replace('_', '-'), hourly.weekday_name || '', '')}
-    ${kpi('Polls Landed Today', String(samples.length), samples.length === 1 ? 'sample' : 'samples', '')}
+    ${kpi(pollTitle, String(intraday.length), `${intraday.length === 1 ? 'sample' : 'samples'} after the 09:15 open`, '')}
   </div>` : `
   <div class="chart-panel" style="text-align:center;padding:32px;color:var(--color-text-muted);margin-bottom:var(--space-4)">
     <div style="font-size:14px;font-weight:600">No live poll recorded yet today</div>
