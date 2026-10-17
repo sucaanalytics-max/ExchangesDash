@@ -32,7 +32,9 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 DATA_DIR = PROJECT_ROOT / "data"
 DASHBOARD_DIR = PROJECT_ROOT / "dashboard"
 
-# ── Take Rates (single source: scripts/take_rates.py) ──
+# ── Take Rates: today's rates from scripts/take_rates.py; the date-effective
+# variant prices each day with scripts/fee_register.py ──
+import fee_register
 from take_rates import NSE_TR_FUT as TR_FUT, NSE_TR_OPT as TR_OPT, NSE_TR_CASH as TR_CASH
 
 
@@ -141,6 +143,33 @@ def date_to_fy(dt):
     fy_year = dt.year + 1 if dt.month >= 4 else dt.year
     return f"FY {fy_year}"
 
+def fo_revenue(if_turnover, sf_turnover, io_premium, so_premium, tr_fut=TR_FUT, tr_opt=TR_OPT):
+    """F&O revenue fields (₹ Cr): futures on notional turnover, options on
+    premium. The one formula for parsed rows and date-effective re-pricing."""
+    if_rev  = if_turnover * tr_fut
+    sf_rev  = sf_turnover * tr_fut
+    fut_rev = if_rev + sf_rev
+    io_rev  = io_premium * tr_opt
+    so_rev  = so_premium * tr_opt
+    opt_rev = io_rev + so_rev
+    fo_rev  = fut_rev + opt_rev
+    return {
+        "if_rev": round(if_rev, 4),
+        "sf_rev": round(sf_rev, 4),
+        "fut_rev": round(fut_rev, 4),
+        "io_rev": round(io_rev, 4),
+        "so_rev": round(so_rev, 4),
+        "opt_rev": round(opt_rev, 4),
+        "fo_rev": round(fo_rev, 4),
+    }
+
+def cash_revenue(cash_traded_value, tr_cash=TR_CASH):
+    return round(cash_traded_value * tr_cash, 4)
+
+def total_revenue(row):
+    """total_rev from a row's (rounded) fo_rev and cash_rev."""
+    return round(row["fo_rev"] + row["cash_rev"], 4)
+
 def parse_fo_record(rec):
     d = rec.get("data", rec)
     date_str = d.get("date", d.get("F_TIMESTAMP", ""))
@@ -155,14 +184,6 @@ def parse_fo_record(rec):
     io_pcr        = float(d.get("Index_Options_PUT_CALL_RATIO", 0))
     total_contracts = int(d.get("F&O_Total_QTY", 0))
     total_turnover  = float(d.get("F&O_Total_VAL", 0))
-
-    if_rev  = if_turnover * TR_FUT
-    sf_rev  = sf_turnover * TR_FUT
-    fut_rev = if_rev + sf_rev
-    io_rev  = io_premium * TR_OPT
-    so_rev  = so_premium * TR_OPT
-    opt_rev = io_rev + so_rev
-    fo_rev  = fut_rev + opt_rev
 
     total_premium  = io_premium + so_premium
     total_notional = io_notional + so_notional
@@ -183,13 +204,7 @@ def parse_fo_record(rec):
         "io_pcr": round(io_pcr, 2),
         "total_contracts": total_contracts,
         "total_turnover": round(total_turnover, 2),
-        "if_rev": round(if_rev, 4),
-        "sf_rev": round(sf_rev, 4),
-        "fut_rev": round(fut_rev, 4),
-        "io_rev": round(io_rev, 4),
-        "so_rev": round(so_rev, 4),
-        "opt_rev": round(opt_rev, 4),
-        "fo_rev": round(fo_rev, 4),
+        **fo_revenue(if_turnover, sf_turnover, io_premium, so_premium),
         "pn_ratio": pn_ratio,
         "vix": 0,
         "_dt": dt,
@@ -200,12 +215,42 @@ def parse_cm_record(rec):
     date_str = d.get("F_TIMESTAMP", "")
     dt = datetime.strptime(date_str, "%d-%b-%Y")
     cash_traded_value = float(d.get("CDT_TRADES_VALUES", 0))
-    cash_rev = cash_traded_value * TR_CASH
     return {
         "date": dt.strftime("%Y-%m-%d"),
         "cash_traded_value": round(cash_traded_value, 2),
-        "cash_rev": round(cash_rev, 4),
+        "cash_rev": cash_revenue(cash_traded_value),
     }
+
+
+def _num(row, key):
+    return float(row.get(key) or 0)
+
+
+def reprice_date_effective(daily):
+    """Copies of `daily` rows with every revenue field re-priced from turnover
+    at the fee rules in force on each row's date (scripts/fee_register.py),
+    plus fee_basis (least exact basis of the row's products) and
+    fee_basis_by_product. Same formulas and rounding as parsed rows.
+
+    A row whose rules all equal today's rates is already priced at them and
+    keeps its stored figures, so both variants agree exactly from 2026-03-01
+    (some stored total_rev values were rounded from unrounded components and
+    would otherwise differ by ₹0.0001 Cr)."""
+    today = (TR_FUT, TR_OPT, TR_CASH)
+    out = []
+    for d in daily:
+        rates = fee_register.day_rates("NSE", d["date"])
+        r = dict(d)
+        if (rates["fut"][0], rates["opt"][0], rates["cash"][0]) != today:
+            r.update(fo_revenue(_num(d, "if_turnover"), _num(d, "sf_turnover"),
+                                _num(d, "io_premium"), _num(d, "so_premium"),
+                                rates["fut"][0], rates["opt"][0]))
+            r["cash_rev"] = cash_revenue(_num(d, "cash_traded_value"), rates["cash"][0])
+            r["total_rev"] = total_revenue(r)
+        r["fee_basis"] = fee_register.combined_basis(b for _, b in rates.values())
+        r["fee_basis_by_product"] = {p: b for p, (_, b) in rates.items()}
+        out.append(r)
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -334,12 +379,15 @@ def recompute_monthly(daily):
     return [{k: round(v, 2) if isinstance(v, float) else v
              for k, v in m.items()} for m in months.values()]
 
+def week_label(d):
+    """Monday of the row's week, 'YYYY-MM-DD' (the weekly aggregate's key)."""
+    dt = datetime.strptime(d["date"], "%Y-%m-%d")
+    return (dt - timedelta(days=dt.weekday())).strftime("%Y-%m-%d")
+
 def recompute_weekly(daily):
     weeks = OrderedDict()
     for d in daily:
-        dt = datetime.strptime(d["date"], "%Y-%m-%d")
-        week_start = dt - timedelta(days=dt.weekday())
-        wk = week_start.strftime("%Y-%m-%d")
+        wk = week_label(d)
         if wk not in weeks:
             weeks[wk] = {"week": wk, "opt_rev": 0, "fut_rev": 0, "cash_rev": 0,
                          "total_rev": 0, "days": 0}
@@ -832,18 +880,65 @@ def build_dashboard_json(daily_all, quarterly, monthly, weekly, dow_avg, summary
     }
 
 
+def build_outputs(all_daily, pnl, pnl_fy, cost_ratios):
+    """Every aggregate and both JSON documents from the daily rows. Pure: the
+    same code path builds the at-today's-rates and the date-effective files."""
+    quarterly = recompute_quarterly(all_daily)
+    monthly   = recompute_monthly(all_daily)
+    weekly    = recompute_weekly(all_daily)
+    dow_avg   = recompute_dow_avg(all_daily)
+    summary_obj = compute_summary(all_daily, quarterly)
+
+    # VIX data (from daily records)
+    vix_data = [{"date": d["date"], "price": float(d.get("vix", 0) or 0)}
+                for d in all_daily[-120:] if float(d.get("vix", 0) or 0) > 0]
+
+    take_rates = {"futures": TR_FUT, "options": TR_OPT, "cash": TR_CASH}
+
+    enriched = compute_enriched(all_daily, quarterly, pnl)
+
+    dashboard_json = build_dashboard_json(
+        all_daily, quarterly, monthly, weekly, dow_avg, summary_obj,
+        pnl, pnl_fy, cost_ratios, take_rates, vix_data
+    )
+    return {"quarterly": quarterly, "monthly": monthly, "weekly": weekly,
+            "dow_avg": dow_avg, "summary": summary_obj, "enriched": enriched,
+            "dashboard": dashboard_json}
+
+
+def build_date_effective_outputs(all_daily, pnl, pnl_fy, cost_ratios):
+    """build_outputs on rows re-priced at the fee rules in force on each date.
+    Adds fee_basis to every daily row and aggregate period, and fee_mode /
+    fee_rules at the top of both documents. take_rates stays today's rates."""
+    eff_daily = reprice_date_effective(all_daily)
+    out = build_outputs(eff_daily, pnl, pnl_fy, cost_ratios)
+    fee_register.annotate_periods(out["quarterly"], "quarter", eff_daily, lambda d: d["fy_quarter"])
+    fee_register.annotate_periods(out["monthly"], "month", eff_daily, lambda d: d["fy_month"])
+    fee_register.annotate_periods(out["weekly"], "week", eff_daily, week_label)
+    meta = {
+        "fee_mode": "date_effective",
+        "fee_rules": fee_register.rules_for(
+            "NSE", eff_daily[0]["date"] if eff_daily else None,
+            eff_daily[-1]["date"] if eff_daily else None),
+    }
+    out["dashboard"].update(meta)
+    out["enriched"].update(meta)
+    return out
+
+
 # ═══════════════════════════════════════════════════════════════
 # SECTION 7: WRITE DASHBOARD DATA FILES
 # (Unified dashboard uses fetch() from dashboard/data/*.json)
 # ═══════════════════════════════════════════════════════════════
 
-def write_dashboard_data(dashboard_data, enriched_data):
-    """Write NSE data files to dashboard/data/ for Vercel serving."""
-    dash_data_dir = DASHBOARD_DIR / "data"
+def write_dashboard_data(dashboard_data, enriched_data, suffix="", out_dir=None):
+    """Write NSE data files to dashboard/data/ for Vercel serving.
+    suffix "_eff" writes the date-effective variant."""
+    dash_data_dir = Path(out_dir) if out_dir else DASHBOARD_DIR / "data"
     dash_data_dir.mkdir(parents=True, exist_ok=True)
 
-    nse_dash_path = dash_data_dir / "nse_dashboard_data.json"
-    nse_enrich_path = dash_data_dir / "nse_enriched_data.json"
+    nse_dash_path = dash_data_dir / f"nse_dashboard_data{suffix}.json"
+    nse_enrich_path = dash_data_dir / f"nse_enriched_data{suffix}.json"
 
     with open(nse_dash_path, "w") as f:
         json.dump(dashboard_data, f, separators=(',', ':'))
@@ -957,21 +1052,10 @@ def main():
     else:
         print("All records already have VIX data")
 
-    # Step 5: Recompute aggregates
-    quarterly = recompute_quarterly(all_daily)
-    monthly   = recompute_monthly(all_daily)
-    weekly    = recompute_weekly(all_daily)
-    dow_avg   = recompute_dow_avg(all_daily)
-    summary_obj = compute_summary(all_daily, quarterly)
-
-    # VIX data (from daily records)
-    vix_data = [{"date": d["date"], "price": float(d.get("vix", 0) or 0)}
-                for d in all_daily[-120:] if float(d.get("vix", 0) or 0) > 0]
-
-    take_rates = {"futures": TR_FUT, "options": TR_OPT, "cash": TR_CASH}
-
-    # Step 6: Build enriched data
-    enriched = compute_enriched(all_daily, quarterly, pnl)
+    # Steps 5-6: Recompute aggregates and enriched data (at today's rates)
+    out = build_outputs(all_daily, pnl, pnl_fy, cost_ratios)
+    quarterly, monthly, weekly = out["quarterly"], out["monthly"], out["weekly"]
+    dow_avg, summary_obj, enriched = out["dow_avg"], out["summary"], out["enriched"]
 
     # Step 7: Save aggregates to Supabase
     if supabase:
@@ -988,10 +1072,7 @@ def main():
 
     # Step 8: Write local JSON files (for git commit → Vercel deploy)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    dashboard_json = build_dashboard_json(
-        all_daily, quarterly, monthly, weekly, dow_avg, summary_obj,
-        pnl, pnl_fy, cost_ratios, take_rates, vix_data
-    )
+    dashboard_json = out["dashboard"]
 
     with open(DATA_DIR / "dashboard_data.json", "w") as f:
         json.dump(dashboard_json, f, separators=(',', ':'))
@@ -1003,6 +1084,11 @@ def main():
 
     # Step 9: Write data files to dashboard/data/ (for unified dashboard fetch())
     write_dashboard_data(dashboard_json, enriched)
+
+    # Step 10: Date-effective variant (each day at the fee rules then in force).
+    # JSON only; Supabase keeps the at-today's-rates rows and aggregates.
+    eff = build_date_effective_outputs(all_daily, pnl, pnl_fy, cost_ratios)
+    write_dashboard_data(eff["dashboard"], eff["enriched"], suffix="_eff")
 
     # Summary
     print("\n" + "=" * 60)

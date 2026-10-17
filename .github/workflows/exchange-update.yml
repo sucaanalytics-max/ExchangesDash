@@ -80,7 +80,8 @@ jobs:
           git config user.name "Research-Tusk"
           git config user.email "research@tuskinvest.com"
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-          git add data/dashboard_data.json data/enriched_data.json dashboard/data/nse_dashboard_data.json dashboard/data/nse_enriched_data.json
+          git add data/dashboard_data.json data/enriched_data.json dashboard/data/nse_dashboard_data.json dashboard/data/nse_enriched_data.json \
+            dashboard/data/nse_dashboard_data_eff.json dashboard/data/nse_enriched_data_eff.json
           git diff --cached --quiet || git commit -m "📊 NSE update: $(date +%Y-%m-%d) — ${{ steps.check_new.outputs.new_days }} new day(s)"
           for i in 1 2 3 4 5; do
             git push && exit 0
@@ -143,7 +144,8 @@ jobs:
           git config user.name "Research-Tusk"
           git config user.email "research@tuskinvest.com"
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-          git add data/bse_dashboard_data.json data/bse_enriched_data.json dashboard/data/bse_dashboard_data.json dashboard/data/bse_enriched_data.json
+          git add data/bse_dashboard_data.json data/bse_enriched_data.json dashboard/data/bse_dashboard_data.json dashboard/data/bse_enriched_data.json \
+            dashboard/data/bse_dashboard_data_eff.json dashboard/data/bse_enriched_data_eff.json
           git diff --cached --quiet || git commit -m "📊 BSE update: $(date +%Y-%m-%d) — ${{ steps.check_new.outputs.new_days }} new day(s)"
           for i in 1 2 3 4 5; do
             git push && exit 0
