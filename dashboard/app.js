@@ -1022,13 +1022,58 @@ function getYoYQuarter(qLabel) {
   return m[1] + ' FY ' + (parseInt(m[2]) - 1);
 }
 
+// ── Expiry calendar (NSE & BSE only) ─────────────────────────────────────────
+// Copy of EXPIRY_RULES in scripts/expiry_calendar.py, the source of truth (the
+// circular behind each rule is noted there); scripts/check_expiry_calendar.py
+// fails CI if the two drift. The weekly expiry falls on `weekday`, the monthly
+// on the month's last `weekday`. Dates are inclusive, null = open-ended, and
+// boundaries sit on Monday/Sunday so each Mon–Sun week has one expiry day.
+const EXPIRY_RULES = [
+  { exchange: 'nse', effective_from: null,         effective_to: '2025-08-31', weekday: 'Thursday' },
+  { exchange: 'nse', effective_from: '2025-09-01', effective_to: null,         weekday: 'Tuesday' },
+  { exchange: 'bse', effective_from: null,         effective_to: '2025-01-05', weekday: 'Friday' },
+  { exchange: 'bse', effective_from: '2025-01-06', effective_to: '2025-08-31', weekday: 'Tuesday' },
+  { exchange: 'bse', effective_from: '2025-09-01', effective_to: null,         weekday: 'Thursday' },
+];
+const EXPIRY_DOW_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function expiryRuleFor(exchange, dateStr) {
+  return EXPIRY_RULES.find(r => r.exchange === exchange
+    && (r.effective_from === null || dateStr >= r.effective_from)
+    && (r.effective_to === null || dateStr <= r.effective_to)) || null;
+}
+
+// True when dateStr ('YYYY-MM-DD') falls on the expiry weekday of the rule in
+// force on that same date — so across a rule change each candidate day is
+// judged by its own rule (e.g. NSE Aug 2025 → last Thursday, Sep → last Tuesday).
+function isScheduledExpiry(exchange, dateStr) {
+  const rule = expiryRuleFor(exchange, dateStr);
+  return !!rule && EXPIRY_DOW_NAMES[new Date(dateStr + 'T00:00:00Z').getUTCDay()] === rule.weekday;
+}
+
+// Header wording for the month-end tables: "Tuesday" while one rule covers the
+// data, otherwise the history, e.g. "expiry weekday (Thu → Tue from Sep 2025)".
+function monthEndExpiryWeekdayLabel(exchange, dailyAll) {
+  const first = dailyAll.reduce((mn, r) => (!mn || r.date < mn ? r.date : mn), '');
+  const last = dailyAll.reduce((mx, r) => (r.date > mx ? r.date : mx), '');
+  const rules = EXPIRY_RULES.filter(r => r.exchange === exchange
+    && (r.effective_to === null || r.effective_to >= first)
+    && (r.effective_from === null || r.effective_from <= last));
+  if (rules.length <= 1) return rules.length ? rules[0].weekday : 'expiry weekday';
+  const mon = s => new Date(s + 'T00:00:00Z').toLocaleString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' });
+  const steps = rules.map((r, i) => i === 0 || !r.effective_from
+    ? r.weekday.slice(0, 3)
+    : `${r.weekday.slice(0, 3)} from ${mon(r.effective_from)}`);
+  return `expiry weekday (${steps.join(' → ')})`;
+}
+
 // ── Month-end expiry comparison (NSE & BSE only) ──────────────────────────────
 // Derived purely from observed trading dates in DATA.daily_all — no separate
-// holiday calendar needed. Expiry = the calendar month's last Tuesday (NSE) /
-// Thursday (BSE); if that exact date isn't an actual trading day (holiday),
-// walk back one calendar day at a time until landing on one that is.
+// holiday calendar needed. Expiry = the calendar month's last scheduled expiry
+// day per EXPIRY_RULES (last Tuesday for NSE since Sep 2025, last Thursday
+// before; see the table for BSE); if that exact date isn't an actual trading
+// day (holiday), walk back one calendar day at a time until landing on one that is.
 function computeMonthExpiryDates(dailyAll, exchange) {
-  const targetDow = exchange === 'bse' ? 4 : 2; // Thu=4, Tue=2 (Sun=0 .. Sat=6)
   const tradingDates = new Set(dailyAll.map(r => r.date));
   const monthsSet = new Set(dailyAll.map(r => r.date.slice(0, 7)));
   const lastDataDate = dailyAll.reduce((mx, r) => (r.date > mx ? r.date : mx), '');
@@ -1040,7 +1085,12 @@ function computeMonthExpiryDates(dailyAll, exchange) {
     const [y, m] = monthKey.split('-').map(Number);
     const lastDayNum = new Date(Date.UTC(y, m, 0)).getUTCDate(); // last calendar day of month m
     const cursor = new Date(Date.UTC(y, m - 1, lastDayNum));
-    while (cursor.getUTCDay() !== targetDow) cursor.setUTCDate(cursor.getUTCDate() - 1);
+    // Latest day of the month that is a scheduled expiry under the rule in
+    // force on that day. A month straddling a rule change therefore ends on
+    // the new rule's last weekday if that falls on/after the change, else on
+    // the old rule's (BSE Jan 2025: Friday rule to 5 Jan, then Tuesday → 28 Jan).
+    while (cursor.getUTCDate() > 1 && !isScheduledExpiry(exchange, toStr(cursor))) cursor.setUTCDate(cursor.getUTCDate() - 1);
+    if (!isScheduledExpiry(exchange, toStr(cursor))) return; // no rule covers this month
 
     // Expiry still in the future (e.g. this month's last Tuesday hasn't happened
     // yet): skip it. Otherwise the holiday walk-back below would misread the
@@ -1059,11 +1109,11 @@ function computeMonthExpiryDates(dailyAll, exchange) {
 }
 
 // Same idea as computeMonthExpiryDates but scoped to each ISO week instead of
-// each calendar month: that week's Tuesday (NSE) / Thursday (BSE), or the
-// nearest earlier trading day if that's a holiday — bounded to not walk back
-// past that week's own Monday (a holiday-shift never borrows from last week).
+// each calendar month: that week's scheduled expiry day per EXPIRY_RULES
+// (Tuesday NSE / Thursday BSE today), or the nearest earlier trading day if
+// that's a holiday — bounded to not walk back past that week's own Monday (a
+// holiday-shift never borrows from last week).
 function computeWeekExpiryDates(dailyAll, exchange) {
-  const targetDow = exchange === 'bse' ? 4 : 2; // Thu=4, Tue=2 (Sun=0 .. Sat=6)
   const tradingDates = new Set(dailyAll.map(r => r.date));
   const pad2 = n => String(n).padStart(2, '0');
   const toStr = d => `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
@@ -1083,8 +1133,16 @@ function computeWeekExpiryDates(dailyAll, exchange) {
   const results = [];
   weeksSet.forEach(weekStartStr => {
     const monday = parseUTC(weekStartStr);
-    const target = new Date(monday);
-    target.setUTCDate(monday.getUTCDate() + (targetDow - 1)); // Monday=1 in this offset scheme
+    // The week's scheduled expiry: the day (Mon–Fri) whose weekday matches the
+    // rule in force on that day. Rule boundaries are Mondays, so exactly one
+    // day qualifies; the latest is taken should a mid-week change ever qualify two.
+    let target = null;
+    for (let i = 4; i >= 0 && !target; i--) {
+      const c = new Date(monday);
+      c.setUTCDate(monday.getUTCDate() + i);
+      if (isScheduledExpiry(exchange, toStr(c))) target = c;
+    }
+    if (!target) return;
     // Same future-expiry guard as computeMonthExpiryDates: this week's expiry
     // day may not have happened yet.
     if (toStr(target) > lastDataDate) return;
@@ -1211,7 +1269,7 @@ function buildExpiryComparisonHTML(exchange, segKey, mOpts, qOpts) {
       <td id="expiryQYoy${r}-${segKey}"></td>
     </tr>`).join('');
 
-  const expiryWeekday = exchange === 'bse' ? 'Thursday' : 'Tuesday';
+  const expiryWeekday = monthEndExpiryWeekdayLabel(exchange, dailyAll);
   return `
   <div style="margin-top:var(--space-4)">
     <div class="xl-seg-header">${exchange.toUpperCase()} Month-End Expiry Comparison <span class="xl-seg-unit">last trading day on/before the month's last ${expiryWeekday} · ₹ Cr</span></div>
@@ -6181,7 +6239,7 @@ async function downloadWeeklyReport() {
         return `<tr style="font-weight:700"><td>Last ${nMonths} Months Avg</td><td>${n(avgWeekly)}</td><td>${n(avgMonthEnd)}</td><td>${prFmt(diff)}</td></tr>`;
       }).join('');
 
-      const expiryWeekday = exchange === 'bse' ? 'Thursday' : 'Tuesday';
+      const expiryWeekday = monthEndExpiryWeekdayLabel(exchange, dailyAll);
       return `
       <div class="pr-sub-header">Month-End Expiry Comparison (Total Rev, ₹ Cr) — last trading day on/before month's last ${expiryWeekday}</div>
       <table class="pr-table" style="margin-bottom:8px">
