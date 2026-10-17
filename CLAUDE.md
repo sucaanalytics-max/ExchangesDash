@@ -8,7 +8,7 @@ Exchange revenue analytics for NSE, BSE and MCX: Python pipelines on GitHub Acti
 |---|---|---|---|
 | `scripts/nse_pipeline.py`, `bse_pipeline.py` | `exchange-update.yml`, 00:30 / 12:30 / 15:30 UTC Mon–Fri | NSE/BSE archive APIs (curl_cffi) | Supabase `nse_daily` / `bse_daily` (+ aggregates), `dashboard/data/{nse,bse}_{dashboard,enriched}_data.json` (copies in `data/`) and `…_data_eff.json` |
 | `scripts/mcx_pipeline.py` | same workflow | **separate** Supabase project `mcx_daily_revenue`, written by the `sucaanalytics-max/mcx-vercel` repo | `dashboard/data/mcx_*` |
-| `scripts/*_share_analysis.py` | after each daily job | yfinance, screener.in fallback | `dashboard/data/*_share_analysis.json` (OLS price vs revenue MA) |
+| `scripts/*_share_analysis.py` | after each daily job | yfinance, screener.in fallback | `dashboard/data/*_share_analysis.json`: price vs the previous session's revenue MA, fitted by `scripts/share_regression.py` |
 | `scripts/*_live_poller.py` + `live_common.py` | `*-live.yml`, dispatched every 5 min by an external cron via `dashboard/api/trigger-live-polls.js`; no-op outside Mon–Fri 08:55–16:30 IST | NSE/BSE live turnover, yfinance quote | `dashboard/data/*_live.json`, `*_live_hourly.json`, `*_hourly_history.json` (committed to `main`) |
 | `scripts/excel_sync.py` | after daily jobs | Supabase | OneDrive Excel (append-only) |
 
@@ -23,17 +23,19 @@ Dashboard: `dashboard/index.html` + `app.js` (vanilla JS, Chart.js) + `style.css
 - Live samples are keyed on the exchange's trade date, never the wall clock; EOD is 16:00 IST (SEBI closing auction).
 - Expiry weekday changed over time (NSE Thu→Tue from 2025-09-01; BSE Fri→Tue from 2025-01-06, Tue→Thu from 2025-09-01); the monthly expiry is the month's last such weekday. The effective-dated rules live only in `scripts/expiry_calendar.py` (used by `live_common.classify_day`); `dashboard/app.js` keeps a JS copy, `EXPIRY_RULES`, checked by `scripts/check_expiry_calendar.py`. A holiday on the scheduled day moves expiry to the previous trading day (handled by the callers, from observed trading dates).
 - Timestamps written by pollers are UTC with a `Z` suffix.
+- Share-price regressions (`scripts/share_regression.py`; `dashboard/app.js` `computeShareModel` mirrors it for the DMA/lag toggles) pair each close with the revenue MA up to the previous session, computed over every revenue day. They report Newey-West t (bandwidth 1.3·√n), Durbin-Watson and an 80/20 chronological holdout against a "price unchanged" forecast. A fair value (`price_pred`) is published only with n ≥ 60, a positive slope with t ≥ 2 and a revenue MA that moved ≥ 10 %; otherwise it is null and the UI says why. R² is in-sample only.
 - Supabase writes from this repo are off unless the repository variable `ENABLE_SUPABASE_WRITES` is `true` (Excel sync: `ENABLE_EXCEL_SYNC`). Keep both off while the old repo `Research-Tusk/nse-cloud-pipeline` still writes the same tables; `scripts/compare_parallel_run.py` checks parity.
 
 ## Working here efficiently
 
 - Do not read `dashboard/data/*.json` or `data/*.json` whole (up to ~850 KB each). Query them: `python3 -I -c "import json; d=json.load(open('dashboard/data/nse_dashboard_data.json')); print(d.keys())"`.
-- `app.js` is ~6,300 lines: grep for the function, then read only that range.
+- `app.js` is ~7,700 lines: grep for the function, then read only that range.
 - Most commits are bot data updates. For human history: `git log --invert-grep --grep='📡' --grep='📈' --grep='📊'`.
 - Never edit committed live/data JSON by hand on a branch: bots rewrite those files on `main` every few minutes. Fix the generating code instead.
 
 ## Verify before pushing
 
+- `python3 -m unittest discover -s tests` (tiny fixtures; also checks the app.js mirrors in Node)
 - `python3 scripts/check_take_rates.py`
 - `python3 scripts/check_expiry_calendar.py`
 - `python3 -m pyflakes scripts/<changed>.py`

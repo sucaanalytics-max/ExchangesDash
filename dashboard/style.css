@@ -736,6 +736,15 @@ html, body {
   font-family: var(--font-mono, monospace);
 }
 
+/* Fair value withheld by the significance gate (shareMethodologyHTML) */
+.share-gate-note {
+  flex-basis: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
+}
+
 /* =========================
    CHART CONTAINERS
    ========================= */
