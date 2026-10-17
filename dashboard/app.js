@@ -3081,6 +3081,9 @@ function initNSEPATPredictor() {
   const taxInput = document.getElementById('inputTaxRate');
   const sharesInput = document.getElementById('inputShares');
 
+  // Share count default comes from SHARES_OUTSTANDING_CR; a value the user typed is kept across rebuilds.
+  if (sharesInput.value === '') sharesInput.value = SHARES_OUTSTANDING_CR.nse.value;
+  sharesInput.title = `Default ${SHARES_OUTSTANDING_CR.nse.value} Cr: ${SHARES_OUTSTANDING_CR.nse.source}`;
   dailyRevInput.value = p.daily_avg_rev.toFixed(1);
   otherIncomeInput.value = (p.other_income_ratio * 100).toFixed(1);
 
@@ -3100,7 +3103,7 @@ function initNSEPATPredictor() {
     const tradingDays = Number(tradingDaysInput.value) || 62;
     const otherIncomeRatio = (Number(otherIncomeInput.value) || 0) / 100;
     const taxRate = (Number(taxInput.value) || 25.2) / 100;
-    const shares = Number(sharesInput.value) || 247.5;
+    const shares = Number(sharesInput.value) || SHARES_OUTSTANDING_CR.nse.value;
 
     if (dailyRev <= 0) {
       document.getElementById('predictorOutput').innerHTML = '';
@@ -3381,8 +3384,8 @@ function updateNSEPrediction() {
     </div>
     <div class="pred-card">
       <div class="pred-label">Scenario EPS</div>
-      <div class="pred-value">₹ ${(pat / 247.5).toFixed(2)}</div>
-      <div style="font-size:var(--text-xs);color:var(--color-text-faint);margin-top:4px">~247.5 Cr shares</div>
+      <div class="pred-value">₹ ${(pat / SHARES_OUTSTANDING_CR.nse.value).toFixed(2)}</div>
+      <div style="font-size:var(--text-xs);color:var(--color-text-faint);margin-top:4px" title="${sharesSourceNote('nse')}">~${SHARES_OUTSTANDING_CR.nse.value} Cr shares</div>
     </div>
   `;
 
@@ -4483,6 +4486,39 @@ function buildBSEShareAnalysis() {
 }
 
 // ========================
+// SHARES OUTSTANDING — the one place share counts live
+// ========================
+
+// Crore shares, used for every EPS in the valuation views (Quick Valuation,
+// BSE Annual Predictor default, NSE PAT predictor). Nothing fetches share
+// counts — yfinance supplies prices only — so these are static, and each view
+// shows the value with its source and as-of note. as_of is null where the repo
+// records no date; source says how far the figure can be trusted.
+// BSE's 40.73 is also the Excel-replica Annual Predictor's starting value; the
+// workbook it mirrors read shares from a Bloomberg/FactSet plugin (see
+// docs/superpowers/specs/2026-07-02-bse-excel-valuation-replication-design.md),
+// but neither the figure nor its date is recorded anywhere checkable.
+// NSE's 247.5 is the share count implied by reported PAT ÷ EPS in
+// nse_dashboard_data.json's pnl: 247.4–247.6 Cr in every reported quarter.
+const SHARES_OUTSTANDING_CR = {
+  bse: { value: 40.73, as_of: null, source: 'hard-coded, unverified' },
+  mcx: { value: 25.45, as_of: null, source: 'hard-coded, unverified' },
+  nse: { value: 247.5, as_of: 'Q3 FY 2026', source: 'implied by reported PAT ÷ EPS in the NSE P&L data (247.4–247.6 Cr each reported quarter since Q3 FY 2024)' },
+};
+
+// Escapes text for HTML content and double-quoted attributes.
+function escHtml(text) {
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// "source · as of X" line shown with a share count (HTML-escaped).
+function sharesSourceNote(exchange) {
+  const s = SHARES_OUTSTANDING_CR[exchange];
+  if (!s) return '';
+  return escHtml(`${s.source} · ${s.as_of ? 'as of ' + s.as_of : 'as-of date not recorded'}`);
+}
+
+// ========================
 // BSE VALUATION MODEL — mirrors Excel "BSE" sheet, 7-part layout
 // ========================
 
@@ -4497,7 +4533,7 @@ const BSE_VALUATION_DEFAULTS = {
   peBase:                   45,
   peBull:                   50,
   discountPct:              18,
-  sharesOutstandingCr:   40.73,
+  sharesOutstandingCr:   SHARES_OUTSTANDING_CR.bse.value,
 
   q1TotalTradingDays:       61,
   otherIncomeQuarterlyCr: 472.16,
@@ -4624,6 +4660,33 @@ async function loadBSEAnalystTargets() {
   return BSE_ANALYST_TARGETS_CACHE;
 }
 
+// Broker targets older than this are flagged as stale wherever they are shown.
+const ANALYST_TARGET_STALE_DAYS = 90;
+
+// Whole days from an ISO date ("2026-05-08") to today's IST date.
+function daysSinceIso(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+  const t = /^(\d{4})-(\d{2})-(\d{2})/.exec(istDateOf() || '');
+  if (!m || !t) return null;
+  return Math.round((Date.UTC(+t[1], +t[2] - 1, +t[3]) - Date.UTC(+m[1], +m[2] - 1, +m[3])) / 86400000);
+}
+
+// http(s) URL from a hand-edited file, attribute-escaped; anything else → null.
+function safeHttpUrl(u) {
+  if (typeof u !== 'string' || !u) return null;
+  try {
+    const url = new URL(u);
+    return /^https?:$/.test(url.protocol) ? url.href.replace(/"/g, '%22') : null;
+  } catch { return null; }
+}
+
+function analystTargetAgeHTML(t) {
+  const age = daysSinceIso(t.date);
+  if (age == null) return '';
+  const stale = age > ANALYST_TARGET_STALE_DAYS;
+  return `<span class="target-age${stale ? ' target-age--stale' : ''}"${stale ? ` title="Older than ${ANALYST_TARGET_STALE_DAYS} days"` : ''}>${age} day${age === 1 ? '' : 's'} old</span>`;
+}
+
 function bseAssumptionRow(label, key, value, suffix, step) {
   return `<div class="param-row">
     <label>${label}</label>
@@ -4647,13 +4710,9 @@ function bseContextRow(label, valueHtml) {
 // ratio persist per exchange via localStorage.
 // NOTE: MCX has no prior valuation baseline in this codebase (unlike BSE's
 // Excel-sourced figures) — its PAT margin/other income/PE defaults below are
-// round-number placeholders, not real financial figures. Shares outstanding for
-// both exchanges is sourced from yfinance (sharesOutstanding for BSE.NS/MCX.NS).
-// NSE's 247.5 Cr is not a fresh guess — it's the implied share count (PAT/EPS)
-// already baked into this codebase's own NSE PAT Prediction Engine data
-// (dashboard/data/nse_dashboard_data.json's pnl/pnl_predicted_quarters), stable
-// at ~247.4-247.7 Cr across every quarter checked.
-const QUICK_VAL_SHARES_CR = { bse: 40.73, mcx: 25.45, nse: 247.5 };
+// round-number placeholders, not real financial figures, and the panel labels
+// them so (QUICK_VAL_PROVENANCE). Shares outstanding come from
+// SHARES_OUTSTANDING_CR, which is hard-coded: no share-count feed exists.
 const QUICK_VAL_DEFAULTS = {
   bse: { patMarginPct: 52, otherIncomeMode: 'fixed', otherIncomeCr: 2055.39, peBear: 40, peBase: 45, peBull: 50, tradingDays: 247 },
   // MCX runs a fuller trading calendar than the equity exchanges (fewer holidays) —
@@ -4666,6 +4725,30 @@ const QUICK_VAL_DEFAULTS = {
   nse: { patMarginPct: 55, otherIncomeMode: 'pctOfTotal', otherIncomePct: 30, peBear: 25, peBase: 35, peBull: 45, tradingDays: 247 },
 };
 const QUICK_VAL_SCENARIOS = ['bear', 'base', 'bull'];
+
+// Provenance tags: every valuation input says where its value comes from, so a
+// placeholder is never read as a sourced figure.
+const PROV_KINDS = {
+  data:        { cls: 'prov-tag--data',        label: 'From data' },
+  excel:       { cls: 'prov-tag--model',       label: 'Excel model' },
+  assumption:  { cls: 'prov-tag--assumed',     label: 'Owner assumption' },
+  placeholder: { cls: 'prov-tag--placeholder', label: 'Placeholder — not sourced' },
+  unverified:  { cls: 'prov-tag--placeholder', label: 'Hard-coded — unverified' },
+  edited:      { cls: 'prov-tag--edited',      label: 'Edited' },
+};
+
+function provTag(kind, title, label) {
+  const k = PROV_KINDS[kind] || PROV_KINDS.assumption;
+  return `<span class="prov-tag ${k.cls}"${title ? ` title="${escHtml(title)}"` : ''}>${label || k.label}</span>`;
+}
+
+// Where each exchange's Quick Valuation defaults for PAT margin, other income
+// and P/E multiples come from (all three share one provenance per exchange).
+const QUICK_VAL_PROVENANCE = {
+  bse: { kind: 'excel',       badge: 'Excel-model inputs', note: 'Starting value from the "BSE" sheet of the Excel valuation model (20260121_Exchanges_Dashboard.xlsx), as in the Annual Predictor below' },
+  nse: { kind: 'assumption',  badge: 'Owner assumptions',  note: "Explicit modelling assumption set by the dashboard's owner; not computed from reported financials" },
+  mcx: { kind: 'placeholder', badge: 'Placeholder inputs', note: 'Round-number placeholder: there is no MCX valuation baseline in this codebase, so this is not a real financial figure' },
+};
 
 function quickValStorageKey(exchange) { return `quickValuation_${exchange}_v1`; }
 
@@ -4695,7 +4778,7 @@ function computeQuickValuation(exchange, a, cmp) {
     totalIncome   = annualRevenue + otherIncomeCr;
   }
   const pat            = totalIncome * a.patMarginPct / 100;
-  const shares          = QUICK_VAL_SHARES_CR[exchange];
+  const shares          = SHARES_OUTSTANDING_CR[exchange]?.value;
   const eps              = shares ? pat / shares : null;
   const scenarios = {};
   QUICK_VAL_SCENARIOS.forEach(key => {
@@ -4741,6 +4824,49 @@ function buildQuickValuationPanel(el, exchange, dailySeries, cmp) {
 
   const pctMode = a.otherIncomeMode === 'pctOfTotal';
 
+  // ── Provenance: where each input's current value comes from ──
+  const defaults = QUICK_VAL_DEFAULTS[exchange];
+  const prov     = QUICK_VAL_PROVENANCE[exchange];
+  const shares   = SHARES_OUTSTANDING_CR[exchange];
+  const otherKey = pctMode ? 'otherIncomePct' : 'otherIncomeCr';
+  const peKeys   = ['peBear', 'peBase', 'peBull'];
+  let adrEdited  = false;
+  const isEdited = key => key === 'adr' ? adrEdited
+    : key === 'pe' ? peKeys.some(k => a[k] !== defaults[k])
+    : a[key] !== defaults[key];
+  const inputProv = key => {
+    if (isEdited(key)) {
+      return provTag('edited', key === 'adr'
+        ? 'Typed in this session; resets to the projection on reload'
+        : 'Changed from the default and saved in this browser');
+    }
+    if (key === 'adr') return provTag('data', `${curFY} actual revenue to date plus the trailing 45-day average for the remaining trading days`);
+    return provTag(prov.kind, prov.note);
+  };
+  const provSlot = key => `<span id="qv-${exchange}-prov-${key}">${inputProv(key)}</span>`;
+  const badgeText = () => (['patMarginPct', otherKey, 'pe'].some(isEdited) ? 'Custom inputs' : prov.badge);
+  const placeholderLeft = () => prov.kind === 'placeholder' && ['patMarginPct', otherKey, 'pe'].some(k => !isEdited(k));
+
+  // Trading days per year vs the last completed FY's count in the data
+  const prevFY = 'FY ' + (Number(curFY.match(/\d{4}/)[0]) - 1);
+  const prevFYDays = dailySeries.filter(r => r.fy === prevFY).length;
+  const tdMatches = prevFYDays > 0 && a.tradingDays === prevFYDays;
+  const tdLabel = 'Trading Days / Year '
+    + (tdMatches
+      ? provTag('data', `Equals the number of ${prevFY} trading days in the data`)
+      : provTag('assumption', 'Not taken from the data', 'Assumption'))
+    + (prevFYDays ? `<div class="prov-note">${prevFY} had ${prevFYDays} trading days</div>` : '');
+
+  const sharesLabel = 'Shares Outstanding (Cr) '
+    + (shares ? provTag(shares.source === 'hard-coded, unverified' ? 'unverified' : 'data', shares.source)
+        + `<div class="prov-note">${sharesSourceNote(exchange)}</div>` : '');
+
+  // CMP comes from this exchange's share feed: an intraday quote or the last close
+  const lat = SHARE_DATA?.latest;
+  const cmpTag = cmp == null ? ''
+    : lat?.is_live ? provTag('data', 'Intraday quote from the live poller', 'Live quote')
+    : provTag('data', 'Latest daily close in the share-price feed', lat?.date ? 'Close ' + fmtTradeDate(lat.date) : 'Latest close');
+
   function updateOutputs() {
     const set = (id, html) => { const node = document.getElementById(id); if (node) node.innerHTML = html; };
     set(`qv-${exchange}-annualRevenue`, fmt(result.annualRevenue));
@@ -4756,15 +4882,29 @@ function buildQuickValuationPanel(el, exchange, dailySeries, cmp) {
     });
   }
 
+  function updateProvenance() {
+    ['adr', otherKey, 'patMarginPct', 'pe'].forEach(key => {
+      const node = document.getElementById(`qv-${exchange}-prov-${key}`);
+      if (node) node.innerHTML = inputProv(key);
+    });
+    const badge = document.getElementById(`qv-${exchange}-badge`);
+    if (badge) {
+      badge.textContent = badgeText();
+      badge.classList.toggle('chart-badge--warn', placeholderLeft());
+    }
+    const warn = document.getElementById(`qv-${exchange}-placeholder-warning`);
+    if (warn) warn.hidden = !placeholderLeft();
+  }
+
   const scenarioCols = QUICK_VAL_SCENARIOS.map(key => `
     <td style="text-align:center">${qvCellInput(exchange, 'pe' + key[0].toUpperCase() + key.slice(1), a['pe' + key[0].toUpperCase() + key.slice(1)], '1')}</td>`).join('');
   const targetCols = QUICK_VAL_SCENARIOS.map(key => `<td id="qv-${exchange}-target-${key}" style="text-align:center"></td>`).join('');
   const upsideCols = QUICK_VAL_SCENARIOS.map(key => `<td id="qv-${exchange}-upside-${key}" style="text-align:center"></td>`).join('');
 
   const otherIncomeRows = pctMode
-    ? bseContextRow('Other Income (% of Total Revenue)', qvCellInput(exchange, 'otherIncomePct', a.otherIncomePct, '1'))
+    ? bseContextRow(`Other Income (% of Total Revenue) ${provSlot(otherKey)}`, qvCellInput(exchange, 'otherIncomePct', a.otherIncomePct, '1'))
       + bseContextRow('Other Income, implied (₹ Cr)', `<span id="qv-${exchange}-otherIncomeComputed"></span>`)
-    : bseContextRow('Other Income (₹ Cr)', qvCellInput(exchange, 'otherIncomeCr', a.otherIncomeCr, '1'));
+    : bseContextRow(`Other Income (₹ Cr) ${provSlot(otherKey)}`, qvCellInput(exchange, 'otherIncomeCr', a.otherIncomeCr, '1'));
 
   // EPS (and everything downstream of it) is built off the full projected FY
   // income, not a trailing/current-date run rate — so the target price is a
@@ -4774,20 +4914,22 @@ function buildQuickValuationPanel(el, exchange, dailySeries, cmp) {
 
   el.innerHTML = `
   <div class="chart-panel" style="margin-bottom:var(--space-4)">
-    <div class="chart-title">Quick Valuation — ${curFY} Projected ADR <span class="chart-badge">Default</span></div>
-    <p class="section-desc">ADR defaults to a projected full-year average for ${curFY} every time this page loads — actual reported revenue for the ${daysElapsed} trading day${daysElapsed === 1 ? '' : 's'} elapsed so far, plus the trailing 45-day average applied to the ${daysRemaining} remaining trading day${daysRemaining === 1 ? '' : 's'} (of ${a.tradingDays} assumed for the year). Edit it freely, it just won't be remembered on refresh. PAT margin, other income, PE ratios, and CMP-derived targets are saved.${pctMode ? ' Other income here is solved so it equals the given % of total revenue (transaction revenue + other income), not a flat add-on.' : ''}</p>
+    <div class="chart-title">Quick Valuation — ${curFY} Projected ADR <span class="chart-badge${placeholderLeft() ? ' chart-badge--warn' : ''}" id="qv-${exchange}-badge">${badgeText()}</span></div>
+    <p class="section-desc">ADR defaults to a projected full-year average for ${curFY} every time this page loads — actual reported revenue for the ${daysElapsed} trading day${daysElapsed === 1 ? '' : 's'} elapsed so far, plus the trailing 45-day average applied to the ${daysRemaining} remaining trading day${daysRemaining === 1 ? '' : 's'} (of ${a.tradingDays} assumed for the year). Edit it freely, it just won't be remembered on refresh. PAT margin, other income, PE ratios, and CMP-derived targets are saved.${pctMode ? ' Other income here is solved so it equals the given % of total revenue (transaction revenue + other income), not a flat add-on.' : ''} The tag beside each input says where its value comes from.</p>
+    ${prov.kind === 'placeholder' ? `<p class="prov-warning" id="qv-${exchange}-placeholder-warning"${placeholderLeft() ? '' : ' hidden'}>PAT margin, other income and P/E multiples below are round-number placeholders, not sourced figures, so these ${exchange.toUpperCase()} targets are illustrative only.</p>` : ''}
     <div style="overflow-x:auto;margin-bottom:var(--space-3)">
       <table class="data-table">
         <tbody>
-          ${bseContextRow(`Average Daily Revenue — ${curFY} Projected (₹ Cr)`, qvCellInput(exchange, 'adr', fmtNum(a.adr, 2), '0.01'))}
-          ${bseContextRow('Trading Days / Year', a.tradingDays)}
+          ${bseContextRow(`Average Daily Revenue — ${curFY} Projected (₹ Cr) ${provSlot('adr')}`, qvCellInput(exchange, 'adr', fmtNum(a.adr, 2), '0.01'))}
+          ${bseContextRow(tdLabel, a.tradingDays)}
           ${bseContextRow('Annual Transaction Revenue (₹ Cr)', `<span id="qv-${exchange}-annualRevenue"></span>`)}
           ${otherIncomeRows}
           ${bseContextRow('Total Income (₹ Cr)', `<span id="qv-${exchange}-totalIncome"></span>`)}
-          ${bseContextRow('PAT Margin (%)', qvCellInput(exchange, 'patMarginPct', a.patMarginPct, '0.5'))}
+          ${bseContextRow(`PAT Margin (%) ${provSlot('patMarginPct')}`, qvCellInput(exchange, 'patMarginPct', a.patMarginPct, '0.5'))}
           ${bseContextRow('<strong>PAT (₹ Cr)</strong>', `<strong><span id="qv-${exchange}-pat"></span></strong>`)}
+          ${bseContextRow(sharesLabel, shares ? fmtNum(shares.value, 2) : '—')}
           ${bseContextRow(`<strong>Expected EPS — ${fyeLabel} (₹)</strong>`, `<strong><span id="qv-${exchange}-eps"></span></strong>`)}
-          ${bseContextRow('CMP — Current Price Estimate (₹)', `<span id="qv-${exchange}-cmp"></span>`)}
+          ${bseContextRow(`CMP — Current Price Estimate (₹) ${cmpTag}`, `<span id="qv-${exchange}-cmp"></span>`)}
         </tbody>
       </table>
     </div>
@@ -4795,7 +4937,7 @@ function buildQuickValuationPanel(el, exchange, dailySeries, cmp) {
       <table class="data-table">
         <thead><tr><th>Metric</th><th style="text-align:center">Bear</th><th style="text-align:center">Base</th><th style="text-align:center">Bull</th></tr></thead>
         <tbody>
-          <tr><td>PE Ratio (x)</td>${scenarioCols}</tr>
+          <tr><td>PE Ratio (x) ${provSlot('pe')}</td>${scenarioCols}</tr>
           <tr style="font-weight:600"><td>Target Share Price — ${fyeLabel}<span style="font-weight:400;font-size:11px;color:var(--color-text-muted)"> (full-year forward, not spot)</span></td>${targetCols}</tr>
           <tr><td>Upside vs CMP</td>${upsideCols}</tr>
         </tbody>
@@ -4808,8 +4950,10 @@ function buildQuickValuationPanel(el, exchange, dailySeries, cmp) {
   el.querySelectorAll(`[data-qv-exch="${exchange}"]`).forEach(input => {
     input.addEventListener('input', () => {
       a[input.dataset.qvKey] = parseFloat(input.value) || 0;
+      if (input.dataset.qvKey === 'adr') adrEdited = Math.abs(a.adr - Number(defaultAdr.toFixed(2))) > 1e-9;
       result = computeQuickValuation(exchange, a, cmp);
       updateOutputs();
+      updateProvenance();
       saveQuickValAssumptions(exchange, a);
     });
   });
@@ -4878,6 +5022,9 @@ async function buildBSEValuation() {
     set('triCmp',        tri.cmp              != null ? fmtPrice(tri.cmp)              : '—');
     set('triUpside',     fmtPctSigned(tri.upside));
 
+    set('annSharesProv', assumptions.sharesOutstandingCr === BSE_VALUATION_DEFAULTS.sharesOutstandingCr
+      ? provTag('unverified', SHARES_OUTSTANDING_CR.bse.source)
+      : provTag('edited', 'Changed from the default and saved in this browser'));
     set('annCtxDaysElapsed', `${mkt.daysElapsed} of ${assumptions.fy27TotalTradingDays}`);
     ['bear', 'base', 'bull'].forEach(k => {
       const s = annual[k];
@@ -4900,38 +5047,53 @@ async function buildBSEValuation() {
     set('qtrPat',      fmt(quarterly.pat));
   }
 
-  const analystRows = analystTargets.map(t => `
+  const analystRows = analystTargets.map(t => {
+    const url = safeHttpUrl(t.source_url);
+    return `
     <tr>
       <td>${t.broker}</td>
-      <td>${t.rating}</td>
       <td>₹ ${fmtNum(t.target_price, 0)}</td>
-      <td>${t.date}</td>
+      <td style="white-space:nowrap">${t.date}<br>${analystTargetAgeHTML(t)}</td>
+      <td>${t.rating}</td>
+      <td>${url ? `<a href="${url}" target="_blank" rel="noopener noreferrer">Report ↗</a>` : '<span style="color:var(--color-text-muted)">not on file</span>'}</td>
       <td style="color:var(--color-text-muted);font-size:11.5px">${t.methodology}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
+
+  // The analyst leg of the triangulated target is only as fresh as its oldest broker note.
+  const oldestTarget = analystTargets.reduce((mn, t) => (t.date && (!mn || t.date < mn) ? t.date : mn), null);
+  const oldestAge    = daysSinceIso(oldestTarget);
+  const analystStale = oldestAge != null && oldestAge > ANALYST_TARGET_STALE_DAYS;
+  const analystAsOf  = oldestTarget
+    ? `<p class="tri-asof${analystStale ? ' tri-asof--stale' : ''}">Analyst component uses broker targets as of ${oldestTarget} (oldest of ${analystTargets.length}, ${oldestAge} day${oldestAge === 1 ? '' : 's'} old)${analystStale ? ` — older than ${ANALYST_TARGET_STALE_DAYS} days, so it may not reflect current broker views` : ''}.</p>`
+    : '';
+  const cmpState = SHARE_DATA?.latest?.is_live ? 'live' : 'close';
+  const cmpDate  = SHARE_DATA?.latest?.date ? fmtTradeDate(SHARE_DATA.latest.date) : '';
 
   el.innerHTML = `
   <div id="bseQuickValPanel"></div>
   <div class="chart-panel" style="margin-bottom:var(--space-4)">
-    <div class="chart-title">1 · Triangulated Target Price <span class="chart-badge">${SHARE_DATA?.latest?.is_live ? 'Live' : 'Latest close'}</span></div>
+    <div class="chart-title">1 · Triangulated Target Price <span class="chart-badge">${cmpState === 'live' ? 'CMP live' : cmpDate ? 'CMP: close ' + cmpDate : 'CMP: latest close'}</span></div>
     <p class="section-desc">Average of the ADR (Annual Predictor Base case), 45-day regression, and analyst-consensus target prices, shown against CMP.</p>
     <div class="tri-target-grid">
       ${kpi('ADR Model', `<span id="triAdrModel"></span>`, 'Annual Predictor · Base', '')}
       ${kpi('Regression', `<span id="triRegression"></span>`, '45-day DMA model', '')}
       ${kpi('Analyst Target', `<span id="triAnalyst"></span>`, `avg of ${analystTargets.length} brokers, discounted`, '')}
       ${kpi('Average Target', `<span id="triAverage"></span>`, `<span id="triUpside"></span> vs CMP`, '')}
-      ${kpi('CMP', `<span id="triCmp"></span>`, SHARE_DATA?.latest?.is_live ? '🟢 live' : 'latest close', '')}
+      ${kpi('CMP', `<span id="triCmp"></span>`, cmpState === 'live' ? '🟢 live' : cmpDate ? 'close ' + cmpDate : 'latest close', '')}
     </div>
+    ${analystAsOf}
   </div>
 
   <div class="chart-panel" style="margin-bottom:var(--space-4)">
     <div class="chart-title">2 &amp; 3 · Annual Predictor — ${latestFY} <span class="chart-badge">Bear / Base / Bull</span></div>
-    <p class="section-desc">Same layout and formulas as the Excel "Annual Predictor" block. Editable cells are inputs — everything else recomputes automatically.</p>
+    <p class="section-desc">Same layout and formulas as the Excel "Annual Predictor" block. Editable cells are inputs — everything else recomputes automatically. Their defaults are the Excel model's starting values, except shares outstanding, which is hard-coded and unverified.</p>
     <div style="overflow-x:auto;margin-bottom:var(--space-3)">
       <table class="data-table">
         <tbody>
           ${bseContextRow('FY Total Trading Days', bseCellInput('fy27TotalTradingDays', assumptions.fy27TotalTradingDays, '1'))}
           ${bseContextRow('FY Trading Days Elapsed', `<span id="annCtxDaysElapsed"></span>`)}
-          ${bseContextRow('Shares Outstanding (Cr)', bseCellInput('sharesOutstandingCr', assumptions.sharesOutstandingCr, '0.01'))}
+          ${bseContextRow(`Shares Outstanding (Cr) <span id="annSharesProv"></span><div class="prov-note">default ${fmtNum(SHARES_OUTSTANDING_CR.bse.value, 2)}: ${sharesSourceNote('bse')}</div>`, bseCellInput('sharesOutstandingCr', assumptions.sharesOutstandingCr, '0.01'))}
           ${bseContextRow('Total Market ADR — FY to Date (₹ Cr/day)', fmtNum(mkt.totalMarketADRFY, 2))}
           ${bseContextRow('Total Market ADR — Last 45 Days (₹ Cr/day)', fmtNum(mkt.totalMarketADR45, 2))}
           ${bseContextRow('Total Market ADR — Last 20 Days (₹ Cr/day)', fmtNum(mkt.totalMarketADR20, 2))}
@@ -5009,10 +5171,11 @@ async function buildBSEValuation() {
 
   <div class="chart-panel" style="margin-bottom:var(--space-4)">
     <div class="chart-title">1 (cont.) · Analyst Targets</div>
+    <p class="section-desc">Hand-maintained in dashboard/data/bse_analyst_targets.json. Ages count from each note's date; notes older than ${ANALYST_TARGET_STALE_DAYS} days are flagged. A source link appears when the entry has a <code>source_url</code>.</p>
     <div style="overflow-x:auto">
       <table class="data-table">
-        <thead><tr><th>Broker</th><th>Rating</th><th>Target</th><th>Date</th><th>Methodology</th></tr></thead>
-        <tbody>${analystRows || '<tr><td colspan="5" style="color:var(--color-text-muted)">No analyst targets on file — add to dashboard/data/bse_analyst_targets.json</td></tr>'}</tbody>
+        <thead><tr><th>Broker</th><th>Target</th><th>Date · Age</th><th>Rating</th><th>Source</th><th>Methodology</th></tr></thead>
+        <tbody>${analystRows || '<tr><td colspan="6" style="color:var(--color-text-muted)">No analyst targets on file — add to dashboard/data/bse_analyst_targets.json</td></tr>'}</tbody>
       </table>
     </div>
   </div>

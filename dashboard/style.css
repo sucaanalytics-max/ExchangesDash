@@ -3162,3 +3162,63 @@ span.pr-neu {
     gap: var(--space-4);
   }
 }
+
+/* ── Valuation provenance: a tag beside each input says where its value
+   comes from (data, Excel model, owner assumption, placeholder, edited) ── */
+.prov-tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+  padding: 0 5px;
+  margin-left: 4px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+  vertical-align: 1px;
+  cursor: help;
+}
+.prov-tag--data        { color: var(--color-positive, #176C2E); }
+.prov-tag--model       { color: var(--color-info, #2563EB); }
+.prov-tag--assumed     { color: var(--color-text-muted); }
+.prov-tag--placeholder { color: var(--color-warning); background: var(--color-warning-bg, rgba(255, 214, 10, 0.12)); }
+.prov-tag--edited      { color: var(--color-primary); }
+
+.prov-note {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+}
+
+.prov-warning,
+.tri-asof {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  margin: 0 14px var(--space-3);
+  max-width: 72ch;
+}
+.prov-warning,
+.tri-asof--stale {
+  color: var(--color-warning);
+  background: var(--color-warning-bg, rgba(255, 214, 10, 0.12));
+  border-left: 3px solid var(--color-warning);
+  padding: 6px 10px;
+}
+.prov-warning[hidden] { display: none; }
+.tri-asof { margin-top: var(--space-3); }
+
+.chart-title .chart-badge.chart-badge--warn {
+  background: #ffd60a;
+  color: #16181D;
+}
+
+.target-age {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+.target-age--stale {
+  color: var(--color-warning);
+  font-weight: 700;
+}
+.target-age--stale::before { content: '⚠ '; }
