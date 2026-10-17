@@ -68,18 +68,29 @@ def compare_daily(ex, days):
 
     only_new = [d for d in dates if d not in old_by]
     only_old = [d for d in dates if d not in new_by]
-    diffs = []
+    diffs, corrected = [], []
     for d in dates:
         if d in new_by and d in old_by:
+            row_diffs = []
             for k in rev_fields(old_by[d]):
                 a, b = float(new_by[d].get(k) or 0), float(old_by[d].get(k) or 0)
                 if abs(a - b) > TOLERANCE_CR:
-                    diffs.append(f"{d} {k}: new {a:.4f} vs old {b:.4f}")
+                    row_diffs.append(k)
+            # The new repo fills a cash figure the old one stored as 0 (posting
+            # lag, bse_pipeline.corrections): an intended correction, not a
+            # parity break, as long as nothing but cash and the total moved.
+            if (row_diffs and set(row_diffs) <= {"cash_rev", "total_rev"}
+                    and not float(old_by[d].get("cash_rev") or 0) and float(new_by[d].get("cash_rev") or 0)):
+                corrected.append(f"{d} cash_rev: new {float(new_by[d]['cash_rev']):.4f} vs old 0")
+                continue
+            diffs += [f"{d} {k}: new {float(new_by[d].get(k) or 0):.4f} vs old {float(old_by[d].get(k) or 0):.4f}"
+                      for k in row_diffs]
 
     ok = not (only_new or only_old or diffs)
     print(f"[{'OK ' if ok else 'DIFF'}] {ex} daily: new last {new_rows[-1]['date']} ({len(new_rows)} rows), "
           f"old last {old_rows[-1]['date']} ({len(old_rows)} rows), compared {len(dates)} dates")
-    for label, items in (("only in new", only_new), ("only in old", only_old), ("value diffs", diffs)):
+    for label, items in (("only in new", only_new), ("only in old", only_old), ("value diffs", diffs),
+                         ("cash filled where the old repo has 0 (expected)", corrected)):
         if items:
             print(f"       {label}: {items[:10]}{' …' if len(items) > 10 else ''}")
     for issue in integrity(ex, new_rows):
