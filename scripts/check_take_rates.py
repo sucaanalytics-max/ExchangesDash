@@ -1,6 +1,8 @@
 """
 Fail if the JS take rates in dashboard/api/revenue.js drift from
-scripts/take_rates.py (the Python source of truth).
+scripts/take_rates.py (derived from scripts/fee_register.py, the single
+source of every rate), or if the fee register itself is malformed (gaps or
+overlaps in a statutory chain, unknown basis, no open-ended current rule).
 
 Run: python scripts/check_take_rates.py
 """
@@ -10,6 +12,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import fee_register
 import take_rates as tr
 
 JS_FILE = Path(__file__).parent.parent / "dashboard" / "api" / "revenue.js"
@@ -25,7 +28,7 @@ EXPECTED = {
 
 def main():
     js = JS_FILE.read_text()
-    bad = []
+    bad = [f"fee_register: {p}" for p in fee_register.validate()]
     for name, want in EXPECTED.items():
         m = re.search(rf"const {name}\s*=\s*([\d.]+)\s*/\s*100\s*\*\s*2\s*;", js)
         if not m:
@@ -37,7 +40,8 @@ def main():
     if bad:
         print("Take-rate drift:\n  " + "\n  ".join(bad))
         sys.exit(1)
-    print(f"Take rates consistent ({len(EXPECTED)} checked)")
+    print(f"Take rates consistent ({len(EXPECTED)} checked); "
+          f"fee register valid ({len(fee_register.RULES)} rules)")
 
 
 if __name__ == "__main__":
