@@ -1,13 +1,14 @@
 """
 MCX Ltd Share Price Analysis
-Fetches MCX.NS share prices from yfinance and merges with daily revenue from
-the MCX pipeline JSON. Runs OLS regression of price ~ revenue_MA to model
-the revenue-driven fair value of MCX stock.
+Fetches MCX.NS share prices from yfinance (screener.in fills missing days) and
+fits price ~ 45-day revenue MA (previous session) from REGRESSION_START on to
+model the revenue-driven fair value of MCX stock. The method lives in
+share_regression.py.
 
 Days flagged `modelled` in the revenue file (the pre-2024-09-02 historical
 backfill, see mcx_pipeline.py) never enter a regression fit: a row is left out
-when its own date or any day in its revenue moving-average window is modelled.
-They stay in the output series, flagged, for the chart.
+when any day in its revenue moving-average window is modelled. They stay in the
+output series, flagged, for the chart.
 
 Outputs: dashboard/data/mcx_share_analysis.json
 
@@ -21,24 +22,9 @@ import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
+import share_regression as sr
 
 warnings.filterwarnings("ignore")
-
-
-class _SafeEncoder(json.JSONEncoder):
-    """Convert float NaN/Inf to null so the output is valid JSON."""
-    def iterencode(self, o, _one_shot=False):
-        return super().iterencode(self._sanitize(o), _one_shot)
-
-    def _sanitize(self, obj):
-        if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
-            return None
-        if isinstance(obj, dict):
-            return {k: self._sanitize(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [self._sanitize(v) for v in obj]
-        return obj
 
 SCRIPT_DIR    = Path(__file__).parent
 REPO_ROOT     = SCRIPT_DIR.parent
@@ -49,22 +35,21 @@ TICKER           = "MCX.NS"
 REGRESSION_START = "2025-01-01"   # Best R² window (0.81); 2024 start captured pre-rerate regime
 MA_WINDOWS       = [20, 30, 45, 50, 60, 90]
 FIXED_MA         = 45
+# screener.in company page /company/MCX/ — its public price-chart API needs no
+# login. Fills days yfinance is missing, as for BSE and NSE.
+SCREENER_COMPANY_ID = 2156
 
-
-# ---------------------------------------------------------------------------
-# Data loading
-# ---------------------------------------------------------------------------
 
 def load_revenue(path):
-    """Returns ({date_str: total_rev_cr}, {modelled date_str}) from
+    """Returns (sorted [(date, total_rev)], {modelled date}) from
     mcx_dashboard_data.json."""
     with open(path) as f:
         raw = json.load(f)
     daily = [r for r in (raw.get("daily_all") or raw.get("daily", []))
              if r.get("total_rev") is not None]
-    revenue = {r["date"]: r["total_rev"] for r in daily}
+    rows = sorted((r["date"], float(r["total_rev"])) for r in daily)
     modelled = {r["date"] for r in daily if r.get("modelled")}
-    return revenue, modelled
+    return rows, modelled
 
 
 def fetch_yfinance_prices(start_date_str):
@@ -74,78 +59,42 @@ def fetch_yfinance_prices(start_date_str):
     result = {}
     for d, c in zip(hist.index, hist["Close"]):
         price = float(c)
-        if not math.isnan(price):
+        if math.isfinite(price):
             result[str(d)[:10]] = round(price, 2)
     return result
 
 
-# ---------------------------------------------------------------------------
-# Dataset construction
-# ---------------------------------------------------------------------------
-
-def build_dataset(revenue, prices):
-    """
-    Join revenue and price on date. Both must be present for a row to be included.
-    """
-    rows = []
-    for d in sorted(set(revenue) & set(prices)):
-        rows.append({
-            "date":       d,
-            "revenue_cr": revenue[d],
-            "price":      prices[d],
-        })
-    return sorted(rows, key=lambda r: r["date"])
-
-
-# ---------------------------------------------------------------------------
-# Statistics
-# ---------------------------------------------------------------------------
-
-def window_has_modelled(flags, window):
-    """Per row: True when any of the last `window` rows (itself included) is
-    modelled, i.e. its moving average is built partly from modelled revenue."""
-    out, run = [], 0
-    for i, f in enumerate(flags):
-        run += f
-        if i >= window:
-            run -= flags[i - window]
-        out.append(run > 0)
-    return out
-
-
-def rolling_ma(values, window):
-    """Returns list of MA values; None for the first (window-1) entries."""
-    result = []
-    for i in range(len(values)):
-        if i < window - 1:
-            result.append(None)
-        else:
-            result.append(float(np.mean(values[i - window + 1 : i + 1])))
+def fetch_screener_prices(start_date_str):
+    """Returns {date_str: close} from screener.in's public chart API ('Price on NSE')."""
+    from curl_cffi import requests as cffi_requests
+    url = (f"https://www.screener.in/api/company/{SCREENER_COMPANY_ID}/chart/"
+           f"?q=Price&days=400&consolidated=true")
+    r = cffi_requests.get(url, impersonate="chrome", timeout=20,
+                          headers={"Referer": "https://www.screener.in/company/MCX/consolidated/"})
+    r.raise_for_status()
+    result = {}
+    for ds in r.json().get("datasets", []):
+        if ds.get("metric") != "Price":
+            continue
+        for d, v in ds.get("values", []):
+            try:
+                price = float(v)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(price) and d >= start_date_str:
+                result[d] = round(price, 2)
     return result
 
 
-def run_ols(X, Y):
-    slope, intercept = np.polyfit(X, Y, 1)
-    pred = slope * X + intercept
-    r2   = 1 - np.var(Y - pred) / np.var(Y)
-    r    = np.corrcoef(X, Y)[0, 1]
-    return slope, intercept, r2, r
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main():
-    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     print(f"[{now_utc}] MCX share analysis starting…")
 
-    revenue, modelled = load_revenue(REVENUE_FILE)
-    print(f"Revenue: {len(revenue)} rows  ({min(revenue)} → {max(revenue)}), "
+    rev_rows, modelled = load_revenue(REVENUE_FILE)
+    print(f"Revenue: {len(rev_rows)} rows  ({rev_rows[0][0]} → {rev_rows[-1][0]}), "
           f"{len(modelled)} modelled")
 
-    # Fetch prices from yfinance for the full revenue range
-    yf_start = min(revenue)
+    yf_start = rev_rows[0][0]
     print(f"Fetching {TICKER} prices from {yf_start}…")
     try:
         prices = fetch_yfinance_prices(yf_start)
@@ -153,132 +102,29 @@ def main():
     except Exception as e:
         print(f"yfinance error: {e}")
         prices = {}
-
+    try:
+        screener = fetch_screener_prices(yf_start)
+    except Exception as e:
+        print(f"screener error: {e}")
+        screener = {}
+    filled = sorted(d for d in screener if d not in prices)
+    if screener:
+        print(f"screener: {len(screener)} prices, filling {len(filled)} day(s) yfinance lacks: {filled}")
+    for d in filled:
+        prices[d] = screener[d]
     if not prices:
-        print("ERROR: No price data available — aborting")
-        return
+        raise SystemExit("ERROR: No price data available — aborting")
 
-    all_rows = build_dataset(revenue, prices)
-    print(f"Combined: {len(all_rows)} rows  ({all_rows[0]['date']} → {all_rows[-1]['date']})")
-
-    revenues = [r["revenue_cr"] for r in all_rows]
-    is_modelled = [r["date"] in modelled for r in all_rows]
-
-    # ── Try every MA window, score on regression-window R² ──
-    print(f"\nMA window comparison (regression from {REGRESSION_START}, modelled days excluded):")
-    window_results = {}
-    excluded = {}
-    for window in MA_WINDOWS:
-        mas = rolling_ma(revenues, window)
-        tainted = window_has_modelled(is_modelled, window)
-        in_window = [i for i, r in enumerate(all_rows)
-                     if r["date"] >= REGRESSION_START and mas[i] is not None]
-        excluded[window] = sum(tainted[i] for i in in_window)
-        reg = [
-            {"date": all_rows[i]["date"], "rev_ma": mas[i], "price": all_rows[i]["price"],
-             "revenue_cr": all_rows[i]["revenue_cr"]}
-            for i in in_window if not tainted[i]
-        ]
-        if len(reg) < 10:
-            continue
-        X = np.array([r["rev_ma"] for r in reg])
-        Y = np.array([r["price"]  for r in reg])
-        slope, intercept, r2, pearson_r = run_ols(X, Y)
-        window_results[window] = {
-            "slope": slope, "intercept": intercept,
-            "r2": r2, "pearson_r": pearson_r, "n": len(reg),
-            "modelled_excluded": excluded[window],
-        }
-        marker = " ← fixed" if window == FIXED_MA else ""
-        print(f"  MA{window:2d}: R²={r2:.4f}  r={pearson_r:.4f}  n={len(reg)}{marker}")
-
-    if FIXED_MA not in window_results:
-        print(f"ERROR: MA{FIXED_MA} window has insufficient data — aborting")
-        return
-
-    best        = window_results[FIXED_MA]
-
-    if math.isnan(best["slope"]) or math.isnan(best["intercept"]):
-        print(f"ERROR: OLS returned NaN (likely NaN prices in input) — aborting")
-        return
-    best_window = FIXED_MA
-    print(f"\nUsing MA{best_window} (R²={best['r2']:.4f})")
-
-    # ── Build full series with best window ──
-    mas = rolling_ma(revenues, best_window)
-    tainted = window_has_modelled(is_modelled, best_window)
-    series, reg_series = [], []
-    for i, row in enumerate(all_rows):
-        if mas[i] is None:
-            continue
-        pred = best["slope"] * mas[i] + best["intercept"]
-        series.append({
-            "date":       row["date"],
-            "revenue_cr": round(row["revenue_cr"], 4),
-            "rev_ma":     round(mas[i], 4),
-            "price":      row["price"],
-            "price_pred": round(pred, 2),
-            "modelled":   is_modelled[i],
-        })
-        if row["date"] >= REGRESSION_START and not tainted[i]:
-            reg_series.append(series[-1])
-
-    latest     = reg_series[-1] if reg_series else series[-1]
-    error_pct  = round(
-        abs(latest["price_pred"] - latest["price"]) / latest["price"] * 100, 1
-    )
-    fit_label  = "strong" if best["r2"] > 0.7 else "moderate" if best["r2"] > 0.4 else "weak"
-
-    output = {
-        "updated_at":       now_utc,
-        "ticker":           TICKER,
-        "ma_window":        best_window,
-        "regression_start": REGRESSION_START,
-        "n_days":           len(reg_series),
-        "modelled_excluded": best["modelled_excluded"],
-        "ma_window_comparison": {
-            str(w): {
-                "r_squared":  round(v["r2"],       4),
-                "pearson_r":  round(v["pearson_r"], 4),
-                "n":          v["n"],
-                "modelled_excluded": v["modelled_excluded"],
-            }
-            for w, v in window_results.items()
-        },
-        "regression": {
-            "slope":      round(best["slope"],      4),
-            "intercept":  round(best["intercept"],  2),
-            "r_squared":  round(best["r2"],         4),
-            "pearson_r":  round(best["pearson_r"],  4),
-            "equation":   (
-                f"Price = {best['slope']:.2f} × "
-                f"Rev_MA{best_window} + {best['intercept']:.2f}"
-            ),
-            "fit": fit_label,
-        },
-        "latest": {
-            "date":         latest["date"],
-            "revenue_cr":   latest["revenue_cr"],
-            "rev_ma":       latest["rev_ma"],
-            "price_actual": latest["price"],
-            "price_pred":   latest["price_pred"],
-            "error_pct":    error_pct,
-        },
-        "series": series,
-    }
+    out = sr.build_output(ticker=TICKER, prices=prices, rev_rows=rev_rows,
+                          reg_start=REGRESSION_START, window=FIXED_MA, ma_windows=MA_WINDOWS,
+                          updated_at=now_utc, modelled=modelled)
+    if out is None or out["regression"] is None:
+        raise SystemExit(f"ERROR: MA{FIXED_MA} fit unavailable — aborting")
 
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_FILE.write_text(json.dumps(output, indent=2, cls=_SafeEncoder))
-    print(
-        f"\nWrote {OUTPUT_FILE.name} "
-        f"({len(series)} total rows, {len(reg_series)} in regression window)"
-    )
-    print(
-        f"Latest ({latest['date']}): "
-        f"actual ₹{latest['price']}  "
-        f"pred ₹{latest['price_pred']}  "
-        f"error {error_pct}%"
-    )
+    OUTPUT_FILE.write_text(json.dumps(out, indent=2, allow_nan=False))
+    print(f"\nWrote {OUTPUT_FILE.name} ({len(out['series'])} rows)")
+    print(sr.describe(out))
 
 
 if __name__ == "__main__":

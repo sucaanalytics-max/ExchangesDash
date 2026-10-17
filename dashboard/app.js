@@ -4717,22 +4717,163 @@ function buildSeriesWithDMA(rawSeries, dmaWindow, regStart, lag = 0, prefix = []
   };
 }
 
+// Mirror of scripts/share_regression.py (keep the two in step; tests/
+// test_share_regression.py checks they agree). The revenue MA runs over every
+// revenue trading day (`revenue_daily`), and a close on date d is paired with
+// the MA ending on the last revenue day before d, shifted back `extraLag`
+// revenue days. Slope errors are Newey-West (bandwidth 1.3·√n); the last 20 %
+// of the window is an out-of-sample test against holding the last training
+// price; a fair value is published only when the gate passes.
+const SHARE_GATE = { minN: 60, minT: 2, minSpread: 0.10, holdoutShare: 0.20, minHoldout: 10 };
+
+function shareOlsStats(X, Y) {
+  const n = X.length;
+  const xm = X.reduce((a, b) => a + b, 0) / n;
+  const ym = Y.reduce((a, b) => a + b, 0) / n;
+  let sxx = 0, sxy = 0, syy = 0;
+  for (let i = 0; i < n; i++) {
+    sxx += (X[i] - xm) ** 2; sxy += (X[i] - xm) * (Y[i] - ym); syy += (Y[i] - ym) ** 2;
+  }
+  const slope = sxy / sxx;
+  const intercept = ym - slope * xm;
+  const resid = X.map((x, i) => Y[i] - (slope * x + intercept));
+  const ssRes = resid.reduce((s, u) => s + u * u, 0);
+  const L = Math.floor(1.3 * Math.sqrt(n));
+  const g = X.map((x, i) => (x - xm) * resid[i]);
+  let S = g.reduce((s, v) => s + v * v, 0);
+  for (let l = 1; l <= L; l++) {
+    let c = 0;
+    for (let t = l; t < n; t++) c += g[t] * g[t - l];
+    S += 2 * (1 - l / (L + 1)) * c;
+  }
+  const seNw = Math.sqrt(Math.max(S, 0)) / sxx;
+  let dwNum = 0;
+  for (let t = 1; t < n; t++) dwNum += (resid[t] - resid[t - 1]) ** 2;
+  return {
+    slope, intercept, n,
+    r2: 1 - ssRes / syy,
+    r: sxy / Math.sqrt(sxx * syy),
+    seNw, tNw: seNw > 0 ? slope / seNw : null, nwLags: L,
+    dw: ssRes > 0 ? dwNum / ssRes : null,
+  };
+}
+
+function shareHoldout(X, Y) {
+  const n = X.length;
+  const nTest = Math.max(SHARE_GATE.minHoldout, Math.round(n * SHARE_GATE.holdoutShare));
+  const nTrain = n - nTest;
+  if (nTrain < 20) return null;
+  const fit = shareOlsStats(X.slice(0, nTrain), Y.slice(0, nTrain));
+  const last = Y[nTrain - 1];
+  let ape = 0, apeNaive = 0;
+  for (let i = nTrain; i < n; i++) {
+    ape      += Math.abs(fit.slope * X[i] + fit.intercept - Y[i]) / Y[i];
+    apeNaive += Math.abs(last - Y[i]) / Y[i];
+  }
+  const mape = ape / nTest * 100, mapeNaive = apeNaive / nTest * 100;
+  return { n_train: nTrain, n_test: nTest, mape_pct: mape, naive_mape_pct: mapeNaive, beats_naive: mape < mapeNaive };
+}
+
+function shareGateReasons(st, X) {
+  const reasons = [];
+  if (st.n < SHARE_GATE.minN) reasons.push(`only ${st.n} observations (needs ${SHARE_GATE.minN})`);
+  if (st.slope <= 0) reasons.push('slope is not positive');
+  else if (st.tNw == null || st.tNw < SHARE_GATE.minT)
+    reasons.push(st.tNw == null ? 'slope not significant'
+      : `slope not significant (Newey-West t = ${st.tNw.toFixed(2)}, needs ${SHARE_GATE.minT})`);
+  const xm = X.reduce((a, b) => a + b, 0) / X.length;
+  const spread = xm ? (Math.max(...X) - Math.min(...X)) / xm : 0;
+  if (spread < SHARE_GATE.minSpread)
+    reasons.push(`revenue MA moved only ${Math.round(spread * 100)}% over the window (needs ${Math.round(SHARE_GATE.minSpread * 100)}%)`);
+  return reasons;
+}
+
+// Model for one DMA window / extra lag. Files written before the Phase 5
+// method (no `revenue_daily`) fall back to the old same-day fit.
+function computeShareModel(shareData, dmaWindow, extraLag = 0) {
+  const prices = shareData.series || [];
+  const regStart = shareData.regression_start;
+  const rev = shareData.revenue_daily;
+  if (!rev) {
+    const legacy = buildSeriesWithDMA(prices, dmaWindow, regStart, extraLag, shareData.revenue_prefix || []);
+    return legacy && { ...legacy, n: shareData.n_days, meth: null };
+  }
+  const revDates = rev.map(r => r.date);
+  const mas = computeRollingMA(rev.map(r => r.revenue_cr), dmaWindow);
+  const tainted = [];
+  let run = 0;
+  rev.forEach((r, i) => {
+    run += r.modelled ? 1 : 0;
+    if (i >= dmaWindow) run -= rev[i - dmaWindow].modelled ? 1 : 0;
+    tainted.push(run > 0);
+  });
+  const rows = [];
+  let j = 0;
+  for (const p of prices) {
+    while (j < revDates.length && revDates[j] < p.date) j++;
+    const idx = j - 1 - extraLag;
+    if (idx < 0 || mas[idx] == null) continue;
+    rows.push({ ...p, rev_ma: mas[idx], _fit: p.date >= regStart && !tainted[idx] });
+  }
+  const fitRows = rows.filter(r => r._fit);
+  if (fitRows.length < 10) return null;
+  const X = fitRows.map(r => r.rev_ma), Y = fitRows.map(r => r.price);
+  const st = shareOlsStats(X, Y);
+  const reasons = shareGateReasons(st, X);
+  const supported = reasons.length === 0;
+  const series = rows.map(({ _fit, ...r }) => ({
+    ...r,
+    price_pred: supported ? Math.round((st.slope * r.rev_ma + st.intercept) * 100) / 100 : null,
+  }));
+  return {
+    series,
+    n: st.n,
+    reg: {
+      slope: st.slope, intercept: st.intercept, r_squared: st.r2, pearson_r: st.r,
+      equation: `Price = ${st.slope.toFixed(2)} × Rev_MA${dmaWindow}[t-${1 + extraLag}] + ${st.intercept.toFixed(2)}`,
+      fit: st.r2 > 0.7 ? 'strong' : st.r2 > 0.4 ? 'moderate' : 'weak',
+    },
+    meth: {
+      revenue_lag_days: 1 + extraLag,
+      t_stat_newey_west: st.tNw, newey_west_lags: st.nwLags, durbin_watson: st.dw,
+      holdout: shareHoldout(X, Y), fair_value_supported: supported, gate_reasons: reasons,
+    },
+  };
+}
+
+// Methodology line under the regression equation (null on pre-Phase-5 files).
+function shareMethodologyHTML(meth) {
+  if (!meth) return '';
+  const h = meth.holdout;
+  const t = meth.t_stat_newey_west;
+  const lagDays = meth.revenue_lag_days || 1;
+  const oos = h
+    ? `Out-of-sample (last ${h.n_test} days, fitted on the ${h.n_train} before): model error ${h.mape_pct.toFixed(1)}% vs ${h.naive_mape_pct.toFixed(1)}% for “price unchanged” — ${h.beats_naive ? 'beats' : '<strong>does not beat</strong>'} the naive forecast`
+    : 'Out-of-sample: too few days for a holdout test';
+  const gate = meth.fair_value_supported ? '' : `
+      <div class="share-gate-note">Fair value withheld: ${meth.gate_reasons.join('; ')}.</div>`;
+  return `
+      <span>Newey-West t = ${t == null ? '—' : t.toFixed(2)} (${meth.newey_west_lags} lags) &nbsp;|&nbsp; Durbin-Watson = ${meth.durbin_watson == null ? '—' : meth.durbin_watson.toFixed(2)} &nbsp;|&nbsp; Revenue lagged ${lagDays === 1 ? 'one session' : lagDays + ' sessions'}; R² is in-sample fit</span>
+      <span>${oos}</span>${gate}`;
+}
+
 // KPI grid + regression-equation panel for the BSE/MCX share-price regression
 // sections — factored out so switching the DMA window (10/20/45) can refresh
 // R², Pearson r, the equation, and the predicted price together, instead of
 // only the charts while these stayed pinned to the initial window's values.
-function shareRegressionInfoHTML(reg, predPrice, actualPrice, isLive, asOfDate, activeDma, regStart, nDays, ticker, activeLag) {
+function shareRegressionInfoHTML(reg, predPrice, actualPrice, isLive, asOfDate, activeDma, regStart, nDays, ticker, activeLag, meth = null) {
   const r2pct   = Math.round(reg.r_squared * 100);
-  const errDiff = predPrice - actualPrice;
-  const errPct  = actualPrice ? (errDiff / actualPrice * 100) : 0;
+  const hasPred = predPrice != null;
+  const errDiff = hasPred ? predPrice - actualPrice : null;
+  const errPct  = hasPred && actualPrice ? (errDiff / actualPrice * 100) : null;
   const lagPart = activeLag ? ` &nbsp;|&nbsp; Lag: ${activeLag} days (revenue leads)` : '';
 
   const kpiHTML = `
   <div class="share-kpi-grid">
-    ${kpi('Model R²',        r2pct + '%',              reg.fit + ' fit',    r2pct > 60 ? 'positive' : r2pct > 30 ? 'neutral' : 'negative')}
+    ${kpi('Model R²',        r2pct + '%',              reg.fit + ' fit' + (meth ? ' (in-sample)' : ''), r2pct > 60 ? 'positive' : r2pct > 30 ? 'neutral' : 'negative')}
     ${kpi('Pearson r',       reg.pearson_r.toFixed(2), 'revenue ↔ price',   '')}
-    ${kpi('Predicted Price', '₹' + fmtNum(predPrice, 0), 'model estimate', '')}
-    ${kpi(isLive ? 'Actual Price 🟢 Live' : 'Actual Price', '₹' + fmtNum(actualPrice, 0), (errDiff >= 0 ? '+' : '') + fmtNum(errDiff, 0) + ' vs model', errDiff >= 0 ? 'positive' : 'negative')}
+    ${kpi('Predicted Price', hasPred ? '₹' + fmtNum(predPrice, 0) : '—', hasPred ? 'model estimate' : 'withheld: not supported', hasPred ? '' : 'negative')}
+    ${kpi(isLive ? 'Actual Price 🟢 Live' : 'Actual Price', '₹' + fmtNum(actualPrice, 0), hasPred ? (errDiff >= 0 ? '+' : '') + fmtNum(errDiff, 0) + ' vs model' : 'no model price', hasPred ? (errDiff >= 0 ? 'positive' : 'negative') : '')}
   </div>`;
 
   const eqHTML = `
@@ -4742,7 +4883,7 @@ function shareRegressionInfoHTML(reg, predPrice, actualPrice, isLive, asOfDate, 
     <div style="font-size:12px;color:var(--color-text-muted);display:flex;gap:24px;flex-wrap:wrap">
       <span>R² = ${reg.r_squared.toFixed(3)} &nbsp;|&nbsp; r = ${reg.pearson_r.toFixed(3)} &nbsp;|&nbsp; n = ${nDays} trading days</span>
       <span>MA window: ${activeDma} days${lagPart} &nbsp;|&nbsp; Regression from: ${regStart} &nbsp;|&nbsp; Ticker: ${ticker}</span>
-      <span>Prediction error: ${errPct.toFixed(2)} % &nbsp;|&nbsp; As of: ${asOfDate}</span>
+      <span>Prediction error: ${errPct == null ? '—' : errPct.toFixed(2) + ' %'} &nbsp;|&nbsp; As of: ${asOfDate}</span>${shareMethodologyHTML(meth)}
     </div>
   </div>`;
 
@@ -4947,7 +5088,7 @@ function buildBSEShareAnalysis() {
 
   const infoHTML = shareRegressionInfoHTML(
     reg, lat.price_pred, lat.price_actual, lat.is_live, lat.date,
-    maWin, regStart, SHARE_DATA.n_days, SHARE_DATA.ticker, 0
+    maWin, regStart, SHARE_DATA.n_days, SHARE_DATA.ticker, 0, SHARE_DATA.methodology
   );
 
   const regLabel = new Date(regStart + 'T00:00:00').toLocaleString('en-IN', { month: 'short', year: 'numeric' }) + '+';
@@ -5014,11 +5155,11 @@ function buildBSEShareAnalysis() {
   let bseActiveDma   = 45;
   let bseActiveLag   = 0;
   let bseActiveRange = 'nov2024';
-  const bseDmaCache  = { '45_0': { series: ser, reg } };
+  const bseDmaCache  = {};
 
   function getBseDmaData(w, lag) {
     const key = `${w}_${lag}`;
-    if (!bseDmaCache[key]) bseDmaCache[key] = buildSeriesWithDMA(ser, w, regStart, lag);
+    if (!bseDmaCache[key]) bseDmaCache[key] = computeShareModel(SHARE_DATA, w, lag);
     return bseDmaCache[key];
   }
 
@@ -5036,7 +5177,7 @@ function buildBSEShareAnalysis() {
       const latestRow = latestShareRow(d.series, lat.date);
       infoEl.innerHTML = shareRegressionInfoHTML(
         d.reg, latestRow.price_pred, lat.is_live ? lat.price_actual : latestRow.price, lat.is_live, lat.date,
-        bseActiveDma, regStart, SHARE_DATA.n_days, SHARE_DATA.ticker, bseActiveLag
+        bseActiveDma, regStart, d.n, SHARE_DATA.ticker, bseActiveLag, d.meth
       );
     }
   }
@@ -5839,9 +5980,8 @@ async function buildBSEValuation() {
 }
 
 function buildBSEDMADiagnosticCharts(bseSeries) {
-  const regStart = SHARE_DATA.regression_start || '2025-03-01';
-  const d10 = buildSeriesWithDMA(SHARE_DATA.series, 10, regStart);
-  const d45 = buildSeriesWithDMA(SHARE_DATA.series, 45, regStart);
+  const d10 = computeShareModel(SHARE_DATA, 10);
+  const d45 = computeShareModel(SHARE_DATA, 45);
   if (!d10 || !d45) return;
 
   ['bse10v45', 'bseLogLog1', 'bseLogLog2'].forEach(k => {
@@ -6072,7 +6212,7 @@ function buildMCXShareAnalysis() {
 
   const infoHTML = shareRegressionInfoHTML(
     reg, lat.price_pred, lat.price_actual, lat.is_live, lat.date,
-    maWin, regStart, SHARE_DATA.n_days, SHARE_DATA.ticker, 0
+    maWin, regStart, SHARE_DATA.n_days, SHARE_DATA.ticker, 0, SHARE_DATA.methodology
   );
 
   const regLabel = new Date(regStart + 'T00:00:00').toLocaleString('en-IN', { month: 'short', year: 'numeric' }) + '+';
@@ -6139,11 +6279,11 @@ function buildMCXShareAnalysis() {
   let mcxActiveDma   = 45;
   let mcxActiveLag   = 0;
   let mcxActiveRange = 'nov2024';
-  const mcxDmaCache  = { '45_0': { series: ser, reg } };
+  const mcxDmaCache  = {};
 
   function getMcxDmaData(w, lag) {
     const key = `${w}_${lag}`;
-    if (!mcxDmaCache[key]) mcxDmaCache[key] = buildSeriesWithDMA(ser, w, regStart, lag);
+    if (!mcxDmaCache[key]) mcxDmaCache[key] = computeShareModel(SHARE_DATA, w, lag);
     return mcxDmaCache[key];
   }
 
@@ -6161,7 +6301,7 @@ function buildMCXShareAnalysis() {
       const latestRow = latestShareRow(d.series, lat.date);
       infoEl.innerHTML = shareRegressionInfoHTML(
         d.reg, latestRow.price_pred, lat.is_live ? lat.price_actual : latestRow.price, lat.is_live, lat.date,
-        mcxActiveDma, regStart, SHARE_DATA.n_days, SHARE_DATA.ticker, mcxActiveLag
+        mcxActiveDma, regStart, d.n, SHARE_DATA.ticker, mcxActiveLag, d.meth
       );
     }
   }
@@ -6229,7 +6369,7 @@ function renderNSECollecting(el) {
   </div>
   <div class="chart-panel" style="margin-bottom:var(--space-4);padding:20px 24px">
     <div class="chart-title">Collecting price history</div>
-    <p class="section-desc">NSE shares only started trading on ${s.listing_date}, so there aren't enough price observations to fit a revenue → price regression yet. Daily closes are being collected automatically; once ${need} trading days are available the regression, charts and predicted price appear here on their own (using the 45-day revenue moving average, same as BSE and MCX).</p>
+    <p class="section-desc">NSE shares only started trading on ${s.listing_date}, so there aren't enough price observations to fit a revenue → price regression yet. Daily closes are being collected automatically; once ${need} trading days are available the regression and charts appear here on their own (using the 45-day revenue moving average up to the previous session, same as BSE and MCX). A predicted price is shown only when the fit passes the significance checks.</p>
     <div style="height:10px;border-radius:5px;background:var(--color-border);overflow:hidden;margin-top:12px">
       <div style="height:100%;width:${pct}%;background:${CHART_COLORS[0]}"></div>
     </div>
@@ -6239,7 +6379,7 @@ function renderNSECollecting(el) {
     <div class="chart-title">Daily closes since listing</div>
     <div style="overflow-x:auto">
       <table class="data-table">
-        <thead><tr><th>Date</th><th>Close</th><th>Revenue (₹ Cr)</th><th>45D Rev MA (₹ Cr)</th></tr></thead>
+        <thead><tr><th>Date</th><th>Close</th><th>Revenue (₹ Cr)</th><th>45D Rev MA to prev. day (₹ Cr)</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="4" style="color:var(--color-text-muted)">No overlapping price / revenue days yet</td></tr>'}</tbody>
       </table>
     </div>
@@ -6424,7 +6564,7 @@ function buildNSEShareAnalysis() {
 
   const infoHTML = shareRegressionInfoHTML(
     reg, lat.price_pred, lat.price_actual, lat.is_live, lat.date,
-    maWin, regStart, SHARE_DATA.n_days, SHARE_DATA.ticker, 0
+    maWin, regStart, SHARE_DATA.n_days, SHARE_DATA.ticker, 0, SHARE_DATA.methodology
   );
 
   const regLabel = new Date(regStart + 'T00:00:00').toLocaleString('en-IN', { month: 'short', year: 'numeric' }) + '+';
@@ -6494,11 +6634,11 @@ function buildNSEShareAnalysis() {
   let nseActiveDma   = 45;
   let nseActiveLag   = 0;
   let nseActiveRange = 'nov2024';
-  const nseDmaCache  = { '45_0': { series: ser, reg } };
+  const nseDmaCache  = {};
 
   function getNseDmaData(w, lag) {
     const key = `${w}_${lag}`;
-    if (!nseDmaCache[key]) nseDmaCache[key] = buildSeriesWithDMA(ser, w, regStart, lag, SHARE_DATA.revenue_prefix || []);
+    if (!nseDmaCache[key]) nseDmaCache[key] = computeShareModel(SHARE_DATA, w, lag);
     return nseDmaCache[key];
   }
 
@@ -6516,7 +6656,7 @@ function buildNSEShareAnalysis() {
       const latestRow = latestShareRow(d.series, lat.date);
       infoEl.innerHTML = shareRegressionInfoHTML(
         d.reg, latestRow.price_pred, lat.is_live ? lat.price_actual : latestRow.price, lat.is_live, lat.date,
-        nseActiveDma, regStart, SHARE_DATA.n_days, SHARE_DATA.ticker, nseActiveLag
+        nseActiveDma, regStart, d.n, SHARE_DATA.ticker, nseActiveLag, d.meth
       );
     }
   }
