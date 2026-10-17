@@ -2906,62 +2906,174 @@ function initNSEQuarterCompare() {
 // ========================
 // NSE: PAT PREDICTION ENGINE
 // ========================
+// One default forecast: the pipeline's ratio model (ENRICHED_DATA
+// .pnl_forecast_model / .pnl_predicted_quarters / .pnl_predictor). The custom
+// predictor, the sliders and the manual nse_pnl forecast rows are scenarios and
+// are labelled as such. EBITDA on this tab is operating EBITDA (nse_pnl rows:
+// ENRICHED_DATA.pnl_operating). An enriched file written before these fields
+// existed shows "—" rather than a differently defined EBITDA.
+
+const NSE_EBITDA_DEF = 'Operating EBITDA = revenue from operations − operating expenses, before depreciation, excluding other (non-operating) income.';
+const NSE_ONE_OFF_LABELS = { sebi_settlement: 'SEBI settlement' };
+
+function nseForecastModel() {
+  const m = ENRICHED_DATA.pnl_forecast_model;
+  return m && m.name ? m : null;
+}
+
+// Quarters the default forecast's ratios come from: the last two actual nse_pnl quarters.
+function nseBaseQuarters() {
+  const m = nseForecastModel();
+  if (m && Array.isArray(m.base_quarters) && m.base_quarters.length) return m.base_quarters;
+  return (DATA.pnl || []).filter(r => !r.is_predicted).slice(-2).map(r => r.quarter);
+}
+
+// Scenario cost ratios: DATA.cost_ratios averaged over those actual quarters,
+// never a forecast quarter's row (the table also holds Q4 FY 2026+ forecasts).
+function nseActualCostRatios() {
+  const rows = nseBaseQuarters().map(q => (DATA.cost_ratios || {})[q]).filter(Boolean);
+  const avg = k => {
+    const v = rows.map(r => r[k]).filter(x => x != null && !isNaN(x)).map(Number);
+    return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+  };
+  return {
+    employee_pct: avg('employee_pct'), regulatory_pct: avg('regulatory_pct'),
+    technology_pct: avg('technology_pct'), depreciation_pct: avg('depreciation_pct'),
+    other_income_ratio: avg('other_income_ratio'),
+  };
+}
+
+function nseQuarterRange(qs) {
+  return qs.length > 1 ? `${qs[0]} – ${qs[qs.length - 1]}` : (qs[0] || '');
+}
+
+function nseOneOffText(oneOffs) {
+  return Object.entries(oneOffs || {})
+    .map(([k, v]) => `${NSE_ONE_OFF_LABELS[k] || k.replace(/_/g, ' ')} ${fmt(v, 0)}`).join(', ');
+}
+
+// nse_pnl quarters that have ended (before the quarter now trading) but are
+// still manual forecasts because their actuals have not been entered.
+function nsePendingActualQuarters() {
+  const q = DATA.quarterly || [];
+  const cq = ENRICHED_DATA.pnl_predictor?.quarter || (q.length ? q[q.length - 1].quarter : null);
+  if (!cq) return [];
+  return (DATA.pnl || []).filter(r => r.is_predicted && quarterSortKey(r.quarter) < quarterSortKey(cq)).map(r => r.quarter);
+}
+
+// Panel titles live in index.html; find the panel from an element inside it.
+function setNSEPanelTitle(innerId, html) {
+  const el = document.getElementById(innerId);
+  const panel = el && el.closest('.chart-panel');
+  const title = panel && panel.querySelector('.chart-title');
+  if (title) title.innerHTML = html;
+}
+
+// Create or update a note paragraph placed right after `anchor`.
+function setNSENote(id, anchor, html) {
+  if (!anchor) return;
+  let n = document.getElementById(id);
+  if (!n) {
+    n = document.createElement('p');
+    n.id = id;
+    n.className = 'section-desc';
+    anchor.insertAdjacentElement('afterend', n);
+  }
+  n.innerHTML = html;
+}
 
 function buildNSEExtrapolationKPIs() {
   const p = ENRICHED_DATA.pnl_predictor;
   if (!p) return;
+  const m = nseForecastModel();
   const otherIncome = p.total_revenue_predicted - p.transaction_rev_extrapolated;
+  const eps = p.eps_predicted ?? ENRICHED_DATA.pnl_predicted_quarters?.[p.quarter]?.eps;
 
   const kpis = [
     { label: 'Daily Avg Txn Rev', value: fmt(p.daily_avg_rev) },
     { label: 'Trading Days (Actual / Expected)', value: `${p.q4_fy2026_trading_days_so_far || p.trading_days_so_far} / ${p.q4_fy2025_total_trading_days || p.expected_trading_days}` },
     { label: 'Extrapolated Qtr Txn Rev', value: fmt(p.transaction_rev_extrapolated) },
-    { label: `Other Income (${fmtPct(p.other_income_ratio)} of Txn Rev)`, value: fmt(otherIncome) },
+    { label: `Other Revenue + Other Income (${fmtPct(p.other_income_ratio)} of Txn Rev)`, value: fmt(otherIncome) },
     { label: 'Total Revenue (Predicted)', value: fmt(p.total_revenue_predicted), highlight: true },
-    { label: 'Predicted PAT', value: fmt(p.pat_predicted), highlight: true },
+    { label: `${m ? 'Default Forecast PAT' : 'Forecast PAT (previous model)'} · ${p.quarter || 'Current Qtr'}`, value: fmt(p.pat_predicted),
+      sub: eps != null ? `EPS ₹ ${fmtNum(eps, 2)}` : '', highlight: true },
   ];
 
-  document.getElementById('extrapKpis').innerHTML = kpis.map(k => `
+  const kpiEl = document.getElementById('extrapKpis');
+  kpiEl.innerHTML = kpis.map(k => `
     <div class="extrap-card${k.highlight ? ' highlight' : ''}">
       <div class="extrap-label">${k.label}</div>
       <div class="extrap-value">${k.value}</div>
+      ${k.sub ? `<div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${k.sub}</div>` : ''}
     </div>
   `).join('');
+
+  const pending = nsePendingActualQuarters();
+  const pendingTxt = pending.length
+    ? ` ${pending.join(', ')} ${pending.length > 1 ? 'have ended but are still manual forecasts' : 'has ended but is still a manual forecast'} in nse_pnl (actuals not yet entered), so the ratios stay on the last actual quarters.`
+    : '';
+  let note = `Forecast model details appear after the next NSE pipeline run.${pendingTxt}`;
+  if (m) {
+    const excl = Object.entries(m.one_offs_excluded || {}).map(([q, o]) => `${nseOneOffText(o)} in ${q}`).join('; ');
+    const skipped = m.tax_rate_quarters.length < m.base_quarters.length ? '; quarters with material one-offs skipped' : '';
+    note = `<strong>Default forecast — ratio model.</strong> Ratios from actual ${nseQuarterRange(m.base_quarters)}` +
+      `${excl ? `, one-offs excluded (${excl})` : ''}: other operating revenue ${fmtPct(m.other_operating_revenue_ratio)}` +
+      ` and other income ${fmtPct(m.non_operating_income_ratio)} of transaction revenue; operating expenses` +
+      ` ${fmtPct(m.operating_expense_ratio)} and depreciation ${fmtPct(m.depreciation_ratio)} of operating revenue;` +
+      ` associates ${fmt(m.share_profit_associates)}; tax ${fmtPct(m.tax_rate)} (${m.tax_rate_quarters.join(', ')} effective rate${skipped}).` +
+      ` Forecasts include no one-offs.${pendingTxt}`;
+  }
+  setNSENote('nseForecastModelNote', kpiEl, note);
 }
 
 function buildNSEPredictedPnLTable() {
   const quarters = ENRICHED_DATA.pnl_predicted_quarters;
   if (!quarters) return;
-  let html = '<thead><tr><th>Quarter</th><th>Txn Rev</th><th>Other Income</th><th>Total Rev</th><th>Total Exp</th><th>EBITDA</th><th>EBITDA %</th><th>PAT</th><th>PAT %</th><th>EPS</th></tr></thead><tbody>';
+  setNSEPanelTitle('tablePredictedPnL', 'Default Forecast — Ratio Model <span class="chart-badge">Predicted Quarterly P&amp;L</span>');
+  let html = `<thead><tr><th>Quarter</th><th>Txn Rev</th><th>Operating Rev</th><th>Other Income</th><th>Total Rev</th><th>Op. Expenses</th><th title="${NSE_EBITDA_DEF}">Op. EBITDA</th><th title="${NSE_EBITDA_DEF}">EBITDA %</th><th>PAT</th><th>PAT %</th><th>EPS</th></tr></thead><tbody>`;
 
   let isFirst = true;
   for (const [qName, q] of Object.entries(quarters)) {
-    const otherIncome = q.total_revenue - q.transaction_rev;
     const tag = isFirst ? ' <span style="color:var(--color-warning);font-size:11px;font-weight:600">CURRENT</span>' : '';
     const cls = isFirst ? '' : 'predicted';
+    // operating_* only: an older file's `ebitda` is post-depreciation incl. other income.
     html += `<tr class="${cls}">
       <td>${qName}${tag}</td>
       <td>${fmt(q.transaction_rev)}</td>
-      <td>${fmt(otherIncome)}</td>
+      <td>${fmt(q.operating_revenue)}</td>
+      <td>${fmt(q.non_operating_income)}</td>
       <td>${fmt(q.total_revenue)}</td>
-      <td>${fmt(q.total_expense)}</td>
-      <td>${fmt(q.ebitda)}</td>
-      <td>${fmtPct(q.ebitda_margin)}</td>
+      <td>${fmt(q.operating_expenses)}</td>
+      <td>${fmt(q.operating_ebitda)}</td>
+      <td>${fmtPct(q.operating_ebitda_margin)}</td>
       <td style="font-weight:600">${fmt(q.pat)}</td>
       <td>${fmtPct(q.pat_margin)}</td>
-      <td>₹ ${fmtNum(q.eps)}</td>
+      <td>₹ ${fmtNum(q.eps, 2)}</td>
     </tr>`;
     isFirst = false;
   }
   html += '</tbody>';
-  document.getElementById('tablePredictedPnL').innerHTML = html;
+  const table = document.getElementById('tablePredictedPnL');
+  table.innerHTML = html;
+  setNSENote('nsePredictedPnLNote', table.parentElement,
+    `Op. EBITDA: ${NSE_EBITDA_DEF} Other Income = non-operating (investment) income. Forecast rows carry no one-offs.` +
+    ' The custom-input predictor, the sliders and the manual nse_pnl rows below are scenarios, not this forecast.');
 }
 
 function initNSEPATPredictor() {
   const p = ENRICHED_DATA.pnl_predictor;
   if (!p || !DATA.cost_ratios) return;
-  const lastCostQ = Object.keys(DATA.cost_ratios).pop();
-  const cr = DATA.cost_ratios[lastCostQ];
+  const cr = nseActualCostRatios();
+
+  setNSEPanelTitle('inputDailyRev', 'Scenario — Custom Inputs <span class="chart-badge">Not the Default Forecast</span>');
+  const desc = document.querySelector('#nsePredictionContent .predictor-panel .section-desc');
+  if (desc) {
+    desc.textContent = 'Scenario: enter your own average daily trading revenue. Costs start from actual ' +
+      nseQuarterRange(nseBaseQuarters()) + ' cost ratios (% of total revenue) plus 3.5 % CSR & other; tax and shares as entered.' +
+      (p.pat_predicted != null ? ' The default forecast for ' + (p.quarter || 'this quarter') + ' is ' + fmt(p.pat_predicted) + ' PAT.' : '');
+  }
+  const peHead = document.querySelector('#nsePredictionContent .predictor-pe-section h4');
+  if (peHead) peHead.textContent = 'Scenario Target Share Price';
 
   const dailyRevInput = document.getElementById('inputDailyRev');
   const tradingDaysInput = document.getElementById('inputTradingDays');
@@ -3021,7 +3133,7 @@ function initNSEPATPredictor() {
         <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${fmt(dailyRev)}/day × ${tradingDays} days</div>
       </div>
       <div class="pred-card">
-        <div class="pred-label">Other Income</div>
+        <div class="pred-label">Other Revenue + Other Income</div>
         <div class="pred-value">${fmt(otherIncome)}</div>
         <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${(otherIncomeRatio * 100).toFixed(1)}% of Txn Rev</div>
       </div>
@@ -3035,12 +3147,12 @@ function initNSEPATPredictor() {
         <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${fmtPct(totalExp / totalRev)} of revenue</div>
       </div>
       <div class="pred-card highlight">
-        <div class="pred-label">Quarterly PAT</div>
+        <div class="pred-label">Scenario PAT</div>
         <div class="pred-value" style="color:var(--color-success)">${fmt(pat)}</div>
         <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${fmtPct(pat / totalRev)} margin</div>
       </div>
       <div class="pred-card">
-        <div class="pred-label">EPS (Quarterly)</div>
+        <div class="pred-label">Scenario EPS (Quarterly)</div>
         <div class="pred-value">₹ ${qtrEPS.toFixed(2)}</div>
         <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">Annualized: ₹ ${annualEPS.toFixed(2)}</div>
       </div>
@@ -3101,6 +3213,7 @@ function initNSEPEValuation() {
 
     const quarterlyEPS = cqData.eps;
     const annualizedEPS = quarterlyEPS * 4;
+    setNSEPanelTitle('peResults', `Valuation — Default Forecast EPS <span class="chart-badge"><span class="js-current-quarter">${cqName}</span> EPS × 4</span>`);
 
     const bearPE = Number(bearInput.value) || 25;
     const basePE = Number(baseInput.value) || 35;
@@ -3123,6 +3236,8 @@ function initNSEPEValuation() {
         <div class="pe-price">${fmtPrice(bullPE * annualizedEPS)}</div>
       </div>
     `;
+    setNSENote('nsePEValuationNote', document.getElementById('peResults'),
+      `Annualised EPS ₹ ${fmtNum(annualizedEPS, 2)} = default forecast EPS ₹ ${fmtNum(quarterlyEPS, 2)} for ${cqName} × 4.`);
   }
 
   bearInput.addEventListener('input', updatePEResults);
@@ -3135,10 +3250,13 @@ let predState = {};
 
 function initNSEPrediction() {
   if (!DATA.pnl || !DATA.cost_ratios) return;
-  const actualPnl = DATA.pnl.filter(p => !p.is_predicted);
-  const lastActual = actualPnl[actualPnl.length - 1];
-  const lastQ = lastActual.quarter;
-  const cr = DATA.cost_ratios[lastQ] || Object.values(DATA.cost_ratios)[Object.values(DATA.cost_ratios).length - 1];
+  const cr = nseActualCostRatios();
+  const desc = document.getElementById('scenarioButtons')?.previousElementSibling;
+  if (desc && desc.classList.contains('section-desc')) {
+    desc.innerHTML = '<strong>Scenario — sliders.</strong> Adjust revenue and cost assumptions to explore PAT. Starts from the' +
+      ' current-quarter run-rate and actual ' + nseQuarterRange(nseBaseQuarters()) + ' cost ratios; not the default forecast.';
+  }
+  setNSEPanelTitle('chartWaterfall', 'P&amp;L Waterfall <span class="chart-badge">Slider Scenario</span>');
 
   const cq = DATA.quarterly[DATA.quarterly.length - 1];
   const days = cq.days || 62;
@@ -3233,8 +3351,13 @@ function updateNSEPrediction() {
   const csrOther = totalRev * 0.035;
   const totalExp = empCost + regCost + techCost + depCost + csrOther;
 
-  const ebitda = totalRev - totalExp + depCost;
-  const ebitdaMargin = ebitda / totalRev;
+  // Operating EBITDA. The slider's other revenue lumps other operating revenue
+  // with non-operating income; split it in the default model's proportions.
+  const m = nseForecastModel();
+  const otherSum = m ? m.other_operating_revenue_ratio + m.non_operating_income_ratio : 0;
+  const opRev = otherSum > 0 ? transactionRev + otherRev * (m.other_operating_revenue_ratio / otherSum) : null;
+  const ebitda = opRev != null ? opRev - (empCost + regCost + techCost + csrOther) : null;
+  const ebitdaMargin = opRev ? ebitda / opRev : null;
   const pbt = totalRev - totalExp;
   const tax = pbt * 0.252;
   const pat = pbt - tax;
@@ -3246,18 +3369,18 @@ function updateNSEPrediction() {
       <div class="pred-label">Total Revenue</div>
       <div class="pred-value">${fmt(totalRev)}</div>
     </div>
-    <div class="pred-card">
-      <div class="pred-label">EBITDA</div>
+    <div class="pred-card" title="${NSE_EBITDA_DEF}">
+      <div class="pred-label">Op. EBITDA</div>
       <div class="pred-value">${fmt(ebitda)}</div>
-      <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${fmtPct(ebitdaMargin)} margin</div>
+      <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${ebitdaMargin != null ? fmtPct(ebitdaMargin) + ' of operating revenue' : 'after the next pipeline run'}</div>
     </div>
     <div class="pred-card highlight">
-      <div class="pred-label">Predicted PAT</div>
+      <div class="pred-label">Scenario PAT</div>
       <div class="pred-value" style="color:var(--color-primary-hover)">${fmt(pat)}</div>
       <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${fmtPct(patMargin)} margin</div>
     </div>
     <div class="pred-card">
-      <div class="pred-label">EPS (est.)</div>
+      <div class="pred-label">Scenario EPS</div>
       <div class="pred-value">₹ ${(pat / 247.5).toFixed(2)}</div>
       <div style="font-size:var(--text-xs);color:var(--color-text-faint);margin-top:4px">~247.5 Cr shares</div>
     </div>
@@ -3315,7 +3438,8 @@ function buildNSEWaterfallChart(txnRev, otherRev, totalRev, totalExp, emp, reg, 
       },
       scales: {
         x: { ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
-        y: { beginAtZero: true, ticks: { callback: v => '₹' + fmtNum(v, 0) } }
+        // lineWidth explicit (see buildNSEPATHistoryChart): bars from 0 vanish otherwise.
+        y: { beginAtZero: true, grid: { color: getGridColor(), lineWidth: 1 }, ticks: { callback: v => '₹' + fmtNum(v, 0) } }
       }
     }
   });
@@ -3325,13 +3449,23 @@ function buildNSEPATHistoryChart() {
   const p = DATA.pnl;
   if (!p || p.length === 0) return;
   setCanvasHeight('chartPATHistory', 300);
+  setNSEPanelTitle('chartPATHistory', 'PAT — Actuals, Manual Forecasts &amp; Default Forecast');
 
-  const allLabels = p.map(x => {
-    const parts = x.quarter.split(' ');
+  // Bars: nse_pnl rows (actuals and manual forecasts). Diamonds: the default
+  // forecast, whose quarters may run past the last nse_pnl row.
+  const fc = ENRICHED_DATA.pnl_predicted_quarters || {};
+  const byQ = new Map(p.map(x => [x.quarter, x]));
+  const quarters = [...new Set([...p.map(x => x.quarter), ...Object.keys(fc)])]
+    .sort((a, b) => quarterSortKey(a) - quarterSortKey(b));
+  const rows = quarters.map(q => byQ.get(q) || null);
+  const allLabels = quarters.map(q => {
+    const parts = q.split(' ');
     return parts[0] + " '" + parts[2].slice(2);
   });
-  const barColors = p.map(x => x.is_predicted ? CHART_COLORS[5] : CHART_COLORS[0]);
-  const patValues = p.map(x => x.pat);
+  const barColors = rows.map(x => x && x.is_predicted ? CHART_COLORS[5] : CHART_COLORS[0]);
+  const patValues = rows.map(x => x ? x.pat : null);
+  const fcValues = quarters.map(q => fc[q] ? fc[q].pat : null);
+  const fcColor = CHART_COLORS[1];
 
   if (charts.patHistory) charts.patHistory.destroy();
   charts.patHistory = new Chart(document.getElementById('chartPATHistory'), {
@@ -3345,33 +3479,53 @@ function buildNSEPATHistoryChart() {
         borderColor: barColors,
         borderWidth: 1,
         borderRadius: 3,
+        order: 1,
+      }, {
+        type: 'line',
+        label: 'Default forecast (ratio model)',
+        data: fcValues,
+        showLine: false,
+        pointStyle: 'rectRot',
+        pointRadius: 7,
+        pointHoverRadius: 8,
+        backgroundColor: fcColor,
+        borderColor: fcColor,
+        order: 0,
       }]
     },
     options: {
+      interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: {
           display: true,
+          onClick: () => {},
           labels: {
+            usePointStyle: true,
             generateLabels: function() {
               return [
-                { text: 'Actual PAT', fillStyle: CHART_COLORS[0], strokeStyle: CHART_COLORS[0], lineWidth: 0, hidden: false },
-                { text: 'Predicted PAT', fillStyle: CHART_COLORS[5], strokeStyle: CHART_COLORS[5], lineWidth: 0, hidden: false },
+                { text: 'Actual PAT', fillStyle: CHART_COLORS[0], strokeStyle: CHART_COLORS[0], pointStyle: 'rect', lineWidth: 0, hidden: false },
+                { text: 'Manual forecast (nse_pnl)', fillStyle: CHART_COLORS[5], strokeStyle: CHART_COLORS[5], pointStyle: 'rect', lineWidth: 0, hidden: false },
+                { text: 'Default forecast (ratio model)', fillStyle: fcColor, strokeStyle: fcColor, pointStyle: 'rectRot', lineWidth: 0, hidden: false },
               ];
             }
           }
         },
         tooltip: {
+          filter: ctx => ctx.raw != null,
           callbacks: {
             label: ctx => {
-              const isPred = DATA.pnl[ctx.dataIndex].is_predicted;
-              return (isPred ? 'Predicted: ' : 'Actual: ') + fmt(ctx.raw);
+              if (ctx.datasetIndex === 1) return 'Default forecast (ratio model): ' + fmt(ctx.raw);
+              const r = rows[ctx.dataIndex];
+              return (r && r.is_predicted ? 'Manual forecast (nse_pnl): ' : 'Actual: ') + fmt(ctx.raw);
             }
           }
         }
       },
       scales: {
         x: { ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
-        y: { ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
+        // lineWidth explicit: the global scale.grid default carries none, and
+        // Chart.js then computes NaN bar bases on the zero gridline (no bars drawn).
+        y: { grid: { color: getGridColor(), lineWidth: 1 }, ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
       }
     }
   });
@@ -3380,23 +3534,53 @@ function buildNSEPATHistoryChart() {
 function buildNSEPnLTable() {
   const p = DATA.pnl;
   if (!p) return;
-  let html = '<thead><tr><th>Quarter</th><th>Txn Rev</th><th>Total Rev</th><th>Total Exp</th><th>EBITDA</th><th>EBITDA %</th><th>PAT</th><th>PAT %</th><th>EPS</th></tr></thead><tbody>';
+  setNSEPanelTitle('tablePnL', 'P&amp;L Comparison Table <span class="chart-badge">nse_pnl Actuals &amp; Manual Forecasts</span>');
+  const ops = new Map((ENRICHED_DATA.pnl_operating || []).map(v => [v.quarter, v]));
+  const pending = new Set(nsePendingActualQuarters());
+  const footnotes = [];
+  let html = `<thead><tr><th>Quarter</th><th>Status</th><th>Txn Rev</th><th>Operating Rev</th><th>Total Rev</th><th>Op. Expenses</th><th title="${NSE_EBITDA_DEF}">Op. EBITDA</th><th title="${NSE_EBITDA_DEF}">EBITDA %</th><th>PAT</th><th>PAT %</th><th>EPS</th></tr></thead><tbody>`;
   for (const q of p) {
-    const cls = q.is_predicted ? 'predicted' : '';
-    html += `<tr class="${cls}">
+    const v = ops.get(q.quarter);
+    const status = !q.is_predicted ? 'Actual'
+      : pending.has(q.quarter) ? 'Manual forecast<br><span style="font-size:11px">actuals not yet entered</span>' : 'Manual forecast';
+    let ebitdaCell = '—', marginCell = '—', ebitdaTitle = '';
+    if (v && v.operating_ebitda != null) {
+      ebitdaCell = fmt(v.operating_ebitda);
+      marginCell = fmtPct(v.operating_ebitda_margin);
+      if (v.one_offs && Object.keys(v.one_offs).length) {
+        ebitdaTitle = `${q.quarter} includes one-off ${nseOneOffText(v.one_offs)}; ex one-offs ${fmt(v.operating_ebitda_ex_one_offs)} (${fmtPct(v.operating_ebitda_margin_ex_one_offs)})`;
+        footnotes.push(ebitdaTitle);
+        ebitdaCell += '<sup style="line-height:0">†</sup>';
+        marginCell += '<sup style="line-height:0">†</sup>';
+      }
+    } else if (v && !v.revenue_split_available) {
+      ebitdaTitle = 'This manual forecast row does not separate revenue from operations from other income';
+    }
+    const style = q.is_predicted ? ' style="font-style:italic;opacity:0.8"' : '';
+    html += `<tr${style}>
       <td>${q.quarter}</td>
+      <td>${status}</td>
       <td>${fmt(q.transaction_rev)}</td>
+      <td>${fmt(v ? v.operating_revenue : null)}</td>
       <td>${fmt(q.total_revenue)}</td>
-      <td>${fmt(q.total_expense)}</td>
-      <td>${fmt(q.ebitda)}</td>
-      <td>${fmtPct(q.ebitda_margin)}</td>
+      <td>${fmt(v ? v.operating_expenses : null)}</td>
+      <td${ebitdaTitle ? ` title="${ebitdaTitle}"` : ''}>${ebitdaCell}</td>
+      <td>${marginCell}</td>
       <td style="font-weight:600">${fmt(q.pat)}</td>
       <td>${fmtPct(q.pat_margin)}</td>
-      <td>₹ ${fmtNum(q.eps)}</td>
+      <td>₹ ${fmtNum(q.eps, 2)}</td>
     </tr>`;
   }
   html += '</tbody>';
-  document.getElementById('tablePnL').innerHTML = html;
+  const table = document.getElementById('tablePnL');
+  table.innerHTML = html;
+  const notes = [`Op. EBITDA: ${NSE_EBITDA_DEF} Actual quarters are on the reported basis.`];
+  if (footnotes.length) notes.push('† ' + footnotes.join('. ') + '.');
+  notes.push(ops.size
+    ? 'Manual forecast rows (entered in nse_pnl) are scenarios, not the default forecast; they put all non-transaction revenue in one line, so Op. EBITDA is not shown for them.'
+    : 'Op. EBITDA appears after the next NSE pipeline run.');
+  notes.push('Actual PAT is as reported, including exceptional items such as gains on sale of investments.');
+  setNSENote('nsePnLNote', table.parentElement, notes.join(' '));
 }
 
 // ========================
