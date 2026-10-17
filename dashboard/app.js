@@ -411,6 +411,9 @@ function attachTabListeners() {
       if (tabEl) tabEl.classList.add('active');
       const titles = TAB_TITLES[currentExchange] || {};
       document.getElementById('headerTitle').textContent = titles[tab] || tab;
+      // Flag mixed snapshots for this view, then refetch anything it uses that has gone stale
+      updateSnapshotNotice();
+      checkDataFreshness();
       // Close mobile nav
       document.getElementById('sidebar').classList.remove('open');
       document.getElementById('sidebarOverlay').classList.remove('open');
@@ -623,55 +626,191 @@ async function applyLiveStockPrice(shareData, exchange) {
   }
 }
 
-async function loadExchangeData(exchange) {
-  if (exchange === 'all') {
-    if (!Object.keys(MARKET_DATA).length) await preloadMarketData();
-    DATA = buildCombinedRawData(['nse', 'bse', 'mcx']);
-    ENRICHED_DATA = buildCombinedEnrichedData(['nse', 'bse', 'mcx']);
-    SHARE_DATA = null;
-    return;
-  }
-  if (exchange === 'nsebse') {
-    if (!Object.keys(MARKET_DATA).length) await preloadMarketData();
-    DATA = buildCombinedRawData(['nse', 'bse']);
-    ENRICHED_DATA = buildCombinedEnrichedData(['nse', 'bse']);
-    SHARE_DATA = null;
-    return;
-  }
-  const fetches = [
-    fetch(`./data/${exchange}_dashboard_data.json`),
-    fetch(`./data/${exchange}_enriched_data.json`),
-  ];
+// ── Data freshness ───────────────────────────────────────────────────────────
+// Bots commit each exchange's JSON separately, so one session can otherwise
+// hold snapshots of different ages. Whenever a view is shown, any dataset it
+// uses that was fetched more than DATA_MAX_AGE_MS ago is fetched again, and the
+// view is rebuilt only if the content actually changed. One check runs at a
+// time and each dataset is re-fetched at most once per window, so rapid tab
+// switching cannot cause a refetch storm.
+const DATA_MAX_AGE_MS = 10 * 60 * 1000;
+const COMBINED_VIEWS = { all: ['nse', 'bse', 'mcx'], nsebse: ['nse', 'bse'] };
+const MARKET_SIG = {};         // exchange → { enr, raw } fingerprints of the cached files
+const MARKET_CHECKED_AT = {};  // exchange → ms of the last fetch into MARKET_DATA/MARKET_RAW
+const MARKET_INFLIGHT = {};    // exchange → that fetch while it runs, shared by callers
+let VIEW_LOADED = null;        // { exchange, sig, checkedAt } of the single-exchange DATA
+let VIEW_BUILT_FROM = {};      // cached exchange → fingerprint the current view was built from
+
+// Cheap content fingerprint (length + FNV-1a), so a refetch can tell whether a file changed.
+function textSignature(text) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return text.length + ':' + (h >>> 0).toString(16);
+}
+
+async function fetchDataFile(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+  const text = await res.text();
+  return { json: JSON.parse(text), sig: textSignature(text) };
+}
+
+function marketSig(ex) {
+  const s = MARKET_SIG[ex];
+  return s ? `${s.enr || ''}|${s.raw || ''}` : '';
+}
+
+// Fetches one exchange's dashboard, enriched and share-analysis files without
+// touching global state, so a freshness check can compare before committing.
+async function fetchExchangeFiles(exchange) {
   const hasShareFeed = exchange === 'nse' || exchange === 'bse' || exchange === 'mcx';
-  if (hasShareFeed) {
-    fetches.push(fetch(`./data/${exchange}_share_analysis.json`).catch(() => null));
-  }
-  const results = await Promise.all(fetches);
-  DATA = await results[0].json();
+  const checkedAt = Date.now();
+  const [raw, enr, share] = await Promise.all([
+    fetchDataFile(`./data/${exchange}_dashboard_data.json`),
+    fetchDataFile(`./data/${exchange}_enriched_data.json`),
+    hasShareFeed ? fetchDataFile(`./data/${exchange}_share_analysis.json`).catch(() => null) : null,
+  ]);
+  return { exchange, raw: raw.json, enr: enr.json, share: share ? share.json : null, sig: [raw.sig, enr.sig, share ? share.sig : ''].join('|'), checkedAt };
+}
+
+async function commitExchangeFiles(f) {
+  DATA = f.raw;
   // P&L quarters must be chronological for the table, chart and "latest
   // actual quarter" lookups (older pipeline output sorted them by label text).
   if (Array.isArray(DATA.pnl)) DATA.pnl.sort((a, b) => quarterSortKey(a.quarter) - quarterSortKey(b.quarter));
-  ENRICHED_DATA = await results[1].json();
-  if (hasShareFeed && results[2]) {
-    SHARE_DATA = await results[2].json().catch(() => null);
-  } else {
-    SHARE_DATA = null;
-  }
-  if (SHARE_DATA && hasShareFeed) {
-    await applyLiveStockPrice(SHARE_DATA, exchange);
+  ENRICHED_DATA = f.enr;
+  SHARE_DATA = f.share;
+  VIEW_LOADED = { exchange: f.exchange, sig: f.sig, checkedAt: f.checkedAt };
+  if (SHARE_DATA) {
+    await applyLiveStockPrice(SHARE_DATA, f.exchange);
   }
 }
 
-async function preloadMarketData() {
-  const exchanges = ['nse', 'bse', 'mcx'];
-  const [enr, raw] = await Promise.all([
-    Promise.allSettled(exchanges.map(ex => fetch(`./data/${ex}_enriched_data.json`).then(r => r.json()))),
-    Promise.allSettled(exchanges.map(ex => fetch(`./data/${ex}_dashboard_data.json`).then(r => r.json()))),
-  ]);
-  exchanges.forEach((ex, i) => {
-    if (enr[i].status === 'fulfilled') MARKET_DATA[ex] = enr[i].value;
-    if (raw[i].status === 'fulfilled') MARKET_RAW[ex]  = raw[i].value;
+async function loadExchangeData(exchange) {
+  VIEW_BUILT_FROM = {};
+  const combined = COMBINED_VIEWS[exchange];
+  if (combined) {
+    await ensureFreshMarketData(combined);
+    DATA = buildCombinedRawData(combined);
+    ENRICHED_DATA = buildCombinedEnrichedData(combined);
+    SHARE_DATA = null;
+    VIEW_LOADED = null;
+    combined.forEach(ex => { VIEW_BUILT_FROM[ex] = marketSig(ex); });
+    return;
+  }
+  await commitExchangeFiles(await fetchExchangeFiles(exchange));
+}
+
+// Fills MARKET_DATA / MARKET_RAW (the cache the combined views and the BSE
+// valuation read) for the given exchanges. Resolves to the exchanges whose
+// content changed. Concurrent callers share one fetch per exchange.
+function preloadMarketData(exchanges = ['nse', 'bse', 'mcx']) {
+  return Promise.all(exchanges.map(ex => {
+    if (!MARKET_INFLIGHT[ex]) {
+      MARKET_CHECKED_AT[ex] = Date.now();
+      MARKET_INFLIGHT[ex] = Promise.allSettled([
+        fetchDataFile(`./data/${ex}_enriched_data.json`),
+        fetchDataFile(`./data/${ex}_dashboard_data.json`),
+      ]).then(([enr, raw]) => {
+        if (enr.status !== 'fulfilled' && raw.status !== 'fulfilled') return null;
+        const before = marketSig(ex);
+        const sig = MARKET_SIG[ex] || (MARKET_SIG[ex] = {});
+        if (enr.status === 'fulfilled') { MARKET_DATA[ex] = enr.value.json; sig.enr = enr.value.sig; }
+        if (raw.status === 'fulfilled') { MARKET_RAW[ex]  = raw.value.json; sig.raw = raw.value.sig; }
+        return marketSig(ex) !== before ? ex : null;
+      }).finally(() => { delete MARKET_INFLIGHT[ex]; });
+    }
+    return MARKET_INFLIGHT[ex];
+  })).then(changed => changed.filter(Boolean));
+}
+
+// Fetches the cached exchanges that are missing, stale or already being fetched.
+function ensureFreshMarketData(exchanges) {
+  const now = Date.now();
+  const due = exchanges.filter(ex => MARKET_INFLIGHT[ex] || !MARKET_RAW[ex] || !MARKET_DATA[ex]
+    || !MARKET_CHECKED_AT[ex] || now - MARKET_CHECKED_AT[ex] > DATA_MAX_AGE_MS);
+  return due.length ? preloadMarketData(due) : Promise.resolve([]);
+}
+
+let freshnessRun = null;
+
+// Runs when a view is shown: refetches whatever the current view uses that is
+// older than DATA_MAX_AGE_MS, and rebuilds the view if any of it changed.
+function checkDataFreshness() {
+  if (freshnessRun) return freshnessRun;
+  freshnessRun = (async () => {
+    const ex = currentExchange;
+    const now = Date.now();
+    const isStale = t => !t || now - t > DATA_MAX_AGE_MS;
+    const cached = Object.keys(VIEW_BUILT_FROM);
+    const dueCached = cached.filter(e => isStale(MARKET_CHECKED_AT[e]));
+    const viewDue = !!VIEW_LOADED && VIEW_LOADED.exchange === ex && isStale(VIEW_LOADED.checkedAt);
+    if (!dueCached.length && !viewDue) return;
+    if (viewDue) VIEW_LOADED.checkedAt = now;  // one attempt per window, even if it fails
+    const [, files] = await Promise.all([
+      dueCached.length ? preloadMarketData(dueCached) : null,
+      viewDue ? fetchExchangeFiles(ex).catch(() => null) : null,
+    ]);
+    if (currentExchange !== ex) return;  // switched meanwhile; that switch loaded its own data
+    const fresh = files && VIEW_LOADED && files.sig !== VIEW_LOADED.sig ? files : null;
+    const cacheMoved = cached.some(e => marketSig(e) !== VIEW_BUILT_FROM[e]);
+    if (fresh || cacheMoved) await rebuildCurrentView(fresh);
+  })().catch(err => console.warn('Data freshness check failed:', err))
+    .finally(() => { freshnessRun = null; });
+  return freshnessRun;
+}
+
+// Rebuilds the current exchange's views from refreshed data, keeping the open tab.
+async function rebuildCurrentView(fresh) {
+  const ex = currentExchange;
+  const activeTab = document.querySelector('.nav-item.active')?.dataset.tab;
+  showLoading(ex);
+  try {
+    if (fresh) await commitExchangeFiles(fresh);
+    else if (COMBINED_VIEWS[ex]) await loadExchangeData(ex);
+    if (currentExchange !== ex) return;  // an exchange switch took over (and owns the overlay)
+    Object.values(charts).forEach(c => { if (c && c.destroy) c.destroy(); });
+    Object.keys(charts).forEach(k => delete charts[k]);
+    updateHeaderInfo();
+    rebuildAll();
+  } finally {
+    if (currentExchange === ex) hideLoading();
+  }
+  if (currentExchange !== ex) return;
+  const tabBtn = activeTab && document.querySelector(`.nav-item[data-tab="${activeTab}"]`);
+  if (tabBtn) tabBtn.click();
+}
+
+// ── Mismatched snapshots ──────────────────────────────────────────────────────
+// Latest trade date of each exchange behind the views that combine several
+// exchanges, keyed by tab id and reset on every rebuild. When they differ, a
+// notice under the header says which exchange's data runs through which date.
+let VIEW_SOURCES = {};
+
+function lastTradeDate(rows) {
+  return rows && rows.length ? rows[rows.length - 1].date : null;
+}
+
+function updateSnapshotNotice() {
+  const el = document.getElementById('snapshotNotice');
+  if (!el) return;
+  const tab = document.querySelector('.nav-item.active')?.dataset.tab;
+  const src = (VIEW_SOURCES[tab] || []).filter(s => s.date);
+  const dates = [...new Set(src.map(s => s.date))].sort();
+  if (dates.length < 2) {
+    el.hidden = true;
+    el.textContent = '';
+    return;
+  }
+  const order = ['nse', 'bse', 'mcx'];
+  const oneYear = new Set(dates.map(d => d.slice(0, 4))).size === 1;
+  const parts = dates.map((d, i) => {
+    const exs = src.filter(s => s.date === d).map(s => s.ex)
+      .sort((a, b) => order.indexOf(a) - order.indexOf(b)).map(e => e.toUpperCase()).join('/');
+    return `${exs}${i === 0 ? ' data' : ''} through ${fmtTradeDate(d)}${oneYear ? '' : ' ' + d.slice(0, 4)}`;
   });
+  el.innerHTML = `<strong>Data dates differ:</strong> ${parts.join('; ')}. Combined figures mix these snapshots.`;
+  el.hidden = false;
 }
 
 // ── Build combined DATA.quarterly + DATA.monthly by summing across exchanges ─
@@ -968,6 +1107,14 @@ async function updateLatestRevBanner() {
 
 function rebuildAll() {
   applyChartDefaults();
+
+  // Combined views read every exchange's rows through DATA.components
+  VIEW_SOURCES = {};
+  if (DATA.components) {
+    const sources = DATA.components.map(c => ({ ex: c.exchange, date: lastTradeDate(c.daily_all) }));
+    (EXCHANGE_TABS[currentExchange] || []).forEach(t => { VIEW_SOURCES[t.id] = sources; });
+  }
+  updateSnapshotNotice();
 
   buildRevenueSummary();
 
@@ -4970,12 +5117,18 @@ async function buildBSEValuation() {
     </div>`;
     return;
   }
-  if (!MARKET_RAW.nse || !MARKET_RAW.bse) await preloadMarketData();
+  await ensureFreshMarketData(['nse']);
 
   const bseSeries = bseDailySeries(DATA);
   const nseSeries = bseDailySeries(MARKET_RAW.nse || {});
   const analystTargets = await loadBSEAnalystTargets();
+  if (currentExchange !== 'bse') return;  // switched away while loading
   if (!bseSeries.length) { el.innerHTML = ''; return; }
+
+  // This view combines BSE's own rows with NSE's from the shared cache
+  VIEW_BUILT_FROM.nse = marketSig('nse');
+  VIEW_SOURCES.valuation = [{ ex: 'bse', date: lastTradeDate(bseSeries) }, { ex: 'nse', date: lastTradeDate(nseSeries) }];
+  updateSnapshotNotice();
 
   // Current FY/quarter is derived from today's real date, not the latest data row —
   // a quarter with data through its last trading day is a COMPLETED quarter, not the one in progress.

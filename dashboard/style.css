@@ -3222,3 +3222,16 @@ span.pr-neu {
   font-weight: 700;
 }
 .target-age--stale::before { content: '⚠ '; }
+
+/* ── Mixed-snapshot notice: a view combines exchanges whose latest data
+   dates differ (bots commit each exchange separately) ── */
+.snapshot-notice {
+  font-size: var(--text-xs);
+  color: var(--color-warning);
+  background: var(--color-warning-bg, rgba(255, 214, 10, 0.12));
+  border-left: 3px solid var(--color-warning);
+  padding: 6px 10px;
+  margin-bottom: var(--space-3);
+}
+.snapshot-notice::before { content: '⚠ '; }
+.snapshot-notice[hidden] { display: none; }
