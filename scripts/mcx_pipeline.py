@@ -26,6 +26,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from collections import OrderedDict
 
+import trading_calendar
+
 # Load .env for local development
 try:
     from dotenv import load_dotenv
@@ -450,6 +452,10 @@ def main():
     if not daily:
         print("ERROR: No valid MCX daily records after transform")
         sys.exit(1)
+    # Muhurat sessions stay out of every aggregate (scripts/trading_calendar.py)
+    daily, special = trading_calendar.split_special(daily, "mcx")
+    if special:
+        print(f"  Special sessions kept out of aggregates: {[r['date'] for r in special]}")
 
     quarterly = recompute_quarterly(daily)
     monthly   = recompute_monthly(daily)
@@ -478,6 +484,7 @@ def main():
         "quarterly": quarterly,
         "summary":   summary,
         "modelled_history": modelled_history(daily),
+        "special_sessions": special,
     }
 
     for out_dir in [DATA_DIR, DASHBOARD_DIR]:

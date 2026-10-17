@@ -35,6 +35,7 @@ DASHBOARD_DIR = PROJECT_ROOT / "dashboard"
 # ── Take Rates: today's rates from scripts/take_rates.py; the date-effective
 # variant prices each day with scripts/fee_register.py ──
 import fee_register
+import trading_calendar
 from take_rates import NSE_TR_FUT as TR_FUT, NSE_TR_OPT as TR_OPT, NSE_TR_CASH as TR_CASH
 
 
@@ -882,7 +883,10 @@ def build_dashboard_json(daily_all, quarterly, monthly, weekly, dow_avg, summary
 
 def build_outputs(all_daily, pnl, pnl_fy, cost_ratios):
     """Every aggregate and both JSON documents from the daily rows. Pure: the
-    same code path builds the at-today's-rates and the date-effective files."""
+    same code path builds the at-today's-rates and the date-effective files.
+    Special sessions (Muhurat, DR tests: scripts/trading_calendar.py) stay out
+    of every aggregate and of daily_all, and are listed in special_sessions."""
+    all_daily, special = trading_calendar.split_special(all_daily, "nse")
     quarterly = recompute_quarterly(all_daily)
     monthly   = recompute_monthly(all_daily)
     weekly    = recompute_weekly(all_daily)
@@ -901,6 +905,7 @@ def build_outputs(all_daily, pnl, pnl_fy, cost_ratios):
         all_daily, quarterly, monthly, weekly, dow_avg, summary_obj,
         pnl, pnl_fy, cost_ratios, take_rates, vix_data
     )
+    dashboard_json["special_sessions"] = special
     return {"quarterly": quarterly, "monthly": monthly, "weekly": weekly,
             "dow_avg": dow_avg, "summary": summary_obj, "enriched": enriched,
             "dashboard": dashboard_json}
@@ -1035,7 +1040,8 @@ def main():
         if existing_path.exists():
             with open(existing_path) as f:
                 existing = json.load(f)
-            all_daily = existing.get("daily_all", [])
+            all_daily = trading_calendar.merge_special(
+                existing.get("daily_all", []), existing.get("special_sessions"))
             pnl = sorted(existing.get("pnl", []), key=lambda r: quarter_sort_key(r.get("quarter")))
             pnl_fy = existing.get("pnl_fy", [])
             cost_ratios = existing.get("cost_ratios", {})

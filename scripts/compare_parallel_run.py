@@ -23,7 +23,7 @@ OLD = "https://raw.githubusercontent.com/Research-Tusk/nse-cloud-pipeline/main/d
 EXCHANGES = ("nse", "bse", "mcx")
 TOLERANCE_CR = 0.005   # revenue fields are rounded to 4 dp in ₹ Cr
 # Weekend sessions that really traded (Muhurat, special live/DR sessions, Budget days)
-SPECIAL_SESSIONS = {"2023-11-12", "2024-01-20", "2024-03-02", "2024-05-18", "2025-02-01", "2026-02-01"}
+SPECIAL_SESSIONS = {"2023-11-12", "2024-01-20", "2024-03-02", "2024-05-18", "2025-02-01", "2026-02-01", "2026-11-08"}
 
 
 def fetch(base, name):
@@ -59,7 +59,9 @@ def integrity(ex, rows):
 
 def compare_daily(ex, days):
     name = f"{ex}_dashboard_data.json"
-    new_rows = fetch(NEW, name)["daily_all"]
+    new_doc = fetch(NEW, name)
+    # The new repo keeps Muhurat / DR sessions out of daily_all (trading_calendar.py)
+    new_rows = sorted(new_doc["daily_all"] + new_doc.get("special_sessions", []), key=lambda r: r["date"])
     old_rows = fetch(OLD, name)["daily_all"]
     new_by, old_by = {r["date"]: r for r in new_rows}, {r["date"]: r for r in old_rows}
     dates = sorted(set(new_by) | set(old_by))[-days:]

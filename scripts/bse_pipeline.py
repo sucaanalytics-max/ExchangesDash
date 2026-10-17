@@ -36,6 +36,7 @@ DASHBOARD_DIR = PROJECT_ROOT / "dashboard"
 # ── BSE Take Rates: today's rates from scripts/take_rates.py; the
 # date-effective variant prices each day with scripts/fee_register.py ──
 import fee_register
+import trading_calendar
 from take_rates import BSE_TR_FUT as TR_FUT, BSE_TR_OPT as TR_OPT, BSE_TR_CASH as TR_CASH
 
 
@@ -700,13 +701,17 @@ def build_dashboard_json(daily_all, quarterly, monthly, weekly, summary):
 
 def build_outputs(all_daily):
     """Every aggregate and both JSON documents from the daily rows. Pure: the
-    same code path builds the at-today's-rates and the date-effective files."""
+    same code path builds the at-today's-rates and the date-effective files.
+    Special sessions (Muhurat, DR tests: scripts/trading_calendar.py) stay out
+    of every aggregate and of daily_all, and are listed in special_sessions."""
+    all_daily, special = trading_calendar.split_special(all_daily, "bse")
     quarterly = recompute_quarterly(all_daily)
     monthly   = recompute_monthly(all_daily)
     weekly    = recompute_weekly(all_daily)
     summary_obj = compute_summary(all_daily, quarterly)
     enriched = compute_enriched(all_daily, quarterly)
     dashboard_json = build_dashboard_json(all_daily, quarterly, monthly, weekly, summary_obj)
+    dashboard_json["special_sessions"] = special
     return {"quarterly": quarterly, "monthly": monthly, "weekly": weekly,
             "summary": summary_obj, "enriched": enriched, "dashboard": dashboard_json}
 
@@ -867,7 +872,8 @@ def main():
         if existing_path.exists():
             with open(existing_path) as f:
                 existing = json.load(f)
-            all_daily = existing.get("daily_all", [])
+            all_daily = trading_calendar.merge_special(
+                existing.get("daily_all", []), existing.get("special_sessions"))
             existing_dates_local = {d["date"] for d in all_daily}
             # Dates previously recorded with no F&O data (cash-only fallback from a
             # data-posting lag, see "Also handle cash-only dates" above) — if freshly

@@ -1059,6 +1059,22 @@ function buildFeeNote() {
       parts.push(`${flagTags({ modelled: true })} marks MCX history ${fmtLongDate(mh.first_date)} – ${fmtLongDate(mh.last_date)}, which is modelled (scaled to reported quarters, options split derived) and left out of YoY, QoQ, segment-mix and market-share comparisons, shown as —.`);
     }
   }
+  // Muhurat / DR test sessions (scripts/trading_calendar.py): left out of every
+  // average and day count, listed here with their revenue
+  const special = exs.flatMap(ex => (rawFor(ex)?.special_sessions || []).map(r => ({ ex, r })));
+  if (special.length) {
+    const label = { muhurat: 'Muhurat', dr_test: 'DR test' };
+    const byDate = {};
+    special.forEach(({ ex, r }) => {
+      const k = r.date + '|' + r.session;
+      (byDate[k] = byDate[k] || []).push(`${multi ? ex.toUpperCase() + ' ' : ''}₹${fmtNum(r.total_rev, 2)} Cr`);
+    });
+    const items = Object.keys(byDate).sort().map(k => {
+      const [d, s] = k.split('|');
+      return `${label[s] || s} ${fmtLongDate(d)} (${byDate[k].join(', ')})`;
+    });
+    parts.push(`<strong>Special sessions</strong> are short sessions left out of averages, day counts and weekday figures: ${items.join('; ')}.`);
+  }
   el.innerHTML = parts.join(' ');
   el.hidden = !parts.length;
 }
