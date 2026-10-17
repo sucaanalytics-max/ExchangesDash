@@ -3410,3 +3410,165 @@ span.pr-neu {
   .header { gap: 4px; }
   .header-left { gap: 6px; }
 }
+
+/* =========================
+   GLANCE VIEW — phones (≤640 px), renderGlance() in app.js
+   ========================= */
+
+.nav-item--glance { display: none; }
+.glance { display: none; }
+
+@media (max-width: 640px) {
+  .nav-item--glance { display: flex; }
+
+  body.glance-mode .glance { display: block; }
+  body.glance-mode .tab-content,
+  body.glance-mode .snapshot-notice,
+  body.glance-mode #loadingOverlay { display: none !important; }
+}
+
+.glance-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.glance-switch { display: flex; }
+
+.glance-ex {
+  min-width: 56px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  cursor: pointer;
+}
+.glance-ex + .glance-ex { border-left: none; }
+.glance-ex.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+}
+
+.glance-full,
+.glance-retry,
+.glance-link {
+  min-height: 44px;
+  border: none;
+  background: none;
+  color: var(--color-primary);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.glance-link { min-height: 0; padding: 0; text-decoration: underline; font-size: inherit; }
+
+.glance-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-top: 3px solid var(--color-primary);
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+.glance-card--error { border-top-color: var(--color-negative); }
+
+.glance-card-title {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.glance-live {
+  padding: 1px 6px;
+  background: var(--color-positive);
+  color: #fff;
+  font-size: 10px;
+  letter-spacing: .06em;
+}
+
+.glance-big {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+.glance-unit { font-size: 14px; font-weight: 500; color: var(--color-text-muted); }
+
+.glance-sub { font-size: 12px; color: var(--color-text-muted); margin-top: 2px; }
+
+.glance-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 0 0;
+  margin-top: 7px;
+  border-top: 1px solid var(--color-divider, var(--color-border));
+  font-size: 14px;
+  color: var(--color-text);
+}
+.glance-row strong { font-variant-numeric: tabular-nums; }
+
+.glance-note {
+  margin-top: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
+}
+
+.glance-chg {
+  display: inline-block;
+  padding: 1px 7px;
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.glance-chg--up   { color: var(--color-positive); background: var(--color-positive-bg); }
+.glance-chg--down { color: var(--color-negative); background: var(--color-negative-bg); }
+.glance-chg--flat,
+.glance-chg--na   { color: var(--color-text-muted); }
+
+.glance-dow {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+  text-align: center;
+}
+.glance-dow-day { font-size: 11px; font-weight: 700; color: var(--color-text-muted); text-transform: uppercase; }
+.glance-dow-val { font-size: 15px; font-weight: 600; margin: 2px 0 4px; font-variant-numeric: tabular-nums; }
+.glance-dow .glance-chg { font-size: 11px; padding: 1px 4px; }
+
+.glance-loading { padding: 32px 0; text-align: center; color: var(--color-text-muted); }
+
+.glance-foot { font-size: 12px; color: var(--color-text-muted); margin: 4px 0 24px; }
+
+/* Bear / Base / Bull tables: fit 390 px instead of clipping the Bull column */
+@media (max-width: 640px) {
+  .scenario-table { table-layout: fixed; width: 100%; min-width: 0; }
+  .scenario-table th:first-child,
+  .scenario-table td:first-child { width: 34%; white-space: normal; }
+  .scenario-table th,
+  .scenario-table td { padding-left: 4px; padding-right: 4px; font-size: 12px; }
+  .scenario-table td:first-child,
+  .scenario-table th:first-child { padding-left: 8px; }
+  .scenario-table .param-input { width: 100% !important; max-width: 72px; min-width: 0; padding-left: 2px; padding-right: 2px; }
+  .scenario-table .prov-tag { white-space: normal; max-width: 100%; }
+}
