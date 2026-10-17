@@ -906,12 +906,25 @@ def build_outputs(all_daily, pnl, pnl_fy, cost_ratios):
             "dashboard": dashboard_json}
 
 
-def build_date_effective_outputs(all_daily, pnl, pnl_fy, cost_ratios):
+# Forward-looking enriched blocks. Future quarters are priced at today's fees
+# in both variants, so they must grow from activity measured at today's rates:
+# growth measured on date-effective history would include one-off fee changes
+# (e.g. the March 2026 increase) and inflate the forecast.
+FORECAST_KEYS = ("pnl_predictor", "pnl_predicted_quarters", "pnl_forecast_model")
+
+
+def build_date_effective_outputs(all_daily, pnl, pnl_fy, cost_ratios, forecast_from=None):
     """build_outputs on rows re-priced at the fee rules in force on each date.
     Adds fee_basis to every daily row and aggregate period, and fee_mode /
-    fee_rules at the top of both documents. take_rates stays today's rates."""
+    fee_rules at the top of both documents. take_rates stays today's rates.
+    forecast_from: the at-today's-rates enriched document; its FORECAST_KEYS
+    replace the date-effective ones so both variants show the same forecast."""
     eff_daily = reprice_date_effective(all_daily)
     out = build_outputs(eff_daily, pnl, pnl_fy, cost_ratios)
+    if forecast_from is not None:
+        for k in FORECAST_KEYS:
+            if k in forecast_from:
+                out["enriched"][k] = forecast_from[k]
     fee_register.annotate_periods(out["quarterly"], "quarter", eff_daily, lambda d: d["fy_quarter"])
     fee_register.annotate_periods(out["monthly"], "month", eff_daily, lambda d: d["fy_month"])
     fee_register.annotate_periods(out["weekly"], "week", eff_daily, week_label)
@@ -1087,7 +1100,7 @@ def main():
 
     # Step 10: Date-effective variant (each day at the fee rules then in force).
     # JSON only; Supabase keeps the at-today's-rates rows and aggregates.
-    eff = build_date_effective_outputs(all_daily, pnl, pnl_fy, cost_ratios)
+    eff = build_date_effective_outputs(all_daily, pnl, pnl_fy, cost_ratios, forecast_from=enriched)
     write_dashboard_data(eff["dashboard"], eff["enriched"], suffix="_eff")
 
     # Summary
