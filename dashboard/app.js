@@ -135,10 +135,19 @@ function setCompactChartLayout(chart, width) {
   // here into every later update until they are undone.
   const opts = chart.config.options;
   if (narrow) {
-    const saved = { titles: [], legend: null };
+    const saved = { titles: [], legend: null, ticks: [] };
     Object.entries(opts.scales || {}).forEach(([id, s]) => {
       if (s && s.title && s.title.display) { s.title.display = false; saved.titles.push(id); }
     });
+    // Horizontal axis: no rotated labels and at most 6 of them
+    const x = opts.scales && opts.scales.x;
+    if (x && x.type !== 'linear' && x.type !== 'logarithmic') {
+      const t = x.ticks || (x.ticks = {});
+      saved.ticks.push({ id: 'x', maxRotation: t.maxRotation, maxTicksLimit: t.maxTicksLimit, autoSkip: t.autoSkip });
+      t.maxRotation = 0;
+      t.autoSkip = true;
+      t.maxTicksLimit = Math.min(t.maxTicksLimit || Infinity, 6);
+    }
     opts.plugins = opts.plugins || {};
     const legend = opts.plugins.legend || (opts.plugins.legend = {});
     if (legend.display !== false && legend.position !== 'bottom') {
@@ -151,6 +160,10 @@ function setCompactChartLayout(chart, width) {
     saved.titles.forEach(id => {
       const s = opts.scales && opts.scales[id];
       if (s && s.title) s.title.display = true;
+    });
+    saved.ticks.forEach(({ id, ...orig }) => {
+      const t = opts.scales && opts.scales[id] && opts.scales[id].ticks;
+      if (t) Object.entries(orig).forEach(([k, v]) => { if (v === undefined) delete t[k]; else t[k] = v; });
     });
     const legend = opts.plugins && opts.plugins.legend;
     if (saved.legend && legend) {
@@ -387,12 +400,21 @@ const TAB_TITLES = {
 function buildSidebarNav(exchange) {
   const nav = document.getElementById('sidebarNav');
   const tabs = EXCHANGE_TABS[exchange];
-  nav.innerHTML = tabs.map((t, i) =>
+  // Phones only (CSS hides it above 640 px): back to the glance view
+  const glance = `<button class="nav-item nav-item--glance" data-glance="1" aria-label="At a glance">
+      ${NAV_ICONS.temporal}
+      At a glance
+    </button>`;
+  nav.innerHTML = glance + tabs.map((t, i) =>
     `<button class="nav-item${i === 0 ? ' active' : ''}" data-tab="${t.id}" aria-label="${t.label}">
       ${NAV_ICONS[t.icon]}
       ${t.label}
     </button>`
   ).join('');
+  nav.querySelector('[data-glance]').addEventListener('click', () => {
+    document.getElementById('sidebarOverlay').classList.remove('open');
+    enterGlance(true);
+  });
   attachTabListeners();
 }
 
@@ -402,8 +424,15 @@ function buildSidebarNav(exchange) {
 
 function attachTabListeners() {
   document.querySelectorAll('.nav-item[data-tab]').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', e => {
       const tab = btn.dataset.tab;
+      // A tab the viewer picks from the menu leaves the glance view; the
+      // programmatic first-tab click after a load keeps it.
+      if (e.isTrusted && glanceActive()) {
+        document.body.classList.remove('glance-mode');
+        document.getElementById('glanceView').hidden = true;
+        updateHeaderExchange(currentExchange);
+      }
       document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
@@ -411,6 +440,12 @@ function attachTabListeners() {
       if (tabEl) tabEl.classList.add('active');
       const titles = TAB_TITLES[currentExchange] || {};
       document.getElementById('headerTitle').textContent = titles[tab] || tab;
+      if (glanceActive()) {
+        document.getElementById('headerTitle').textContent = 'At a glance';
+        updateHeaderExchange(GLANCE_EX);
+        btn.classList.remove('active');
+        document.querySelector('.nav-item[data-glance]')?.classList.add('active');
+      }
       // Flag mixed snapshots / missing date-effective files for this view, then
       // refetch anything it uses that has gone stale
       updateSnapshotNotice();
@@ -474,6 +509,19 @@ function initExchangeSwitcher() {
   document.querySelectorAll('.exchange-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const exchange = btn.dataset.exchange;
+      // In the glance view a single exchange only changes the glance's own switch
+      if (glanceActive() && !COMBINED_VIEWS[exchange]) {
+        document.getElementById('sidebar').classList.remove('open');
+        document.getElementById('sidebarOverlay').classList.remove('open');
+        GLANCE_EX = exchange;
+        updateHeaderExchange(exchange);
+        renderGlance();
+        return;
+      }
+      if (glanceActive()) {
+        document.body.classList.remove('glance-mode');
+        document.getElementById('glanceView').hidden = true;
+      }
       if (exchange === currentExchange) return;
       document.querySelectorAll('.exchange-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
@@ -1393,6 +1441,252 @@ async function updateLatestRevBanner() {
   const hasLive = isLiveToday(nse) || isLiveToday(bse);
   const title = hasLive ? "Today's Revenue" : 'Latest Full Day Revenue';
   el.innerHTML = '<span class="rev-banner-title">' + title + '</span>' + chip('NSE', nse) + chip('BSE', bse);
+}
+
+// ========================
+// GLANCE VIEW (phones)
+// ========================
+// The default screen at ≤640 px: one card stack per exchange (today's live
+// revenue and its age, predicted end of day, last 5 days vs the 5 before,
+// quarter to date with QoQ / YoY, a weekday strip, share price against the
+// regression fair value), with its own exchange switch and a link to the full
+// dashboard. It reads the preloaded MARKET_DATA / MARKET_RAW caches and the
+// live files, so it never waits for the full view's tabs to build. A viewer
+// who picks "Full view" keeps it on later visits (localStorage).
+const GLANCE_STORAGE_KEY = 'exchangesdash.view';
+const GLANCE_MEDIA = window.matchMedia ? window.matchMedia('(max-width: 640px)') : { matches: false };
+const GLANCE_SHARE = {};   // exchange → { json, at } share file with the live quote applied
+let GLANCE_EX = 'nse';
+let GLANCE_SEQ = 0;        // drops a render that a newer one has overtaken
+
+function glancePref() {
+  try { return localStorage.getItem(GLANCE_STORAGE_KEY); } catch (e) { return null; }
+}
+
+function setGlancePref(v) {
+  try { localStorage.setItem(GLANCE_STORAGE_KEY, v); } catch (e) { /* storage blocked: not remembered */ }
+}
+
+function glanceActive() { return document.body.classList.contains('glance-mode'); }
+
+function enterGlance(remember) {
+  if (remember) setGlancePref('glance');
+  if (COMBINED_VIEWS[currentExchange] == null) GLANCE_EX = currentExchange;
+  document.body.classList.add('glance-mode');
+  document.getElementById('glanceView').hidden = false;
+  document.getElementById('headerTitle').textContent = 'At a glance';
+  updateHeaderExchange(GLANCE_EX);
+  document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.glance === '1'));
+  document.getElementById('sidebar').classList.remove('open');
+  renderGlance();
+}
+
+// Leaves the glance for the full dashboard; with `remember`, later visits open
+// on the full view too. A tab chosen from the menu leaves it without that.
+async function exitGlance(remember) {
+  if (!glanceActive()) return;
+  if (remember) setGlancePref('full');
+  document.body.classList.remove('glance-mode');
+  document.getElementById('glanceView').hidden = true;
+  if (GLANCE_EX !== currentExchange) {
+    document.querySelectorAll('.exchange-btn').forEach(b => b.classList.toggle('active', b.dataset.exchange === GLANCE_EX));
+    await switchExchange(GLANCE_EX);
+  } else {
+    updateHeaderExchange(currentExchange);
+    const active = document.querySelector('.nav-item.active[data-tab]') || document.querySelector('.nav-item[data-tab]');
+    if (active) active.click();
+  }
+}
+
+async function glanceShare(ex) {
+  const c = GLANCE_SHARE[ex];
+  if (c && Date.now() - c.at < DATA_MAX_AGE_MS) return c.json;
+  try {
+    const json = (await fetchDataFile(`./data/${ex}_share_analysis.json`)).json;
+    await applyLiveStockPrice(json, ex);
+    GLANCE_SHARE[ex] = { json, at: Date.now() };
+    return json;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function glanceLiveFiles(ex) {
+  if (ex !== 'nse' && ex !== 'bse') return { live: null, hourly: null };
+  const hourly = async () => {
+    for (const url of [`/api/live?exchange=${ex}&file=hourly&t=${Date.now()}`, `./data/${ex}_live_hourly.json`]) {
+      try {
+        const res = await fetch(url);
+        if (res.ok) return await res.json();
+      } catch (e) { /* next source */ }
+    }
+    return null;
+  };
+  const [live, hr] = await Promise.all([fetchLiveFile(ex), hourly()]);
+  return { live, hourly: hr };
+}
+
+function glanceAge(ts) {
+  const mins = Math.round((Date.now() - parseUtcTs(ts).getTime()) / 60000);
+  if (!isFinite(mins) || mins < 0) return '';
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const h = Math.floor(mins / 60);
+  return h < 24 ? `${h} h ${mins % 60} min ago` : `${Math.floor(h / 24)} d ago`;
+}
+
+function glanceBadge(v, na) {
+  if (na || v == null || isNaN(v)) return '<span class="glance-chg glance-chg--na">—</span>';
+  const cls = v > 0.0001 ? 'up' : v < -0.0001 ? 'down' : 'flat';
+  return `<span class="glance-chg glance-chg--${cls}">${(v > 0.0001 ? '+' : '') + (v * 100).toFixed(1)}%</span>`;
+}
+
+function glanceCard(title, body, extraClass = '') {
+  return `<section class="glance-card${extraClass}"><h2 class="glance-card-title">${title}</h2>${body}</section>`;
+}
+
+// Today: the live reading when it is a fresh sample of today's IST session,
+// else the latest full day from the daily file.
+function glanceTodayCard(ex, live, hourly, raw) {
+  const rev = live && live.revenue;
+  const todayIST = istDateOf();
+  const tradeDate = rev && (normalizeTradeDateJS(rev.trade_date));
+  const isLive = !!rev && rev.has_data && !rev.stale_since && tradeDate === todayIST;
+  const daily = (raw && raw.daily_all) || [];
+  const last = daily[daily.length - 1];
+  if (!isLive) {
+    if (!last) return '';
+    return glanceCard('Latest full day', `
+      <div class="glance-big">₹${fmtNum(last.total_rev, 1)}<span class="glance-unit"> Cr</span></div>
+      <div class="glance-sub">${fmtTradeDate(last.date, true)} · end-of-day file${ex === 'mcx' ? '' : ' · market closed or not yet open'}</div>`);
+  }
+  const hhmm = parseUtcTs(live.updated_at).toLocaleTimeString('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' });
+  const samples = hourly && hourly.date === todayIST ? (hourly.samples || []) : [];
+  const lastS = samples[samples.length - 1];
+  const pred = lastS && lastS.predicted_eod;
+  const method = lastS && lastS.pred_method ? (lastS.pred_method.startsWith('historical') ? 'from past sessions\' intraday curves' : 'straight-line') : '';
+  const partial = rev.options_pending ? '<div class="glance-note">Partial: BSE has not posted options premium yet — cash only.</div>' : '';
+  return glanceCard(`Today <span class="glance-live">LIVE</span>`, `
+      <div class="glance-big">₹${fmtNum(rev.total_revenue, 1)}<span class="glance-unit"> Cr</span></div>
+      <div class="glance-sub">as of ${hhmm} IST · ${glanceAge(live.updated_at)}</div>
+      ${partial}
+      <div class="glance-row"><span>Predicted end of day</span><strong>${pred != null ? '₹' + fmtNum(pred, 1) + ' Cr' : '—'}</strong></div>
+      ${pred != null ? `<div class="glance-sub">${method}</div>` : ''}`);
+}
+
+// '16-Oct-2026 14:30' / '16/10/26' / '2026-10-16' → '2026-10-16'
+function normalizeTradeDateJS(s) {
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  let m = /^(\d{2})\/(\d{2})\/(\d{2,4})/.exec(s);
+  if (m) return (m[3].length === 2 ? '20' + m[3] : m[3]) + '-' + m[2] + '-' + m[1];
+  m = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})/.exec(s);
+  if (m) {
+    const mon = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(m[2].toLowerCase()) + 1;
+    return mon ? `${m[3]}-${String(mon).padStart(2, '0')}-${m[1].padStart(2, '0')}` : null;
+  }
+  return null;
+}
+
+function glanceShareCard(ex, share) {
+  if (!share || !share.latest) return '';
+  const lat = share.latest;
+  const priceSub = lat.is_live
+    ? `live ${parseUtcTs(lat.live_updated_at).toLocaleTimeString('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })} IST`
+    : `close ${fmtTradeDate(lat.date)}`;
+  let fv;
+  if (share.status === 'collecting') {
+    fv = `<div class="glance-sub">Regression fair value after ${share.min_days_required} trading days (${share.n_days} so far)</div>`;
+  } else if (lat.price_pred == null) {
+    const why = share.methodology && share.methodology.gate_reasons && share.methodology.gate_reasons[0];
+    fv = `<div class="glance-row"><span>Fair value</span><strong>withheld</strong></div>${why ? `<div class="glance-sub">${why}</div>` : ''}`;
+  } else {
+    const up = lat.price_pred / lat.price_actual - 1;
+    const h = share.methodology && share.methodology.holdout;
+    fv = `<div class="glance-row"><span>Regression fair value</span><strong>₹${fmtNum(lat.price_pred, 0)}</strong></div>
+      <div class="glance-row"><span>Upside</span>${glanceBadge(up)}</div>
+      ${h && !h.beats_naive ? '<div class="glance-note">Out of sample this model has not beaten “price unchanged”.</div>' : ''}`;
+  }
+  return glanceCard(`Share price · ${share.ticker}`, `
+    <div class="glance-big">₹${fmtNum(lat.price_actual, 0)}</div>
+    <div class="glance-sub">${priceSub}${lat.is_live && lat.live_pct_change != null ? ' · ' + (lat.live_pct_change >= 0 ? '+' : '') + Number(lat.live_pct_change).toFixed(2) + '% today' : ''}</div>
+    ${fv}`);
+}
+
+async function renderGlance() {
+  const el = document.getElementById('glanceView');
+  if (!el || !glanceActive()) return;
+  const seq = ++GLANCE_SEQ;
+  const ex = GLANCE_EX;
+  const switcher = `
+    <div class="glance-top">
+      <div class="glance-switch" role="group" aria-label="Exchange">
+        ${['nse', 'bse', 'mcx'].map(e => `<button type="button" class="glance-ex${e === ex ? ' active' : ''}" data-glance-ex="${e}" aria-pressed="${e === ex}">${e.toUpperCase()}</button>`).join('')}
+      </div>
+      <button type="button" class="glance-full" data-glance-full>Full view →</button>
+    </div>`;
+  if (!MARKET_DATA[ex] || !MARKET_RAW[ex]) el.innerHTML = switcher + '<div class="glance-loading">Loading…</div>';
+  attachGlanceHandlers(el);
+
+  await preloadMarketData([ex]);
+  const [share, lf] = await Promise.all([glanceShare(ex), glanceLiveFiles(ex)]);
+  if (seq !== GLANCE_SEQ || !glanceActive()) return;
+  const enr = MARKET_DATA[ex], raw = MARKET_RAW[ex];
+  if (!enr || !raw) {
+    el.innerHTML = switcher + '<div class="glance-card glance-card--error">Could not load this exchange\'s data. <button type="button" class="glance-retry" data-glance-retry>Retry</button></div>';
+    attachGlanceHandlers(el);
+    return;
+  }
+
+  const F = reportFlagsFor(raw);
+  const tg = f => reportTags(f, false);
+  const s = enr.summary_total || {};
+  const l5 = s.weekly?.last5 || {}, p5 = s.weekly?.prev5 || {};
+  const qc = s.quarterly?.current || {}, qp = s.quarterly?.previous || {}, q2 = s.quarterly?.prev2 || {};
+  const qRow = (raw.quarterly || []).find(q => q.quarter === qc.label);
+  const f5 = F.tail(-5, undefined, 'total'), fp5 = F.tail(-10, -5, 'total');
+  const fqc = F.q(qc.label, 'total'), fqp = F.q(qp.label, 'total'), fq2 = F.q(q2.label, 'total');
+
+  const weekCard = glanceCard('Last 5 trading days', `
+    <div class="glance-big">₹${fmtNum(l5.value, 1)}<span class="glance-unit"> Cr/day</span>${tg(f5)}</div>
+    <div class="glance-row"><span>Previous 5 days</span><strong>₹${fmtNum(p5.value, 1)}${tg(fp5)}</strong></div>
+    <div class="glance-row"><span>Change</span>${glanceBadge(l5.wow, anyModelled(f5, fp5))}</div>`);
+
+  const qtdCard = glanceCard(`Quarter to date · ${qc.label || '—'}`, `
+    <div class="glance-big">₹${fmtNum(qc.value, 1)}<span class="glance-unit"> Cr/day</span>${tg(fqc)}</div>
+    <div class="glance-sub">${qRow ? (qRow.days || qRow.trading_days) + ' trading days' : ''}</div>
+    <div class="glance-row"><span>vs ${qp.label || 'previous quarter'} (QoQ)</span>${glanceBadge(qc.qoq, anyModelled(fqc, fqp))}</div>
+    <div class="glance-row"><span>vs ${q2.label || 'a year earlier'} (YoY)</span>${glanceBadge(qc.yoy, anyModelled(fqc, fq2))}</div>`);
+
+  const dow = s.day_of_week || {};
+  const strip = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'].map(d => {
+    const v = dow[d] || {};
+    const f3 = F.weekday(d, 3, 'total');
+    return `<div class="glance-dow-cell"><div class="glance-dow-day">${d.slice(0, 3)}</div>
+      <div class="glance-dow-val">${fmtNum(v.latest, 1)}</div>${glanceBadge(v.do3d, anyModelled(f3))}</div>`;
+  }).join('');
+  const dowCard = glanceCard('Day of week · latest ₹ Cr, vs last 3', `<div class="glance-dow">${strip}</div>`);
+
+  const feeLine = hasFeeVariant(ex)
+    ? (MARKET_EFF[ex] ? 'Fees as charged (rates in force each day).' : 'Fees at today\'s rates.')
+    : 'MCX: source values.';
+
+  el.innerHTML = switcher
+    + glanceTodayCard(ex, lf.live, lf.hourly, raw)
+    + weekCard + qtdCard + dowCard
+    + glanceShareCard(ex, share)
+    + `<p class="glance-foot">${feeLine} Data to ${fmtTradeDate((raw.daily_all || []).slice(-1)[0]?.date, true)}. <button type="button" class="glance-link" data-glance-full>Open the full dashboard</button></p>`;
+  attachGlanceHandlers(el);
+}
+
+function attachGlanceHandlers(el) {
+  el.querySelectorAll('[data-glance-ex]').forEach(b => b.addEventListener('click', () => {
+    GLANCE_EX = b.dataset.glanceEx;
+    updateHeaderExchange(GLANCE_EX);
+    renderGlance();
+  }));
+  el.querySelectorAll('[data-glance-full]').forEach(b => b.addEventListener('click', () => exitGlance(true)));
+  el.querySelectorAll('[data-glance-retry]').forEach(b => b.addEventListener('click', () => renderGlance()));
 }
 
 // ========================
@@ -2343,7 +2637,7 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
           </tbody>
 
           <tbody class="xl-sec">
-            <tr class="xl-col-hdr"><td>Week&gt;&gt;</td><td>Val (In Cr)</td><td>WoW</td><td>Wo 10W</td></tr>
+            <tr class="xl-col-hdr"><td>Week&gt;&gt;</td><td>Val (In Cr)</td><td>WoW</td><td title="Last 5 days vs the last 45 days">vs 45D</td></tr>
             ${wRows}
           </tbody>
         </table>
@@ -2485,7 +2779,7 @@ function xlStaticSegmentBlock(st, label, segKey) {
             ${mRows}
           </tbody>
           <tbody class="xl-sec">
-            <tr class="xl-col-hdr"><td>Week&gt;&gt;</td><td>Val (In Cr)</td><td>WoW</td><td>Wo 10W</td></tr>
+            <tr class="xl-col-hdr"><td>Week&gt;&gt;</td><td>Val (In Cr)</td><td>WoW</td><td title="Last 5 days vs the last 45 days">vs 45D</td></tr>
             ${wRows}
           </tbody>
         </table>
@@ -5664,7 +5958,7 @@ function buildQuickValuationPanel(el, exchange, dailySeries, cmp) {
       </table>
     </div>
     <div style="overflow-x:auto">
-      <table class="data-table">
+      <table class="data-table scenario-table">
         <thead><tr><th>Metric</th><th style="text-align:center">Bear</th><th style="text-align:center">Base</th><th style="text-align:center">Bull</th></tr></thead>
         <tbody>
           <tr><td>PE Ratio (x) ${provSlot('pe')}</td>${scenarioCols}</tr>
@@ -5854,7 +6148,7 @@ async function buildBSEValuation() {
       </table>
     </div>
     <div style="overflow-x:auto">
-      <table class="data-table">
+      <table class="data-table scenario-table">
         <thead><tr><th>Metric</th><th style="text-align:center">Bear</th><th style="text-align:center">Base</th><th style="text-align:center">Bull</th></tr></thead>
         <tbody>
           <tr>
@@ -6994,6 +7288,9 @@ async function init() {
   updateHeaderExchange('nse');
   buildSidebarNav('nse');
   toggleExchangeContent('nse');
+  if (GLANCE_MEDIA.matches && glancePref() !== 'full') enterGlance(false);
+  if (GLANCE_MEDIA.addEventListener) GLANCE_MEDIA.addEventListener('change', m => { if (!m.matches) exitGlance(false); });
+  setInterval(() => { if (glanceActive() && !document.hidden) renderGlance(); }, 5 * 60 * 1000);
   preloadMarketData().then(() => { if (currentExchange === 'all' || currentExchange === 'nsebse') rebuildAll(); });
   await loadExchangeData('nse');
   updateHeaderInfo();
@@ -7301,7 +7598,7 @@ async function downloadWeeklyReport() {
       }).join('');
       return `<div class="pr-sub-header">Segment Revenue (L5 Daily Avg, ₹ Cr)</div>
       <table class="pr-table">
-        <thead><tr><th>Segment</th><th>L5 Avg</th><th>WoW</th><th>Wo10W</th></tr></thead>
+        <thead><tr><th>Segment</th><th>L5 Avg</th><th>WoW</th><th>vs 45D</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
     }
@@ -7651,7 +7948,8 @@ async function downloadMobileReport() {
           </div>
           <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px">
             ${kpiCard(qc.label || 'Current Q', qc.value, qc.qoq, 'QoQ', fqc, anyModelled(fqc, fqp))}
-            ${kpiCard(qp.label || 'Prev Q', qp.value, qc.yoy, 'YoY', fqp, anyModelled(fqc, fq2))}
+            ${kpiCard(qp.label || 'Prev Q', qp.value, null, '', fqp)}
+            ${kpiCard(s.quarterly?.prev2?.label || 'Year-ago Q', s.quarterly?.prev2?.value, qc.yoy, 'YoY (current Q)', fq2, anyModelled(fqc, fq2))}
             ${kpiCard(mc.label || 'Current Month', mc.value, mc.mom, 'MoM', fmc, anyModelled(fmc, fmp))}
           </div>
 
