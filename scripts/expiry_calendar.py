@@ -48,6 +48,7 @@ def _iso(d) -> str:
 def expiry_rule(exchange: str, d):
     """The rule in force for `exchange` on date `d` (date or 'YYYY-MM-DD'), or None."""
     s = _iso(d)
+    exchange = exchange.lower()
     for r in EXPIRY_RULES:
         if (r["exchange"] == exchange
                 and (r["effective_from"] is None or s >= r["effective_from"])
