@@ -411,8 +411,10 @@ function attachTabListeners() {
       if (tabEl) tabEl.classList.add('active');
       const titles = TAB_TITLES[currentExchange] || {};
       document.getElementById('headerTitle').textContent = titles[tab] || tab;
-      // Flag mixed snapshots for this view, then refetch anything it uses that has gone stale
+      // Flag mixed snapshots / missing date-effective files for this view, then
+      // refetch anything it uses that has gone stale
       updateSnapshotNotice();
+      updateFeeNotice();
       checkDataFreshness();
       // Close mobile nav
       document.getElementById('sidebar').classList.remove('open');
@@ -648,10 +650,21 @@ function textSignature(text) {
   return text.length + ':' + (h >>> 0).toString(16);
 }
 
+// Concurrent requests for one file share a download (init fetches the NSE
+// files for both the view and the cache); each caller parses its own copy.
+const TEXT_INFLIGHT = {};
+function fetchText(url) {
+  if (!TEXT_INFLIGHT[url]) {
+    TEXT_INFLIGHT[url] = fetch(url).then(res => {
+      if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+      return res.text();
+    }).finally(() => { delete TEXT_INFLIGHT[url]; });
+  }
+  return TEXT_INFLIGHT[url];
+}
+
 async function fetchDataFile(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-  const text = await res.text();
+  const text = await fetchText(url);
   return { json: JSON.parse(text), sig: textSignature(text) };
 }
 
@@ -660,17 +673,70 @@ function marketSig(ex) {
   return s ? `${s.enr || ''}|${s.raw || ''}` : '';
 }
 
+// ── Fee basis: as charged (date-effective) or at today's rates ───────────────
+// NSE and BSE revenue comes in two variants (CLAUDE.md, "Business rules"):
+// {ex}_{dashboard,enriched}_data.json prices every day at today's statutory
+// fees; {ex}_…_data_eff.json prices each day at the fees in force that day
+// (scripts/fee_register.py) and tags each row and period with fee_basis.
+// "As charged" (the default) loads the _eff pair; until the pipeline has
+// written it (404, or no fee_mode) the view falls back to today's rates and a
+// notice says so. MCX has no turnover to re-price: always source values.
+const FEE_MODE_STORAGE_KEY = 'feeMode_v1';
+let FEE_MODE = loadFeeMode();   // 'charged' | 'today'
+let feeModeSeq = 0;             // latest toggle; an older reload still in flight yields to it
+const MARKET_MODE = {};         // exchange → fee mode its MARKET_DATA/MARKET_RAW were fetched in
+const MARKET_EFF = {};          // exchange → true when those cached files are the _eff variant
+const EFF_MISSING_AT = {};      // exchange → ms when its _eff pair was last found missing
+
+function loadFeeMode() {
+  try { return localStorage.getItem(FEE_MODE_STORAGE_KEY) === 'today' ? 'today' : 'charged'; } catch (e) { return 'charged'; }
+}
+
+function saveFeeMode(mode) {
+  try { localStorage.setItem(FEE_MODE_STORAGE_KEY, mode); } catch (e) { /* storage blocked: not remembered */ }
+}
+
+function hasFeeVariant(ex) { return ex === 'nse' || ex === 'bse'; }
+
+// The variant an exchange's files are fetched in: NSE/BSE follow the toggle, MCX never changes
+function feeModeFor(ex) { return hasFeeVariant(ex) ? FEE_MODE : 'source'; }
+
+// An exchange's dashboard + enriched files in the current fee mode, as settled
+// results ({ status, value }), plus whether they are the date-effective pair.
+// Both files come from the same variant: a half-generated _eff pair is not used.
+// A missing pair is probed again at most once per DATA_MAX_AGE_MS.
+async function fetchRevenueFiles(ex) {
+  const mode = feeModeFor(ex);
+  const pair = suffix => Promise.allSettled([
+    fetchDataFile(`./data/${ex}_dashboard_data${suffix}.json`),
+    fetchDataFile(`./data/${ex}_enriched_data${suffix}.json`),
+  ]);
+  if (mode === 'charged' && !(Date.now() - (EFF_MISSING_AT[ex] || 0) < DATA_MAX_AGE_MS)) {
+    const [raw, enr] = await pair('_eff');
+    const dateEffective = r => r.status === 'fulfilled' && r.value.json && r.value.json.fee_mode === 'date_effective';
+    if (dateEffective(raw) && dateEffective(enr)) {
+      delete EFF_MISSING_AT[ex];
+      return { raw, enr, eff: true, mode };
+    }
+    EFF_MISSING_AT[ex] = Date.now();
+  }
+  const [raw, enr] = await pair('');
+  return { raw, enr, eff: false, mode };
+}
+
 // Fetches one exchange's dashboard, enriched and share-analysis files without
 // touching global state, so a freshness check can compare before committing.
 async function fetchExchangeFiles(exchange) {
   const hasShareFeed = exchange === 'nse' || exchange === 'bse' || exchange === 'mcx';
   const checkedAt = Date.now();
-  const [raw, enr, share] = await Promise.all([
-    fetchDataFile(`./data/${exchange}_dashboard_data.json`),
-    fetchDataFile(`./data/${exchange}_enriched_data.json`),
+  const [rev, share] = await Promise.all([
+    fetchRevenueFiles(exchange),
     hasShareFeed ? fetchDataFile(`./data/${exchange}_share_analysis.json`).catch(() => null) : null,
   ]);
-  return { exchange, raw: raw.json, enr: enr.json, share: share ? share.json : null, sig: [raw.sig, enr.sig, share ? share.sig : ''].join('|'), checkedAt };
+  if (rev.raw.status !== 'fulfilled') throw rev.raw.reason;
+  if (rev.enr.status !== 'fulfilled') throw rev.enr.reason;
+  const raw = rev.raw.value, enr = rev.enr.value;
+  return { exchange, raw: raw.json, enr: enr.json, share: share ? share.json : null, sig: [raw.sig, enr.sig, share ? share.sig : ''].join('|'), checkedAt, mode: rev.mode, eff: rev.eff };
 }
 
 async function commitExchangeFiles(f) {
@@ -680,7 +746,7 @@ async function commitExchangeFiles(f) {
   if (Array.isArray(DATA.pnl)) DATA.pnl.sort((a, b) => quarterSortKey(a.quarter) - quarterSortKey(b.quarter));
   ENRICHED_DATA = f.enr;
   SHARE_DATA = f.share;
-  VIEW_LOADED = { exchange: f.exchange, sig: f.sig, checkedAt: f.checkedAt };
+  VIEW_LOADED = { exchange: f.exchange, sig: f.sig, checkedAt: f.checkedAt, mode: f.mode, eff: f.eff };
   if (SHARE_DATA) {
     await applyLiveStockPrice(SHARE_DATA, f.exchange);
   }
@@ -704,30 +770,42 @@ async function loadExchangeData(exchange) {
 // Fills MARKET_DATA / MARKET_RAW (the cache the combined views and the BSE
 // valuation read) for the given exchanges. Resolves to the exchanges whose
 // content changed. Concurrent callers share one fetch per exchange.
+// The cache holds NSE/BSE in one fee mode at a time: a fetch is keyed by
+// exchange and mode, and one that finishes after the mode has changed is dropped.
 function preloadMarketData(exchanges = ['nse', 'bse', 'mcx']) {
   return Promise.all(exchanges.map(ex => {
-    if (!MARKET_INFLIGHT[ex]) {
+    const mode = feeModeFor(ex);
+    const key = ex + '|' + mode;
+    if (!MARKET_INFLIGHT[key]) {
       MARKET_CHECKED_AT[ex] = Date.now();
-      MARKET_INFLIGHT[ex] = Promise.allSettled([
-        fetchDataFile(`./data/${ex}_enriched_data.json`),
-        fetchDataFile(`./data/${ex}_dashboard_data.json`),
-      ]).then(([enr, raw]) => {
+      MARKET_INFLIGHT[key] = fetchRevenueFiles(ex).then(({ raw, enr, eff }) => {
+        if (mode !== feeModeFor(ex)) return null;  // toggled meanwhile; that mode's fetch fills the cache
         if (enr.status !== 'fulfilled' && raw.status !== 'fulfilled') return null;
+        const modeChanged = MARKET_MODE[ex] !== mode;
+        if (modeChanged) {  // never leave one file of the other variant behind
+          delete MARKET_DATA[ex];
+          delete MARKET_RAW[ex];
+          delete MARKET_SIG[ex];
+        }
         const before = marketSig(ex);
         const sig = MARKET_SIG[ex] || (MARKET_SIG[ex] = {});
         if (enr.status === 'fulfilled') { MARKET_DATA[ex] = enr.value.json; sig.enr = enr.value.sig; }
         if (raw.status === 'fulfilled') { MARKET_RAW[ex]  = raw.value.json; sig.raw = raw.value.sig; }
-        return marketSig(ex) !== before ? ex : null;
-      }).finally(() => { delete MARKET_INFLIGHT[ex]; });
+        MARKET_MODE[ex] = mode;
+        MARKET_EFF[ex] = eff;
+        return marketSig(ex) !== before || modeChanged ? ex : null;
+      }).finally(() => { delete MARKET_INFLIGHT[key]; });
     }
-    return MARKET_INFLIGHT[ex];
+    return MARKET_INFLIGHT[key];
   })).then(changed => changed.filter(Boolean));
 }
 
-// Fetches the cached exchanges that are missing, stale or already being fetched.
+// Fetches the cached exchanges that are missing, stale, in the other fee mode
+// or already being fetched.
 function ensureFreshMarketData(exchanges) {
   const now = Date.now();
-  const due = exchanges.filter(ex => MARKET_INFLIGHT[ex] || !MARKET_RAW[ex] || !MARKET_DATA[ex]
+  const due = exchanges.filter(ex => MARKET_INFLIGHT[ex + '|' + feeModeFor(ex)] || !MARKET_RAW[ex] || !MARKET_DATA[ex]
+    || MARKET_MODE[ex] !== feeModeFor(ex)
     || !MARKET_CHECKED_AT[ex] || now - MARKET_CHECKED_AT[ex] > DATA_MAX_AGE_MS);
   return due.length ? preloadMarketData(due) : Promise.resolve([]);
 }
@@ -752,7 +830,9 @@ function checkDataFreshness() {
       viewDue ? fetchExchangeFiles(ex).catch(() => null) : null,
     ]);
     if (currentExchange !== ex) return;  // switched meanwhile; that switch loaded its own data
-    const fresh = files && VIEW_LOADED && files.sig !== VIEW_LOADED.sig ? files : null;
+    // A fetch made before a fee-mode toggle is left to the toggle's own reload
+    const fresh = files && VIEW_LOADED && files.mode === VIEW_LOADED.mode && files.mode === feeModeFor(ex)
+      && files.sig !== VIEW_LOADED.sig ? files : null;
     const cacheMoved = cached.some(e => marketSig(e) !== VIEW_BUILT_FROM[e]);
     if (fresh || cacheMoved) await rebuildCurrentView(fresh);
   })().catch(err => console.warn('Data freshness check failed:', err))
@@ -811,6 +891,216 @@ function updateSnapshotNotice() {
   });
   el.innerHTML = `<strong>Data dates differ:</strong> ${parts.join('; ')}. Combined figures mix these snapshots.`;
   el.hidden = false;
+}
+
+// ── Fee toggle, fee notice and the fee-basis definitions note ─────────────────
+const FEE_BASIS_SHORT = { charged: 'as charged', today: "at today's rates", source: 'source values' };
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// "2024-10-01" → "1 Oct 2024"
+function fmtLongDate(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+  return m ? `${+m[3]} ${MONTHS_SHORT[+m[2] - 1]} ${m[1]}` : (iso || '');
+}
+
+function viewExchanges() { return COMBINED_VIEWS[currentExchange] || [currentExchange]; }
+
+// The dashboard file behind `ex` in the current view (single view: DATA; else the cache)
+function rawFor(ex) {
+  return !DATA.components && VIEW_LOADED && VIEW_LOADED.exchange === ex ? DATA : MARKET_RAW[ex];
+}
+
+// What the figures shown for `ex` are priced at: 'charged', 'today' or 'source' (MCX)
+function feeBasisOf(ex) {
+  if (!hasFeeVariant(ex)) return 'source';
+  const eff = !DATA.components && VIEW_LOADED && VIEW_LOADED.exchange === ex ? VIEW_LOADED.eff : MARKET_EFF[ex];
+  return eff ? 'charged' : 'today';
+}
+
+// Short unit label for table headers, e.g. "as charged" or "NSE/BSE as charged · MCX source values"
+function feeUnitLabel() {
+  const groups = {};
+  viewExchanges().forEach(ex => { (groups[feeBasisOf(ex)] = groups[feeBasisOf(ex)] || []).push(ex.toUpperCase()); });
+  const kinds = Object.keys(groups);
+  return kinds.length === 1 ? FEE_BASIS_SHORT[kinds[0]]
+    : kinds.map(k => `${groups[k].join('/')} ${FEE_BASIS_SHORT[k]}`).join(' · ');
+}
+
+// NSE/BSE sources of the current view: [{ ex, eff }]. The BSE valuation also
+// reads NSE's rows (market ADR and share).
+function viewFeeSources() {
+  const tab = document.querySelector('.nav-item.active')?.dataset.tab;
+  const list = viewExchanges().filter(hasFeeVariant);
+  if (currentExchange === 'bse' && tab === 'valuation' && MARKET_RAW.nse) list.push('nse');
+  return list.map(ex => ({ ex, eff: feeBasisOf(ex) === 'charged' }));
+}
+
+// "As charged" selected but the date-effective files are not there yet
+function updateFeeNotice() {
+  const el = document.getElementById('feeNotice');
+  if (!el) return;
+  const sources = viewFeeSources();
+  const missing = FEE_MODE === 'charged' ? sources.filter(s => !s.eff) : [];
+  if (!missing.length) {
+    el.hidden = true;
+    el.textContent = '';
+    return;
+  }
+  const names = missing.map(s => s.ex.toUpperCase()).join(' and ');
+  el.textContent = missing.length === sources.length
+    ? 'Date-effective data not generated yet — showing today\'s rates.'
+    : `${names} date-effective data not generated yet — ${names} figures use today's rates.`;
+  el.hidden = false;
+}
+
+// Date spans of an exchange's fee rules with this basis, from its loaded
+// fee_rules: e.g. "NSE until 30 Sep 2024", "BSE options 1 Nov 2023 – 30 Sep 2024".
+function feeRuleSpans(ex, basis) {
+  const raw = rawFor(ex);
+  const rules = (raw?.fee_rules || []).filter(r => r.basis === basis);
+  if (!rules.length) return [];
+  const firstDate = raw.daily_all?.[0]?.date || '';
+  const allProducts = new Set((raw.fee_rules || []).map(r => r.product));
+  const spans = {};
+  rules.forEach(r => {
+    const s = spans[r.product] || (spans[r.product] = { from: r.effective_from, to: r.effective_to });
+    if (r.effective_from === null || (s.from !== null && r.effective_from < s.from)) s.from = r.effective_from;
+    if (r.effective_to === null || (s.to !== null && r.effective_to > s.to)) s.to = r.effective_to;
+  });
+  const groups = {};
+  Object.entries(spans).forEach(([prod, s]) => {
+    const when = s.from === null || s.from <= firstDate
+      ? (s.to ? `until ${fmtLongDate(s.to)}` : '')
+      : (s.to ? `${fmtLongDate(s.from)} – ${fmtLongDate(s.to)}` : `from ${fmtLongDate(s.from)}`);
+    (groups[when] = groups[when] || []).push(prod);
+  });
+  const names = { opt: 'options', fut: 'futures', cash: 'cash' };
+  return Object.entries(groups).map(([when, prods]) => {
+    const what = prods.length === allProducts.size ? '' : ' ' + prods.map(p => names[p] || p).join(' and ');
+    return `${ex.toUpperCase()}${what}${when ? ' ' + when : ''}`;
+  });
+}
+
+// One short note under the Revenue Summary: which fee basis the figures use,
+// the method, and what the "est." / "modelled" markers mean.
+function buildFeeNote() {
+  const el = document.getElementById('feeModeNote');
+  if (!el) return;
+  const exs = viewExchanges();
+  const multi = exs.length > 1;
+  const names = list => list.map(e => e.toUpperCase()).join(' and ');
+  const parts = [];
+  const charged = exs.filter(ex => feeBasisOf(ex) === 'charged');
+  const today = exs.filter(ex => feeBasisOf(ex) === 'today');
+  if (charged.length) {
+    parts.push(`<strong>${multi ? names(charged) + ' fees' : 'Fees'} as charged:</strong> each trading day is priced at the transaction fees in force that day, from the fee register (exchange circulars${charged.includes('bse') ? '; BSE cash at per-quarter rates calibrated to BSE\'s reported cash transaction income' : ''}).`);
+    const slab = charged.flatMap(ex => feeRuleSpans(ex, 'slab_estimate'));
+    const prov = charged.flatMap(ex => feeRuleSpans(ex, 'calibrated_provisional'));
+    const est = [];
+    if (slab.length) est.push(`${flagTags({ slab: true })} marks a slab-era flat estimate of tiered fees (${slab.join('; ')})`);
+    if (prov.length) est.push(`${flagTags({ prov: true })} marks a provisional calibrated rate (${prov.join('; ')}), updated when BSE reports the quarter`);
+    if (est.length) parts.push(est.join('; ') + '.');
+  }
+  if (today.length) {
+    parts.push(`<strong>${multi ? names(today) + ' fees' : 'Fees'} at today's rates:</strong> every trading day is priced at today's statutory transaction fees from the fee register, so periods differ by volume alone.`);
+  }
+  if (exs.includes('mcx')) {
+    parts.push('MCX figures are source values (there is no turnover to re-price), so the fee setting does not change them.');
+    const mh = rawFor('mcx')?.modelled_history;
+    if (mh && mh.days > 0) {
+      parts.push(`${flagTags({ modelled: true })} marks MCX history ${fmtLongDate(mh.first_date)} – ${fmtLongDate(mh.last_date)}, which is modelled (scaled to reported quarters, options split derived) and left out of YoY, QoQ, segment-mix and market-share comparisons, shown as —.`);
+    }
+  }
+  el.innerHTML = parts.join(' ');
+  el.hidden = !parts.length;
+}
+
+function initFeeToggle() {
+  document.querySelectorAll('#feeToggle [data-fee-mode]').forEach(btn => {
+    btn.addEventListener('click', () => setFeeMode(btn.dataset.feeMode));
+  });
+  const compact = document.getElementById('feeCompact');
+  if (compact) compact.addEventListener('click', () => setFeeMode(FEE_MODE === 'charged' ? 'today' : 'charged'));
+  updateFeeToggle();
+}
+
+function updateFeeToggle() {
+  const box = document.getElementById('feeToggle');
+  if (!box) return;
+  box.querySelectorAll('[data-fee-mode]').forEach(btn => {
+    const on = btn.dataset.feeMode === FEE_MODE;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  const isCharged = FEE_MODE === 'charged';
+  const val = document.getElementById('feeCompactVal');
+  if (val) val.textContent = isCharged ? 'As chg' : 'Today';
+  const compact = document.getElementById('feeCompact');
+  const na = currentExchange === 'mcx';
+  const naNote = na ? ' MCX revenue is shown as source values; this setting applies to NSE and BSE.' : '';
+  if (compact) {
+    compact.setAttribute('aria-label', `Fees: ${isCharged ? 'as charged' : "at today's rates"}. Switch to ${isCharged ? "today's rates" : 'as charged'}.`);
+    compact.title = `Fees: ${isCharged ? 'as charged (each day at the fees then in force)' : "at today's rates"} — tap to switch.${naNote}`;
+  }
+  box.classList.toggle('fee-toggle--na', na);
+  box.title = na ? naNote.trim() : '';
+}
+
+async function setFeeMode(mode) {
+  if ((mode !== 'charged' && mode !== 'today') || mode === FEE_MODE) return;
+  const prev = FEE_MODE;
+  FEE_MODE = mode;
+  saveFeeMode(mode);
+  updateFeeToggle();
+  if (await reloadForFeeMode() === false && FEE_MODE === mode) {
+    // The new mode's files could not be loaded: the view still shows the old
+    // mode, so the toggle goes back to match it
+    FEE_MODE = prev;
+    saveFeeMode(prev);
+    updateFeeToggle();
+  }
+}
+
+// Reloads the current view's NSE/BSE files in the new fee mode and rebuilds it,
+// keeping the open tab and sub-tab. MCX alone has nothing to reload. A newer
+// toggle or an exchange switch made meanwhile takes over. Resolves to false
+// if the files could not be loaded (the view is left as it was).
+async function reloadForFeeMode() {
+  const seq = ++feeModeSeq;
+  const ex = currentExchange;
+  if (!viewExchanges().some(hasFeeVariant)) return;
+  const owns = () => seq === feeModeSeq && currentExchange === ex;
+  const activeTab = document.querySelector('.nav-item.active')?.dataset.tab;
+  showLoading(ex);
+  try {
+    let files = null;
+    if (COMBINED_VIEWS[ex]) {
+      await ensureFreshMarketData(COMBINED_VIEWS[ex]);
+      if (owns() && COMBINED_VIEWS[ex].some(e => MARKET_MODE[e] !== feeModeFor(e))) throw new Error('fee-mode files unavailable');
+    } else {
+      files = await fetchExchangeFiles(ex);
+    }
+    if (!owns()) return;
+    if (files) {
+      VIEW_BUILT_FROM = {};  // as loadExchangeData: views reading the cache record it again
+      await commitExchangeFiles(files);
+    } else {
+      await loadExchangeData(ex);  // combined: builds from the cache just filled
+    }
+    if (!owns()) return;
+    Object.values(charts).forEach(c => { if (c && c.destroy) c.destroy(); });
+    Object.keys(charts).forEach(k => delete charts[k]);
+    updateHeaderInfo();
+    rebuildAll();
+  } catch (err) {
+    console.warn('Fee mode reload failed:', err);
+    if (owns()) return false;
+  } finally {
+    if (owns()) hideLoading();
+  }
+  if (!owns()) return;
+  const tabBtn = activeTab && document.querySelector(`.nav-item[data-tab="${activeTab}"]`);
+  if (tabBtn) tabBtn.click();
 }
 
 // ── Build combined DATA.quarterly + DATA.monthly by summing across exchanges ─
@@ -882,10 +1172,12 @@ function buildCombinedRawData(exList) {
 
   // Each exchange's own rows, for the figures that cannot be read off the
   // summed rows above: FY, weekday × quarter and 125-day averages (see
-  // revenueSources), and the header's last trading date.
+  // revenueSources), the header's last trading date, and the fee-basis /
+  // modelled-history labels (periodFlags), which travel with each exchange.
   const components = present.map(ex => ({
     exchange:  ex,
     quarterly: MARKET_RAW[ex].quarterly || [],
+    monthly:   MARKET_RAW[ex].monthly || [],
     daily_all: MARKET_RAW[ex].daily_all || [],
   }));
 
@@ -965,6 +1257,8 @@ function updateHeaderInfo() {
     const d = new Date(iso + 'T00:00:00');
     return ('0' + d.getDate()).slice(-2) + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
   };
+  // Phones hide the year (.lu-year) to leave room in the header
+  const fmtDayHTML = iso => fmtDay(iso).replace(/ (\d{4})$/, '<span class="lu-year"> $1</span>');
   const span = document.getElementById('lastUpdatedSpan');
   if (DATA.components) {
     // Combined view: show the earliest of the exchanges' last trading dates,
@@ -975,14 +1269,14 @@ function updateHeaderInfo() {
     if (span && lasts.length) {
       const earliest = lasts.reduce((mn, c) => (c.date < mn ? c.date : mn), lasts[0].date);
       const differ = lasts.some(c => c.date !== earliest);
-      span.innerHTML = '<span class="lu-label">Last Updated: </span>' + fmtDay(earliest);
+      span.innerHTML = '<span class="lu-label">Last Updated: </span>' + fmtDayHTML(earliest);
       span.title = (differ ? 'Earliest of the exchanges\' last trading dates — ' : 'Last trading date — ')
         + lasts.map(c => `${c.ex} ${fmtDay(c.date)}`).join(', ');
     }
   } else {
     const dailyAll = DATA.daily_all || DATA.daily;
     if (span && dailyAll && dailyAll.length > 0) {
-      span.innerHTML = '<span class="lu-label">Last Updated: </span>' + fmtDay(dailyAll[dailyAll.length - 1].date);
+      span.innerHTML = '<span class="lu-label">Last Updated: </span>' + fmtDayHTML(dailyAll[dailyAll.length - 1].date);
       span.removeAttribute('title');
     }
   }
@@ -1115,6 +1409,9 @@ function rebuildAll() {
     (EXCHANGE_TABS[currentExchange] || []).forEach(t => { VIEW_SOURCES[t.id] = sources; });
   }
   updateSnapshotNotice();
+  updateFeeNotice();
+  updateFeeToggle();
+  buildFeeNote();
 
   buildRevenueSummary();
 
@@ -1325,7 +1622,7 @@ function getExpiryValueForMonthIdx(mIdx, exchange, segKey) {
   const rec = expiryDate ? dailyAll.find(r => r.date === expiryDate) : null;
   if (!rec) return null;
   const rf = getRevFieldObj(segKey);
-  return { label: m.month, value: rec[rf.dField] || 0 };
+  return { label: m.month, value: rec[rf.dField] || 0, flags: periodFlags(rec, segKey) };
 }
 
 function getExpiryValueForQuarterLabel(quarterLabel, exchange, segKey) {
@@ -1333,12 +1630,12 @@ function getExpiryValueForQuarterLabel(quarterLabel, exchange, segKey) {
   const dailyAll = DATA.daily_all || [];
   const rf = getRevFieldObj(segKey);
   const byDate = new Map(dailyAll.map(r => [r.date, r]));
-  const vals = computeMonthExpiryDates(dailyAll, exchange)
+  const recs = computeMonthExpiryDates(dailyAll, exchange)
     .map(e => byDate.get(e.expiryDate))
-    .filter(rec => rec && rec.fy_quarter === quarterLabel)
-    .map(rec => rec[rf.dField] || 0);
+    .filter(rec => rec && rec.fy_quarter === quarterLabel);
+  const vals = recs.map(rec => rec[rf.dField] || 0);
   if (!vals.length) return null;
-  return { label: quarterLabel, value: vals.reduce((s, v) => s + v, 0) / vals.length };
+  return { label: quarterLabel, value: vals.reduce((s, v) => s + v, 0) / vals.length, flags: rowsFlags(recs, segKey) };
 }
 
 function getExpiryValueForQuarterIdx(qIdx, exchange, segKey) {
@@ -1350,7 +1647,7 @@ function renderExpiryMonthRow(rowNum, mIdx, exchange, segKey) {
   const cur   = getExpiryValueForMonthIdx(mIdx, exchange, segKey);
   const valEl = document.getElementById(`expiryMVal${rowNum}-${segKey}`);
   const chgEl = document.getElementById(`expiryMChg${rowNum}-${segKey}`);
-  if (valEl) valEl.innerHTML = cur ? wireVal(cur.value, 2) : '—';
+  if (valEl) valEl.innerHTML = cur ? wireVal(cur.value, 2) + flagTags(cur.flags) : '—';
   if (chgEl) {
     // True calendar-adjacent previous month, independent of whatever the row above shows.
     const prev = getExpiryValueForMonthIdx(mIdx - 1, exchange, segKey);
@@ -1364,7 +1661,7 @@ function renderExpiryQuarterRow(rowNum, qIdx, exchange, segKey) {
   const valEl = document.getElementById(`expiryQVal${rowNum}-${segKey}`);
   const chgEl = document.getElementById(`expiryQChg${rowNum}-${segKey}`);
   const yoyEl = document.getElementById(`expiryQYoy${rowNum}-${segKey}`);
-  if (valEl) valEl.innerHTML = cur ? wireVal(cur.value, 2) : '—';
+  if (valEl) valEl.innerHTML = cur ? wireVal(cur.value, 2) + flagTags(cur.flags) : '—';
   if (chgEl) {
     const prev = getExpiryValueForQuarterIdx(qIdx - 1, exchange, segKey);
     chgEl.innerHTML = (prev && prev.value && cur) ? wireChg((cur.value - prev.value) / prev.value) : '';
@@ -1460,16 +1757,17 @@ function buildWeeklyVsMonthEndHTML(exchange, segKey) {
     const meDate = monthEndByKey.get(monthKey);
     const meRec  = meDate ? byDate.get(meDate) : null;
     if (!meRec) return;
-    const otherVals = weekDates
+    const otherRecs = weekDates
       .filter(d => d !== meDate)
       .map(d => byDate.get(d))
-      .filter(Boolean)
-      .map(r => r[rf.dField] || 0);
+      .filter(Boolean);
+    const otherVals = otherRecs.map(r => r[rf.dField] || 0);
     if (!otherVals.length) return; // month had no other weekly expiry to compare against
     const avgWeekly = otherVals.reduce((s, v) => s + v, 0) / otherVals.length;
     const monthEndVal = meRec[rf.dField] || 0;
     const diff = avgWeekly ? (monthEndVal - avgWeekly) / avgWeekly : null;
-    rows.push({ monthKey, fy_month: meRec.fy_month, avgWeekly, monthEndVal, diff });
+    rows.push({ monthKey, fy_month: meRec.fy_month, avgWeekly, monthEndVal, diff,
+      weeklyFlags: rowsFlags(otherRecs, segKey), monthEndFlags: periodFlags(meRec, segKey) });
   });
   rows.sort((a, b) => a.monthKey.localeCompare(b.monthKey));
   if (!rows.length) return '';
@@ -1478,8 +1776,8 @@ function buildWeeklyVsMonthEndHTML(exchange, segKey) {
   const rowsHTML = recent.map(r => `
     <tr>
       <td>${r.fy_month}</td>
-      <td class="wire-value">${wireVal(r.avgWeekly, 2)}</td>
-      <td class="wire-value">${wireVal(r.monthEndVal, 2)}</td>
+      <td class="wire-value">${wireVal(r.avgWeekly, 2)}${flagTags(r.weeklyFlags)}</td>
+      <td class="wire-value">${wireVal(r.monthEndVal, 2)}${flagTags(r.monthEndFlags)}</td>
       ${wireDeltaTd(r.diff)}
     </tr>`).join('');
 
@@ -1495,8 +1793,8 @@ function buildWeeklyVsMonthEndHTML(exchange, segKey) {
     return `
     <tr class="xl-r-cur">
       <td>Last ${n} Months Avg</td>
-      <td class="wire-value">${wireVal(avgWeekly, 2)}</td>
-      <td class="wire-value">${wireVal(avgMonthEnd, 2)}</td>
+      <td class="wire-value">${wireVal(avgWeekly, 2)}${flagTags(mergeFlags(window.map(r => r.weeklyFlags)))}</td>
+      <td class="wire-value">${wireVal(avgMonthEnd, 2)}${flagTags(mergeFlags(window.map(r => r.monthEndFlags)))}</td>
       ${wireDeltaTd(diff)}
     </tr>`;
   }).join('');
@@ -1623,13 +1921,109 @@ function wireDeltaTd(val) {
 // sum is just that exchange's figure. An exchange with no rows for the
 // period adds nothing (e.g. MCX alone before NSE/BSE data starts in FY 2024).
 function revenueSources() {
-  return DATA.components || [{ quarterly: DATA.quarterly || [], daily_all: DATA.daily_all || [] }];
+  return DATA.components || [{ quarterly: DATA.quarterly || [], monthly: DATA.monthly || [], daily_all: DATA.daily_all || [] }];
 }
 
 function sumOverSources(perSource) {
   const vals = revenueSources().map(perSource).filter(v => v != null);
   return vals.length ? vals.reduce((a, v) => a + v, 0) : null;
 }
+
+// ── Fee-basis and modelled-history labels ─────────────────────────────────────
+// Date-effective NSE/BSE rows and periods carry fee_basis / fee_basis_by_product
+// (scripts/fee_register.py); MCX rows carry `modelled` and MCX periods
+// `modelled_days`. A displayed value is flagged when any row behind it was
+// priced at a slab-era flat estimate (slab) or a provisional calibrated BSE cash
+// rate (prov), or is modelled MCX history (modelled). Values get an "est." or
+// "modelled" marker; a % change with modelled days on either side is shown as
+// "—". Files without these fields (today's rates, older pipeline output) carry
+// no flags, so nothing is marked.
+const SEG_PRODUCT = { options: 'opt', futures: 'fut', cash: 'cash' };
+const NO_FLAGS = Object.freeze({ slab: false, prov: false, modelled: false });
+const FEE_EST_TITLES = {
+  slab: 'Slab-era estimate: transaction fees were tiered by volume slab before 1 Oct 2024 (NSE; BSE options from 1 Nov 2023), so this figure uses a flat estimate of the blended rate (fee register).',
+  prov: "Provisional: BSE cash revenue here uses a calibrated rate from BSE's last four reported quarters; it is updated when BSE reports the quarter.",
+};
+const MCX_MODELLED_TITLE = 'MCX revenue before 2 Sep 2024 is modelled — scaled to reported quarters, options split derived';
+
+// Flags of one daily row or aggregate period, for a segment ('total' = any product)
+function periodFlags(item, segKey) {
+  if (!item) return NO_FLAGS;
+  const prod = SEG_PRODUCT[segKey];
+  const byProd = item.fee_basis_by_product;
+  const bases = byProd ? (prod ? [byProd[prod]] : Object.values(byProd)) : (item.fee_basis ? [item.fee_basis] : []);
+  const slab = bases.includes('slab_estimate');
+  const prov = bases.includes('calibrated_provisional');
+  const modelled = item.modelled === true || item.modelled_days > 0;
+  return slab || prov || modelled ? { slab, prov, modelled } : NO_FLAGS;
+}
+
+function mergeFlags(list) {
+  const out = { slab: false, prov: false, modelled: false };
+  list.forEach(f => { if (f) { out.slab = out.slab || f.slab; out.prov = out.prov || f.prov; out.modelled = out.modelled || f.modelled; } });
+  return out;
+}
+
+function rowsFlags(rows, segKey) { return mergeFlags((rows || []).map(r => periodFlags(r, segKey))); }
+
+// Over every exchange behind the view (one for single-exchange views)
+function sourcesFlags(perSource) { return mergeFlags(revenueSources().map(perSource)); }
+
+function quarterFlags(label, segKey) {
+  return sourcesFlags(src => periodFlags(src.quarterly.find(q => q.quarter === label), segKey));
+}
+
+function monthFlags(label, segKey) {
+  return sourcesFlags(src => {
+    const m = (src.monthly || []).find(x => x.month === label);
+    return m ? periodFlags(m, segKey) : rowsFlags(src.daily_all.filter(r => r.fy_month === label), segKey);
+  });
+}
+
+function fyFlags(fyStr, segKey) {
+  return sourcesFlags(src => mergeFlags(src.quarterly.filter(q => q.quarter.endsWith(fyStr)).map(q => periodFlags(q, segKey))));
+}
+
+// Rows of each exchange's daily series from `from` to `to` (slice indices)
+function tailFlags(from, to, segKey) {
+  return sourcesFlags(src => rowsFlags(src.daily_all.slice(from, to), segKey));
+}
+
+// The 125 trading days ending at a month's last trading day (as getM6mAvg)
+function m6Flags(monthLabel, segKey) {
+  return sourcesFlags(src => {
+    const daily = src.daily_all;
+    const endIdx = daily.reduce((last, r, i) => r.fy_month === monthLabel ? i : last, -1);
+    return endIdx < 0 ? NO_FLAGS : rowsFlags(daily.slice(Math.max(0, endIdx - 124), endIdx + 1), segKey);
+  });
+}
+
+// A weekday's last n occurrences, or all of them within one quarter
+function weekdayFlags(weekday, n, segKey) {
+  return sourcesFlags(src => rowsFlags(src.daily_all.filter(r => r.day === weekday).slice(-n), segKey));
+}
+
+function weekdayQuarterFlags(weekday, qLabel, segKey) {
+  return sourcesFlags(src => rowsFlags(src.daily_all.filter(r => r.day === weekday && r.fy_quarter === qLabel), segKey));
+}
+
+// "est." / "modelled" markers for a value with these flags ('' when none)
+function flagTags(f) {
+  if (!f) return '';
+  let html = '';
+  if (f.slab || f.prov) {
+    const title = [f.slab && FEE_EST_TITLES.slab, f.prov && FEE_EST_TITLES.prov].filter(Boolean).join(' ');
+    html += `<span class="fee-est" title="${title}">est.</span>`;
+  }
+  if (f.modelled) html += `<span class="mcx-modelled" title="${MCX_MODELLED_TITLE}">modelled</span>`;
+  return html;
+}
+
+// A % change between periods, one of which contains modelled MCX days, is not shown
+const CMP_MODELLED_SPAN = `<span class="xl-chg xl-neu cmp-na" title="${MCX_MODELLED_TITLE}">—</span>`;
+const CMP_MODELLED_TD = `<td class="wire-delta neutral cmp-na" title="${MCX_MODELLED_TITLE}">—</td>`;
+
+function anyModelled(...flags) { return flags.some(f => f && f.modelled); }
 
 // ── Simple avg getters (no derived comparisons) ───────────────────────────────
 function getFYAvg(fyStr, segKey) {
@@ -1686,47 +2080,56 @@ function getM6mAvg(mIdx, segKey) {
 
 function renderFYRow(rowNum, fyStr, segKey) {
   const cur   = getFYAvg(fyStr, segKey);
+  const flags = fyFlags(fyStr, segKey);
   const valEl = document.getElementById('xlFYVal' + rowNum + '-' + segKey);
   const chgEl = document.getElementById('xlFYChg' + rowNum + '-' + segKey);
-  if (valEl) valEl.innerHTML = xlValPlain(cur?.value, 2);
+  if (valEl) valEl.innerHTML = xlValPlain(cur?.value, 2) + flagTags(flags);
   if (chgEl) {
     if (rowNum === 0) { chgEl.innerHTML = ''; return; }
-    const ref = getFYAvg(document.getElementById('xlFY0-' + segKey)?.value, segKey);
-    chgEl.innerHTML = wireChg(ref && cur ? (ref.value - cur.value) / cur.value : null);
+    const refFY = document.getElementById('xlFY0-' + segKey)?.value;
+    const ref = getFYAvg(refFY, segKey);
+    chgEl.innerHTML = anyModelled(flags, fyFlags(refFY, segKey)) ? CMP_MODELLED_SPAN
+      : wireChg(ref && cur ? (ref.value - cur.value) / cur.value : null);
   }
 }
 
 function renderQRow(rowNum, qIdx, segKey) {
   const cur   = getQAvg(qIdx, segKey);
+  const flags = cur ? quarterFlags(cur.label, segKey) : NO_FLAGS;
   const valEl = document.getElementById('xlQVal' + rowNum + '-' + segKey);
   const chgEl = document.getElementById('xlQChg' + rowNum + '-' + segKey);
-  if (valEl) valEl.innerHTML = xlValPlain(cur?.value, 2);
+  if (valEl) valEl.innerHTML = xlValPlain(cur?.value, 2) + flagTags(flags);
   if (chgEl) {
     if (rowNum === 0) { chgEl.innerHTML = ''; return; }
     const ref = getQAvg(parseInt(document.getElementById('xlQ0-' + segKey)?.value), segKey);
-    chgEl.innerHTML = wireChg(ref && cur ? (ref.value - cur.value) / cur.value : null);
+    chgEl.innerHTML = anyModelled(flags, ref && quarterFlags(ref.label, segKey)) ? CMP_MODELLED_SPAN
+      : wireChg(ref && cur ? (ref.value - cur.value) / cur.value : null);
   }
 }
 
 function renderMRow(rowNum, mIdx, segKey) {
   const cur   = getMAvg(mIdx, segKey);
+  const flags = cur ? monthFlags(cur.label, segKey) : NO_FLAGS;
   const valEl = document.getElementById('xlMVal' + rowNum + '-' + segKey);
   const chgEl = document.getElementById('xlMChg' + rowNum + '-' + segKey);
-  if (valEl) valEl.innerHTML = xlValPlain(cur?.value, 2);
+  if (valEl) valEl.innerHTML = xlValPlain(cur?.value, 2) + flagTags(flags);
   if (chgEl) {
     if (rowNum === 0) {
       chgEl.innerHTML = '';
       // Recompute Avg 6M (125 days ending at row 0's month); its % chg is
       // row 0's month vs that average, like the pipelines' mo6m
       const avg = getM6mAvg(mIdx, segKey);
+      const avgFlags = cur ? m6Flags(cur.label, segKey) : NO_FLAGS;
       const avgValEl = document.getElementById('xlMAvgVal-' + segKey);
       const avgChgEl = document.getElementById('xlMAvgChg-' + segKey);
-      if (avgValEl) avgValEl.innerHTML = xlValPlain(avg, 2);
-      if (avgChgEl) avgChgEl.innerHTML = wireChg(avg && cur ? (cur.value - avg) / avg : null);
+      if (avgValEl) avgValEl.innerHTML = xlValPlain(avg, 2) + flagTags(avgFlags);
+      if (avgChgEl) avgChgEl.innerHTML = anyModelled(flags, avgFlags) ? CMP_MODELLED_SPAN
+        : wireChg(avg && cur ? (cur.value - avg) / avg : null);
       return;
     }
     const ref = getMAvg(parseInt(document.getElementById('xlM0-' + segKey)?.value), segKey);
-    chgEl.innerHTML = wireChg(ref && cur ? (ref.value - cur.value) / cur.value : null);
+    chgEl.innerHTML = anyModelled(flags, ref && monthFlags(ref.label, segKey)) ? CMP_MODELLED_SPAN
+      : wireChg(ref && cur ? (ref.value - cur.value) / cur.value : null);
   }
 }
 
@@ -1775,7 +2178,9 @@ function getWeekdayQAvg(weekday, qIdx, segKey) {
 
 function renderWireQRow(weekday, rowNum, qIdx, segKey) {
   const valEl = document.getElementById(`wireQVal-${weekday}-${rowNum}-${segKey}`);
-  if (valEl) valEl.innerHTML = wireVal(getWeekdayQAvg(weekday, qIdx, segKey), 1);
+  const q = DATA.quarterly[qIdx];
+  if (valEl) valEl.innerHTML = wireVal(getWeekdayQAvg(weekday, qIdx, segKey), 1)
+    + (q ? flagTags(weekdayQuarterFlags(weekday, q.quarter, segKey)) : '');
 }
 
 function syncWireQ(weekday, rowNum, qIdx) {
@@ -1817,30 +2222,38 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
   // expiry day included exactly once) with no holiday distortion possible.
   const dowLatestAvg = dayFull.reduce((sum, d) => sum + ((dow[d] || {}).latest || 0), 0) / dayFull.length;
 
+  // Fee-basis / modelled flags of the trailing windows behind each figure
+  const fl5 = tailFlags(-5, undefined, segKey), flp5 = tailFlags(-10, -5, segKey);
+  const fl20 = tailFlags(-20, undefined, segKey), fl45 = tailFlags(-45, undefined, segKey);
+  const flDow = mergeFlags(dayFull.map(d => weekdayFlags(d, 1, segKey)));
+  const chgOrNA = (val, ...flags) => anyModelled(...flags) ? CMP_MODELLED_SPAN : wireChg(val);
+  const tdOrNA = (val, ...flags) => anyModelled(...flags) ? CMP_MODELLED_TD : wireDeltaTd(val);
+
   const wRows = [
-    `<tr class="xl-r-cur"><td>Last 5 Days</td><td>${xlValPlain(wl5.value, 2)}</td><td>${wireChg(wl5.wow)}</td><td>${wireChg(wl5.wo10w)}</td></tr>`,
-    `<tr><td>Prev 5 Days</td><td>${xlValPlain(wp5.value, 2)}</td><td></td><td></td></tr>`,
-    `<tr><td>Last 20 Days</td><td>${xlValPlain(w20.value, 2)}</td><td></td><td></td></tr>`,
-    `<tr><td>Last 45 Days</td><td>${xlValPlain(w50.value, 2)}</td><td></td><td></td></tr>`,
-    `<tr><td>Mon–Fri Avg (Latest)</td><td>${xlValPlain(dowLatestAvg, 2)}</td><td></td><td></td></tr>`,
+    `<tr class="xl-r-cur"><td>Last 5 Days</td><td>${xlValPlain(wl5.value, 2)}${flagTags(fl5)}</td><td>${chgOrNA(wl5.wow, fl5, flp5)}</td><td>${chgOrNA(wl5.wo10w, fl45)}</td></tr>`,
+    `<tr><td>Prev 5 Days</td><td>${xlValPlain(wp5.value, 2)}${flagTags(flp5)}</td><td></td><td></td></tr>`,
+    `<tr><td>Last 20 Days</td><td>${xlValPlain(w20.value, 2)}${flagTags(fl20)}</td><td></td><td></td></tr>`,
+    `<tr><td>Last 45 Days</td><td>${xlValPlain(w50.value, 2)}${flagTags(fl45)}</td><td></td><td></td></tr>`,
+    `<tr><td>Mon–Fri Avg (Latest)</td><td>${xlValPlain(dowLatestAvg, 2)}${flagTags(flDow)}</td><td></td><td></td></tr>`,
   ].join('');
 
-  const wireDetailRow = (label, val) => label
-    ? `<tr class="wire-detail"><td>${label}</td><td class="wire-value">${wireVal(val, 1)}</td><td></td><td></td></tr>` : '';
+  const wireDetailRow = (label, val, flags) => label
+    ? `<tr class="wire-detail"><td>${label}</td><td class="wire-value">${wireVal(val, 1)}${flagTags(flags)}</td><td></td><td></td></tr>` : '';
   const wireSpacerRow = '<tr class="wire-day-spacer"><td colspan="4"></td></tr>';
 
   const mkSel = (id, opts) => `<select class="xl-row-sel" id="${id}">${opts}</select>`;
 
   const dowRows = dayFull.map((d) => {
     const dd = dow[d] || {};
+    const f1 = weekdayFlags(d, 1, segKey), f3 = weekdayFlags(d, 3, segKey), f10 = weekdayFlags(d, 10, segKey);
     return `<tr class="wire-day-main">
       <td>${d}</td>
-      <td class="wire-value">${wireVal(dd.latest, 1)}</td>
-      ${wireDeltaTd(dd.do3d)}
-      ${wireDeltaTd(dd.do10d)}
+      <td class="wire-value">${wireVal(dd.latest, 1)}${flagTags(f1)}</td>
+      ${tdOrNA(dd.do3d, f3)}
+      ${tdOrNA(dd.do10d, f10)}
     </tr>
-    ${wireDetailRow('Average of last 3 ' + d + 's', dd.avg_3d)}
-    ${wireDetailRow('Average of last 10 ' + d + 's', dd.avg_10d)}`;
+    ${wireDetailRow('Average of last 3 ' + d + 's', dd.avg_3d, f3)}
+    ${wireDetailRow('Average of last 10 ' + d + 's', dd.avg_10d, f10)}`;
   }).join(wireSpacerRow);
 
   // Quarter wire-table: 3 independently selectable quarters per weekday
@@ -1855,11 +2268,13 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
 
   const qdowRows = dayFull.map((d) => {
     const dd = dow[d] || {};
+    const fq = label => label ? weekdayQuarterFlags(d, label, segKey) : NO_FLAGS;
+    const fCur = fq(dd.cur_q_label);
     return `<tr class="wire-day-main">
       <td>${d}</td>
-      <td class="wire-value">${wireVal(dd.latest, 1)}</td>
-      ${wireDeltaTd(dd.qoq)}
-      ${wireDeltaTd(dd.yoy)}
+      <td class="wire-value">${wireVal(dd.latest, 1)}${flagTags(weekdayFlags(d, 1, segKey))}</td>
+      ${tdOrNA(dd.qoq, fCur, fq(dd.prev_q_label))}
+      ${tdOrNA(dd.yoy, fCur, fq(dd.yoy_q_label))}
     </tr>
     ${wireQSelRow(d, 0)}
     ${wireQSelRow(d, 1)}
@@ -1901,7 +2316,7 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
 
   return `
     <div class="xl-segment">
-      <div class="xl-seg-header">${label} <span class="xl-seg-unit">₹ Cr · daily avg</span></div>
+      <div class="xl-seg-header">${label} <span class="xl-seg-unit">₹ Cr · daily avg · ${feeUnitLabel()}</span></div>
       <div class="xl-main-row">
 
         <table class="xl-period-table">
@@ -1961,7 +2376,9 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
 }
 
 // ── Static segment block (pre-computed data — used by Market Overview) ────────
-function xlStaticSegmentBlock(st, label) {
+// segKey (optional) labels the figures from the view's own rows (revenueSources):
+// fee-basis "est." / MCX "modelled" markers, and "—" for comparisons with modelled days.
+function xlStaticSegmentBlock(st, label, segKey) {
   if (!st) return `<div class="xl-segment"><div class="xl-seg-header">${label} <span class="xl-seg-unit">— data not available</span></div></div>`;
 
   const fy  = st.fy || {};
@@ -1981,59 +2398,72 @@ function xlStaticSegmentBlock(st, label) {
   const curFYLabel  = curFYNum ? `FY ${curFYNum}`     : 'Current FY';
   const prevFYLabel = curFYNum ? `FY ${curFYNum - 1}` : 'Prev FY';
 
+  const fl = segKey ? fn => fn() : () => NO_FLAGS;
+  const byLabel = (fn, lbl) => fl(() => lbl ? fn(lbl, segKey) : NO_FLAGS);
+  const chgOrNA = (val, ...flags) => anyModelled(...flags) ? CMP_MODELLED_SPAN : wireChg(val);
+  const tdOrNA = (val, ...flags) => anyModelled(...flags) ? CMP_MODELLED_TD : wireDeltaTd(val);
+  const fFY = byLabel(fyFlags, curFYNum && curFYLabel), fPFY = byLabel(fyFlags, curFYNum && prevFYLabel);
+  const fQ = byLabel(quarterFlags, q.current?.label), fPQ = byLabel(quarterFlags, q.previous?.label), fQ2 = byLabel(quarterFlags, q.prev2?.label);
+  const fM = byLabel(monthFlags, m.current?.label), fPM = byLabel(monthFlags, m.previous?.label), fM6 = byLabel(m6Flags, m.current?.label);
+  const fl5 = fl(() => tailFlags(-5, undefined, segKey)), flp5 = fl(() => tailFlags(-10, -5, segKey));
+  const fl20 = fl(() => tailFlags(-20, undefined, segKey)), fl45 = fl(() => tailFlags(-45, undefined, segKey));
+
   const fyRows = `
-    <tr class="xl-r-cur"><td>${curFYLabel}</td><td>${xlValPlain(fy.current, 2)}</td><td>${wireChg(fy.yoy)}</td><td></td></tr>
-    <tr><td>${prevFYLabel}</td><td>${xlValPlain(fy.previous, 2)}</td><td></td><td></td></tr>`;
+    <tr class="xl-r-cur"><td>${curFYLabel}</td><td>${xlValPlain(fy.current, 2)}${flagTags(fFY)}</td><td>${chgOrNA(fy.yoy, fFY, fPFY)}</td><td></td></tr>
+    <tr><td>${prevFYLabel}</td><td>${xlValPlain(fy.previous, 2)}${flagTags(fPFY)}</td><td></td><td></td></tr>`;
 
   const qRows = [
-    `<tr class="xl-r-cur"><td>${q.current?.label  || '—'}</td><td>${xlValPlain(q.current?.value, 2)}</td><td>${wireChg(q.current?.qoq)}</td><td></td></tr>`,
-    `<tr><td>${q.previous?.label || '—'}</td><td>${xlValPlain(q.previous?.value, 2)}</td><td></td><td></td></tr>`,
-    q.prev2 ? `<tr><td>${q.prev2.label}</td><td>${xlValPlain(q.prev2.value, 2)}</td><td></td><td></td></tr>` : '',
+    `<tr class="xl-r-cur"><td>${q.current?.label  || '—'}</td><td>${xlValPlain(q.current?.value, 2)}${flagTags(fQ)}</td><td>${chgOrNA(q.current?.qoq, fQ, fPQ)}</td><td></td></tr>`,
+    `<tr><td>${q.previous?.label || '—'}</td><td>${xlValPlain(q.previous?.value, 2)}${flagTags(fPQ)}</td><td></td><td></td></tr>`,
+    q.prev2 ? `<tr><td>${q.prev2.label}</td><td>${xlValPlain(q.prev2.value, 2)}${flagTags(fQ2)}</td><td></td><td></td></tr>` : '',
   ].join('');
 
   const mRows = `
-    <tr class="xl-r-cur"><td>${m.current?.label  || '—'}</td><td>${xlValPlain(m.current?.value, 2)}</td><td>${wireChg(m.current?.mom)}</td><td></td></tr>
-    <tr><td>${m.previous?.label || '—'}</td><td>${xlValPlain(m.previous?.value, 2)}</td><td></td><td></td></tr>
-    <tr><td>${AVG_6M_LABEL}</td><td>${xlValPlain(m.avg_6m?.value, 2)}</td><td>${wireChg(m.current?.mo6m)}</td><td></td></tr>`;
+    <tr class="xl-r-cur"><td>${m.current?.label  || '—'}</td><td>${xlValPlain(m.current?.value, 2)}${flagTags(fM)}</td><td>${chgOrNA(m.current?.mom, fM, fPM)}</td><td></td></tr>
+    <tr><td>${m.previous?.label || '—'}</td><td>${xlValPlain(m.previous?.value, 2)}${flagTags(fPM)}</td><td></td><td></td></tr>
+    <tr><td>${AVG_6M_LABEL}</td><td>${xlValPlain(m.avg_6m?.value, 2)}${flagTags(fM6)}</td><td>${chgOrNA(m.current?.mo6m, fM, fM6)}</td><td></td></tr>`;
 
   const wRows = `
-    <tr class="xl-r-cur"><td>Last 5 Days</td><td>${xlValPlain(wl5.value, 2)}</td><td>${wireChg(wl5.wow)}</td><td>${wireChg(wl5.wo10w)}</td></tr>
-    <tr><td>Prev 5 Days</td><td>${xlValPlain(wp5.value, 2)}</td><td></td><td></td></tr>
-    <tr><td>Last 20 Days</td><td>${xlValPlain(w20.value, 2)}</td><td></td><td></td></tr>
-    <tr><td>Last 45 Days</td><td>${xlValPlain(w45.value, 2)}</td><td></td><td></td></tr>`;
+    <tr class="xl-r-cur"><td>Last 5 Days</td><td>${xlValPlain(wl5.value, 2)}${flagTags(fl5)}</td><td>${chgOrNA(wl5.wow, fl5, flp5)}</td><td>${chgOrNA(wl5.wo10w, fl45)}</td></tr>
+    <tr><td>Prev 5 Days</td><td>${xlValPlain(wp5.value, 2)}${flagTags(flp5)}</td><td></td><td></td></tr>
+    <tr><td>Last 20 Days</td><td>${xlValPlain(w20.value, 2)}${flagTags(fl20)}</td><td></td><td></td></tr>
+    <tr><td>Last 45 Days</td><td>${xlValPlain(w45.value, 2)}${flagTags(fl45)}</td><td></td><td></td></tr>`;
 
-  const wireDetailRow = (label, val) => label
-    ? `<tr class="wire-detail"><td>${label}</td><td class="wire-value">${wireVal(val, 1)}</td><td></td><td></td></tr>` : '';
+  const wireDetailRow = (label, val, flags) => label
+    ? `<tr class="wire-detail"><td>${label}</td><td class="wire-value">${wireVal(val, 1)}${flagTags(flags)}</td><td></td><td></td></tr>` : '';
   const wireSpacerRow = '<tr class="wire-day-spacer"><td colspan="4"></td></tr>';
 
   const dowRows = dayFull.map((d) => {
     const dd = dow[d] || {};
+    const f1 = fl(() => weekdayFlags(d, 1, segKey)), f3 = fl(() => weekdayFlags(d, 3, segKey)), f10 = fl(() => weekdayFlags(d, 10, segKey));
     return `<tr class="wire-day-main">
       <td>${d}</td>
-      <td class="wire-value">${wireVal(dd.latest, 1)}</td>
-      ${wireDeltaTd(dd.do3d)}
-      ${wireDeltaTd(dd.do10d)}
+      <td class="wire-value">${wireVal(dd.latest, 1)}${flagTags(f1)}</td>
+      ${tdOrNA(dd.do3d, f3)}
+      ${tdOrNA(dd.do10d, f10)}
     </tr>
-    ${wireDetailRow('Average of last 3 ' + d + 's', dd.avg_3d)}
-    ${wireDetailRow('Average of last 10 ' + d + 's', dd.avg_10d)}`;
+    ${wireDetailRow('Average of last 3 ' + d + 's', dd.avg_3d, f3)}
+    ${wireDetailRow('Average of last 10 ' + d + 's', dd.avg_10d, f10)}`;
   }).join(wireSpacerRow);
 
   const qdowRows = dayFull.map((d) => {
     const dd = dow[d] || {};
+    const fq = lbl => fl(() => lbl ? weekdayQuarterFlags(d, lbl, segKey) : NO_FLAGS);
+    const fCur = fq(dd.cur_q_label), fPrev = fq(dd.prev_q_label), fYoy = fq(dd.yoy_q_label);
     return `<tr class="wire-day-main">
       <td>${d}</td>
-      <td class="wire-value">${wireVal(dd.latest, 1)}</td>
-      ${wireDeltaTd(dd.qoq)}
-      ${wireDeltaTd(dd.yoy)}
+      <td class="wire-value">${wireVal(dd.latest, 1)}${flagTags(fl(() => weekdayFlags(d, 1, segKey)))}</td>
+      ${tdOrNA(dd.qoq, fCur, fPrev)}
+      ${tdOrNA(dd.yoy, fCur, fYoy)}
     </tr>
-    ${wireDetailRow(dd.cur_q_label, dd.cur_q_avg)}
-    ${wireDetailRow(dd.prev_q_label, dd.prev_q_avg)}
-    ${wireDetailRow(dd.yoy_q_label, dd.yoy_q_avg)}`;
+    ${wireDetailRow(dd.cur_q_label, dd.cur_q_avg, fCur)}
+    ${wireDetailRow(dd.prev_q_label, dd.prev_q_avg, fPrev)}
+    ${wireDetailRow(dd.yoy_q_label, dd.yoy_q_avg, fYoy)}`;
   }).join(wireSpacerRow);
 
   return `
     <div class="xl-segment">
-      <div class="xl-seg-header">${label} <span class="xl-seg-unit">₹ Cr · daily avg</span></div>
+      <div class="xl-seg-header">${label} <span class="xl-seg-unit">₹ Cr · daily avg${segKey ? ' · ' + feeUnitLabel() : ''}</span></div>
       <div class="xl-main-row">
         <table class="xl-period-table">
           <colgroup>
@@ -2407,6 +2837,18 @@ function buildMarketSharePanel(exList) {
   const pct  = (n, d) => d > 0 ? Math.round(n / d * 100) + ' %' : '—';
   const ed   = ex => MARKET_DATA[ex];
 
+  // Fee-basis / modelled flags of each exchange's rows behind a period. A share
+  // row with modelled MCX days on any side is not shown (not like for like).
+  const SEG_OF_MS_KEY = { summary_total: 'total', seg_options: 'options', seg_futures: 'futures', seg_cash: 'cash' };
+  const raw = ex => MARKET_RAW[ex];
+  const qFlags = (label, sk) => mergeFlags(exList.map(ex => periodFlags((raw(ex).quarterly || []).find(x => x.quarter === label), sk)));
+  const fyFlagsMS = (label, sk) => mergeFlags(exList.map(ex => mergeFlags((raw(ex).quarterly || []).filter(x => x.quarter.endsWith(label)).map(x => periodFlags(x, sk)))));
+  const mFlags = (which, key, sk) => mergeFlags(exList.map(ex => {
+    const lbl = ed(ex)[key]?.monthly?.[which]?.label;
+    return periodFlags((raw(ex).monthly || []).find(x => x.month === lbl), sk);
+  }));
+  const tFlags = (from, to, sk) => mergeFlags(exList.map(ex => rowsFlags((raw(ex).daily_all || []).slice(from, to), sk)));
+
   const SEGS = [
     { label: 'Total',   key: 'summary_total' },
     { label: 'Options', key: 'seg_options'   },
@@ -2421,28 +2863,31 @@ function buildMarketSharePanel(exList) {
   const segHTML = SEGS.map(({ label: segLabel, key }) => {
     if (exList.some(ex => !ed(ex)[key])) return '';
     const refED = ed(refEx)[key];
+    const sk = SEG_OF_MS_KEY[key];
 
     // Build period rows — quarterly from raw (correct per-exchange days), rest from enriched
     const periods = [
-      ...(curFYLabel  ? [{ lbl: curFYLabel,   vals: exList.map(ex => ed(ex)[key]?.fy?.current         || 0) }] : []),
-      ...(curQLabel   ? [{ lbl: curQLabel,    vals: exList.map(ex => qAvg(ex, curQLabel,   key)), cur: true }] : []),
-      ...(prevQLabel  ? [{ lbl: prevQLabel,   vals: exList.map(ex => qAvg(ex, prevQLabel,  key)) }] : []),
-      ...(prev2QLabel && prev2QLabel !== prevQLabel ? [{ lbl: prev2QLabel, vals: exList.map(ex => qAvg(ex, prev2QLabel, key)) }] : []),
-      ...(yoyQLabel && yoyQLabel !== prevQLabel && yoyQLabel !== prev2QLabel ? [{ lbl: yoyQLabel, vals: exList.map(ex => qAvg(ex, yoyQLabel, key)) }] : []),
-      { lbl: refED.monthly?.current?.label  || 'Cur Month',  vals: exList.map(ex => ed(ex)[key]?.monthly?.current?.value  || 0) },
-      { lbl: refED.monthly?.previous?.label || 'Prev Month', vals: exList.map(ex => ed(ex)[key]?.monthly?.previous?.value || 0) },
-      { lbl: AVG_6M_LABEL,    vals: exList.map(ex => ed(ex)[key]?.monthly?.avg_6m?.value  || 0) },
-      { lbl: 'Last 5 Days',   vals: exList.map(ex => ed(ex)[key]?.weekly?.last5?.value    || 0) },
-      { lbl: 'Prev 5 Days',   vals: exList.map(ex => ed(ex)[key]?.weekly?.prev5?.value    || 0) },
-      { lbl: 'Last 45 Days',  vals: exList.map(ex => ed(ex)[key]?.weekly?.last45?.value   || 0) },
+      ...(curFYLabel  ? [{ lbl: curFYLabel,   vals: exList.map(ex => ed(ex)[key]?.fy?.current         || 0), flags: fyFlagsMS(curFYLabel, sk) }] : []),
+      ...(curQLabel   ? [{ lbl: curQLabel,    vals: exList.map(ex => qAvg(ex, curQLabel,   key)), cur: true, flags: qFlags(curQLabel, sk) }] : []),
+      ...(prevQLabel  ? [{ lbl: prevQLabel,   vals: exList.map(ex => qAvg(ex, prevQLabel,  key)), flags: qFlags(prevQLabel, sk) }] : []),
+      ...(prev2QLabel && prev2QLabel !== prevQLabel ? [{ lbl: prev2QLabel, vals: exList.map(ex => qAvg(ex, prev2QLabel, key)), flags: qFlags(prev2QLabel, sk) }] : []),
+      ...(yoyQLabel && yoyQLabel !== prevQLabel && yoyQLabel !== prev2QLabel ? [{ lbl: yoyQLabel, vals: exList.map(ex => qAvg(ex, yoyQLabel, key)), flags: qFlags(yoyQLabel, sk) }] : []),
+      { lbl: refED.monthly?.current?.label  || 'Cur Month',  vals: exList.map(ex => ed(ex)[key]?.monthly?.current?.value  || 0), flags: mFlags('current', key, sk) },
+      { lbl: refED.monthly?.previous?.label || 'Prev Month', vals: exList.map(ex => ed(ex)[key]?.monthly?.previous?.value || 0), flags: mFlags('previous', key, sk) },
+      { lbl: AVG_6M_LABEL,    vals: exList.map(ex => ed(ex)[key]?.monthly?.avg_6m?.value  || 0), flags: tFlags(-125, undefined, sk) },
+      { lbl: 'Last 5 Days',   vals: exList.map(ex => ed(ex)[key]?.weekly?.last5?.value    || 0), flags: tFlags(-5, undefined, sk) },
+      { lbl: 'Prev 5 Days',   vals: exList.map(ex => ed(ex)[key]?.weekly?.prev5?.value    || 0), flags: tFlags(-10, -5, sk) },
+      { lbl: 'Last 45 Days',  vals: exList.map(ex => ed(ex)[key]?.weekly?.last45?.value   || 0), flags: tFlags(-45, undefined, sk) },
     ];
 
-    const rows = periods.map(({ lbl, vals, cur }) => {
+    const rows = periods.map(({ lbl, vals, cur, flags }) => {
       const total = vals.reduce((a, b) => a + b, 0);
-      const cells = exList.map((ex, i) =>
-        `<td><span class="ms-pct ${MS_META[ex].cls}">${pct(vals[i], total)}</span></td>`
+      const na = anyModelled(flags);
+      const cells = exList.map((ex, i) => na
+        ? `<td><span class="ms-pct cmp-na" title="${MCX_MODELLED_TITLE}">—</span></td>`
+        : `<td><span class="ms-pct ${MS_META[ex].cls}">${pct(vals[i], total)}</span></td>`
       ).join('');
-      return `<tr${cur ? ' class="xl-r-cur"' : ''}><td>${lbl}</td>${cells}</tr>`;
+      return `<tr${cur ? ' class="xl-r-cur"' : ''}><td>${lbl}${flagTags(flags)}</td>${cells}</tr>`;
     }).join('');
 
     return `<div class="ms-seg">
@@ -2456,7 +2901,7 @@ function buildMarketSharePanel(exList) {
 
   const title = exList.map(ex => MS_META[ex].label).join(' + ') + ' Market Share';
   el.innerHTML = `<div class="ms-panel">
-    <div class="ms-header">${title} <span class="xl-seg-unit">% of combined daily avg rev</span></div>
+    <div class="ms-header">${title} <span class="xl-seg-unit">% of combined daily avg rev · ${feeUnitLabel()}</span></div>
     <div class="ms-segs-row">${segHTML}</div>
   </div>`;
 }
@@ -2768,6 +3213,29 @@ function optionsSharePredictorHTML(predictor) {
   return kpiHTML + tableHTML + chartHTML + projHTML;
 }
 
+// Caption under a share-trend chart naming the months whose NSE or BSE revenue
+// (date-effective files only) uses a slab-era flat estimate or a provisional
+// BSE cash rate, as runs of consecutive months. '' when there are none.
+function marketShareFlagNote(nseRaw, bseRaw, segKey) {
+  const bseByMonth = new Map((bseRaw?.monthly || []).map(m => [m.month, m]));
+  const months = (nseRaw?.monthly || []).filter(n => bseByMonth.has(n.month))
+    .map(n => ({ label: n.month, f: mergeFlags([periodFlags(n, segKey), periodFlags(bseByMonth.get(n.month), segKey)]) }));
+  const runs = kind => {
+    const out = [];
+    months.forEach((m, i) => {
+      if (!m.f[kind]) return;
+      if (i > 0 && months[i - 1].f[kind]) out[out.length - 1].to = m.label;
+      else out.push({ from: m.label, to: m.label });
+    });
+    return out.map(r => r.from === r.to ? r.from : `${r.from} – ${r.to}`).join(', ');
+  };
+  const parts = [];
+  const slab = runs('slab'), prov = runs('prov');
+  if (slab) parts.push(`${flagTags({ slab: true })} ${slab}: slab-era flat fee estimates`);
+  if (prov) parts.push(`${flagTags({ prov: true })} ${prov}: provisional BSE cash rate`);
+  return parts.length ? `<p class="fee-chart-note">${parts.join('; ')}.</p>` : '';
+}
+
 function buildMarketShareTrend() {
   const el = document.getElementById('marketShareTrendContent');
   if (!el) return;
@@ -2785,6 +3253,10 @@ function buildMarketShareTrend() {
   ).join('')}</div>`;
 
   const predictor = computeOptionsSharePredictor(nseRaw, bseRaw);
+  // Fee-basis estimates inside the trend fit's window (date-effective files only)
+  const predFlags = predictor
+    ? mergeFlags([nseRaw, bseRaw].map(raw => rowsFlags((raw?.daily_all || []).filter(r => r.date >= predictor.chosenFit.startDate), 'options')))
+    : NO_FLAGS;
 
   el.innerHTML = `
   <div class="chart-panel" style="margin-bottom:var(--space-4)">
@@ -2793,6 +3265,7 @@ function buildMarketShareTrend() {
       ${toggleHTML('msOpt')}
     </div>
     <div class="chart-wrapper"><canvas id="chartMsOptions"></canvas></div>
+    ${marketShareFlagNote(nseRaw, bseRaw, 'options')}
   </div>
   <div class="chart-panel" style="margin-bottom:var(--space-4)">
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:var(--space-3)">
@@ -2800,8 +3273,9 @@ function buildMarketShareTrend() {
       ${toggleHTML('msTotal')}
     </div>
     <div class="chart-wrapper"><canvas id="chartMsTotal"></canvas></div>
+    ${marketShareFlagNote(nseRaw, bseRaw, 'total')}
   </div>
-  <h3 style="margin:0 0 var(--space-3);font-size:var(--text-lg);font-weight:700;color:var(--color-text)">Options Share Predictor</h3>
+  <h3 style="margin:0 0 var(--space-3);font-size:var(--text-lg);font-weight:700;color:var(--color-text)">Options Share Predictor${flagTags(predFlags)}</h3>
   ${optionsSharePredictorHTML(predictor)}`;
 
   let optGran = 'monthly', totalGran = 'monthly';
@@ -3883,96 +4357,62 @@ function buildHeatmap() {
 // BSE: REVENUE PREDICTOR
 // ========================
 
-function buildBSERevenuePredictor() {
+// BSE and MCX "Revenue Predictor": current-quarter extrapolation KPIs and the
+// segment composition table. The quarter's fee-basis / modelled markers sit on
+// the labels; its segment mix is not shown if it contains modelled MCX days.
+function buildQuarterRevenuePredictor(prefix) {
   const p = ENRICHED_DATA.pnl_predictor;
   if (!p) return;
+  const q = DATA.quarterly;
+  const cq = q[q.length - 1];
+  const totalTags = flagTags(periodFlags(cq, 'total'));
   const otherIncome = p.total_revenue_predicted - p.transaction_rev_extrapolated;
   const progressPct = ((p.trading_days_so_far / p.expected_trading_days) * 100).toFixed(0);
 
   const kpis = [
-    { label: 'Daily Avg Transaction Rev', value: fmt(p.daily_avg_rev) },
+    { label: 'Daily Avg Transaction Rev' + totalTags, value: fmt(p.daily_avg_rev) },
     { label: 'Trading Days (Actual / Expected)', value: `${p.trading_days_so_far} / ${p.expected_trading_days}` },
-    { label: 'Extrapolated Qtr Transaction Rev', value: fmt(p.transaction_rev_extrapolated) },
+    { label: 'Extrapolated Qtr Transaction Rev' + totalTags, value: fmt(p.transaction_rev_extrapolated) },
     { label: `Other Income (~${fmtPct(p.other_income_ratio)} of Txn)`, value: fmt(otherIncome) },
   ];
 
-  document.getElementById('bsePredictorKpis').innerHTML = kpis.map(k => `
+  document.getElementById(prefix + 'PredictorKpis').innerHTML = kpis.map(k => `
     <div class="extrap-card${k.highlight ? ' highlight' : ''}">
       <div class="extrap-label">${k.label}</div>
       <div class="extrap-value">${k.value}</div>
     </div>
   `).join('') + `
     <div class="extrap-card highlight" style="grid-column: 1 / -1">
-      <div class="extrap-label">Total Estimated Quarterly Revenue</div>
+      <div class="extrap-label">Total Estimated Quarterly Revenue${totalTags}</div>
       <div class="extrap-value" style="font-size:var(--text-xl)">${fmt(p.total_revenue_predicted)}</div>
     </div>
   `;
 
-  document.getElementById('bseProgressBarFill').style.width = progressPct + '%';
-  document.getElementById('bseProgressLabel').textContent =
+  document.getElementById(prefix + 'ProgressBarFill').style.width = progressPct + '%';
+  document.getElementById(prefix + 'ProgressLabel').textContent =
     `Quarter Progress: ${p.trading_days_so_far} of ${p.expected_trading_days} trading days completed (${progressPct}%)`;
 
   // Composition table
-  const q = DATA.quarterly;
-  const cq = q[q.length - 1];
   const cqDays = cq.days || cq.trading_days || 1;
-  const optPct = cq.total_rev > 0 ? (cq.opt_rev / cq.total_rev * 100).toFixed(1) : 0;
-  const cashPct = cq.total_rev > 0 ? (cq.cash_rev / cq.total_rev * 100).toFixed(1) : 0;
-  const futPct = cq.total_rev > 0 ? (cq.fut_rev / cq.total_rev * 100).toFixed(1) : 0;
+  const mixNA = periodFlags(cq, 'total').modelled;
+  const segRow = (label, field, segKey) => {
+    const share = cq.total_rev > 0 ? (cq[field] / cq.total_rev * 100).toFixed(1) : 0;
+    const mix = mixNA ? `<span class="cmp-na" title="${MCX_MODELLED_TITLE}">—</span>` : `${share}%`;
+    return `<tr><td>${label}${flagTags(periodFlags(cq, segKey))}</td><td>${fmt(cq[field])}</td><td>${mix}</td><td>${cqDays}</td><td>${fmt(cq[field] / cqDays)}</td></tr>`;
+  };
 
   let compositionHTML = `<thead><tr><th>Segment</th><th>Current Qtr Rev</th><th>% of Total</th><th>Days</th><th>Daily Avg</th></tr></thead><tbody>`;
-  compositionHTML += `<tr><td>Options</td><td>${fmt(cq.opt_rev)}</td><td>${optPct}%</td><td>${cqDays}</td><td>${fmt(cq.opt_rev / cqDays)}</td></tr>`;
-  compositionHTML += `<tr><td>Futures</td><td>${fmt(cq.fut_rev)}</td><td>${futPct}%</td><td>${cqDays}</td><td>${fmt(cq.fut_rev / cqDays)}</td></tr>`;
-  compositionHTML += `<tr><td>Cash</td><td>${fmt(cq.cash_rev)}</td><td>${cashPct}%</td><td>${cqDays}</td><td>${fmt(cq.cash_rev / cqDays)}</td></tr>`;
-  compositionHTML += `<tr style="font-weight:600"><td>Total</td><td>${fmt(cq.total_rev)}</td><td>100%</td><td>${cqDays}</td><td>${fmt(cq.total_rev / cqDays)}</td></tr>`;
+  compositionHTML += segRow('Options', 'opt_rev', 'options');
+  compositionHTML += segRow('Futures', 'fut_rev', 'futures');
+  compositionHTML += segRow('Cash', 'cash_rev', 'cash');
+  compositionHTML += `<tr style="font-weight:600"><td>Total${totalTags}</td><td>${fmt(cq.total_rev)}</td><td>100%</td><td>${cqDays}</td><td>${fmt(cq.total_rev / cqDays)}</td></tr>`;
   compositionHTML += `</tbody>`;
-  document.getElementById('tableBseRevComposition').innerHTML = compositionHTML;
+  document.getElementById(prefix === 'bse' ? 'tableBseRevComposition' : 'tableMcxRevComposition').innerHTML = compositionHTML;
 }
 
-function buildMCXRevenuePredictor() {
-  const p = ENRICHED_DATA.pnl_predictor;
-  if (!p) return;
-  const otherIncome = p.total_revenue_predicted - p.transaction_rev_extrapolated;
-  const progressPct = ((p.trading_days_so_far / p.expected_trading_days) * 100).toFixed(0);
+function buildBSERevenuePredictor() { buildQuarterRevenuePredictor('bse'); }
 
-  const kpis = [
-    { label: 'Daily Avg Transaction Rev', value: fmt(p.daily_avg_rev) },
-    { label: 'Trading Days (Actual / Expected)', value: `${p.trading_days_so_far} / ${p.expected_trading_days}` },
-    { label: 'Extrapolated Qtr Transaction Rev', value: fmt(p.transaction_rev_extrapolated) },
-    { label: `Other Income (~${fmtPct(p.other_income_ratio)} of Txn)`, value: fmt(otherIncome) },
-  ];
-
-  document.getElementById('mcxPredictorKpis').innerHTML = kpis.map(k => `
-    <div class="extrap-card${k.highlight ? ' highlight' : ''}">
-      <div class="extrap-label">${k.label}</div>
-      <div class="extrap-value">${k.value}</div>
-    </div>
-  `).join('') + `
-    <div class="extrap-card highlight" style="grid-column: 1 / -1">
-      <div class="extrap-label">Total Estimated Quarterly Revenue</div>
-      <div class="extrap-value" style="font-size:var(--text-xl)">${fmt(p.total_revenue_predicted)}</div>
-    </div>
-  `;
-
-  document.getElementById('mcxProgressBarFill').style.width = progressPct + '%';
-  document.getElementById('mcxProgressLabel').textContent =
-    `Quarter Progress: ${p.trading_days_so_far} of ${p.expected_trading_days} trading days completed (${progressPct}%)`;
-
-  const q = DATA.quarterly;
-  const cq = q[q.length - 1];
-  const cqDays = cq.days || cq.trading_days || 1;
-  const optPct  = cq.total_rev > 0 ? (cq.opt_rev  / cq.total_rev * 100).toFixed(1) : 0;
-  const cashPct = cq.total_rev > 0 ? (cq.cash_rev / cq.total_rev * 100).toFixed(1) : 0;
-  const futPct  = cq.total_rev > 0 ? (cq.fut_rev  / cq.total_rev * 100).toFixed(1) : 0;
-
-  let compositionHTML = `<thead><tr><th>Segment</th><th>Current Qtr Rev</th><th>% of Total</th><th>Days</th><th>Daily Avg</th></tr></thead><tbody>`;
-  compositionHTML += `<tr><td>Options</td><td>${fmt(cq.opt_rev)}</td><td>${optPct}%</td><td>${cqDays}</td><td>${fmt(cq.opt_rev / cqDays)}</td></tr>`;
-  compositionHTML += `<tr><td>Futures</td><td>${fmt(cq.fut_rev)}</td><td>${futPct}%</td><td>${cqDays}</td><td>${fmt(cq.fut_rev / cqDays)}</td></tr>`;
-  compositionHTML += `<tr><td>Cash</td><td>${fmt(cq.cash_rev)}</td><td>${cashPct}%</td><td>${cqDays}</td><td>${fmt(cq.cash_rev / cqDays)}</td></tr>`;
-  compositionHTML += `<tr style="font-weight:600"><td>Total</td><td>${fmt(cq.total_rev)}</td><td>100%</td><td>${cqDays}</td><td>${fmt(cq.total_rev / cqDays)}</td></tr>`;
-  compositionHTML += `</tbody>`;
-  document.getElementById('tableMcxRevComposition').innerHTML = compositionHTML;
-}
+function buildMCXRevenuePredictor() { buildQuarterRevenuePredictor('mcx'); }
 
 // ========================
 // BSE: QUARTERLY ANALYSIS
@@ -4965,6 +5405,8 @@ function buildQuickValuationPanel(el, exchange, dailySeries, cmp) {
   const daysRemaining = Math.max(a.tradingDays - daysElapsed, 0);
   const projectedAnnualRevenue = revenueToDate + adr45 * daysRemaining;
   const defaultAdr = a.tradingDays ? projectedAnnualRevenue / a.tradingDays : adr45;
+  // Fee-basis / modelled markers for the rows the projected ADR is built from
+  const adrTags = flagTags(mergeFlags([rowsFlags(fyRowsToDate, 'total'), rowsFlags(last45, 'total')]));
 
   a.adr = defaultAdr;
   let result = computeQuickValuation(exchange, a, cmp);
@@ -5067,7 +5509,7 @@ function buildQuickValuationPanel(el, exchange, dailySeries, cmp) {
     <div style="overflow-x:auto;margin-bottom:var(--space-3)">
       <table class="data-table">
         <tbody>
-          ${bseContextRow(`Average Daily Revenue — ${curFY} Projected (₹ Cr) ${provSlot('adr')}`, qvCellInput(exchange, 'adr', fmtNum(a.adr, 2), '0.01'))}
+          ${bseContextRow(`Average Daily Revenue — ${curFY} Projected (₹ Cr) ${provSlot('adr')}${adrTags}`, qvCellInput(exchange, 'adr', fmtNum(a.adr, 2), '0.01'))}
           ${bseContextRow(tdLabel, a.tradingDays)}
           ${bseContextRow('Annual Transaction Revenue (₹ Cr)', `<span id="qv-${exchange}-annualRevenue"></span>`)}
           ${otherIncomeRows}
@@ -5129,6 +5571,7 @@ async function buildBSEValuation() {
   VIEW_BUILT_FROM.nse = marketSig('nse');
   VIEW_SOURCES.valuation = [{ ex: 'bse', date: lastTradeDate(bseSeries) }, { ex: 'nse', date: lastTradeDate(nseSeries) }];
   updateSnapshotNotice();
+  updateFeeNotice();
 
   // Current FY/quarter is derived from today's real date, not the latest data row —
   // a quarter with data through its last trading day is a COMPLETED quarter, not the one in progress.
@@ -5156,6 +5599,16 @@ async function buildBSEValuation() {
     qDaysElapsed:        qRows.length,
     bseADRQtdToDate:     avg(qRows),
   };
+
+  // Fee-basis markers for the ADR inputs (date-effective files: BSE's latest
+  // cash revenue is at a provisional calibrated rate until BSE reports)
+  const mktRowFlags = rows => {
+    const dates = new Set(rows.map(r => r.date));
+    return mergeFlags([rowsFlags(rows, 'total'), rowsFlags(nseSeries.filter(r => dates.has(r.date)), 'total')]);
+  };
+  const fBseFY = rowsFlags(fyRows, 'total'), fBse45 = rowsFlags(bseSeries.slice(-45), 'total'), fBse20 = rowsFlags(bseSeries.slice(-20), 'total');
+  const fMktFY = mktRowFlags(fyRows), fMkt45 = mktRowFlags(bseSeries.slice(-45)), fMkt20 = mktRowFlags(bseSeries.slice(-20));
+  const fQtd = rowsFlags(qRows, 'total');
 
   let assumptions = loadBSEValuationAssumptions();
   let annual, quarterly, tri;
@@ -5247,15 +5700,15 @@ async function buildBSEValuation() {
           ${bseContextRow('FY Total Trading Days', bseCellInput('fy27TotalTradingDays', assumptions.fy27TotalTradingDays, '1'))}
           ${bseContextRow('FY Trading Days Elapsed', `<span id="annCtxDaysElapsed"></span>`)}
           ${bseContextRow(`Shares Outstanding (Cr) <span id="annSharesProv"></span><div class="prov-note">default ${fmtNum(SHARES_OUTSTANDING_CR.bse.value, 2)}: ${sharesSourceNote('bse')}</div>`, bseCellInput('sharesOutstandingCr', assumptions.sharesOutstandingCr, '0.01'))}
-          ${bseContextRow('Total Market ADR — FY to Date (₹ Cr/day)', fmtNum(mkt.totalMarketADRFY, 2))}
-          ${bseContextRow('Total Market ADR — Last 45 Days (₹ Cr/day)', fmtNum(mkt.totalMarketADR45, 2))}
-          ${bseContextRow('Total Market ADR — Last 20 Days (₹ Cr/day)', fmtNum(mkt.totalMarketADR20, 2))}
-          ${bseContextRow('BSE Market Share — FY to Date', fmtPctRaw(mkt.bseShareFY * 100))}
-          ${bseContextRow('BSE Market Share — Last 45 Days', fmtPctRaw(mkt.bseShare45 * 100))}
-          ${bseContextRow('BSE Market Share — Last 20 Days', fmtPctRaw(mkt.bseShare20 * 100))}
-          ${bseContextRow('BSE ADR — FY to Date (₹ Cr/day)', fmtNum(mkt.bseADRFYTodate, 2))}
-          ${bseContextRow('BSE ADR — Last 45 Days (₹ Cr/day)', fmtNum(mkt.bseADR45, 2))}
-          ${bseContextRow('BSE ADR — Last 20 Days (₹ Cr/day)', fmtNum(mkt.bseADR20, 2))}
+          ${bseContextRow('Total Market ADR — FY to Date (₹ Cr/day)' + flagTags(fMktFY), fmtNum(mkt.totalMarketADRFY, 2))}
+          ${bseContextRow('Total Market ADR — Last 45 Days (₹ Cr/day)' + flagTags(fMkt45), fmtNum(mkt.totalMarketADR45, 2))}
+          ${bseContextRow('Total Market ADR — Last 20 Days (₹ Cr/day)' + flagTags(fMkt20), fmtNum(mkt.totalMarketADR20, 2))}
+          ${bseContextRow('BSE Market Share — FY to Date' + flagTags(fMktFY), fmtPctRaw(mkt.bseShareFY * 100))}
+          ${bseContextRow('BSE Market Share — Last 45 Days' + flagTags(fMkt45), fmtPctRaw(mkt.bseShare45 * 100))}
+          ${bseContextRow('BSE Market Share — Last 20 Days' + flagTags(fMkt20), fmtPctRaw(mkt.bseShare20 * 100))}
+          ${bseContextRow('BSE ADR — FY to Date (₹ Cr/day)' + flagTags(fBseFY), fmtNum(mkt.bseADRFYTodate, 2))}
+          ${bseContextRow('BSE ADR — Last 45 Days (₹ Cr/day)' + flagTags(fBse45), fmtNum(mkt.bseADR45, 2))}
+          ${bseContextRow('BSE ADR — Last 20 Days (₹ Cr/day)' + flagTags(fBse20), fmtNum(mkt.bseADR20, 2))}
         </tbody>
       </table>
     </div>
@@ -5270,8 +5723,8 @@ async function buildBSEValuation() {
             <td style="text-align:center">${bseCellInput('adrGrowthBullPct', assumptions.adrGrowthBullPct, '0.5')}</td>
           </tr>
           <tr><td>Projected Total Market ADR (₹ Cr/day)</td><td id="annProjADR-bear" style="text-align:center"></td><td id="annProjADR-base" style="text-align:center"></td><td id="annProjADR-bull" style="text-align:center"></td></tr>
-          <tr style="color:var(--color-text-muted)"><td>BSE Target ADR (₹ Cr/day) — Method 1, 45-day share <span style="font-size:11px">(informational)</span></td><td id="annM1-bear" style="text-align:center"></td><td id="annM1-base" style="text-align:center"></td><td id="annM1-bull" style="text-align:center"></td></tr>
-          <tr><td>BSE Target ADR (₹ Cr/day) — Method 2, 20-day share <span style="font-size:11px;color:var(--color-text-muted)">(used)</span></td><td id="annM2-bear" style="text-align:center"></td><td id="annM2-base" style="text-align:center"></td><td id="annM2-bull" style="text-align:center"></td></tr>
+          <tr style="color:var(--color-text-muted)"><td>BSE Target ADR (₹ Cr/day) — Method 1, 45-day share <span style="font-size:11px">(informational)</span>${flagTags(mergeFlags([fBseFY, fMkt45]))}</td><td id="annM1-bear" style="text-align:center"></td><td id="annM1-base" style="text-align:center"></td><td id="annM1-bull" style="text-align:center"></td></tr>
+          <tr><td>BSE Target ADR (₹ Cr/day) — Method 2, 20-day share <span style="font-size:11px;color:var(--color-text-muted)">(used)</span>${flagTags(mergeFlags([fBseFY, fMkt20]))}</td><td id="annM2-bear" style="text-align:center"></td><td id="annM2-base" style="text-align:center"></td><td id="annM2-bull" style="text-align:center"></td></tr>
           <tr>
             <td>Other Income — Annual (₹ Cr, same for all scenarios)</td>
             <td colspan="3" style="text-align:center">${bseCellInput('otherIncomeAnnualCr', assumptions.otherIncomeAnnualCr, '1')}</td>
@@ -5310,8 +5763,8 @@ async function buildBSEValuation() {
         <tbody>
           ${bseContextRow('Quarter Total Trading Days', bseCellInput('q1TotalTradingDays', assumptions.q1TotalTradingDays, '1'))}
           ${bseContextRow('Quarter Trading Days Elapsed', `<span id="qtrCtxDaysElapsed"></span>`)}
-          ${bseContextRow('BSE Target ADR (₹ Cr/day) — Method 1, 45-day share <span style="font-size:11px;color:var(--color-text-muted)">(used)</span>', `<span id="qtrM1"></span>`)}
-          ${bseContextRow('BSE Target ADR (₹ Cr/day) — Method 2, 20-day share <span style="font-size:11px;color:var(--color-text-muted)">(informational)</span>', `<span id="qtrM2"></span>`)}
+          ${bseContextRow('BSE Target ADR (₹ Cr/day) — Method 1, 45-day share <span style="font-size:11px;color:var(--color-text-muted)">(used)</span>' + flagTags(mergeFlags([fQtd, fMkt45])), `<span id="qtrM1"></span>`)}
+          ${bseContextRow('BSE Target ADR (₹ Cr/day) — Method 2, 20-day share <span style="font-size:11px;color:var(--color-text-muted)">(informational)</span>' + flagTags(mergeFlags([fQtd, fMkt20])), `<span id="qtrM2"></span>`)}
           ${bseContextRow('Transaction Revenue (₹ Cr)', `<span id="qtrTxnRev"></span>`)}
           ${bseContextRow('Other Income — Quarter (₹ Cr)', bseCellInput('otherIncomeQuarterlyCr', assumptions.otherIncomeQuarterlyCr, '1'))}
           ${bseContextRow('Total Revenue (₹ Cr)', `<span id="qtrTotalRev"></span>`)}
@@ -5362,9 +5815,9 @@ async function buildBSEValuation() {
   updateOutputs();
   buildQuickValuationPanel(el.querySelector('#bseQuickValPanel'), 'bse', bseSeries, tri.cmp);
   el.querySelector('#bseValTrendTables').innerHTML =
-    xlStaticSegmentBlock(ENRICHED_DATA.summary_total, 'Total') +
-    xlStaticSegmentBlock(ENRICHED_DATA.seg_options, 'Options') +
-    xlStaticSegmentBlock(ENRICHED_DATA.seg_cash, 'Cash');
+    xlStaticSegmentBlock(ENRICHED_DATA.summary_total, 'Total', 'total') +
+    xlStaticSegmentBlock(ENRICHED_DATA.seg_options, 'Options', 'options') +
+    xlStaticSegmentBlock(ENRICHED_DATA.seg_cash, 'Cash', 'cash');
 
   const debouncedSave = debounce(() => saveBSEValuationAssumptions(assumptions), 500);
   el.querySelectorAll('[data-bse-assump]').forEach(input => {
@@ -6397,6 +6850,7 @@ function kpi(title, value, sub, sentiment) {
 async function init() {
   showLoading('nse');
   initExchangeSwitcher();
+  initFeeToggle();
   updateHeaderExchange('nse');
   buildSidebarNav('nse');
   toggleExchangeContent('nse');
@@ -6416,6 +6870,51 @@ async function init() {
 // ========================
 // SHARED REPORT HELPERS
 // ========================
+
+// Revenue files for the downloadable reports: the current fee mode, with the
+// same fallback as the views. NSE/BSE are required, MCX optional.
+async function fetchReportRevenue(ex, required) {
+  const rev = await fetchRevenueFiles(ex);
+  const val = r => (r.status === 'fulfilled' ? r.value.json : null);
+  if (required && !val(rev.raw)) throw rev.raw.reason;
+  if (required && !val(rev.enr)) throw rev.enr.reason;
+  return { dash: val(rev.raw), enr: val(rev.enr), eff: rev.eff };
+}
+
+// Fee-basis / modelled flags of one exchange's rows, for the report tables
+function reportFlagsFor(dash) {
+  const daily = dash?.daily_all || [];
+  return {
+    q:       (label, sk) => periodFlags((dash?.quarterly || []).find(x => x.quarter === label), sk),
+    m:       (label, sk) => periodFlags((dash?.monthly || []).find(x => x.month === label), sk),
+    tail:    (from, to, sk) => rowsFlags(daily.slice(from, to), sk),
+    weekday: (day, n, sk) => rowsFlags(daily.filter(r => r.day === day).slice(-n), sk),
+  };
+}
+
+// Printed markers (tooltips do not print): the weekly report styles them with
+// .pr-flag; the standalone mobile report needs inline styles.
+function reportTags(f, inline) {
+  if (!f) return '';
+  const tag = (text, color, cls) => inline
+    ? `<span style="display:inline-block;margin-left:3px;padding:0 3px;border:1px solid ${color};border-radius:3px;color:${color};font-size:9px;font-weight:700;line-height:1.3;vertical-align:1px">${text}</span>`
+    : `<span class="pr-flag${cls}">${text}</span>`;
+  return (f.slab || f.prov ? tag('est.', '#A56000', '') : '') + (f.modelled ? tag('modelled', '#6D28D9', ' pr-flag--modelled') : '');
+}
+
+// One line under a report's title: the fee basis of its NSE/BSE figures and
+// what the markers mean.
+function reportFeeLine(nseEff, bseEff, mcxDash) {
+  const parts = [];
+  const charged = [nseEff && 'NSE', bseEff && 'BSE'].filter(Boolean);
+  const today = [!nseEff && 'NSE', !bseEff && 'BSE'].filter(Boolean);
+  if (charged.length) parts.push(`${charged.join('/')} fees as charged: each trading day at the transaction fees then in force (fee register); est. = slab-era flat estimate or provisional calibrated BSE cash rate.`);
+  if (today.length) parts.push(`${today.join('/')} fees at today's rates: every trading day at today's statutory transaction fees (fee register)${FEE_MODE === 'charged' ? ' — date-effective data not generated yet' : ''}.`);
+  parts.push('MCX: source values.');
+  const mh = mcxDash?.modelled_history;
+  if (mh && mh.days > 0) parts.push(`modelled = MCX history ${fmtLongDate(mh.first_date)} – ${fmtLongDate(mh.last_date)}, excluded from comparisons (—).`);
+  return parts.join(' ');
+}
 
 function buildAllRegressionChartImgs(shareData, exchangeName) {
   const reg      = shareData.regression || {};
@@ -6551,16 +7050,17 @@ async function downloadWeeklyReport() {
   setReportBtnBusy(btn, true);
 
   try {
-    const [nseEnrich, bseEnrich, mcxEnrich, nseDash, bseDash, bseShare, mcxShare, nseShare] = await Promise.all([
-      fetch('./data/nse_enriched_data.json').then(r => r.json()),
-      fetch('./data/bse_enriched_data.json').then(r => r.json()),
-      fetch('./data/mcx_enriched_data.json').then(r => r.json()).catch(() => null),
-      fetch('./data/nse_dashboard_data.json').then(r => r.json()),
-      fetch('./data/bse_dashboard_data.json').then(r => r.json()),
+    // NSE/BSE in the current fee mode (as the views); MCX is source values
+    const [nseRev, bseRev, mcxRev, bseShare, mcxShare, nseShare] = await Promise.all([
+      fetchReportRevenue('nse', true),
+      fetchReportRevenue('bse', true),
+      fetchReportRevenue('mcx', false).catch(() => ({ dash: null, enr: null })),
       fetch('./data/bse_share_analysis.json').then(r => r.json()).catch(() => null),
       fetch('./data/mcx_share_analysis.json').then(r => r.json()).catch(() => null),
       fetch('./data/nse_share_analysis.json').then(r => r.json()).catch(() => null),
     ]);
+    const [nseEnrich, bseEnrich, mcxEnrich] = [nseRev.enr, bseRev.enr, mcxRev.enr];
+    const [nseDash, bseDash, mcxDash] = [nseRev.dash, bseRev.dash, mcxRev.dash];
 
     // ── Week range from latest NSE daily date ──
     const nseDaily = nseDash.daily_all || nseDash.daily || [];
@@ -6589,8 +7089,11 @@ async function downloadWeeklyReport() {
       if (val < -0.0001) return `<span class="pr-neg">${pct}%</span>`;
       return '<span class="pr-neu">0.0%</span>';
     }
+    // Markers, and "—" for a comparison with modelled MCX days on either side
+    const tg = f => reportTags(f);
+    const prChg = (val, ...flags) => anyModelled(...flags) ? '—' : prFmt(val);
 
-    function buildTotalRevenueTable(enriched) {
+    function buildTotalRevenueTable(enriched, F) {
       const s = enriched.summary_total;
       if (!s) return '';
       const wl5 = s.weekly.last5 || {};
@@ -6603,35 +7106,40 @@ async function downloadWeeklyReport() {
       const qc = s.quarterly.current || {};
       const qp = s.quarterly.previous || {};
       const q2 = s.quarterly.prev2 || {};
+      const f5 = F.tail(-5, undefined, 'total'), fp5 = F.tail(-10, -5, 'total');
+      const f20 = F.tail(-20, undefined, 'total'), f45 = F.tail(-45, undefined, 'total');
+      const fmc = F.m(mc.label, 'total'), fmp = F.m(mp.label, 'total'), fm6 = F.tail(-125, undefined, 'total');
+      const fqc = F.q(qc.label, 'total'), fqp = F.q(qp.label, 'total'), fq2 = F.q(q2.label, 'total');
       return `<div class="pr-sub-header">Total Revenue (Daily Avg, ₹ Cr)</div>
       <table class="pr-table">
         <thead><tr><th>Metric</th><th>₹ Cr</th><th>% Change</th></tr></thead>
         <tbody>
           <tr class="pr-group-label"><td colspan="3">Weekly</td></tr>
-          <tr><td>L5 – This Week</td><td>${n(wl5.value)}</td><td>${prFmt(wl5.wow)}</td></tr>
-          <tr><td>Prev5 – Last Week</td><td>${n(wp5.value)}</td><td>—</td></tr>
-          <tr><td>L20 – 20-Day Avg</td><td>${n(w20r.value)}</td><td>—</td></tr>
-          <tr><td>L45 – 45-Day Avg</td><td>${n(w50.value)}</td><td>${prFmt(wl5.wo10w)}</td></tr>
+          <tr><td>L5 – This Week</td><td>${n(wl5.value)}${tg(f5)}</td><td>${prChg(wl5.wow, f5, fp5)}</td></tr>
+          <tr><td>Prev5 – Last Week</td><td>${n(wp5.value)}${tg(fp5)}</td><td>—</td></tr>
+          <tr><td>L20 – 20-Day Avg</td><td>${n(w20r.value)}${tg(f20)}</td><td>—</td></tr>
+          <tr><td>L45 – 45-Day Avg</td><td>${n(w50.value)}${tg(f45)}</td><td>${prChg(wl5.wo10w, f45)}</td></tr>
           <tr class="pr-separator"><td colspan="3"></td></tr>
           <tr class="pr-group-label"><td colspan="3">Monthly</td></tr>
-          <tr><td>${mc.label || 'Current Month'}</td><td>${n(mc.value)}</td><td>${prFmt(mc.mom)}</td></tr>
-          <tr><td>${mp.label || 'Prev Month'}</td><td>${n(mp.value)}</td><td>—</td></tr>
-          <tr><td>${AVG_6M_LABEL}</td><td>${n(m6.value)}</td><td>${prFmt(mc.mo6m)}</td></tr>
+          <tr><td>${mc.label || 'Current Month'}</td><td>${n(mc.value)}${tg(fmc)}</td><td>${prChg(mc.mom, fmc, fmp)}</td></tr>
+          <tr><td>${mp.label || 'Prev Month'}</td><td>${n(mp.value)}${tg(fmp)}</td><td>—</td></tr>
+          <tr><td>${AVG_6M_LABEL}</td><td>${n(m6.value)}${tg(fm6)}</td><td>${prChg(mc.mo6m, fmc, fm6)}</td></tr>
           <tr class="pr-separator"><td colspan="3"></td></tr>
           <tr class="pr-group-label"><td colspan="3">Quarterly</td></tr>
-          <tr><td>${qc.label || 'Current Q'}</td><td>${n(qc.value)}</td><td>${prFmt(qc.qoq)}</td></tr>
-          <tr><td>${qp.label || 'Prev Q'}</td><td>${n(qp.value)}</td><td>—</td></tr>
-          <tr><td>${q2.label || 'YoY Q'}</td><td>${n(q2.value)}</td><td>${prFmt(qc.yoy)}</td></tr>
+          <tr><td>${qc.label || 'Current Q'}</td><td>${n(qc.value)}${tg(fqc)}</td><td>${prChg(qc.qoq, fqc, fqp)}</td></tr>
+          <tr><td>${qp.label || 'Prev Q'}</td><td>${n(qp.value)}${tg(fqp)}</td><td>—</td></tr>
+          <tr><td>${q2.label || 'YoY Q'}</td><td>${n(q2.value)}${tg(fq2)}</td><td>${prChg(qc.yoy, fqc, fq2)}</td></tr>
         </tbody>
       </table>`;
     }
 
-    function buildDowTable(enriched) {
+    function buildDowTable(enriched, F) {
       const dow = (enriched.summary_total || {}).day_of_week || {};
       const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
       const rows = dayNames.map(day => {
         const dd = dow[day] || {};
-        return `<tr><td>${day}</td><td>${n(dd.latest)}</td><td>${n(dd.avg_3d)}</td><td>${prFmt(dd.do3d)}</td><td>${n(dd.avg_10d)}</td><td>${prFmt(dd.do10d)}</td></tr>`;
+        const f1 = F.weekday(day, 1, 'total'), f3 = F.weekday(day, 3, 'total'), f10 = F.weekday(day, 10, 'total');
+        return `<tr><td>${day}</td><td>${n(dd.latest)}${tg(f1)}</td><td>${n(dd.avg_3d)}${tg(f3)}</td><td>${prChg(dd.do3d, f3)}</td><td>${n(dd.avg_10d)}${tg(f10)}</td><td>${prChg(dd.do10d, f10)}</td></tr>`;
       }).join('');
       return `<div class="pr-sub-header">Day-of-Week Performance</div>
       <table class="pr-table">
@@ -6640,15 +7148,16 @@ async function downloadWeeklyReport() {
       </table>`;
     }
 
-    function buildSegmentTable(enriched) {
+    function buildSegmentTable(enriched, F) {
       const segs = [
-        { label: 'Options', data: enriched.seg_options },
-        { label: 'Futures', data: enriched.seg_futures },
-        { label: 'Cash',    data: enriched.seg_cash },
+        { label: 'Options', data: enriched.seg_options, sk: 'options' },
+        { label: 'Futures', data: enriched.seg_futures, sk: 'futures' },
+        { label: 'Cash',    data: enriched.seg_cash,    sk: 'cash' },
       ];
       const rows = segs.map(seg => {
         const l5 = ((seg.data || {}).weekly || {}).last5 || {};
-        return `<tr><td>${seg.label}</td><td>${n(l5.value)}</td><td>${prFmt(l5.wow)}</td><td>${prFmt(l5.wo10w)}</td></tr>`;
+        const f5 = F.tail(-5, undefined, seg.sk);
+        return `<tr><td>${seg.label}</td><td>${n(l5.value)}${tg(f5)}</td><td>${prChg(l5.wow, f5, F.tail(-10, -5, seg.sk))}</td><td>${prChg(l5.wo10w, F.tail(-45, undefined, seg.sk))}</td></tr>`;
       }).join('');
       return `<div class="pr-sub-header">Segment Revenue (L5 Daily Avg, ₹ Cr)</div>
       <table class="pr-table">
@@ -6669,7 +7178,7 @@ async function downloadWeeklyReport() {
       const monthExpiries = computeMonthExpiryDates(dailyAll, exchange)
         .map(({ monthKey, expiryDate }) => {
           const rec = byDate.get(expiryDate);
-          return rec ? { monthKey, expiryDate, fy_month: rec.fy_month, fy_quarter: rec.fy_quarter, value: rec.total_rev || 0 } : null;
+          return rec ? { monthKey, expiryDate, fy_month: rec.fy_month, fy_quarter: rec.fy_quarter, value: rec.total_rev || 0, flags: periodFlags(rec, 'total') } : null;
         })
         .filter(Boolean);
       if (!monthExpiries.length) return '';
@@ -6678,13 +7187,14 @@ async function downloadWeeklyReport() {
       const monthlyRows = monthly.map((e, i) => {
         const prev = i > 0 ? monthly[i - 1] : null;
         const mom = prev && prev.value ? (e.value - prev.value) / prev.value : null;
-        return `<tr><td>${e.fy_month}</td><td>${n(e.value)}</td><td>${prFmt(mom)}</td></tr>`;
+        return `<tr><td>${e.fy_month}</td><td>${n(e.value)}${tg(e.flags)}</td><td>${prFmt(mom)}</td></tr>`;
       }).join('');
 
-      const byQuarter = new Map();
+      const byQuarter = new Map(), flagsByQuarter = new Map();
       monthExpiries.forEach(e => {
-        if (!byQuarter.has(e.fy_quarter)) byQuarter.set(e.fy_quarter, []);
+        if (!byQuarter.has(e.fy_quarter)) { byQuarter.set(e.fy_quarter, []); flagsByQuarter.set(e.fy_quarter, []); }
         byQuarter.get(e.fy_quarter).push(e.value);
+        flagsByQuarter.get(e.fy_quarter).push(e.flags);
       });
       const qAvg = q => {
         const v = byQuarter.get(q);
@@ -6697,7 +7207,7 @@ async function downloadWeeklyReport() {
         const yoyVal  = qAvg(getYoYQuarter(q));
         const qoq = prevVal ? (cur - prevVal) / prevVal : null;
         const yoy = yoyVal ? (cur - yoyVal) / yoyVal : null;
-        return `<tr><td>${q}</td><td>${n(cur)}</td><td>${prFmt(qoq)}</td><td>${prFmt(yoy)}</td></tr>`;
+        return `<tr><td>${q}</td><td>${n(cur)}${tg(mergeFlags(flagsByQuarter.get(q) || []))}</td><td>${prFmt(qoq)}</td><td>${prFmt(yoy)}</td></tr>`;
       }).join('');
 
       const monthEndByKey = new Map(monthExpiries.map(e => [e.monthKey, e]));
@@ -6711,20 +7221,21 @@ async function downloadWeeklyReport() {
       weeksByMonth.forEach((dates, mk) => {
         const me = monthEndByKey.get(mk);
         if (!me) return;
-        const otherVals = dates
+        const otherRecs = dates
           .filter(d => d !== me.expiryDate)
           .map(d => byDate.get(d))
-          .filter(Boolean)
-          .map(r => r.total_rev || 0);
+          .filter(Boolean);
+        const otherVals = otherRecs.map(r => r.total_rev || 0);
         if (!otherVals.length) return;
         const avgWeekly = otherVals.reduce((s, v) => s + v, 0) / otherVals.length;
         const diff = avgWeekly ? (me.value - avgWeekly) / avgWeekly : null;
-        wvmRows.push({ monthKey: mk, fy_month: me.fy_month, avgWeekly, monthEnd: me.value, diff });
+        wvmRows.push({ monthKey: mk, fy_month: me.fy_month, avgWeekly, monthEnd: me.value, diff,
+          weeklyFlags: rowsFlags(otherRecs, 'total'), monthEndFlags: me.flags });
       });
       wvmRows.sort((a, b) => a.monthKey.localeCompare(b.monthKey));
       const wvmRecent = wvmRows.slice(-12);
       const wvmRowsHTML = wvmRecent.map(r =>
-        `<tr><td>${r.fy_month}</td><td>${n(r.avgWeekly)}</td><td>${n(r.monthEnd)}</td><td>${prFmt(r.diff)}</td></tr>`
+        `<tr><td>${r.fy_month}</td><td>${n(r.avgWeekly)}${tg(r.weeklyFlags)}</td><td>${n(r.monthEnd)}${tg(r.monthEndFlags)}</td><td>${prFmt(r.diff)}</td></tr>`
       ).join('');
 
       // Same trailing-average summary rows as the on-screen Weekly vs Month-End
@@ -6736,7 +7247,7 @@ async function downloadWeeklyReport() {
         const avgWeekly = avgOf(w.map(r => r.avgWeekly));
         const avgMonthEnd = avgOf(w.map(r => r.monthEnd));
         const diff = avgWeekly ? (avgMonthEnd - avgWeekly) / avgWeekly : null;
-        return `<tr style="font-weight:700"><td>Last ${nMonths} Months Avg</td><td>${n(avgWeekly)}</td><td>${n(avgMonthEnd)}</td><td>${prFmt(diff)}</td></tr>`;
+        return `<tr style="font-weight:700"><td>Last ${nMonths} Months Avg</td><td>${n(avgWeekly)}${tg(mergeFlags(w.map(r => r.weeklyFlags)))}</td><td>${n(avgMonthEnd)}${tg(mergeFlags(w.map(r => r.monthEndFlags)))}</td><td>${prFmt(diff)}</td></tr>`;
       }).join('');
 
       const expiryWeekday = monthEndExpiryWeekdayLabel(exchange, dailyAll);
@@ -6757,13 +7268,15 @@ async function downloadWeeklyReport() {
       </table>`;
     }
 
-    function buildExchangeSection(label, enriched, includeSegments, dashData, exchangeKey) {
+    // flagDash: the exchange's dashboard file, for the fee-basis / modelled markers
+    function buildExchangeSection(label, enriched, includeSegments, dashData, exchangeKey, flagDash) {
+      const F = reportFlagsFor(flagDash || dashData);
       return `<div class="pr-section">
         <div class="pr-section-header">${label}</div>
         <div class="pr-section-body">
-          ${buildTotalRevenueTable(enriched)}
-          ${buildDowTable(enriched)}
-          ${includeSegments ? buildSegmentTable(enriched) : ''}
+          ${buildTotalRevenueTable(enriched, F)}
+          ${buildDowTable(enriched, F)}
+          ${includeSegments ? buildSegmentTable(enriched, F) : ''}
           ${dashData && exchangeKey ? buildExpiryReportTable(dashData, exchangeKey) : ''}
         </div>
       </div>`;
@@ -6859,12 +7372,13 @@ async function downloadWeeklyReport() {
         <span class="pr-title">NSE/BSE Weekly Update – Week of ${weekRange}</span>
         <span class="pr-subtitle">Generated: ${genTime}</span>
       </div>
+      <p class="pr-fee-line">${reportFeeLine(nseRev.eff, bseRev.eff, mcxDash)}</p>
       ${buildExchangeSection('NSE Update', nseEnrich, true, nseDash, 'nse')}
       ${buildNSEShareSection(nseShare)}
       ${buildExchangeSection('BSE Update', bseEnrich, false, bseDash, 'bse')}
       ${buildRegressionSection(bseShare, 'BSE')}
       ${buildMarketShareSection()}
-      ${mcxEnrich ? buildExchangeSection('MCX Update', mcxEnrich, true) : ''}
+      ${mcxEnrich ? buildExchangeSection('MCX Update', mcxEnrich, true, null, null, mcxDash) : ''}
       ${buildRegressionSection(mcxShare, 'MCX')}
       <div class="pr-footer">NSE/BSE/MCX Analytics Dashboard — Auto-generated report</div>
     </div>`;
@@ -6887,15 +7401,16 @@ async function downloadMobileReport() {
   setReportBtnBusy(btn, true);
 
   try {
-    const [nseEnrich, bseEnrich, mcxEnrich, nseDash, bseDash, bseShare, mcxShare] = await Promise.all([
-      fetch('./data/nse_enriched_data.json').then(r => r.json()),
-      fetch('./data/bse_enriched_data.json').then(r => r.json()),
-      fetch('./data/mcx_enriched_data.json').then(r => r.json()).catch(() => null),
-      fetch('./data/nse_dashboard_data.json').then(r => r.json()),
-      fetch('./data/bse_dashboard_data.json').then(r => r.json()),
+    // NSE/BSE in the current fee mode (as the views); MCX is source values
+    const [nseRev, bseRev, mcxRev, bseShare, mcxShare] = await Promise.all([
+      fetchReportRevenue('nse', true),
+      fetchReportRevenue('bse', true),
+      fetchReportRevenue('mcx', false).catch(() => ({ dash: null, enr: null })),
       fetch('./data/bse_share_analysis.json').then(r => r.json()).catch(() => null),
       fetch('./data/mcx_share_analysis.json').then(r => r.json()).catch(() => null),
     ]);
+    const [nseEnrich, bseEnrich, mcxEnrich] = [nseRev.enr, bseRev.enr, mcxRev.enr];
+    const [nseDash, bseDash, mcxDash] = [nseRev.dash, bseRev.dash, mcxRev.dash];
 
     const nseDaily = nseDash.daily_all || nseDash.daily || [];
     const latestDateStr = nseDaily.length > 0 ? nseDaily[nseDaily.length - 1].date : '';
@@ -6916,32 +7431,43 @@ async function downloadMobileReport() {
       return `<span style="display:inline-block;background:${bg};color:${fg};padding:1px 7px;border-radius:5px;font-weight:700;white-space:nowrap">${pct(v, decimals)}</span>`;
     }
 
+    // Markers, and "—" for a comparison with modelled MCX days on either side
+    const tg = f => reportTags(f, true);
+    const badgeOrNA = (val, ...flags) => pctBadge(anyModelled(...flags) ? null : val);
+
     // ── KPI card for weekly/quarterly headline ──
-    function kpiCard(label, value, change, changeLabel) {
-      const chgStr = change != null ? `<div style="margin-top:4px">${pctBadge(change)} <span style="font-size:10px;color:#9ca3af">${changeLabel || ''}</span></div>` : '';
+    // flags: the figure's fee-basis / modelled flags; cmpNA: its comparison is
+    // against modelled MCX days, so "—" replaces the % change
+    function kpiCard(label, value, change, changeLabel, flags, cmpNA) {
+      const chgStr = cmpNA
+        ? `<div style="margin-top:4px">${pctBadge(null)} <span style="font-size:10px;color:#9ca3af">${changeLabel || ''}</span></div>`
+        : change != null ? `<div style="margin-top:4px">${pctBadge(change)} <span style="font-size:10px;color:#9ca3af">${changeLabel || ''}</span></div>` : '';
       return `<div style="background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;flex:1;min-width:130px">
-        <div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</div>
+        <div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}${tg(flags)}</div>
         <div style="font-size:20px;font-weight:700;color:#111;letter-spacing:-.02em">₹${n(value)}<span style="font-size:11px;font-weight:400;color:#6b7280"> Cr</span></div>
         ${chgStr}
       </div>`;
     }
 
     // ── DoW table rows ──
-    function dowRows(enriched) {
+    function dowRows(enriched, F) {
       const dow = (enriched.summary_total || {}).day_of_week || {};
       const days = ['Monday','Tuesday','Wednesday','Thursday','Friday'];
       return days.map(d => {
         const dd = dow[d] || {};
+        const f3 = F.weekday(d, 3, 'total');
         return `<tr>
           <td style="padding:7px 10px;border-bottom:1px solid #f3f4f6;font-weight:600;color:#374151">${d.slice(0,3)}</td>
-          <td style="padding:7px 10px;border-bottom:1px solid #f3f4f6;text-align:right">₹${n(dd.latest)}</td>
-          <td style="padding:7px 10px;border-bottom:1px solid #f3f4f6;text-align:right">${pctBadge(dd.do3d)}</td>
-          <td style="padding:7px 10px;border-bottom:1px solid #f3f4f6;text-align:right;color:#6b7280">${n(dd.avg_10d)}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid #f3f4f6;text-align:right">₹${n(dd.latest)}${tg(F.weekday(d, 1, 'total'))}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid #f3f4f6;text-align:right">${badgeOrNA(dd.do3d, f3)}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid #f3f4f6;text-align:right;color:#6b7280">${n(dd.avg_10d)}${tg(F.weekday(d, 10, 'total'))}</td>
         </tr>`;
       }).join('');
     }
 
-    function exchangeSection(name, color, enriched) {
+    // dash: the exchange's dashboard file, for the fee-basis / modelled markers
+    function exchangeSection(name, color, enriched, dash) {
+      const F = reportFlagsFor(dash);
       const s   = enriched.summary_total || {};
       const wl5 = s.weekly?.last5 || {};
       const wp5 = s.weekly?.prev5 || {};
@@ -6953,19 +7479,24 @@ async function downloadMobileReport() {
       const m6  = s.monthly?.avg_6m || {};
 
       const segs = [
-        { label: 'Options', d: enriched.seg_options },
-        { label: 'Futures', d: enriched.seg_futures },
-        { label: 'Cash',    d: enriched.seg_cash },
+        { label: 'Options', d: enriched.seg_options, sk: 'options' },
+        { label: 'Futures', d: enriched.seg_futures, sk: 'futures' },
+        { label: 'Cash',    d: enriched.seg_cash,    sk: 'cash' },
       ];
       const segRows = segs.map(sg => {
         const l5 = sg.d?.weekly?.last5 || {};
+        const f5 = F.tail(-5, undefined, sg.sk);
         return `<tr>
           <td style="padding:7px 10px;border-bottom:1px solid #f3f4f6;color:#374151">${sg.label}</td>
-          <td style="padding:7px 10px;border-bottom:1px solid #f3f4f6;text-align:right">₹${n(l5.value)}</td>
-          <td style="padding:7px 10px;border-bottom:1px solid #f3f4f6;text-align:right">${pctBadge(l5.wow)}</td>
-          <td style="padding:7px 10px;border-bottom:1px solid #f3f4f6;text-align:right">${pctBadge(l5.wo10w)}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid #f3f4f6;text-align:right">₹${n(l5.value)}${tg(f5)}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid #f3f4f6;text-align:right">${badgeOrNA(l5.wow, f5, F.tail(-10, -5, sg.sk))}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid #f3f4f6;text-align:right">${badgeOrNA(l5.wo10w, F.tail(-45, undefined, sg.sk))}</td>
         </tr>`;
       }).join('');
+      const f5 = F.tail(-5, undefined, 'total'), fp5 = F.tail(-10, -5, 'total');
+      const f20 = F.tail(-20, undefined, 'total'), f45 = F.tail(-45, undefined, 'total');
+      const fqc = F.q(qc.label, 'total'), fqp = F.q(qp.label, 'total'), fq2 = F.q(s.quarterly?.prev2?.label, 'total');
+      const fmc = F.m(mc.label, 'total'), fmp = F.m(s.monthly?.previous?.label, 'total');
 
       return `
       <div style="margin-bottom:20px">
@@ -6973,15 +7504,15 @@ async function downloadMobileReport() {
         <div style="background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 10px 10px;padding:14px 14px 6px">
 
           <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px">
-            ${kpiCard('This Week (L5)', wl5.value, wl5.wow, 'WoW')}
-            ${kpiCard('Last Week (P5)', wp5.value, null)}
-            ${kpiCard('20-Day Avg', w20.value, null)}
-            ${kpiCard('45-Day Avg', w45.value, wl5.wo10w, 'Wo45')}
+            ${kpiCard('This Week (L5)', wl5.value, wl5.wow, 'WoW', f5, anyModelled(f5, fp5))}
+            ${kpiCard('Last Week (P5)', wp5.value, null, '', fp5)}
+            ${kpiCard('20-Day Avg', w20.value, null, '', f20)}
+            ${kpiCard('45-Day Avg', w45.value, wl5.wo10w, 'Wo45', f45, anyModelled(f45))}
           </div>
           <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px">
-            ${kpiCard(qc.label || 'Current Q', qc.value, qc.qoq, 'QoQ')}
-            ${kpiCard(qp.label || 'Prev Q', qp.value, qc.yoy, 'YoY')}
-            ${kpiCard(mc.label || 'Current Month', mc.value, mc.mom, 'MoM')}
+            ${kpiCard(qc.label || 'Current Q', qc.value, qc.qoq, 'QoQ', fqc, anyModelled(fqc, fqp))}
+            ${kpiCard(qp.label || 'Prev Q', qp.value, qc.yoy, 'YoY', fqp, anyModelled(fqc, fq2))}
+            ${kpiCard(mc.label || 'Current Month', mc.value, mc.mom, 'MoM', fmc, anyModelled(fmc, fmp))}
           </div>
 
           <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#6b7280;letter-spacing:.05em;margin:10px 0 6px">Day of Week (₹ Cr daily avg)</div>
@@ -6993,7 +7524,7 @@ async function downloadMobileReport() {
                 <th style="padding:6px 10px;text-align:right;font-size:10px;color:#9ca3af;font-weight:600;text-transform:uppercase">Do3D</th>
                 <th style="padding:6px 10px;text-align:right;font-size:10px;color:#9ca3af;font-weight:600;text-transform:uppercase">10D Avg</th>
               </tr></thead>
-              <tbody>${dowRows(enriched)}</tbody>
+              <tbody>${dowRows(enriched, F)}</tbody>
             </table>
           </div>
 
@@ -7084,11 +7615,11 @@ async function downloadMobileReport() {
     }
 
     const body = `
-      ${exchangeSection('NSE Update', '#1d4ed8', nseEnrich)}
-      ${exchangeSection('BSE Update', '#0f766e', bseEnrich)}
+      ${exchangeSection('NSE Update', '#1d4ed8', nseEnrich, nseDash)}
+      ${exchangeSection('BSE Update', '#0f766e', bseEnrich, bseDash)}
       ${regressionSection(bseShare, 'BSE', '#0f766e')}
       ${marketShareSection()}
-      ${mcxEnrich ? exchangeSection('MCX Update', '#7c3aed', mcxEnrich) : ''}
+      ${mcxEnrich ? exchangeSection('MCX Update', '#7c3aed', mcxEnrich, mcxDash) : ''}
       ${regressionSection(mcxShare, 'MCX', '#7c3aed')}
     `;
 
@@ -7109,6 +7640,7 @@ async function downloadMobileReport() {
 <div style="background:#1e3a2f;color:#fff;border-radius:12px;padding:16px 18px;margin-bottom:16px">
   <div style="font-size:18px;font-weight:800;letter-spacing:-.02em;margin-bottom:4px">NSE/BSE Weekly Update</div>
   <div style="font-size:12px;color:#86efac">As of ${latestDateStr} &nbsp;·&nbsp; Generated ${genTime}</div>
+  <div style="font-size:10.5px;color:#d1fae5;margin-top:6px;line-height:1.4">${reportFeeLine(nseRev.eff, bseRev.eff, mcxDash)}</div>
 </div>
 ${body}
 <div style="text-align:center;font-size:10px;color:#9ca3af;margin-top:16px;padding-top:12px;border-top:1px solid #e5e7eb">

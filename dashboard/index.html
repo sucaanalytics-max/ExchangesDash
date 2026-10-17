@@ -69,6 +69,16 @@
       <h1 class="header-title" id="headerTitle">Revenue Summary</h1>
     </div>
     <div class="header-right">
+      <!-- Fee basis of NSE/BSE revenue: as charged (date-effective) or at today's rates -->
+      <div class="fee-toggle" id="feeToggle" role="group" aria-label="Fee basis for NSE and BSE revenue">
+        <span class="fee-toggle-label">Fees:</span>
+        <button type="button" class="fee-opt active" data-fee-mode="charged" aria-pressed="true" title="Each trading day priced at the transaction fees in force that day (date-effective)">As charged</button>
+        <button type="button" class="fee-opt" data-fee-mode="today" aria-pressed="false" title="Every trading day priced at today's statutory transaction fees">At today's rates</button>
+        <button type="button" class="fee-compact" id="feeCompact" aria-label="Fees: as charged. Switch to today's rates.">
+          <span class="fee-compact-k">Fees</span>
+          <span class="fee-compact-v" id="feeCompactVal">As chg</span>
+        </button>
+      </div>
       <div class="header-meta">
         <span id="currentQuarterSpan">—</span>
         <span style="color:var(--color-text-faint)">|</span>
@@ -90,6 +100,8 @@
   <main class="main" id="mainContent">
     <!-- Shown when a view combines exchanges whose latest data dates differ -->
     <div id="snapshotNotice" class="snapshot-notice" role="status" hidden></div>
+    <!-- Shown when "As charged" is selected but the date-effective files are not generated yet -->
+    <div id="feeNotice" class="snapshot-notice fee-notice" role="status" hidden></div>
 
     <!-- ===================== TAB 1: REVENUE SUMMARY ===================== -->
     <section class="tab-content active" id="tab-revenue">
@@ -104,6 +116,8 @@
       <div class="sub-content" id="subtab-rev-options"></div>
       <div class="sub-content" id="subtab-rev-futures"></div>
       <div class="sub-content" id="subtab-rev-cash"></div>
+      <!-- Fee basis in use, method, and what "est." / "modelled" mean -->
+      <p class="fee-note" id="feeModeNote" hidden></p>
     </section>
 
     <!-- ===================== TAB 2: PAT PREDICTION / REVENUE PREDICTOR ===================== -->
