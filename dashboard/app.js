@@ -34,11 +34,6 @@ function fmtPct(num) {
   return pct + ' %';
 }
 
-function fmtPctRaw(num) {
-  if (num == null || isNaN(num)) return '—';
-  return Number(num).toFixed(1) + ' %';
-}
-
 function fmtPctSigned(val) {
   if (val == null || isNaN(val)) return '<span class="neutral">—</span>';
   const abs = Math.abs(Number(val) * 100).toFixed(1);
@@ -58,11 +53,6 @@ function deltaStr(val) {
   const abs = Math.abs(val * 100).toFixed(1);
   const arrow = val > 0 ? '▲' : val < 0 ? '▼' : '—';
   return abs + ' % ' + arrow;
-}
-
-function fmtPrice(num) {
-  if (num == null || isNaN(num)) return '—';
-  return '₹ ' + Number(num).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
 // ========================
@@ -204,8 +194,12 @@ function applyChartDefaults() {
   Chart.defaults.plugins.tooltip.bodyFont = { size: 11 };
   Chart.defaults.plugins.tooltip.padding = 10;
   Chart.defaults.plugins.tooltip.cornerRadius = 8;
-  Chart.defaults.scale.grid = { color: getGridColor() };
-  Chart.defaults.scale.border = { color: getScaleBorderColor() };
+  // Merge, never replace: a replaced grid/border object drops Chart.js's other
+  // scale defaults, which leaves bar elements without a base (nothing drawn).
+  // Grid lines, tick marks and axis borders stay off unless a chart asks for
+  // them, which is how the replaced objects used to resolve.
+  Object.assign(Chart.defaults.scale.grid, { color: getGridColor(), display: false, drawTicks: false });
+  Object.assign(Chart.defaults.scale.border, { color: getScaleBorderColor(), display: false });
   Chart.defaults.elements.line.tension = 0.3;
   Chart.defaults.elements.line.borderWidth = 2;
   Chart.defaults.elements.point.radius = 0;
@@ -231,7 +225,8 @@ function sizeChartWrapper(wrapper) {
   const minH = Number(wrapper.dataset.minH);
   if (!minH) return;
   const width = wrapper.clientWidth;
-  const h = width >= CHART_GROW_FROM_WIDTH
+  // data-fixed: a strip chart that keeps its floor height at any width
+  const h = width >= CHART_GROW_FROM_WIDTH && !wrapper.dataset.fixed
     ? Math.round(Math.max(minH, Math.min(CHART_MAX_HEIGHT, width * CHART_HEIGHT_PER_WIDTH)))
     : minH;
   const px = h + 'px';
@@ -254,6 +249,192 @@ window.addEventListener('resize', () => {
   clearTimeout(chartWrapperResizeTimer);
   chartWrapperResizeTimer = setTimeout(resizeChartWrappers, 150);
 });
+
+// ========================
+// REDESIGNED TABS — shared components (Revenue Predictor, Live Predictor,
+// Regression, Valuation Model). Markup uses the .rx / .rx-* classes in
+// style.css; the Revenue Summary tab keeps its own components.
+// ========================
+
+// Colour jobs, kept in sync with the .rx tokens in style.css: ink = actual or
+// subtotal, model = model / forecast, rev = revenue; pos/neg only for up/down.
+const RX = {
+  ink: '#16181D', ink2: '#3B3E46', muted: '#62656D', grey: '#9A9DA4', light: '#C9CBCF',
+  grid: '#EEEEEA', axis: '#CFCFC8',
+  model: '#2B5CC8', modelBand: '#DCE5F7', modelBand2: '#F1F4FB',
+  rev: '#C4621A', pos: '#176C2E', neg: '#A01822',
+  above: '#D39A6E', below: '#8AA5E0',
+  add: '#5E8A6B', deduct: '#C0868B',
+  seq: ['#C9D6F3', '#9FB6EA', '#6F8FDB', '#3F67C9', '#1E3F8F'],
+};
+const RX_FONT = "'IBM Plex Sans', Arial, sans-serif";
+
+// Called after a redesigned tab becomes visible, so its charts are drawn at
+// their real size (Chart.js mis-sizes some charts built while display:none).
+// Keyed by tab id; rebuildAll clears it, each builder sets its own entry.
+let RX_TAB_REFRESH = {};
+
+const RX_ICONS = {
+  ok: '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3 3 7-7" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
+  warn: '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 15 14.5H1z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 6v4M8 11.8v.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  fail: '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
+  info: '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4.5M8 4.6v.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+};
+
+function rxPanel({ title, meta = '', right = '', body = '', foot = '', how = '', cls = '', attrs = '' }) {
+  return `<section class="rx-panel ${cls}" ${attrs}>
+    <div class="rx-ph"><h2>${title}</h2>${meta ? `<span class="rx-meta">${meta}</span>` : ''}${right ? `<div class="rx-ph-right">${right}</div>` : ''}</div>
+    ${body}${foot ? `<p class="rx-foot">${foot}</p>` : ''}${how}
+  </section>`;
+}
+
+function rxKpi(label, value, sub = '', { cls = '', accent = false, extra = '' } = {}) {
+  return `<div class="rx-kpi${accent ? ' rx-kpi--accent' : ''}">
+    <div class="rx-lbl">${label}</div>
+    <div class="rx-kpi-v ${cls}">${value}</div>
+    ${sub ? `<div class="rx-kpi-s">${sub}</div>` : ''}${extra}
+  </div>`;
+}
+
+function rxKpis(items, aria = '') {
+  return `<section class="rx-kpis"${aria ? ` aria-label="${escHtml(aria)}"` : ''}>${items.join('')}</section>`;
+}
+
+function rxChip(text, kind = '') {
+  return `<span class="rx-chip${kind ? ' rx-chip--' + kind : ''}">${text}</span>`;
+}
+
+// Segmented control; rxOnSeg wires it. `options` are [value, label] pairs.
+function rxSeg(group, options, active, aria) {
+  return `<div class="rx-seg" role="group" aria-label="${escHtml(aria || group)}" data-rx-seg="${group}">${options.map(([v, label]) =>
+    `<button type="button" data-value="${v}" aria-pressed="${String(v) === String(active)}">${label}</button>`).join('')}</div>`;
+}
+
+function rxOnSeg(root, group, onPick) {
+  const seg = root.querySelector(`[data-rx-seg="${group}"]`);
+  if (!seg) return;
+  seg.addEventListener('click', e => {
+    const btn = e.target.closest('button[data-value]');
+    if (!btn || btn.getAttribute('aria-pressed') === 'true') return;
+    seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b === btn)));
+    onPick(btn.dataset.value);
+  });
+}
+
+function rxCheck(state, title, sub) {
+  return `<div class="rx-check rx-check--${state}">${RX_ICONS[state] || RX_ICONS.info}<div><b>${title}</b><span>${sub}</span></div></div>`;
+}
+
+function rxAlert(html, kind = 'warn') {
+  return `<div class="rx-alert${kind === 'info' ? ' rx-alert--info' : ''}" role="note">${RX_ICONS[kind === 'info' ? 'info' : 'warn']}<div>${html}</div></div>`;
+}
+
+function rxHow(summary, html) {
+  return `<details class="rx-how"><summary>${summary}</summary>${html}</details>`;
+}
+
+// Legend swatches: box (fill), line, dash, dot, tick, hatch
+function rxLegend(items) {
+  return `<div class="rx-legend">${items.map(({ label, color, kind = 'box', style = '' }) => {
+    const sw = kind === 'box' ? `<i style="background:${color};${style}"></i>`
+      : kind === 'hatch' ? `<i class="rx-hatch" style="${style}"></i>`
+      : kind === 'tick' ? `<i class="rx-tick" style="color:${color}"></i>`
+      : `<i class="rx-ln${kind === 'dash' ? ' rx-ln--dash' : kind === 'dot' ? ' rx-ln--dot' : ''}" style="color:${color}"></i>`;
+    return `<span>${sw}${label}</span>`;
+  }).join('')}</div>`;
+}
+
+// Signed percentage of a ratio change (0.039 → "▲ +3.9 %"), with its class
+function rxChange(frac, digits = 1) {
+  if (frac == null || !isFinite(frac)) return { text: '—', cls: '' };
+  const up = frac >= 0;
+  return { text: `${up ? '▲ +' : '▼ −'}${Math.abs(frac * 100).toFixed(digits)} %`, cls: up ? 'rx-up' : 'rx-dn' };
+}
+
+function rxChangeHTML(frac, digits = 1) {
+  const c = rxChange(frac, digits);
+  return `<span class="${c.cls}">${c.text}</span>`;
+}
+
+// Plain signed percent without arrow, for table cells ("+3.9 %")
+function rxSignedPct(frac, digits = 1) {
+  if (frac == null || !isFinite(frac)) return '—';
+  return `${frac >= 0 ? '+' : '−'}${Math.abs(frac * 100).toFixed(digits)} %`;
+}
+
+function rxRupee(v, digits = 0) {
+  return v == null || !isFinite(v) ? '—' : '₹' + fmtNum(v, digits);
+}
+
+function rxCr(v, digits = 1) {
+  return v == null || !isFinite(v) ? '—' : '₹' + fmtNum(v, digits) + ' Cr';
+}
+
+// "2025-03-01" → "1 Mar 2025"
+function rxDate(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+  if (!m) return iso || '—';
+  return `${+m[3]} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m[2] - 1]} ${m[1]}`;
+}
+
+// Chart.js config in the redesigned style: Plex type, hairline grid, dark
+// tooltip, no canvas legend (panels carry an HTML legend instead).
+function rxChartConfig(config) {
+  const o = config.options || (config.options = {});
+  const font = { family: RX_FONT, size: 11 };
+  o.plugins = o.plugins || {};
+  o.plugins.legend = Object.assign({ display: false }, o.plugins.legend);
+  o.plugins.tooltip = Object.assign({
+    backgroundColor: RX.ink, titleColor: '#FFFFFF', bodyColor: '#FFFFFF', footerColor: '#D5D7DB',
+    borderColor: RX.ink, borderWidth: 0, cornerRadius: 2, padding: 8, boxPadding: 4,
+    titleFont: { family: RX_FONT, size: 11.5, weight: '600' }, bodyFont: font, footerFont: { family: RX_FONT, size: 11, weight: '400' },
+  }, o.plugins.tooltip);
+  // Bars are not animated: Chart.js leaves a bar's animated `base` unset (bar
+  // never drawn) when its chart was resized during the opening animation.
+  if (o.animation === undefined) o.animation = config.type === 'bar' ? false : { duration: 250 };
+  Object.values(o.scales || {}).forEach(s => {
+    s.ticks = Object.assign({ color: RX.muted }, s.ticks, { font });
+    s.grid = Object.assign({ display: true, drawTicks: false, color: RX.grid }, s.grid);
+    s.border = Object.assign({ display: true, color: RX.axis }, s.border);
+    if (s.title) s.title = Object.assign({ color: RX.muted }, s.title, { font });
+  });
+  return config;
+}
+
+// Replaces charts[key] with a new chart on canvas `id` (height floor minH)
+function rxChart(key, id, minH, config) {
+  if (charts[key]) { charts[key].destroy(); delete charts[key]; }
+  const canvas = document.getElementById(id);
+  if (!canvas) return null;
+  setCanvasHeight(id, minH);
+  charts[key] = new Chart(canvas, rxChartConfig(config));
+  return charts[key];
+}
+
+// Keeps a chart at its floor height at any width (strip and secondary charts)
+function rxFixHeight(chart) {
+  if (!chart || !chart.canvas) return;
+  chart.canvas.parentElement.dataset.fixed = '1';
+  sizeChartWrapper(chart.canvas.parentElement);
+}
+
+function rxCanvas(id, cls = '') {
+  return `<div class="chart-wrapper ${cls}"><canvas id="${id}"></canvas></div>`;
+}
+
+// Date `n` weekdays after `iso` (holidays not counted)
+function rxAddWeekdays(iso, n) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+  if (!m) return null;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  let left = n;
+  while (left > 0) {
+    d.setUTCDate(d.getUTCDate() + 1);
+    const wd = d.getUTCDay();
+    if (wd !== 0 && wd !== 6) left--;
+  }
+  return d.toISOString().slice(0, 10);
+}
 
 // ========================
 // THEME TOGGLE
@@ -345,7 +526,7 @@ const NAV_ICONS = {
 const EXCHANGE_TABS = {
   nse: [
     { id: 'revenue',    label: 'Revenue Summary',    icon: 'revenue' },
-    { id: 'prediction', label: 'PAT Prediction',      icon: 'prediction' },
+    { id: 'prediction', label: 'Revenue Predictor',   icon: 'prediction' },
     { id: 'intraday',   label: 'Live Predictor',      icon: 'temporal' },
     { id: 'share',      label: 'Regression',          icon: 'share' },
     { id: 'valuation',  label: 'Valuation Model',     icon: 'advanced' },
@@ -375,23 +556,23 @@ const EXCHANGE_TABS = {
 const TAB_TITLES = {
   nse: {
     revenue: 'Revenue Summary',
-    prediction: 'PAT Prediction Engine',
-    intraday: 'Live EOD Predictor',
-    share: 'Share Price Analytics',
-    valuation: 'NSE Valuation Model',
+    prediction: 'Revenue Predictor',
+    intraday: 'Live Predictor',
+    share: 'Regression',
+    valuation: 'Valuation Model',
   },
   bse: {
     revenue: 'Revenue Summary',
     prediction: 'Revenue Predictor',
-    intraday: 'Live EOD Predictor',
-    share: 'Share Price Analytics',
-    valuation: 'BSE Valuation Model',
+    intraday: 'Live Predictor',
+    share: 'Regression',
+    valuation: 'Valuation Model',
   },
   mcx: {
     revenue: 'Revenue Summary',
     prediction: 'Revenue Predictor',
-    share: 'Share Price Analytics',
-    valuation: 'MCX Valuation Model',
+    share: 'Regression',
+    valuation: 'Valuation Model',
   },
   all: {
     revenue: 'Combined Revenue — NSE + BSE + MCX',
@@ -468,11 +649,8 @@ function attachTabListeners() {
       setTimeout(() => {
         resizeChartWrappers();
         Object.values(charts).forEach(c => { if (c && c.resize) c.resize(); });
-        // Bar charts built while their tab was still display:none never get
-        // correct geometry from Chart.js even after a later .resize() — only
-        // a full destroy+recreate once the canvas has real dimensions fixes
-        // it (line charts don't have this problem). Re-render on first visit.
-        if (tab === 'intraday') INTRADAY_RERENDER[currentExchange]?.();
+        // Redesigned tabs redraw their charts now that the canvas has its real size
+        RX_TAB_REFRESH[tab]?.();
       }, 50);
     });
   });
@@ -1785,6 +1963,7 @@ function attachGlanceHandlers(el) {
 
 function rebuildAll() {
   applyChartDefaults();
+  RX_TAB_REFRESH = {};
 
   // Combined views read every exchange's rows through DATA.components
   VIEW_SOURCES = {};
@@ -1796,12 +1975,11 @@ function rebuildAll() {
   const byExchange = {
     nsebse: [() => buildMarketSharePanel(['nse', 'bse']), buildMarketShareTrend],
     all:    [() => buildMarketSharePanel(['nse', 'bse', 'mcx'])],
-    nse:    [buildNSEExtrapolationKPIs, buildNSEPredictedPnLTable, initNSEPATPredictor, initNSEPEValuation,
-             initNSEPrediction, buildNSEValuation, buildNSEShareAnalysis,
-             () => buildIntradayPredictor('nse', 'nseIntradayContent')],
-    bse:    [buildBSERevenuePredictor, buildBSEShareAnalysis, buildBSEValuation,
-             () => buildIntradayPredictor('bse', 'bseIntradayContent')],
-    mcx:    [buildMCXRevenuePredictor, buildMCXShareAnalysis, buildMCXValuation],
+    nse:    [() => buildRevenuePredictor('nse'), () => buildValuation('nse'), () => buildShareAnalysis('nse'),
+             () => buildLivePredictor('nse')],
+    bse:    [() => buildRevenuePredictor('bse'), () => buildShareAnalysis('bse'), () => buildValuation('bse'),
+             () => buildLivePredictor('bse')],
+    mcx:    [() => buildRevenuePredictor('mcx'), () => buildShareAnalysis('mcx'), () => buildValuation('mcx')],
   };
   runSections(common.concat(byExchange[currentExchange] || []));
 }
@@ -3897,14 +4075,14 @@ function initNSEQuarterCompare() {
 }
 
 // ========================
-// NSE: PAT PREDICTION ENGINE
+// NSE: DEFAULT FORECAST (pipeline ratio model)
 // ========================
 // One default forecast: the pipeline's ratio model (ENRICHED_DATA
-// .pnl_forecast_model / .pnl_predicted_quarters / .pnl_predictor). The custom
-// predictor, the sliders and the manual nse_pnl forecast rows are scenarios and
-// are labelled as such. EBITDA on this tab is operating EBITDA (nse_pnl rows:
+// .pnl_forecast_model / .pnl_predicted_quarters / .pnl_predictor), which the
+// Revenue Predictor's Base scenario reproduces; manual nse_pnl forecast rows are
+// labelled as such. EBITDA there is operating EBITDA (nse_pnl rows:
 // ENRICHED_DATA.pnl_operating). An enriched file written before these fields
-// existed shows "—" rather than a differently defined EBITDA.
+// existed has no P&L on the predictor, only revenue.
 
 const NSE_EBITDA_DEF = 'Operating EBITDA = revenue from operations − operating expenses, before depreciation, excluding other (non-operating) income.';
 const NSE_ONE_OFF_LABELS = { sebi_settlement: 'SEBI settlement' };
@@ -3912,28 +4090,6 @@ const NSE_ONE_OFF_LABELS = { sebi_settlement: 'SEBI settlement' };
 function nseForecastModel() {
   const m = ENRICHED_DATA.pnl_forecast_model;
   return m && m.name ? m : null;
-}
-
-// Quarters the default forecast's ratios come from: the last two actual nse_pnl quarters.
-function nseBaseQuarters() {
-  const m = nseForecastModel();
-  if (m && Array.isArray(m.base_quarters) && m.base_quarters.length) return m.base_quarters;
-  return (DATA.pnl || []).filter(r => !r.is_predicted).slice(-2).map(r => r.quarter);
-}
-
-// Scenario cost ratios: DATA.cost_ratios averaged over those actual quarters,
-// never a forecast quarter's row (the table also holds Q4 FY 2026+ forecasts).
-function nseActualCostRatios() {
-  const rows = nseBaseQuarters().map(q => (DATA.cost_ratios || {})[q]).filter(Boolean);
-  const avg = k => {
-    const v = rows.map(r => r[k]).filter(x => x != null && !isNaN(x)).map(Number);
-    return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
-  };
-  return {
-    employee_pct: avg('employee_pct'), regulatory_pct: avg('regulatory_pct'),
-    technology_pct: avg('technology_pct'), depreciation_pct: avg('depreciation_pct'),
-    other_income_ratio: avg('other_income_ratio'),
-  };
 }
 
 function nseQuarterRange(qs) {
@@ -3952,631 +4108,6 @@ function nsePendingActualQuarters() {
   const cq = ENRICHED_DATA.pnl_predictor?.quarter || (q.length ? q[q.length - 1].quarter : null);
   if (!cq) return [];
   return (DATA.pnl || []).filter(r => r.is_predicted && quarterSortKey(r.quarter) < quarterSortKey(cq)).map(r => r.quarter);
-}
-
-// Panel titles live in index.html; find the panel from an element inside it.
-function setNSEPanelTitle(innerId, html) {
-  const el = document.getElementById(innerId);
-  const panel = el && el.closest('.chart-panel');
-  const title = panel && panel.querySelector('.chart-title');
-  if (title) title.innerHTML = html;
-}
-
-// Create or update a note paragraph placed right after `anchor`.
-function setNSENote(id, anchor, html) {
-  if (!anchor) return;
-  let n = document.getElementById(id);
-  if (!n) {
-    n = document.createElement('p');
-    n.id = id;
-    n.className = 'section-desc';
-    anchor.insertAdjacentElement('afterend', n);
-  }
-  n.innerHTML = html;
-}
-
-function buildNSEExtrapolationKPIs() {
-  const p = ENRICHED_DATA.pnl_predictor;
-  if (!p) return;
-  const m = nseForecastModel();
-  const otherIncome = p.total_revenue_predicted - p.transaction_rev_extrapolated;
-  const eps = p.eps_predicted ?? ENRICHED_DATA.pnl_predicted_quarters?.[p.quarter]?.eps;
-
-  const kpis = [
-    { label: 'Daily Avg Txn Rev', value: fmt(p.daily_avg_rev) },
-    { label: 'Trading Days (Actual / Expected)', value: `${p.q4_fy2026_trading_days_so_far || p.trading_days_so_far} / ${p.q4_fy2025_total_trading_days || p.expected_trading_days}` },
-    { label: 'Extrapolated Qtr Txn Rev', value: fmt(p.transaction_rev_extrapolated) },
-    { label: `Other Revenue + Other Income (${fmtPct(p.other_income_ratio)} of Txn Rev)`, value: fmt(otherIncome) },
-    { label: 'Total Revenue (Predicted)', value: fmt(p.total_revenue_predicted), highlight: true },
-    { label: `${m ? 'Default Forecast PAT' : 'Forecast PAT (previous model)'} · ${p.quarter || 'Current Qtr'}`, value: fmt(p.pat_predicted),
-      sub: eps != null ? `EPS ₹ ${fmtNum(eps, 2)}` : '', highlight: true },
-  ];
-
-  const kpiEl = document.getElementById('extrapKpis');
-  kpiEl.innerHTML = kpis.map(k => `
-    <div class="extrap-card${k.highlight ? ' highlight' : ''}">
-      <div class="extrap-label">${k.label}</div>
-      <div class="extrap-value">${k.value}</div>
-      ${k.sub ? `<div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${k.sub}</div>` : ''}
-    </div>
-  `).join('');
-
-  const pending = nsePendingActualQuarters();
-  const pendingTxt = pending.length
-    ? ` ${pending.join(', ')} ${pending.length > 1 ? 'have ended but are still manual forecasts' : 'has ended but is still a manual forecast'} in nse_pnl (actuals not yet entered), so the ratios stay on the last actual quarters.`
-    : '';
-  let note = `Forecast model details appear after the next NSE pipeline run.${pendingTxt}`;
-  if (m) {
-    const excl = Object.entries(m.one_offs_excluded || {}).map(([q, o]) => `${nseOneOffText(o)} in ${q}`).join('; ');
-    const skipped = m.tax_rate_quarters.length < m.base_quarters.length ? '; quarters with material one-offs skipped' : '';
-    note = `<strong>Default forecast — ratio model.</strong> Ratios from actual ${nseQuarterRange(m.base_quarters)}` +
-      `${excl ? `, one-offs excluded (${excl})` : ''}: other operating revenue ${fmtPct(m.other_operating_revenue_ratio)}` +
-      ` and other income ${fmtPct(m.non_operating_income_ratio)} of transaction revenue; operating expenses` +
-      ` ${fmtPct(m.operating_expense_ratio)} and depreciation ${fmtPct(m.depreciation_ratio)} of operating revenue;` +
-      ` associates ${fmt(m.share_profit_associates)}; tax ${fmtPct(m.tax_rate)} (${m.tax_rate_quarters.join(', ')} effective rate${skipped}).` +
-      ` Forecasts include no one-offs.${pendingTxt}`;
-  }
-  setNSENote('nseForecastModelNote', kpiEl, note);
-}
-
-function buildNSEPredictedPnLTable() {
-  const quarters = ENRICHED_DATA.pnl_predicted_quarters;
-  if (!quarters) return;
-  setNSEPanelTitle('tablePredictedPnL', 'Default Forecast — Ratio Model <span class="chart-badge">Predicted Quarterly P&amp;L</span>');
-  let html = `<thead><tr><th>Quarter</th><th>Txn Rev</th><th>Operating Rev</th><th>Other Income</th><th>Total Rev</th><th>Op. Expenses</th><th title="${NSE_EBITDA_DEF}">Op. EBITDA</th><th title="${NSE_EBITDA_DEF}">EBITDA %</th><th>PAT</th><th>PAT %</th><th>EPS</th></tr></thead><tbody>`;
-
-  let isFirst = true;
-  for (const [qName, q] of Object.entries(quarters)) {
-    const tag = isFirst ? ' <span style="color:var(--color-warning);font-size:11px;font-weight:600">CURRENT</span>' : '';
-    const cls = isFirst ? '' : 'predicted';
-    // operating_* only: an older file's `ebitda` is post-depreciation incl. other income.
-    html += `<tr class="${cls}">
-      <td>${qName}${tag}</td>
-      <td>${fmt(q.transaction_rev)}</td>
-      <td>${fmt(q.operating_revenue)}</td>
-      <td>${fmt(q.non_operating_income)}</td>
-      <td>${fmt(q.total_revenue)}</td>
-      <td>${fmt(q.operating_expenses)}</td>
-      <td>${fmt(q.operating_ebitda)}</td>
-      <td>${fmtPct(q.operating_ebitda_margin)}</td>
-      <td style="font-weight:600">${fmt(q.pat)}</td>
-      <td>${fmtPct(q.pat_margin)}</td>
-      <td>₹ ${fmtNum(q.eps, 2)}</td>
-    </tr>`;
-    isFirst = false;
-  }
-  html += '</tbody>';
-  const table = document.getElementById('tablePredictedPnL');
-  table.innerHTML = html;
-  setNSENote('nsePredictedPnLNote', table.parentElement,
-    `Op. EBITDA: ${NSE_EBITDA_DEF} Other Income = non-operating (investment) income. Forecast rows carry no one-offs.` +
-    ' The custom-input predictor, the sliders and the manual nse_pnl rows below are scenarios, not this forecast.');
-}
-
-function initNSEPATPredictor() {
-  const p = ENRICHED_DATA.pnl_predictor;
-  if (!p || !DATA.cost_ratios) return;
-  const cr = nseActualCostRatios();
-
-  setNSEPanelTitle('inputDailyRev', 'Scenario — Custom Inputs <span class="chart-badge">Not the Default Forecast</span>');
-  const desc = document.querySelector('#nsePredictionContent .predictor-panel .section-desc');
-  if (desc) {
-    desc.textContent = 'Scenario: enter your own average daily trading revenue. Costs start from actual ' +
-      nseQuarterRange(nseBaseQuarters()) + ' cost ratios (% of total revenue) plus 3.5 % CSR & other; tax and shares as entered.' +
-      (p.pat_predicted != null ? ' The default forecast for ' + (p.quarter || 'this quarter') + ' is ' + fmt(p.pat_predicted) + ' PAT.' : '');
-  }
-  const peHead = document.querySelector('#nsePredictionContent .predictor-pe-section h4');
-  if (peHead) peHead.textContent = 'Scenario Target Share Price';
-
-  const dailyRevInput = document.getElementById('inputDailyRev');
-  const tradingDaysInput = document.getElementById('inputTradingDays');
-  const otherIncomeInput = document.getElementById('inputOtherIncomeRatio');
-  const taxInput = document.getElementById('inputTaxRate');
-  const sharesInput = document.getElementById('inputShares');
-
-  // Share count default comes from SHARES_OUTSTANDING_CR; a value the user typed is kept across rebuilds.
-  if (sharesInput.value === '') sharesInput.value = SHARES_OUTSTANDING_CR.nse.value;
-  sharesInput.title = `Default ${SHARES_OUTSTANDING_CR.nse.value} Cr: ${SHARES_OUTSTANDING_CR.nse.source}`;
-  dailyRevInput.value = p.daily_avg_rev.toFixed(1);
-  otherIncomeInput.value = (p.other_income_ratio * 100).toFixed(1);
-
-  document.getElementById('predictorHint').textContent =
-    'Current ' + (p.quarter || (DATA.summary && DATA.summary.current_quarter) || 'quarter') + ' avg: ₹ ' + p.daily_avg_rev.toFixed(2) + ' Cr/day';
-
-  const costParams = {
-    emp_pct: cr.employee_pct || 0.044,
-    reg_pct: cr.regulatory_pct || 0.045,
-    tech_pct: cr.technology_pct || 0.07,
-    dep_pct: cr.depreciation_pct || 0.035,
-    csr_other_pct: 0.035,
-  };
-
-  function computePredictor() {
-    const dailyRev = Number(dailyRevInput.value) || 0;
-    const tradingDays = Number(tradingDaysInput.value) || 62;
-    const otherIncomeRatio = (Number(otherIncomeInput.value) || 0) / 100;
-    const taxRate = (Number(taxInput.value) || 25.2) / 100;
-    const shares = Number(sharesInput.value) || SHARES_OUTSTANDING_CR.nse.value;
-
-    if (dailyRev <= 0) {
-      document.getElementById('predictorOutput').innerHTML = '';
-      document.getElementById('predictorPEResults').innerHTML = '';
-      return;
-    }
-
-    const qtrTxnRev = dailyRev * tradingDays;
-    const otherIncome = qtrTxnRev * otherIncomeRatio;
-    const totalRev = qtrTxnRev + otherIncome;
-
-    const empCost = totalRev * costParams.emp_pct;
-    const regCost = totalRev * costParams.reg_pct;
-    const techCost = totalRev * costParams.tech_pct;
-    const depCost = totalRev * costParams.dep_pct;
-    const csrOther = totalRev * costParams.csr_other_pct;
-    const totalExp = empCost + regCost + techCost + depCost + csrOther;
-
-    const pbt = totalRev - totalExp;
-    const tax = pbt * taxRate;
-    const pat = pbt - tax;
-
-    const qtrEPS = pat / shares;
-    const annualEPS = qtrEPS * 4;
-
-    document.getElementById('predictorOutput').innerHTML = `
-      <div class="pred-card">
-        <div class="pred-label">Qtr Txn Revenue</div>
-        <div class="pred-value">${fmt(qtrTxnRev)}</div>
-        <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${fmt(dailyRev)}/day × ${tradingDays} days</div>
-      </div>
-      <div class="pred-card">
-        <div class="pred-label">Other Revenue + Other Income</div>
-        <div class="pred-value">${fmt(otherIncome)}</div>
-        <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${(otherIncomeRatio * 100).toFixed(1)}% of Txn Rev</div>
-      </div>
-      <div class="pred-card">
-        <div class="pred-label">Total Revenue</div>
-        <div class="pred-value">${fmt(totalRev)}</div>
-      </div>
-      <div class="pred-card">
-        <div class="pred-label">Total Expenses</div>
-        <div class="pred-value">${fmt(totalExp)}</div>
-        <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${fmtPct(totalExp / totalRev)} of revenue</div>
-      </div>
-      <div class="pred-card highlight">
-        <div class="pred-label">Scenario PAT</div>
-        <div class="pred-value" style="color:var(--color-success)">${fmt(pat)}</div>
-        <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${fmtPct(pat / totalRev)} margin</div>
-      </div>
-      <div class="pred-card">
-        <div class="pred-label">Scenario EPS (Quarterly)</div>
-        <div class="pred-value">₹ ${qtrEPS.toFixed(2)}</div>
-        <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">Annualized: ₹ ${annualEPS.toFixed(2)}</div>
-      </div>
-    `;
-
-    updatePredictorPE(annualEPS);
-  }
-
-  function updatePredictorPE(annualEPS) {
-    if (!annualEPS || annualEPS <= 0) {
-      document.getElementById('predictorPEResults').innerHTML = '';
-      return;
-    }
-    const bearPE = Number(document.getElementById('predBearPE').value) || 25;
-    const basePE = Number(document.getElementById('predBasePE').value) || 35;
-    const bullPE = Number(document.getElementById('predBullPE').value) || 45;
-
-    document.getElementById('predictorPEResults').innerHTML = `
-      <div class="pe-card bear">
-        <div class="pe-scenario-label">Bear Case</div>
-        <div class="pe-subtitle">${bearPE}x PE × ₹${annualEPS.toFixed(2)} EPS</div>
-        <div class="pe-price">${fmtPrice(bearPE * annualEPS)}</div>
-      </div>
-      <div class="pe-card base">
-        <div class="pe-scenario-label">Base Case</div>
-        <div class="pe-subtitle">${basePE}x PE × ₹${annualEPS.toFixed(2)} EPS</div>
-        <div class="pe-price">${fmtPrice(basePE * annualEPS)}</div>
-      </div>
-      <div class="pe-card bull">
-        <div class="pe-scenario-label">Bull Case</div>
-        <div class="pe-subtitle">${bullPE}x PE × ₹${annualEPS.toFixed(2)} EPS</div>
-        <div class="pe-price">${fmtPrice(bullPE * annualEPS)}</div>
-      </div>
-    `;
-  }
-
-  [dailyRevInput, tradingDaysInput, otherIncomeInput, taxInput, sharesInput].forEach(el => {
-    el.addEventListener('input', computePredictor);
-  });
-  ['predBearPE', 'predBasePE', 'predBullPE'].forEach(id => {
-    document.getElementById(id).addEventListener('input', computePredictor);
-  });
-  computePredictor();
-}
-
-function initNSEPEValuation() {
-  const bearInput = document.getElementById('peBear');
-  const baseInput = document.getElementById('peBase');
-  const bullInput = document.getElementById('peBull');
-
-  function updatePEResults() {
-    const quarters = ENRICHED_DATA.pnl_predicted_quarters;
-    if (!quarters) return;
-    // The quarter being extrapolated (first entry = current quarter)
-    const cqName = ENRICHED_DATA.pnl_predictor?.quarter || Object.keys(quarters)[0];
-    const cqData = quarters[cqName];
-    if (!cqData || !cqData.eps) return;
-
-    const quarterlyEPS = cqData.eps;
-    const annualizedEPS = quarterlyEPS * 4;
-    setNSEPanelTitle('peResults', `Valuation — Default Forecast EPS <span class="chart-badge"><span class="js-current-quarter">${cqName}</span> EPS × 4</span>`);
-
-    const bearPE = Number(bearInput.value) || 25;
-    const basePE = Number(baseInput.value) || 35;
-    const bullPE = Number(bullInput.value) || 45;
-
-    document.getElementById('peResults').innerHTML = `
-      <div class="pe-card bear">
-        <div class="pe-scenario-label">Bear Case</div>
-        <div class="pe-subtitle">${bearPE}x PE</div>
-        <div class="pe-price">${fmtPrice(bearPE * annualizedEPS)}</div>
-      </div>
-      <div class="pe-card base">
-        <div class="pe-scenario-label">Base Case</div>
-        <div class="pe-subtitle">${basePE}x PE</div>
-        <div class="pe-price">${fmtPrice(basePE * annualizedEPS)}</div>
-      </div>
-      <div class="pe-card bull">
-        <div class="pe-scenario-label">Bull Case</div>
-        <div class="pe-subtitle">${bullPE}x PE</div>
-        <div class="pe-price">${fmtPrice(bullPE * annualizedEPS)}</div>
-      </div>
-    `;
-    setNSENote('nsePEValuationNote', document.getElementById('peResults'),
-      `Annualised EPS ₹ ${fmtNum(annualizedEPS, 2)} = default forecast EPS ₹ ${fmtNum(quarterlyEPS, 2)} for ${cqName} × 4.`);
-  }
-
-  bearInput.addEventListener('input', updatePEResults);
-  baseInput.addEventListener('input', updatePEResults);
-  bullInput.addEventListener('input', updatePEResults);
-  updatePEResults();
-}
-
-let predState = {};
-
-function initNSEPrediction() {
-  if (!DATA.pnl || !DATA.cost_ratios) return;
-  const cr = nseActualCostRatios();
-  const desc = document.getElementById('scenarioButtons')?.previousElementSibling;
-  if (desc && desc.classList.contains('section-desc')) {
-    desc.innerHTML = '<strong>Scenario — sliders.</strong> Adjust revenue and cost assumptions to explore PAT. Starts from the' +
-      ' current-quarter run-rate and actual ' + nseQuarterRange(nseBaseQuarters()) + ' cost ratios; not the default forecast.';
-  }
-  setNSEPanelTitle('chartWaterfall', 'P&amp;L Waterfall <span class="chart-badge">Slider Scenario</span>');
-
-  const cq = DATA.quarterly[DATA.quarterly.length - 1];
-  const days = cq.days || 62;
-  const annualFactor = 62 / Math.max(days, 1);
-
-  predState = {
-    optRev: Math.round(cq.opt_rev * annualFactor),
-    futRev: Math.round(cq.fut_rev * annualFactor),
-    cashRev: Math.round(cq.cash_rev * annualFactor),
-    empPct: (cr.employee_pct * 100) || 4.0,
-    regPct: (cr.regulatory_pct * 100) || 4.5,
-    techPct: (cr.technology_pct * 100) || 7.0,
-    depPct: (cr.depreciation_pct * 100) || 3.5,
-    otherIncome: (cr.other_income_ratio * 100) || 45,
-  };
-
-  setSlider('sliderOpt', 'valOpt', predState.optRev, v => fmt(v));
-  setSlider('sliderFut', 'valFut', predState.futRev, v => fmt(v));
-  setSlider('sliderCash', 'valCash', predState.cashRev, v => fmt(v));
-  setSlider('sliderEmp', 'valEmp', predState.empPct, v => v.toFixed(1) + '%');
-  setSlider('sliderReg', 'valReg', predState.regPct, v => v.toFixed(1) + '%');
-  setSlider('sliderTech', 'valTech', predState.techPct, v => v.toFixed(1) + '%');
-  setSlider('sliderDep', 'valDep', predState.depPct, v => v.toFixed(1) + '%');
-  setSlider('sliderOther', 'valOther', predState.otherIncome, v => v.toFixed(0) + '%');
-
-  const sliders = ['sliderOpt', 'sliderFut', 'sliderCash', 'sliderEmp', 'sliderReg', 'sliderTech', 'sliderDep', 'sliderOther'];
-  sliders.forEach(id => {
-    document.getElementById(id).addEventListener('input', () => updateNSEPrediction());
-  });
-
-  document.querySelectorAll('.scenario-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.scenario-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      applyNSEScenario(btn.dataset.scenario);
-    });
-  });
-
-  updateNSEPrediction();
-  buildNSEPnLTable();
-  buildNSEPATHistoryChart();
-}
-
-function setSlider(sliderId, valId, value, formatter) {
-  const sl = document.getElementById(sliderId);
-  const vl = document.getElementById(valId);
-  if (!sl || !vl) return;
-  sl.value = value;
-  vl.textContent = formatter(value);
-  sl.addEventListener('input', () => {
-    vl.textContent = formatter(Number(sl.value));
-  });
-}
-
-function applyNSEScenario(scenario) {
-  const cq = DATA.quarterly[DATA.quarterly.length - 1];
-  const days = cq.days || 62;
-  const annualFactor = 62 / Math.max(days, 1);
-  let factor = 1;
-  if (scenario === 'bear') factor = 0.85;
-  if (scenario === 'bull') factor = 1.15;
-
-  document.getElementById('sliderOpt').value = Math.round(cq.opt_rev * annualFactor * factor);
-  document.getElementById('sliderFut').value = Math.round(cq.fut_rev * annualFactor * factor);
-  document.getElementById('sliderCash').value = Math.round(cq.cash_rev * annualFactor * factor);
-
-  document.getElementById('valOpt').textContent = fmt(Number(document.getElementById('sliderOpt').value));
-  document.getElementById('valFut').textContent = fmt(Number(document.getElementById('sliderFut').value));
-  document.getElementById('valCash').textContent = fmt(Number(document.getElementById('sliderCash').value));
-
-  updateNSEPrediction();
-}
-
-function updateNSEPrediction() {
-  const optRev = Number(document.getElementById('sliderOpt').value);
-  const futRev = Number(document.getElementById('sliderFut').value);
-  const cashRev = Number(document.getElementById('sliderCash').value);
-  const empPct = Number(document.getElementById('sliderEmp').value) / 100;
-  const regPct = Number(document.getElementById('sliderReg').value) / 100;
-  const techPct = Number(document.getElementById('sliderTech').value) / 100;
-  const depPct = Number(document.getElementById('sliderDep').value) / 100;
-  const otherIncome = Number(document.getElementById('sliderOther').value) / 100;
-
-  const transactionRev = optRev + futRev + cashRev;
-  const otherRev = transactionRev * otherIncome;
-  const totalRev = transactionRev + otherRev;
-
-  const empCost = totalRev * empPct;
-  const regCost = totalRev * regPct;
-  const techCost = totalRev * techPct;
-  const depCost = totalRev * depPct;
-  const csrOther = totalRev * 0.035;
-  const totalExp = empCost + regCost + techCost + depCost + csrOther;
-
-  // Operating EBITDA. The slider's other revenue lumps other operating revenue
-  // with non-operating income; split it in the default model's proportions.
-  const m = nseForecastModel();
-  const otherSum = m ? m.other_operating_revenue_ratio + m.non_operating_income_ratio : 0;
-  const opRev = otherSum > 0 ? transactionRev + otherRev * (m.other_operating_revenue_ratio / otherSum) : null;
-  const ebitda = opRev != null ? opRev - (empCost + regCost + techCost + csrOther) : null;
-  const ebitdaMargin = opRev ? ebitda / opRev : null;
-  const pbt = totalRev - totalExp;
-  const tax = pbt * 0.252;
-  const pat = pbt - tax;
-  const patMargin = pat / totalRev;
-
-  const container = document.getElementById('predResult');
-  container.innerHTML = `
-    <div class="pred-card">
-      <div class="pred-label">Total Revenue</div>
-      <div class="pred-value">${fmt(totalRev)}</div>
-    </div>
-    <div class="pred-card" title="${NSE_EBITDA_DEF}">
-      <div class="pred-label">Op. EBITDA</div>
-      <div class="pred-value">${fmt(ebitda)}</div>
-      <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${ebitdaMargin != null ? fmtPct(ebitdaMargin) + ' of operating revenue' : 'after the next pipeline run'}</div>
-    </div>
-    <div class="pred-card highlight">
-      <div class="pred-label">Scenario PAT</div>
-      <div class="pred-value" style="color:var(--color-primary-hover)">${fmt(pat)}</div>
-      <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-top:4px">${fmtPct(patMargin)} margin</div>
-    </div>
-    <div class="pred-card">
-      <div class="pred-label">Scenario EPS</div>
-      <div class="pred-value">₹ ${(pat / SHARES_OUTSTANDING_CR.nse.value).toFixed(2)}</div>
-      <div style="font-size:var(--text-xs);color:var(--color-text-faint);margin-top:4px" title="${sharesSourceNote('nse')}">~${SHARES_OUTSTANDING_CR.nse.value} Cr shares</div>
-    </div>
-  `;
-
-  buildNSEWaterfallChart(transactionRev, otherRev, totalRev, totalExp, empCost, regCost, techCost, depCost, csrOther, ebitda, pbt, tax, pat);
-}
-
-function buildNSEWaterfallChart(txnRev, otherRev, totalRev, totalExp, emp, reg, tech, dep, csrOther, ebitda, pbt, tax, pat) {
-  if (charts.waterfall) charts.waterfall.destroy();
-  setCanvasHeight('chartWaterfall', 300);
-
-  const labels = ['Txn Rev', 'Other Income', 'Total Rev', 'Employee', 'Regulatory', 'Technology', 'Depreciation', 'Other Exp', 'PBT', 'Tax', 'PAT'];
-  let running = 0;
-  const floatingData = [];
-  const colors = [];
-
-  floatingData.push([0, txnRev]); colors.push(CHART_COLORS[0]);
-  floatingData.push([txnRev, txnRev + otherRev]); colors.push(CHART_COLORS[3]);
-  floatingData.push([0, totalRev]); colors.push(CHART_COLORS[0]);
-  running = totalRev;
-  floatingData.push([running - emp, running]); running -= emp; colors.push(CHART_COLORS[4]);
-  floatingData.push([running - reg, running]); running -= reg; colors.push(CHART_COLORS[4]);
-  floatingData.push([running - tech, running]); running -= tech; colors.push(CHART_COLORS[4]);
-  floatingData.push([running - dep, running]); running -= dep; colors.push(CHART_COLORS[4]);
-  floatingData.push([running - csrOther, running]); running -= csrOther; colors.push(CHART_COLORS[4]);
-  floatingData.push([0, pbt]); colors.push(CHART_COLORS[5]);
-  floatingData.push([pat, pbt]); colors.push(CHART_COLORS[1]);
-  floatingData.push([0, pat]); colors.push('#30d158');
-
-  charts.waterfall = new Chart(document.getElementById('chartWaterfall'), {
-    type: 'bar',
-    data: {
-      labels,
-      datasets: [{
-        label: 'P&L Waterfall',
-        data: floatingData,
-        backgroundColor: colors,
-        borderRadius: 3,
-        borderSkipped: false,
-      }]
-    },
-    options: {
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: ctx => {
-              const range = ctx.raw;
-              const value = Math.abs(range[1] - range[0]);
-              return ctx.label + ': ' + fmt(value);
-            }
-          }
-        }
-      },
-      scales: {
-        x: { ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
-        // lineWidth explicit (see buildNSEPATHistoryChart): bars from 0 vanish otherwise.
-        y: { beginAtZero: true, grid: { color: getGridColor(), lineWidth: 1 }, ticks: { callback: v => '₹' + fmtNum(v, 0) } }
-      }
-    }
-  });
-}
-
-function buildNSEPATHistoryChart() {
-  const p = DATA.pnl;
-  if (!p || p.length === 0) return;
-  setCanvasHeight('chartPATHistory', 300);
-  setNSEPanelTitle('chartPATHistory', 'PAT — Actuals, Manual Forecasts &amp; Default Forecast');
-
-  // Bars: nse_pnl rows (actuals and manual forecasts). Diamonds: the default
-  // forecast, whose quarters may run past the last nse_pnl row.
-  const fc = ENRICHED_DATA.pnl_predicted_quarters || {};
-  const byQ = new Map(p.map(x => [x.quarter, x]));
-  const quarters = [...new Set([...p.map(x => x.quarter), ...Object.keys(fc)])]
-    .sort((a, b) => quarterSortKey(a) - quarterSortKey(b));
-  const rows = quarters.map(q => byQ.get(q) || null);
-  const allLabels = quarters.map(q => {
-    const parts = q.split(' ');
-    return parts[0] + " '" + parts[2].slice(2);
-  });
-  const barColors = rows.map(x => x && x.is_predicted ? CHART_COLORS[5] : CHART_COLORS[0]);
-  const patValues = rows.map(x => x ? x.pat : null);
-  const fcValues = quarters.map(q => fc[q] ? fc[q].pat : null);
-  const fcColor = CHART_COLORS[1];
-
-  if (charts.patHistory) charts.patHistory.destroy();
-  charts.patHistory = new Chart(document.getElementById('chartPATHistory'), {
-    type: 'bar',
-    data: {
-      labels: allLabels,
-      datasets: [{
-        label: 'PAT',
-        data: patValues,
-        backgroundColor: barColors,
-        borderColor: barColors,
-        borderWidth: 1,
-        borderRadius: 3,
-        order: 1,
-      }, {
-        type: 'line',
-        label: 'Default forecast (ratio model)',
-        data: fcValues,
-        showLine: false,
-        pointStyle: 'rectRot',
-        pointRadius: 7,
-        pointHoverRadius: 8,
-        backgroundColor: fcColor,
-        borderColor: fcColor,
-        order: 0,
-      }]
-    },
-    options: {
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: {
-          display: true,
-          onClick: () => {},
-          labels: {
-            usePointStyle: true,
-            generateLabels: function() {
-              return [
-                { text: 'Actual PAT', fillStyle: CHART_COLORS[0], strokeStyle: CHART_COLORS[0], pointStyle: 'rect', lineWidth: 0, hidden: false },
-                { text: 'Manual forecast (nse_pnl)', fillStyle: CHART_COLORS[5], strokeStyle: CHART_COLORS[5], pointStyle: 'rect', lineWidth: 0, hidden: false },
-                { text: 'Default forecast (ratio model)', fillStyle: fcColor, strokeStyle: fcColor, pointStyle: 'rectRot', lineWidth: 0, hidden: false },
-              ];
-            }
-          }
-        },
-        tooltip: {
-          filter: ctx => ctx.raw != null,
-          callbacks: {
-            label: ctx => {
-              if (ctx.datasetIndex === 1) return 'Default forecast (ratio model): ' + fmt(ctx.raw);
-              const r = rows[ctx.dataIndex];
-              return (r && r.is_predicted ? 'Manual forecast (nse_pnl): ' : 'Actual: ') + fmt(ctx.raw);
-            }
-          }
-        }
-      },
-      scales: {
-        x: { ticks: { maxRotation: 45, font: { size: CHART_FONT.tick } } },
-        // lineWidth explicit: the global scale.grid default carries none, and
-        // Chart.js then computes NaN bar bases on the zero gridline (no bars drawn).
-        y: { grid: { color: getGridColor(), lineWidth: 1 }, ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
-      }
-    }
-  });
-}
-
-function buildNSEPnLTable() {
-  const p = DATA.pnl;
-  if (!p) return;
-  setNSEPanelTitle('tablePnL', 'P&amp;L Comparison Table <span class="chart-badge">nse_pnl Actuals &amp; Manual Forecasts</span>');
-  const ops = new Map((ENRICHED_DATA.pnl_operating || []).map(v => [v.quarter, v]));
-  const pending = new Set(nsePendingActualQuarters());
-  const footnotes = [];
-  let html = `<thead><tr><th>Quarter</th><th>Status</th><th>Txn Rev</th><th>Operating Rev</th><th>Total Rev</th><th>Op. Expenses</th><th title="${NSE_EBITDA_DEF}">Op. EBITDA</th><th title="${NSE_EBITDA_DEF}">EBITDA %</th><th>PAT</th><th>PAT %</th><th>EPS</th></tr></thead><tbody>`;
-  for (const q of p) {
-    const v = ops.get(q.quarter);
-    const status = !q.is_predicted ? 'Actual'
-      : pending.has(q.quarter) ? 'Manual forecast<br><span style="font-size:11px">actuals not yet entered</span>' : 'Manual forecast';
-    let ebitdaCell = '—', marginCell = '—', ebitdaTitle = '';
-    if (v && v.operating_ebitda != null) {
-      ebitdaCell = fmt(v.operating_ebitda);
-      marginCell = fmtPct(v.operating_ebitda_margin);
-      if (v.one_offs && Object.keys(v.one_offs).length) {
-        ebitdaTitle = `${q.quarter} includes one-off ${nseOneOffText(v.one_offs)}; ex one-offs ${fmt(v.operating_ebitda_ex_one_offs)} (${fmtPct(v.operating_ebitda_margin_ex_one_offs)})`;
-        footnotes.push(ebitdaTitle);
-        ebitdaCell += '<sup style="line-height:0">†</sup>';
-        marginCell += '<sup style="line-height:0">†</sup>';
-      }
-    } else if (v && !v.revenue_split_available) {
-      ebitdaTitle = 'This manual forecast row does not separate revenue from operations from other income';
-    }
-    const style = q.is_predicted ? ' style="font-style:italic;opacity:0.8"' : '';
-    html += `<tr${style}>
-      <td>${q.quarter}</td>
-      <td>${status}</td>
-      <td>${fmt(q.transaction_rev)}</td>
-      <td>${fmt(v ? v.operating_revenue : null)}</td>
-      <td>${fmt(q.total_revenue)}</td>
-      <td>${fmt(v ? v.operating_expenses : null)}</td>
-      <td${ebitdaTitle ? ` title="${ebitdaTitle}"` : ''}>${ebitdaCell}</td>
-      <td>${marginCell}</td>
-      <td style="font-weight:600">${fmt(q.pat)}</td>
-      <td>${fmtPct(q.pat_margin)}</td>
-      <td>₹ ${fmtNum(q.eps, 2)}</td>
-    </tr>`;
-  }
-  html += '</tbody>';
-  const table = document.getElementById('tablePnL');
-  table.innerHTML = html;
-  const notes = [`Op. EBITDA: ${NSE_EBITDA_DEF} Actual quarters are on the reported basis.`];
-  if (footnotes.length) notes.push('† ' + footnotes.join('. ') + '.');
-  notes.push(ops.size
-    ? 'Manual forecast rows (entered in nse_pnl) are scenarios, not the default forecast; they put all non-transaction revenue in one line, so Op. EBITDA is not shown for them.'
-    : 'Op. EBITDA appears after the next NSE pipeline run.');
-  notes.push('Actual PAT is as reported, including exceptional items such as gains on sale of investments.');
-  setNSENote('nsePnLNote', table.parentElement, notes.join(' '));
 }
 
 // ========================
@@ -4726,65 +4257,611 @@ function buildHeatmap() {
 }
 
 // ========================
-// BSE: REVENUE PREDICTOR
+// REVENUE PREDICTOR TAB — one scenario model per exchange
 // ========================
+// The quarter's transaction revenue = revenue banked so far + daily revenue
+// for the sessions left × those sessions. With the daily inputs at their
+// quarter-to-date averages (the Base preset) that equals the pipeline's
+// extrapolation (pnl_predictor), and for NSE the P&L below it reproduces the
+// pipeline's default ratio-model forecast line for line. Bear / Bull scale the
+// rest-of-quarter daily revenue ±15 %. NSE carries the ratio model to PAT and
+// EPS; BSE uses the Excel "Quarterly Predictor" (other income and PAT margin);
+// MCX stops at revenue (no MCX P&L inputs in this repo).
 
-// BSE and MCX "Revenue Predictor": current-quarter extrapolation KPIs and the
-// segment composition table. The quarter's fee-basis / modelled markers sit on
-// the labels; its segment mix is not shown if it contains modelled MCX days.
-function buildQuarterRevenuePredictor(prefix) {
-  const p = ENRICHED_DATA.pnl_predictor;
-  if (!p) return;
-  const q = DATA.quarterly;
-  const cq = q[q.length - 1];
-  const totalTags = flagTags(periodFlags(cq, 'total'));
-  const otherIncome = p.total_revenue_predicted - p.transaction_rev_extrapolated;
-  const progressPct = ((p.trading_days_so_far / p.expected_trading_days) * 100).toFixed(0);
+const PREDICTOR_SEGMENTS = { nse: ['opt', 'fut', 'cash'], bse: ['opt', 'fut', 'cash'], mcx: ['opt', 'fut'] };
+const PREDICTOR_SEG_LABEL = { opt: 'Options', fut: 'Futures', cash: 'Cash' };
+const PREDICTOR_PRESET_PCT = 15;
+// Inputs show 2 decimals but hold full precision until edited, so the Base
+// preset is the pipeline's figure to the rupee; a value within half the last
+// shown digit of its default counts as unchanged.
+const PREDICTOR_TOLERANCE = 0.005;
+function predictorShown(x) { return +(+x).toFixed(2); }
 
-  const kpis = [
-    { label: 'Daily Avg Transaction Rev' + totalTags, value: fmt(p.daily_avg_rev) },
-    { label: 'Trading Days (Actual / Expected)', value: `${p.trading_days_so_far} / ${p.expected_trading_days}` },
-    { label: 'Extrapolated Qtr Transaction Rev' + totalTags, value: fmt(p.transaction_rev_extrapolated) },
-    { label: `Other Income (~${fmtPct(p.other_income_ratio)} of Txn)`, value: fmt(otherIncome) },
-  ];
+// BSE Excel "Quarterly Predictor" starting values (other income ₹ Cr / quarter, PAT margin %)
+const BSE_QTR_PNL_DEFAULTS = { oiQ: 472.16, margin: 50 };
 
-  document.getElementById(prefix + 'PredictorKpis').innerHTML = kpis.map(k => `
-    <div class="extrap-card${k.highlight ? ' highlight' : ''}">
-      <div class="extrap-label">${k.label}</div>
-      <div class="extrap-value">${k.value}</div>
-    </div>
-  `).join('') + `
-    <div class="extrap-card highlight" style="grid-column: 1 / -1">
-      <div class="extrap-label">Total Estimated Quarterly Revenue${totalTags}</div>
-      <div class="extrap-value" style="font-size:var(--text-xl)">${fmt(p.total_revenue_predicted)}</div>
-    </div>
-  `;
-
-  document.getElementById(prefix + 'ProgressBarFill').style.width = progressPct + '%';
-  document.getElementById(prefix + 'ProgressLabel').textContent =
-    `Quarter Progress: ${p.trading_days_so_far} of ${p.expected_trading_days} trading days completed (${progressPct}%)`;
-
-  // Composition table
-  const cqDays = cq.days || cq.trading_days || 1;
-  const mixNA = periodFlags(cq, 'total').modelled;
-  const segRow = (label, field, segKey) => {
-    const share = cq.total_rev > 0 ? (cq[field] / cq.total_rev * 100).toFixed(1) : 0;
-    const mix = mixNA ? `<span class="cmp-na" title="${MCX_MODELLED_TITLE}">—</span>` : `${share}%`;
-    return `<tr><td>${label}${flagTags(periodFlags(cq, segKey))}</td><td>${fmt(cq[field])}</td><td>${mix}</td><td>${cqDays}</td><td>${fmt(cq[field] / cqDays)}</td></tr>`;
-  };
-
-  let compositionHTML = `<thead><tr><th>Segment</th><th>Current Qtr Rev</th><th>% of Total</th><th>Days</th><th>Daily Avg</th></tr></thead><tbody>`;
-  compositionHTML += segRow('Options', 'opt_rev', 'options');
-  compositionHTML += segRow('Futures', 'fut_rev', 'futures');
-  compositionHTML += segRow('Cash', 'cash_rev', 'cash');
-  compositionHTML += `<tr style="font-weight:600"><td>Total${totalTags}</td><td>${fmt(cq.total_rev)}</td><td>100%</td><td>${cqDays}</td><td>${fmt(cq.total_rev / cqDays)}</td></tr>`;
-  compositionHTML += `</tbody>`;
-  document.getElementById(prefix === 'bse' ? 'tableBseRevComposition' : 'tableMcxRevComposition').innerHTML = compositionHTML;
+// "Q3 FY 2027" shifted by n quarters ("Q2 FY 2027" for -1, "Q3 FY 2026" for -4)
+function shiftQuarter(label, n) {
+  const m = /^Q([1-4]) FY (\d{4})$/.exec(label || '');
+  if (!m) return null;
+  const idx = +m[2] * 4 + (+m[1] - 1) + n;
+  return `Q${(idx % 4) + 1} FY ${Math.floor(idx / 4)}`;
 }
 
-function buildBSERevenuePredictor() { buildQuarterRevenuePredictor('bse'); }
+// "Q2 FY 2026" … "Q3 FY 2026" → "Q2–Q3 FY26"
+function shortQuarterRange(qs) {
+  const s = q => { const m = /^Q([1-4]) FY \d{2}(\d{2})$/.exec(q || ''); return m ? { q: 'Q' + m[1], fy: 'FY' + m[2] } : null; };
+  const a = s(qs[0]), b = s(qs[qs.length - 1]);
+  if (!a || !b) return qs.join(', ');
+  if (qs.length === 1) return `${a.q} ${a.fy}`;
+  return a.fy === b.fy ? `${a.q}–${b.q} ${a.fy}` : `${a.q} ${a.fy}–${b.q} ${b.fy}`;
+}
 
-function buildMCXRevenuePredictor() { buildQuarterRevenuePredictor('mcx'); }
+function predictorContext(ex) {
+  const q = DATA.quarterly || [];
+  const p = ENRICHED_DATA.pnl_predictor || {};
+  const cqLabel = p.quarter || DATA.summary?.current_quarter || (q.length ? q[q.length - 1].quarter : null);
+  const cq = q.find(r => r.quarter === cqLabel) || q[q.length - 1];
+  if (!cq) return null;
+  const segs = PREDICTOR_SEGMENTS[ex];
+  const n = cq.days || cq.trading_days || 0;
+  const banked = {};
+  segs.forEach(k => { banked[k] = cq[k + '_rev'] || 0; });
+  const bankedTotal = segs.reduce((s, k) => s + banked[k], 0);
+  const adr = {};
+  segs.forEach(k => { adr[k] = n ? banked[k] / n : 0; });
+  const prev = q.find(r => r.quarter === shiftQuarter(cq.quarter, -1)) || null;
+  const ly = q.find(r => r.quarter === shiftQuarter(cq.quarter, -4)) || null;
+  const daily = (DATA.daily_all || DATA.daily || []).filter(r => r.fy_quarter === cq.quarter);
+  return {
+    ex, segs, cq, n, banked, bankedTotal, adr, prev, ly, daily,
+    days: p.expected_trading_days || Math.max(n, 62),
+    quarters: q,
+  };
+}
+
+function predictorDefaults(ex, ctx) {
+  const v = { days: ctx.days };
+  ctx.segs.forEach(k => { v[k] = ctx.adr[k]; });
+  const m = ex === 'nse' ? nseForecastModel() : null;
+  if (m) Object.assign(v, {
+    oor: m.other_operating_revenue_ratio * 100,
+    oi: m.non_operating_income_ratio * 100,
+    opex: m.operating_expense_ratio * 100,
+    dep: m.depreciation_ratio * 100,
+    assoc: +m.share_profit_associates,
+    tax: m.tax_rate * 100,
+    shares: SHARES_OUTSTANDING_CR.nse.value,
+  });
+  if (ex === 'bse') Object.assign(v, BSE_QTR_PNL_DEFAULTS, { shares: SHARES_OUTSTANDING_CR.bse.value });
+  return v;
+}
+
+// Scenario P&L for input values `v` (ctx from predictorContext). The NSE branch
+// is scripts/nse_pipeline.py's ratio model (build_entry) with editable ratios.
+function predictorScenario(ex, ctx, v) {
+  const rest = Math.max(v.days - ctx.n, 0);
+  const seg = {};
+  let txn = 0;
+  ctx.segs.forEach(k => { seg[k] = ctx.banked[k] + v[k] * rest; txn += seg[k]; });
+  const out = { seg, txn, rest, adr: v.days ? txn / v.days : 0, adrRest: ctx.segs.reduce((s, k) => s + v[k], 0) };
+  if (ex === 'nse' && v.oor != null) {
+    out.oorV = txn * v.oor / 100;
+    out.op = txn + out.oorV;
+    out.oi = txn * v.oi / 100;
+    out.total = out.op + out.oi;
+    out.opx = out.op * v.opex / 100;
+    out.ebitda = out.op - out.opx;
+    out.dep = out.op * v.dep / 100;
+    out.assoc = v.assoc;
+    out.pbt = out.ebitda - out.dep + out.oi + out.assoc;
+    out.tax = out.pbt * v.tax / 100;
+    out.pat = out.pbt - out.tax;
+    out.eps = v.shares ? out.pat / v.shares : null;
+  } else if (ex === 'bse') {
+    out.oi = v.oiQ;
+    out.total = txn + v.oiQ;
+    out.pat = out.total * v.margin / 100;
+    out.costs = out.total - out.pat;
+    out.eps = v.shares ? out.pat / v.shares : null;
+  }
+  return out;
+}
+
+// Input rows of the assumptions panel, by group
+function predictorFields(ex, ctx) {
+  const rest = Math.max(ctx.days - ctx.n, 0);
+  const groups = [{
+    title: `Daily revenue for the ${rest} sessions left, ₹ Cr`,
+    fields: ctx.segs.map(k => ({ key: k, label: PREDICTOR_SEG_LABEL[k], step: 0.1, tag: rxChip(`QTD avg · ${ctx.n} sessions`, 'data') })),
+  }, {
+    title: 'Quarter',
+    fields: [{ key: 'days', label: 'Trading sessions in the quarter', step: 1, tag: rxChip('Pipeline estimate') }],
+  }];
+  const m = ex === 'nse' ? nseForecastModel() : null;
+  if (m) {
+    const base = shortQuarterRange(m.base_quarters || []);
+    const taxQ = shortQuarterRange(m.tax_rate_quarters || []);
+    groups.push({
+      title: `Ratios · actual ${base}, one-offs excluded`,
+      fields: [
+        { key: 'oor', label: 'Other operating revenue, % of txn revenue', step: 0.1, tag: rxChip(base) },
+        { key: 'oi', label: 'Other income, % of txn revenue', step: 0.1, tag: rxChip(base) },
+        { key: 'opex', label: 'Operating expenses, % of operating revenue', step: 0.1, tag: rxChip(base) },
+        { key: 'dep', label: 'Depreciation, % of operating revenue', step: 0.1, tag: rxChip(base) },
+        { key: 'assoc', label: 'Share of associates, ₹ Cr', step: 0.5, tag: rxChip(base) },
+        { key: 'tax', label: 'Tax rate, %', step: 0.1, tag: rxChip(`${taxQ} effective`) },
+        { key: 'shares', label: 'Shares outstanding, Cr', step: 0.1, tag: rxChip('PAT ÷ EPS, reported', 'data') },
+      ],
+    });
+  }
+  if (ex === 'bse') groups.push({
+    title: 'Excel “Quarterly Predictor”',
+    fields: [
+      { key: 'oiQ', label: 'Other income, ₹ Cr for the quarter', step: 1, tag: rxChip('Excel model') },
+      { key: 'margin', label: 'PAT margin, % of total income', step: 0.5, tag: rxChip('Excel model') },
+      { key: 'shares', label: 'Shares outstanding, Cr', step: 0.01, tag: rxChip('Hard-coded · unverified', 'warn') },
+    ],
+  });
+  return groups;
+}
+
+// P&L rows for NSE: [label, key, row class]; ratio rows divide `key` by `base`
+const NSE_PNL_ROWS = [
+  ['Transaction revenue', 'txn'], ['Other operating revenue', 'oorV'], ['Operating revenue', 'op', 'rx-sub'],
+  ['Other income', 'oi'], ['Total income', 'total', 'rx-sub'], ['Operating expenses', 'opx'],
+  ['Operating EBITDA', 'ebitda', 'rx-sub'], ['EBITDA margin', 'ebitda', 'rx-pct', 'op'], ['Depreciation', 'dep'],
+  ['Share of associates', 'assoc'], ['PBT', 'pbt', 'rx-sub'], ['Tax', 'tax'], ['PAT', 'pat', 'rx-sub'],
+  ['PAT margin', 'pat', 'rx-pct', 'total'], ['EPS, ₹', 'eps', 'rx-sub'],
+];
+
+// Reported Q-year-ago P&L in the scenario's keys (null if not an actual quarter)
+function nseActualPnl(quarter) {
+  const r = (DATA.pnl || []).find(x => x.quarter === quarter && !x.is_predicted);
+  if (!r) return null;
+  const op = (ENRICHED_DATA.pnl_operating || []).find(x => x.quarter === quarter) || {};
+  const opRev = op.operating_revenue;
+  return {
+    txn: r.transaction_rev, oorV: opRev != null ? opRev - r.transaction_rev : null, op: opRev,
+    oi: op.non_operating_income, total: r.total_revenue, opx: op.operating_expenses, ebitda: op.operating_ebitda,
+    dep: op.depreciation ?? r.depreciation, assoc: r.share_profit_associates, pbt: r.pbt, tax: r.income_tax,
+    pat: r.pat, eps: r.eps, oneOffs: op.one_offs || {},
+  };
+}
+
+// Pipeline default forecast for a quarter, in the scenario's keys
+function nseDefaultPnl(quarter) {
+  const f = ENRICHED_DATA.pnl_predicted_quarters?.[quarter];
+  if (!f) return null;
+  return {
+    txn: f.transaction_rev, oorV: f.operating_revenue - f.transaction_rev, op: f.operating_revenue,
+    oi: f.non_operating_income, total: f.total_revenue, opx: f.operating_expenses, ebitda: f.operating_ebitda,
+    dep: f.depreciation, assoc: f.share_profit_associates, pbt: f.pbt, tax: f.income_tax, pat: f.pat, eps: f.eps,
+  };
+}
+
+function buildRevenuePredictor(ex) {
+  const el = document.getElementById(`${ex}PredictionContent`);
+  if (!el) return;
+  const ctx = predictorContext(ex);
+  if (!ctx || !ctx.n) {
+    el.innerHTML = `<div class="rx">${rxPanel({ title: 'Revenue predictor', body: '<div class="rx-empty"><b>No sessions in the current quarter yet</b>The predictor starts after the quarter’s first trading day.</div>' })}</div>`;
+    return;
+  }
+  const name = SHARE_EXCHANGE_NAMES[ex];
+  const model = ex === 'nse' ? nseForecastModel() : null;
+  const hasPnl = (ex === 'nse' && !!model) || ex === 'bse';
+  const defaults = predictorDefaults(ex, ctx);
+  const v = { ...defaults };
+  const cqL = ctx.cq.quarter;
+  const nextL = shiftQuarter(cqL, 1);
+  const lyL = shiftQuarter(cqL, -4);
+  const prevL = shiftQuarter(cqL, -1);
+  const cqFlags = periodFlags(ctx.cq, 'total');
+  const lyModelled = ctx.ly && periodFlags(ctx.ly, 'total').modelled;
+  const prevModelled = ctx.prev && periodFlags(ctx.prev, 'total').modelled;
+  const groups = predictorFields(ex, ctx);
+  const presets = { bear: 1 - PREDICTOR_PRESET_PCT / 100, base: 1, bull: 1 + PREDICTOR_PRESET_PCT / 100 };
+  const lastDate = ctx.daily.length ? ctx.daily[ctx.daily.length - 1].date : DATA.summary?.last_date;
+
+  // NSE: quarters that have ended but still hold manual forecasts in nse_pnl
+  let staleHTML = '';
+  if (ex === 'nse') {
+    const pending = nsePendingActualQuarters();
+    if (pending.length) {
+      const last = pending[pending.length - 1];
+      const manual = (DATA.pnl || []).find(r => r.quarter === last);
+      const traded = ctx.quarters.find(r => r.quarter === last);
+      const cmp = manual && traded && manual.transaction_rev
+        ? ` ${last}’s manual forecast has transaction revenue ${rxCr(manual.transaction_rev, 0)}; trading data says ${rxCr(traded.total_rev, 0)}.` : '';
+      const list = pending.length === 1 ? pending[0] : pending.slice(0, -1).join(', ') + ' and ' + last;
+      staleHTML = rxAlert(`<strong>Ratios rest on ${model ? shortQuarterRange(model.base_quarters) : 'older quarters'}.</strong> ${list} ${pending.length === 1 ? 'has' : 'have'} ended but nse_pnl still holds manual forecasts for ${pending.length === 1 ? 'it' : 'them'}, so the default forecast cannot use ${pending.length === 1 ? 'its' : 'their'} actuals.${cmp}`);
+    }
+  }
+
+  const fieldsHTML = groups.map(g => `<div class="rx-field-group"><span class="rx-lbl">${g.title}</span>${g.fields.map(f => `
+      <div class="rx-field">
+        <label for="rxPred-${ex}-${f.key}">${f.label}</label>
+        <input class="rx-in" id="rxPred-${ex}-${f.key}" type="number" step="${f.step}" min="0" inputmode="decimal" data-key="${f.key}" value="${predictorShown(defaults[f.key])}">
+        <div class="rx-tags" data-tags="${f.key}">${f.tag}</div>
+      </div>`).join('')}</div>`).join('');
+
+  const howNSE = model ? rxHow('How the default forecast works', `<ul>
+      <li>Transaction revenue = revenue banked in the ${ctx.n} sessions so far + daily revenue × the sessions left. At the quarter-to-date averages this is the pipeline’s extrapolation.</li>
+      <li>Other operating revenue (${fmtPct(model.other_operating_revenue_ratio)}) and other income (${fmtPct(model.non_operating_income_ratio)}) scale with transaction revenue; operating expenses (${fmtPct(model.operating_expense_ratio)}) and depreciation (${fmtPct(model.depreciation_ratio)}) scale with operating revenue; associates ${rxCr(model.share_profit_associates)}; tax at the ${shortQuarterRange(model.tax_rate_quarters)} effective rate (${fmtPct(model.tax_rate)}).</li>
+      <li>Ratios come from actual ${nseQuarterRange(model.base_quarters)}${Object.keys(model.one_offs_excluded || {}).length ? `, one-offs excluded (${Object.entries(model.one_offs_excluded).map(([q, o]) => `${nseOneOffText(o)} in ${q}`).join('; ')})` : ''}. Forecasts carry no one-offs.</li>
+      <li>${nextL} grows transaction revenue at the current quarter’s year-on-year per-session rate. ${NSE_EBITDA_DEF}</li>
+    </ul>`) : '';
+  const howBSE = rxHow('How this estimate works', `<ul>
+      <li>Transaction revenue = revenue banked in the ${ctx.n} sessions so far + daily revenue × the sessions left (quarter-to-date averages by default).</li>
+      <li>Other income and PAT margin are the starting values of the Excel “Quarterly Predictor”; BSE’s reported P&amp;L is not in this repo, so there are no actuals to compare against.</li>
+      <li>BSE cash revenue for the latest quarter is at a provisional calibrated rate until BSE reports it (marked est.).</li>
+    </ul>`);
+  const howMCX = rxHow('How this estimate works', `<ul>
+      <li>Transaction revenue = revenue banked in the ${ctx.n} sessions so far + daily revenue × the sessions left (quarter-to-date averages by default).</li>
+      <li>MCX stops at revenue: no MCX other-income or margin inputs are maintained here. MCX total revenue is futures + options; days before 2 Sep 2024 are modelled and left out of comparisons.</li>
+    </ul>`);
+
+  const pnlPanel = ex === 'nse' && model ? rxPanel({ cls: 'rx-col-wide', title: 'P&amp;L', meta: '₹ Cr · operating EBITDA excludes other income',
+      right: rxLegend([{ label: 'Your scenario', color: '#EAF0FB', style: 'box-shadow:inset 0 0 0 1px #B9C9EE' }]),
+      body: `<div class="rx-scroll"><table class="rx-table" data-rx="pnl"></table></div>`, foot: '<span data-rx="pnlFoot"></span>', how: howNSE })
+    : ex === 'bse' ? rxPanel({ cls: 'rx-col-wide', title: 'Quarter P&amp;L', meta: '₹ Cr · Excel quarterly model',
+      body: `<div class="rx-scroll"><table class="rx-table" data-rx="pnl"></table></div>`, how: howBSE })
+    : rxPanel({ cls: 'rx-col-wide', title: 'Segments', meta: '₹ Cr', body: `<div class="rx-scroll"><table class="rx-table" data-rx="segs"></table></div>`, how: howMCX });
+  const bridgePanel = hasPnl ? rxPanel({ cls: 'rx-col-narrow', title: 'Scenario bridge', meta: `${cqL}, ₹ Cr`,
+      body: `<div class="rx-pb"><div class="rx-walk" data-rx="walk"></div><div style="margin-top:10px">${rxLegend([{ label: 'Subtotal', color: RX.ink }, { label: 'Adds', color: RX.add }, { label: 'Deducts', color: RX.deduct }])}</div></div>` })
+    : rxPanel({ cls: 'rx-col-narrow', title: 'Segment mix', meta: `${cqL} scenario`, body: '<div class="rx-pb" data-rx="mix"></div>' });
+
+  const histTitle = ex === 'nse' && model ? 'PAT by quarter' : 'Transaction revenue by quarter';
+  const histMeta = ex === 'nse' && model ? '₹ Cr · reported, manual nse_pnl forecasts, and the forecast' : '₹ Cr · trading data';
+  const histLegend = ex === 'nse' && model
+    ? rxLegend([{ label: 'Reported', color: RX.ink }, { label: 'Manual forecast, quarter ended', kind: 'hatch', style: 'background:repeating-linear-gradient(135deg,#fff 0 3px,#8A8D94 3px 4.5px);box-shadow:inset 0 0 0 1px #8A8D94' }, { label: `${cqL} scenario`, color: RX.model }, { label: `${nextL} default`, color: '#9DB4E8' }])
+    : rxLegend([{ label: 'Actual', color: RX.ink }, { label: 'Banked this quarter', color: RX.ink2 }, { label: 'Projected', color: RX.model }].concat(ex === 'mcx' ? [{ label: 'Modelled history', color: RX.light }] : []));
+
+  el.innerHTML = `<div class="rx">
+    <section class="rx-kpis" aria-label="${cqL} scenario" data-rx="kpis"></section>
+    ${staleHTML}
+    <div class="rx-row">
+      ${rxPanel({ cls: 'rx-col-wide', title: 'Quarter progress', meta: `Daily transaction revenue, ₹ Cr · ${cqL} to ${fmtTradeDate(lastDate)}${flagTags(cqFlags)}`,
+        right: rxLegend([{ label: 'Session', color: RX.ink }, { label: 'QTD avg', color: RX.model, kind: 'line' }].concat(ctx.prev && !prevModelled ? [{ label: `${prevL} avg`, color: RX.grey, kind: 'dash' }] : [])),
+        body: `<div class="rx-pb" style="padding-bottom:6px">${rxCanvas(`rxPredDaily-${ex}`)}<div data-rx="bullet" style="margin-top:14px"></div></div>
+          <div class="rx-scroll"><table class="rx-table" data-rx="segTable"></table></div>` })}
+      <section class="rx-panel rx-col-narrow" aria-label="Assumptions">
+        <div class="rx-ph"><h2>Assumptions</h2><span class="rx-meta" data-rx="scenLabel"></span><div class="rx-ph-right"><button type="button" class="rx-link" data-rx="resetAll">Reset all</button></div></div>
+        <div class="rx-pb" style="padding-top:10px">
+          ${rxSeg('preset', [['bear', `Bear −${PREDICTOR_PRESET_PCT} %`], ['base', 'Base'], ['bull', `Bull +${PREDICTOR_PRESET_PCT} %`]], 'base', 'Scenario preset')}
+          <p class="rx-foot" style="margin-top:8px">Presets scale the daily revenue for the sessions left. Editing any input makes this a custom scenario; ${ex === 'nse' ? 'the “Default” columns stay as the pipeline published them.' : 'nothing is saved.'}</p>
+          ${fieldsHTML}
+        </div>
+      </section>
+    </div>
+    <div class="rx-row">${pnlPanel}${bridgePanel}</div>
+    ${rxPanel({ title: histTitle, meta: histMeta, right: histLegend, body: `<div class="rx-pb" style="padding-bottom:10px">${rxCanvas(`rxPredHist-${ex}`)}</div>` })}
+  </div>`;
+
+  const q = k => el.querySelector(`[data-rx="${k}"]`);
+  const prevAdr = ctx.prev && ctx.prev.days ? ctx.prev.total_rev / ctx.prev.days : null;
+  const lyAdr = ctx.ly && ctx.ly.days ? ctx.ly.total_rev / ctx.ly.days : null;
+  const actualLY = ex === 'nse' ? nseActualPnl(lyL) : null;
+  const defCur = ex === 'nse' ? nseDefaultPnl(cqL) : null;
+  const defNext = ex === 'nse' ? nseDefaultPnl(nextL) : null;
+
+  function scenarioName() {
+    const keys = Object.keys(defaults);
+    const same = (o) => keys.every(k => Math.abs(Number(v[k]) - Number(o[k])) < PREDICTOR_TOLERANCE);
+    for (const [name, f] of Object.entries(presets)) {
+      const o = { ...defaults };
+      ctx.segs.forEach(k => { o[k] = defaults[k] * f; });
+      if (same(o)) return name;
+    }
+    return 'custom';
+  }
+
+  function renderKpis(s) {
+    const qoq = ctx.prev && !prevModelled ? s.txn / ctx.prev.total_rev - 1 : null;
+    const yoy = ctx.ly && !lyModelled ? s.txn / ctx.ly.total_rev - 1 : null;
+    const hist = ctx.quarters.filter(r => quarterSortKey(r.quarter) < quarterSortKey(cqL) && !periodFlags(r, 'total').modelled).slice(-8);
+    const vals = hist.map(r => r.total_rev).concat([s.txn]);
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    const pt = (val, i) => `${(i / Math.max(vals.length - 1, 1) * 100).toFixed(1)},${(25 - (val - lo) / ((hi - lo) || 1) * 23).toFixed(1)}`;
+    const spark = vals.length > 2 ? `<svg class="rx-spark" viewBox="0 0 100 26" preserveAspectRatio="none" role="img" aria-label="Transaction revenue, last ${hist.length} quarters and this quarter's scenario">
+        <polyline points="${hist.map((r, i) => pt(r.total_rev, i)).join(' ')}" fill="none" stroke="${RX.ink}" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
+        <polyline points="${pt(vals[vals.length - 2], vals.length - 2)} ${pt(s.txn, vals.length - 1)}" fill="none" stroke="${RX.model}" stroke-width="1.5" stroke-dasharray="3 2" vector-effect="non-scaling-stroke"/></svg>` : '';
+    const chg = (c, label) => c == null ? '' : `${rxChangeHTML(c)} ${label}`;
+    const items = [
+      rxKpi(`Txn revenue · ${cqL}`, rxCr(s.txn), [chg(qoq, 'QoQ'), chg(yoy, 'YoY')].filter(Boolean).join(' · ') || 'no comparable quarter', { accent: true, extra: spark }),
+      rxKpi('Avg daily txn revenue', rxCr(s.adr, 2), `QTD ${rxCr(ctx.bankedTotal / ctx.n, 2)} over ${ctx.n} sessions${prevAdr && !prevModelled ? ` · ${prevL} ${rxCr(prevAdr, 1)}` : ''}`),
+    ];
+    if (ex === 'nse' && s.pat != null) {
+      const patYoY = actualLY ? s.pat / actualLY.pat - 1 : null;
+      items.push(
+        rxKpi('Total income', rxCr(s.total), `Other income ${rxCr(s.oi)}`),
+        rxKpi('Operating EBITDA', rxCr(s.ebitda), `${fmtPct(s.ebitda / s.op)} of operating revenue`),
+        rxKpi('PAT', rxCr(s.pat), `${patYoY != null ? chg(patYoY, 'YoY') + ' · ' : ''}${fmtPct(s.pat / s.total)} margin`),
+        rxKpi('EPS · quarter', rxRupee(s.eps, 2), `Annualised ${rxRupee(s.eps * 4, 2)} · <button type="button" class="rx-link" data-rx-goto="valuation">value it →</button>`),
+      );
+    } else if (ex === 'bse') {
+      items.push(
+        rxKpi('Total income', rxCr(s.total), `Other income ${rxCr(s.oi)} (Excel model)`),
+        rxKpi('PAT', rxCr(s.pat), `${fmtNum(v.margin, 1)} % margin on total income`),
+        rxKpi('EPS · quarter', rxRupee(s.eps, 2), `Annualised ${rxRupee(s.eps * 4, 2)} · <button type="button" class="rx-link" data-rx-goto="valuation">value it →</button>`),
+      );
+    } else {
+      ctx.segs.forEach(k => items.push(rxKpi(`${PREDICTOR_SEG_LABEL[k]} · quarter`, rxCr(s.seg[k]), `${s.txn ? fmtPct(s.seg[k] / s.txn) : '—'} of transaction revenue`)));
+    }
+    q('kpis').innerHTML = items.join('');
+  }
+
+  function renderBullet(s) {
+    const refs = [s.txn, ctx.prev && !prevModelled ? ctx.prev.total_rev : 0, ctx.ly && !lyModelled ? ctx.ly.total_rev : 0];
+    const max = Math.max(...refs) * 1.06 || 1;
+    const pct = x => (Math.max(0, x) / max * 100).toFixed(2);
+    const bank = Math.min(ctx.bankedTotal, s.txn);
+    const marks = [];
+    if (ctx.prev && !prevModelled) marks.push(`<div class="rx-mark" style="left:${pct(ctx.prev.total_rev)}%;border-color:${RX.rev}" title="${prevL}: ${rxCr(ctx.prev.total_rev, 0)}"></div>`);
+    if (ctx.ly && !lyModelled) marks.push(`<div class="rx-mark" style="left:${pct(ctx.ly.total_rev)}%;border-left-style:dotted;border-color:${RX.ink2}" title="${lyL}: ${rxCr(ctx.ly.total_rev, 0)}"></div>`);
+    q('bullet').innerHTML = `
+      <div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px;margin-bottom:6px">
+        <span class="rx-lbl">Quarter transaction revenue, ₹ Cr</span>
+        <span style="font-size:12px;color:var(--rx-ink-2)">Banked <strong>${fmtNum(ctx.bankedTotal, 1)}</strong> + projected <strong>${fmtNum(s.txn - ctx.bankedTotal, 1)}</strong> = <strong>${fmtNum(s.txn, 1)}</strong></span>
+      </div>
+      <div class="rx-bullet" role="img" aria-label="Banked ${fmtNum(ctx.bankedTotal, 0)} crore plus projected ${fmtNum(s.txn - ctx.bankedTotal, 0)} crore">
+        <div style="left:0;width:${pct(bank)}%;background:${RX.ink}" title="Banked: ${ctx.n} sessions, ${rxCr(ctx.bankedTotal)}"></div>
+        <div class="rx-hatch" style="left:${pct(bank)}%;width:${(pct(s.txn) - pct(bank)).toFixed(2)}%" title="Projected: ${s.rest} sessions, ${rxCr(s.txn - ctx.bankedTotal)}"></div>
+        ${marks.join('')}
+      </div>
+      <div style="margin-top:8px">${rxLegend([{ label: `Banked (${ctx.n} sessions)`, color: RX.ink }, { label: `Projected (${s.rest} sessions)`, kind: 'hatch' }]
+        .concat(ctx.prev && !prevModelled ? [{ label: `${prevL} ${fmtNum(ctx.prev.total_rev, 0)}`, color: RX.rev, kind: 'tick' }] : [])
+        .concat(ctx.ly && !lyModelled ? [{ label: `${lyL} ${fmtNum(ctx.ly.total_rev, 0)}`, color: RX.ink2, kind: 'tick' }] : []))}</div>`;
+  }
+
+  function renderSegTable(s) {
+    const rows = ctx.segs.map(k => {
+      const f = periodFlags(ctx.cq, k === 'opt' ? 'options' : k === 'fut' ? 'futures' : 'cash');
+      return `<tr><td>${PREDICTOR_SEG_LABEL[k]}${flagTags(f)}</td><td>${fmtNum(ctx.banked[k], 1)}</td><td>${fmtNum(ctx.adr[k], 2)}</td><td class="rx-hl">${fmtNum(v[k], 2)}</td><td class="rx-hl">${fmtNum(s.seg[k], 1)}</td><td>${s.txn ? fmtPct(s.seg[k] / s.txn) : '—'}</td></tr>`;
+    }).join('');
+    q('segTable').innerHTML = `<thead><tr><th scope="col">Segment</th><th scope="col">Banked</th><th scope="col">QTD / session</th><th scope="col" class="rx-hl">Rest / session</th><th scope="col" class="rx-hl">Quarter</th><th scope="col">Mix</th></tr></thead>
+      <tbody>${rows}</tbody><tfoot><tr><td>Total${flagTags(cqFlags)}</td><td>${fmtNum(ctx.bankedTotal, 1)}</td><td>${fmtNum(ctx.bankedTotal / ctx.n, 2)}</td><td class="rx-hl">${fmtNum(s.adrRest, 2)}</td><td class="rx-hl">${fmtNum(s.txn, 1)}</td><td>100 %</td></tr></tfoot>`;
+  }
+
+  function renderPnl(s) {
+    if (ex === 'nse' && model) {
+      const num = (o, key, base) => {
+        if (!o || o[key] == null) return '—';
+        if (base) return o[base] ? fmtPct(o[key] / o[base]) : '—';
+        return key === 'eps' ? fmtNum(o[key], 2) : fmtNum(o[key], 1);
+      };
+      const body = NSE_PNL_ROWS.map(([label, key, cls, base]) => {
+        let yoy = '';
+        if (!base && actualLY && actualLY[key]) {
+          const c = s[key] / actualLY[key] - 1;
+          yoy = `<span class="${c >= 0 ? 'rx-up' : 'rx-dn'}">${rxSignedPct(c)}</span>`;
+        }
+        return `<tr class="${cls || ''}"><td>${label}</td><td>${num(actualLY, key, base)}</td><td>${num(defCur, key, base)}</td><td class="rx-hl">${num(s, key, base)}</td><td>${yoy || (base ? '' : '—')}</td><td>${num(defNext, key, base)}</td></tr>`;
+      }).join('');
+      const scenHead = scenarioName() === 'base' ? 'Scenario<br>= default' : 'Scenario';
+      q('pnl').innerHTML = `<thead><tr><th scope="col">Line item</th><th scope="col">${shortQuarterRange([lyL])}<br>Actual</th><th scope="col">${shortQuarterRange([cqL])}<br>Default</th><th scope="col" class="rx-hl">${shortQuarterRange([cqL])}<br>${scenHead}</th><th scope="col">Scenario<br>YoY</th><th scope="col">${shortQuarterRange([nextL])}<br>Default</th></tr></thead><tbody>${body}</tbody>`;
+      const oneOff = actualLY && Object.keys(actualLY.oneOffs).length ? `${lyL} actual includes ${nseOneOffText(actualLY.oneOffs)}. ` : '';
+      q('pnlFoot').textContent = actualLY ? `${oneOff}Actual operating lines are ex-one-offs where the pipeline separates them.` : `${lyL} has no reported actuals in nse_pnl yet.`;
+    } else if (ex === 'bse') {
+      const per = x => s.txn ? fmtPct(x / s.total) : '—';
+      q('pnl').innerHTML = `<thead><tr><th scope="col">Line item</th><th scope="col" class="rx-hl">${shortQuarterRange([cqL])} scenario</th><th scope="col">% of total income</th><th scope="col" class="rx-l">Source</th></tr></thead><tbody>
+        <tr><td>Transaction revenue${flagTags(cqFlags)}</td><td class="rx-hl">${fmtNum(s.txn, 1)}</td><td>${per(s.txn)}</td><td class="rx-src">Trading data + daily inputs</td></tr>
+        <tr><td>Other income</td><td class="rx-hl">${fmtNum(s.oi, 1)}</td><td>${per(s.oi)}</td><td class="rx-src">Excel model</td></tr>
+        <tr class="rx-sub"><td>Total income</td><td class="rx-hl">${fmtNum(s.total, 1)}</td><td>100 %</td><td class="rx-src"></td></tr>
+        <tr><td>Costs and tax (implied)</td><td class="rx-hl">${fmtNum(s.costs, 1)}</td><td>${per(s.costs)}</td><td class="rx-src">1 − PAT margin</td></tr>
+        <tr class="rx-sub"><td>PAT</td><td class="rx-hl">${fmtNum(s.pat, 1)}</td><td>${per(s.pat)}</td><td class="rx-src">PAT margin ${fmtNum(v.margin, 1)} %</td></tr>
+        <tr class="rx-sub"><td>EPS, ₹</td><td class="rx-hl">${fmtNum(s.eps, 2)}</td><td></td><td class="rx-src">${fmtNum(v.shares, 2)} Cr shares</td></tr>
+      </tbody>`;
+    } else {
+      const rows = ctx.segs.map(k => {
+        const lyv = ctx.ly && !lyModelled ? ctx.ly[k + '_rev'] : null;
+        const pv = ctx.prev && !prevModelled ? ctx.prev[k + '_rev'] : null;
+        return `<tr><td>${PREDICTOR_SEG_LABEL[k]}</td><td>${pv == null ? '—' : fmtNum(pv, 1)}</td><td>${lyv == null ? '—' : fmtNum(lyv, 1)}</td><td class="rx-hl">${fmtNum(s.seg[k], 1)}</td><td>${pv ? rxChangeHTML(s.seg[k] / pv - 1) : '—'}</td><td>${lyv ? rxChangeHTML(s.seg[k] / lyv - 1) : '—'}</td></tr>`;
+      }).join('');
+      const tp = ctx.prev && !prevModelled ? ctx.prev.total_rev : null, tl = ctx.ly && !lyModelled ? ctx.ly.total_rev : null;
+      q('segs').innerHTML = `<thead><tr><th scope="col">Segment</th><th scope="col">${shortQuarterRange([prevL])}</th><th scope="col">${shortQuarterRange([lyL])}</th><th scope="col" class="rx-hl">${shortQuarterRange([cqL])} scenario</th><th scope="col">QoQ</th><th scope="col">YoY</th></tr></thead>
+        <tbody>${rows}</tbody><tfoot><tr><td>Total</td><td>${tp == null ? '—' : fmtNum(tp, 1)}</td><td>${tl == null ? '—' : fmtNum(tl, 1)}</td><td class="rx-hl">${fmtNum(s.txn, 1)}</td><td>${tp ? rxChangeHTML(s.txn / tp - 1) : '—'}</td><td>${tl ? rxChangeHTML(s.txn / tl - 1) : '—'}</td></tr></tfoot>`;
+    }
+  }
+
+  function renderWalk(s) {
+    if (!hasPnl) {
+      q('mix').innerHTML = `<div style="display:flex;height:12px;gap:2px;margin:4px 0 10px">${ctx.segs.map((k, i) => `<div style="flex:${Math.max(s.seg[k], 0)} 1 0;background:${[RX.model, RX.rev, RX.ink2][i]}" title="${PREDICTOR_SEG_LABEL[k]} ${rxCr(s.seg[k])}"></div>`).join('')}</div>
+        ${rxLegend(ctx.segs.map((k, i) => ({ label: `${PREDICTOR_SEG_LABEL[k]} ${s.txn ? fmtPct(s.seg[k] / s.txn) : '—'}`, color: [RX.model, RX.rev, RX.ink2][i] })))}
+        <p class="rx-foot" style="margin-top:10px">${ctx.ly && !lyModelled ? `${lyL}: options ${fmtPct(ctx.ly.opt_rev / ctx.ly.total_rev)} of revenue.` : ''}</p>`;
+      return;
+    }
+    const steps = ex === 'nse'
+      ? [['Transaction rev', s.txn, 'tot'], ['Other op. revenue', s.oorV, 'add'], ['Operating rev', s.op, 'tot'], ['Op. expenses', -s.opx, 'sub'],
+         ['Op. EBITDA', s.ebitda, 'tot'], ['Depreciation', -s.dep, 'sub'], ['Other income', s.oi, 'add'], ['Associates', s.assoc, 'add'],
+         ['PBT', s.pbt, 'tot'], ['Tax', -s.tax, 'sub'], ['PAT', s.pat, 'tot']]
+      : [['Transaction rev', s.txn, 'tot'], ['Other income', s.oi, 'add'], ['Total income', s.total, 'tot'], ['Costs and tax', -s.costs, 'sub'], ['PAT', s.pat, 'tot']];
+    let run = 0, max = 0;
+    const bars = steps.map(([label, val, kind]) => {
+      let l, w;
+      if (kind === 'tot') { l = 0; w = val; run = val; } else if (val >= 0) { l = run; w = val; run += val; } else { run += val; l = run; w = -val; }
+      max = Math.max(max, l + w);
+      return { label, val, kind, l, w };
+    });
+    max = max * 1.02 || 1;
+    q('walk').innerHTML = bars.map(b => {
+      const color = b.kind === 'tot' ? RX.ink : b.val >= 0 ? RX.add : RX.deduct;
+      const txt = b.kind === 'tot' ? fmtNum(b.val, 0) : `${b.val >= 0 ? '+' : '−'}${fmtNum(Math.abs(b.val), 0)}`;
+      return `<div class="rx-walk-row${b.kind === 'tot' ? ' is-total' : ''}"><span>${b.label}</span>
+        <div class="rx-walk-trk"><div style="left:${(b.l / max * 100).toFixed(2)}%;width:${Math.max(b.w / max * 100, 0.4).toFixed(2)}%;background:${color}" title="${b.label}: ${rxCr(Math.abs(b.val))}"></div></div>
+        <span class="${b.kind === 'tot' ? '' : b.val >= 0 ? 'rx-up' : 'rx-dn'}">${txt}</span></div>`;
+    }).join('');
+  }
+
+  let lastScenario = null;
+  function renderDaily() {
+    const rows = ctx.daily;
+    const qtdAvg = ctx.bankedTotal / ctx.n;
+    const ds = [
+      { type: 'bar', label: 'Session', data: rows.map(r => r.total_rev), backgroundColor: RX.ink, borderRadius: { topLeft: 2, topRight: 2 }, maxBarThickness: 34, order: 2 },
+      { type: 'line', label: 'QTD avg', data: rows.map(() => qtdAvg), borderColor: RX.model, borderWidth: 2, pointRadius: 0, order: 1 },
+    ];
+    if (prevAdr && !prevModelled) ds.push({ type: 'line', label: `${prevL} avg`, data: rows.map(() => prevAdr), borderColor: RX.grey, borderWidth: 1.5, borderDash: [5, 3], pointRadius: 0, order: 1 });
+    rxChart('predDaily', `rxPredDaily-${ex}`, 200, {
+      type: 'bar',
+      data: { labels: rows.map(r => fmtTradeDate(r.date)), datasets: ds },
+      options: {
+        interaction: { mode: 'index', intersect: false },
+        plugins: { tooltip: { callbacks: {
+          title: items => fmtTradeDate(rows[items[0].dataIndex].date, true),
+          label: ctx2 => ` ${ctx2.dataset.label}: ${rxCr(ctx2.raw, 2)}`,
+        } } },
+        scales: {
+          x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 16 } },
+          y: { beginAtZero: true, ticks: { callback: val => fmtNum(val, 0) } },
+        },
+      },
+    });
+    rxFixHeight(charts.predDaily);
+  }
+
+  function renderHist(s) {
+    const canvasId = `rxPredHist-${ex}`;
+    if (ex === 'nse' && model) {
+      const preds = ENRICHED_DATA.pnl_predicted_quarters || {};
+      const rows = (DATA.pnl || []).filter(r => !preds[r.quarter] && quarterSortKey(r.quarter) < quarterSortKey(cqL));
+      const pts = rows.map(r => ({ q: r.quarter, v: r.pat, kind: r.is_predicted ? 'manual' : 'actual' }))
+        .concat(Object.keys(preds).sort((a, b) => quarterSortKey(a) - quarterSortKey(b)).map(qL => ({ q: qL, v: qL === cqL ? s.pat : preds[qL].pat, kind: qL === cqL ? 'scenario' : 'default', def: preds[qL].pat })));
+      const hatch = rxHatchPattern();
+      const colors = pts.map(p => p.kind === 'actual' ? RX.ink : p.kind === 'manual' ? hatch : p.kind === 'scenario' ? RX.model : '#9DB4E8');
+      const cfg = {
+        type: 'bar',
+        data: { labels: pts.map(p => shortQuarterRange([p.q])), datasets: [{ label: 'PAT', data: pts.map(p => p.v), backgroundColor: colors,
+          borderColor: pts.map(p => p.kind === 'manual' ? '#8A8D94' : 'transparent'), borderWidth: pts.map(p => p.kind === 'manual' ? 1 : 0), borderRadius: { topLeft: 2, topRight: 2 }, maxBarThickness: 44 }] },
+        options: {
+          plugins: { tooltip: { callbacks: {
+            title: items => pts[items[0].dataIndex].q,
+            label: c => {
+              const p = pts[c.dataIndex];
+              const kind = { actual: 'reported', manual: 'manual forecast; quarter ended without an actual', scenario: 'your scenario', default: 'default forecast' }[p.kind];
+              return ` PAT ${rxCr(p.v, 0)} · ${kind}`;
+            },
+            footer: items => { const p = pts[items[0].dataIndex]; return p.kind === 'scenario' && Math.abs(p.v - p.def) > 0.5 ? `Default forecast ${rxCr(p.def, 0)}` : ''; },
+          } } },
+          scales: { x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true } }, y: { beginAtZero: true, ticks: { callback: val => fmtNum(val, 0) } } },
+        },
+      };
+      if (charts.predHist && lastScenario === 'nse') { charts.predHist.data.datasets[0].data = pts.map(p => p.v); charts.predHist.update('none'); return; }
+      rxChart('predHist', canvasId, 240, cfg);
+      rxFixHeight(charts.predHist);
+      lastScenario = 'nse';
+      return;
+    }
+    const hist = ctx.quarters.filter(r => quarterSortKey(r.quarter) < quarterSortKey(cqL)).slice(-11);
+    const labels = hist.map(r => r.quarter).concat([cqL]).map(l => shortQuarterRange([l]));
+    const actual = hist.map(r => r.total_rev).concat([ctx.bankedTotal]);
+    const proj = hist.map(() => null).concat([s.txn - ctx.bankedTotal]);
+    const actualColors = hist.map(r => periodFlags(r, 'total').modelled ? RX.light : RX.ink).concat([RX.ink2]);
+    if (charts.predHist && lastScenario === ex) { charts.predHist.data.datasets[1].data = proj; charts.predHist.update('none'); return; }
+    rxChart('predHist', canvasId, 240, {
+      type: 'bar',
+      data: { labels, datasets: [
+        { label: 'Actual', data: actual, backgroundColor: actualColors, stack: 'q', maxBarThickness: 44 },
+        { label: 'Projected', data: proj, backgroundColor: RX.model, stack: 'q', borderRadius: { topLeft: 2, topRight: 2 }, maxBarThickness: 44 },
+      ] },
+      options: {
+        interaction: { mode: 'index', intersect: false },
+        plugins: { tooltip: { callbacks: {
+          title: items => (hist[items[0].dataIndex] || ctx.cq).quarter,
+          label: c => {
+            if (c.raw == null) return null;
+            const isCur = c.dataIndex === hist.length;
+            const r = hist[c.dataIndex];
+            if (!isCur) return ` ${rxCr(c.raw, 0)}${r && periodFlags(r, 'total').modelled ? ' · modelled' : ''}`;
+            return c.datasetIndex === 0 ? ` Banked ${rxCr(c.raw, 0)} (${ctx.n} sessions)` : ` Projected ${rxCr(c.raw, 0)}`;
+          },
+        } } },
+        scales: { x: { stacked: true, grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true } }, y: { stacked: true, beginAtZero: true, ticks: { callback: val => fmtNum(val, 0) } } },
+      },
+    });
+    rxFixHeight(charts.predHist);
+    lastScenario = ex;
+  }
+
+  // The Base scenario shows NSE's published default forecast as is (the JS
+  // recomputation agrees to within rounding of the pipeline's stored ratios).
+  function scenarioNow(name) {
+    const s = predictorScenario(ex, ctx, v);
+    return name === 'base' && defCur ? { ...s, ...defCur } : s;
+  }
+
+  function update() {
+    const name = scenarioName();
+    const s = scenarioNow(name);
+    el.querySelectorAll('[data-rx-seg="preset"] button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.value === name)));
+    q('scenLabel').textContent = name === 'base' ? 'Base = quarter-to-date pace' : name === 'custom' ? 'Custom scenario' : `${name === 'bear' ? 'Bear' : 'Bull'}: rest-of-quarter revenue ${name === 'bear' ? '−' : '+'}${PREDICTOR_PRESET_PCT} %`;
+    groups.forEach(g => g.fields.forEach(f => {
+      const edited = Math.abs(Number(v[f.key]) - Number(defaults[f.key])) >= PREDICTOR_TOLERANCE;
+      const input = el.querySelector(`#rxPred-${ex}-${f.key}`);
+      input.classList.toggle('is-edited', edited);
+      el.querySelector(`[data-tags="${f.key}"]`).innerHTML = f.tag + (edited ? ` ${rxChip('Edited', 'edit')} <button type="button" class="rx-link" data-reset="${f.key}">reset to ${predictorShown(defaults[f.key])}</button>` : '');
+    }));
+    renderKpis(s);
+    renderBullet(s);
+    renderSegTable(s);
+    renderPnl(s);
+    renderWalk(s);
+    renderHist(s);
+  }
+
+  el.addEventListener('input', e => {
+    const key = e.target.dataset && e.target.dataset.key;
+    if (!key) return;
+    const num = parseFloat(e.target.value);
+    if (!isFinite(num) || num < 0) return;
+    v[key] = key === 'days' ? Math.max(Math.round(num), ctx.n) : num;
+    update();
+  });
+  el.addEventListener('change', e => {
+    const key = e.target.dataset && e.target.dataset.key;
+    if (key) e.target.value = predictorShown(v[key]);
+  });
+  el.addEventListener('click', e => {
+    const r = e.target.closest('[data-reset]');
+    if (r) { const k = r.dataset.reset; v[k] = defaults[k]; el.querySelector(`#rxPred-${ex}-${k}`).value = predictorShown(defaults[k]); update(); return; }
+    if (e.target.closest('[data-rx="resetAll"]')) {
+      Object.assign(v, defaults);
+      Object.keys(defaults).forEach(k => { const i = el.querySelector(`#rxPred-${ex}-${k}`); if (i) i.value = predictorShown(defaults[k]); });
+      update();
+    }
+  });
+  rxOnSeg(el, 'preset', name => {
+    const f = presets[name];
+    ctx.segs.forEach(k => { v[k] = defaults[k] * f; el.querySelector(`#rxPred-${ex}-${k}`).value = predictorShown(v[k]); });
+    update();
+  });
+
+  update();
+  renderDaily();
+  RX_TAB_REFRESH.prediction = () => { renderDaily(); charts.predHist && charts.predHist.destroy(); delete charts.predHist; lastScenario = null; renderHist(scenarioNow(scenarioName())); };
+}
+
+// Diagonal hatch fill for Chart.js bars (manual forecasts)
+function rxHatchPattern() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 6;
+  const g = c.getContext('2d');
+  g.fillStyle = '#FFFFFF';
+  g.fillRect(0, 0, 6, 6);
+  g.strokeStyle = '#8A8D94';
+  g.lineWidth = 1.2;
+  g.beginPath(); g.moveTo(-1, 7); g.lineTo(7, -1); g.stroke();
+  return g.createPattern(c, 'repeat');
+}
+
+// Buttons that jump to another tab (e.g. "value it →" on the predictor)
+document.addEventListener('click', e => {
+  const go = e.target.closest('[data-rx-goto]');
+  if (!go) return;
+  const nav = document.querySelector(`.nav-item[data-tab="${go.dataset.rxGoto}"]`);
+  if (nav) nav.click();
+});
 
 // ========================
 // BSE: QUARTERLY ANALYSIS
@@ -5195,8 +5272,11 @@ function computeShareModel(shareData, dmaWindow, extraLag = 0) {
   const supported = reasons.length === 0;
   const series = rows.map(({ _fit, ...r }) => ({
     ...r,
+    in_fit: _fit,
     price_pred: supported ? Math.round((st.slope * r.rev_ma + st.intercept) * 100) / 100 : null,
   }));
+  const maMin = Math.min(...X), maMax = Math.max(...X);
+  const maMean = X.reduce((a, b) => a + b, 0) / X.length;
   return {
     series,
     n: st.n,
@@ -5209,57 +5289,9 @@ function computeShareModel(shareData, dmaWindow, extraLag = 0) {
       revenue_lag_days: 1 + extraLag,
       t_stat_newey_west: st.tNw, newey_west_lags: st.nwLags, durbin_watson: st.dw,
       holdout: shareHoldout(X, Y), fair_value_supported: supported, gate_reasons: reasons,
+      ma_min: maMin, ma_max: maMax, ma_spread: maMean ? (maMax - maMin) / maMean : 0,
     },
   };
-}
-
-// Methodology line under the regression equation (null on pre-Phase-5 files).
-function shareMethodologyHTML(meth) {
-  if (!meth) return '';
-  const h = meth.holdout;
-  const t = meth.t_stat_newey_west;
-  const lagDays = meth.revenue_lag_days || 1;
-  const oos = h
-    ? `Out-of-sample (last ${h.n_test} days, fitted on the ${h.n_train} before): model error ${h.mape_pct.toFixed(1)}% vs ${h.naive_mape_pct.toFixed(1)}% for “price unchanged” — ${h.beats_naive ? 'beats' : '<strong>does not beat</strong>'} the naive forecast`
-    : 'Out-of-sample: too few days for a holdout test';
-  const gate = meth.fair_value_supported ? '' : `
-      <div class="share-gate-note">Fair value withheld: ${meth.gate_reasons.join('; ')}.</div>`;
-  return `
-      <span>Newey-West t = ${t == null ? '—' : t.toFixed(2)} (${meth.newey_west_lags} lags) &nbsp;|&nbsp; Durbin-Watson = ${meth.durbin_watson == null ? '—' : meth.durbin_watson.toFixed(2)} &nbsp;|&nbsp; Revenue lagged ${lagDays === 1 ? 'one session' : lagDays + ' sessions'}; R² is in-sample fit</span>
-      <span>${oos}</span>${gate}`;
-}
-
-// KPI grid + regression-equation panel for the BSE/MCX share-price regression
-// sections — factored out so switching the DMA window (10/20/45) can refresh
-// R², Pearson r, the equation, and the predicted price together, instead of
-// only the charts while these stayed pinned to the initial window's values.
-function shareRegressionInfoHTML(reg, predPrice, actualPrice, isLive, asOfDate, activeDma, regStart, nDays, ticker, activeLag, meth = null) {
-  const r2pct   = Math.round(reg.r_squared * 100);
-  const hasPred = predPrice != null;
-  const errDiff = hasPred ? predPrice - actualPrice : null;
-  const errPct  = hasPred && actualPrice ? (errDiff / actualPrice * 100) : null;
-  const lagPart = activeLag ? ` &nbsp;|&nbsp; Lag: ${activeLag} days (revenue leads)` : '';
-
-  const kpiHTML = `
-  <div class="share-kpi-grid">
-    ${kpi('Model R²',        r2pct + '%',              reg.fit + ' fit' + (meth ? ' (in-sample)' : ''), r2pct > 60 ? 'positive' : r2pct > 30 ? 'neutral' : 'negative')}
-    ${kpi('Pearson r',       reg.pearson_r.toFixed(2), 'revenue ↔ price',   '')}
-    ${kpi('Predicted Price', hasPred ? '₹' + fmtNum(predPrice, 0) : '—', hasPred ? 'model estimate' : 'withheld: not supported', hasPred ? '' : 'negative')}
-    ${kpi(isLive ? 'Actual Price 🟢 Live' : 'Actual Price', '₹' + fmtNum(actualPrice, 0), hasPred ? (errDiff >= 0 ? '+' : '') + fmtNum(errDiff, 0) + ' vs model' : 'no model price', hasPred ? (errDiff >= 0 ? 'positive' : 'negative') : '')}
-  </div>`;
-
-  const eqHTML = `
-  <div class="chart-panel" style="margin-bottom:var(--space-4);padding:20px 24px">
-    <div class="chart-title">Regression Equation</div>
-    <div class="regression-eq">${reg.equation}</div>
-    <div style="font-size:12px;color:var(--color-text-muted);display:flex;gap:24px;flex-wrap:wrap">
-      <span>R² = ${reg.r_squared.toFixed(3)} &nbsp;|&nbsp; r = ${reg.pearson_r.toFixed(3)} &nbsp;|&nbsp; n = ${nDays} trading days</span>
-      <span>MA window: ${activeDma} days${lagPart} &nbsp;|&nbsp; Regression from: ${regStart} &nbsp;|&nbsp; Ticker: ${ticker}</span>
-      <span>Prediction error: ${errPct == null ? '—' : errPct.toFixed(2) + ' %'} &nbsp;|&nbsp; As of: ${asOfDate}</span>${shareMethodologyHTML(meth)}
-    </div>
-  </div>`;
-
-  return kpiHTML + eqHTML;
 }
 
 // Latest row of a DMA-window series — falls back to the last entry if the
@@ -5278,323 +5310,454 @@ function filterShareSeries(ser, range, regStart) {
     case '6m':      d.setMonth(d.getMonth() - 6);      cutoff = d.toISOString().slice(0, 10); break;
     case '1y':      d.setFullYear(d.getFullYear() - 1); cutoff = d.toISOString().slice(0, 10); break;
     case '2y':      d.setFullYear(d.getFullYear() - 2); cutoff = d.toISOString().slice(0, 10); break;
-    case 'nov2024':
+    case 'fit':
     default:        cutoff = regStart;
   }
   return ser.filter(r => r.date >= cutoff);
 }
 
-function buildBSECharts(viewSer, reg, maWin) {
-  ['bseSharePrice', 'bseRevMaVsPrice', 'bseRatioSD', 'bseShareScatter'].forEach(k => {
-    if (charts[k]) { charts[k].destroy(); charts[k] = null; }
-  });
-  if (!viewSer.length) return;
+// ========================
+// REGRESSION TAB — share price vs the revenue moving average, one builder
+// for NSE, BSE and MCX. The answer (price vs fair value, and the price ÷ MA
+// ratio vs its history) comes first, then the significance checks, then the
+// charts for the window / lag / range picked in the sticky bar.
+// ========================
 
-  const labels  = viewSer.map(r => fmtChartDate(r.date));
-  const actuals = viewSer.map(r => r.price);
-  const preds   = viewSer.map(r => r.price_pred);
-  const revMA   = viewSer.map(r => r.rev_ma);
-  const revRaw  = viewSer.map(r => r.revenue_cr);
+const SHARE_EXCHANGE_NAMES = { nse: 'NSE', bse: 'BSE', mcx: 'MCX' };
+const SHARE_MA_WINDOWS = [10, 20, 45];
+const SHARE_LAGS = [0, 45, 60, 90];
 
-  // ── Chart 1: Price actual vs predicted ──
-  setCanvasHeight('chartBseSharePrice', 280);
-  charts.bseSharePrice = new Chart(document.getElementById('chartBseSharePrice'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        { label: 'Actual Price',    data: actuals, borderColor: CHART_COLORS[0], backgroundColor: 'transparent', borderWidth: 2,   pointRadius: 0, tension: 0.2 },
-        { label: 'Model Prediction', data: preds,  borderColor: CHART_COLORS[2], backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 0, tension: 0.2, borderDash: [5, 3] },
-      ]
-    },
-    options: {
-      interaction: { mode: 'index', intersect: false },
-      plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 0) } } },
-      scales: {
-        x: { ticks: { maxTicksLimit: 8, font: { size: CHART_FONT.tick } } },
-        y: { ticks: { callback: v => '₹' + fmtNum(v, 0) } }
-      }
-    }
-  });
-
-  // ── Chart 2: Dual-axis — Rev MA vs Share Price ──
-  setCanvasHeight('chartBseRevMaVsPrice', 300);
-  charts.bseRevMaVsPrice = new Chart(document.getElementById('chartBseRevMaVsPrice'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        { label: maWin + '-Day MA Revenue (₹ Cr)', data: revMA,   borderColor: CHART_COLORS[4], backgroundColor: 'transparent', borderWidth: 2, pointRadius: 0, tension: 0.3, yAxisID: 'yRev' },
-        { label: 'BSE Share Price (₹)',             data: actuals, borderColor: CHART_COLORS[0], backgroundColor: 'transparent', borderWidth: 2, pointRadius: 0, tension: 0.3, yAxisID: 'yPrice' },
-      ]
-    },
-    options: {
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        tooltip: {
-          callbacks: {
-            label: ctx => ctx.dataset.yAxisID === 'yRev'
-              ? ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 2) + ' Cr'
-              : ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 0)
-          }
-        }
-      },
-      scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
-        yRev: {
-          type: 'linear', position: 'left',
-          title: { display: true, text: maWin + '-Day MA Rev (₹ Cr)', font: { size: CHART_FONT.title } },
-          ticks: { callback: v => '₹' + fmtNum(v, 1) + ' Cr', font: { size: CHART_FONT.tick } },
-        },
-        yPrice: {
-          type: 'linear', position: 'right',
-          title: { display: true, text: 'Share Price (₹)', font: { size: CHART_FONT.title } },
-          ticks: { callback: v => '₹' + fmtNum(v, 0), font: { size: CHART_FONT.tick } },
-          grid: { drawOnChartArea: false },
-        },
-      }
-    }
-  });
-
-  // ── Chart 4: Price ÷ RevMA Ratio — Mean ± SD (recalculated for this range) ──
-  const ratios = viewSer.map(r => r.price / r.rev_ma);
-  const n      = ratios.length;
-  const mean   = ratios.reduce((a, b) => a + b, 0) / n;
-  const std    = Math.sqrt(ratios.reduce((a, b) => a + (b - mean) ** 2, 0) / n);
-  const flat   = val => viewSer.map(() => val);
-
-  const sdBandOuter = CHART_COLORS[0] + '18';
-  const sdBandInner = CHART_COLORS[0] + '30';
-  const sdLineOuter = CHART_COLORS[0] + '55';
-  const sdLineInner = CHART_COLORS[0] + '80';
-
-  setCanvasHeight('chartBseRatioSD', 300);
-  charts.bseRatioSD = new Chart(document.getElementById('chartBseRatioSD'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        { label: '+2σ',          data: flat(mean + 2 * std), borderColor: sdLineOuter, borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: { target: 4 }, backgroundColor: sdBandOuter },
-        { label: '+1σ',          data: flat(mean + std),     borderColor: sdLineInner, borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: { target: 3 }, backgroundColor: sdBandInner },
-        { label: 'Mean',         data: flat(mean),           borderColor: CHART_COLORS[4], borderWidth: 1.5, borderDash: [5, 3], pointRadius: 0, fill: false, backgroundColor: 'transparent' },
-        { label: '−1σ',          data: flat(mean - std),     borderColor: sdLineInner, borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: false, backgroundColor: 'transparent' },
-        { label: '−2σ',          data: flat(mean - 2 * std), borderColor: sdLineOuter, borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: false, backgroundColor: 'transparent' },
-        { label: 'Price / Rev MA', data: ratios, borderColor: CHART_COLORS[1], backgroundColor: 'transparent', borderWidth: 2, pointRadius: 0, tension: 0.2, fill: false },
-      ]
-    },
-    options: {
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        tooltip: {
-          callbacks: {
-            label: ctx => {
-              const v = ctx.raw.toFixed(1);
-              if (ctx.dataset.label === 'Price / Rev MA') {
-                const zVal = (ctx.raw - mean) / std;
-                return `Ratio: ${v}  (${zVal >= 0 ? '+' : ''}${zVal.toFixed(1)}σ)`;
-              }
-              const target = ctx.raw * revMA[ctx.dataIndex];
-              return `${ctx.dataset.label}: ${v}  →  ₹${fmtNum(target, 0)} target`;
-            }
-          }
-        }
-      },
-      scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
-        y: {
-          ticks: { font: { size: CHART_FONT.tick }, callback: v => v.toFixed(0) },
-          title: { display: true, text: 'Price ÷ Rev MA' + maWin, font: { size: CHART_FONT.title } },
-        }
-      }
-    }
-  });
-
-  // ── Chart 5: Scatter (Revenue MA → Price) ──
-  const scatterData = viewSer.map(r => ({ x: r.rev_ma, y: r.price }));
-  const xVals = viewSer.map(r => r.rev_ma);
-  const xMin  = Math.min(...xVals);
-  const xMax  = Math.max(...xVals);
-  const regLine = [
-    { x: xMin, y: reg.slope * xMin + reg.intercept },
-    { x: xMax, y: reg.slope * xMax + reg.intercept },
-  ];
-
-  setCanvasHeight('chartBseShareScatter', 260);
-  charts.bseShareScatter = new Chart(document.getElementById('chartBseShareScatter'), {
-    type: 'scatter',
-    data: {
-      datasets: [
-        { label: 'Price vs Rev MA',  data: scatterData, backgroundColor: CHART_COLORS[0] + '88', pointRadius: 3 },
-        { label: 'Regression Line', data: regLine, type: 'line', borderColor: CHART_COLORS[2], backgroundColor: 'transparent', borderWidth: 2, borderDash: [5, 3], pointRadius: 0 },
-      ]
-    },
-    options: {
-      plugins: {
-        tooltip: { callbacks: { label: ctx => `Rev MA${maWin}: ₹${fmtNum(ctx.parsed.x, 1)} Cr | Price: ₹${fmtNum(ctx.parsed.y, 0)}` } }
-      },
-      scales: {
-        x: { title: { display: true, text: maWin + '-Day MA Revenue (₹ Cr)' }, ticks: { callback: v => '₹' + fmtNum(v, 1) } },
-        y: { title: { display: true, text: 'BSE Share Price (₹)' },            ticks: { callback: v => '₹' + fmtNum(v, 0) } }
-      }
-    }
-  });
+// "2026-12-17" → "mid-Dec 2026"
+function rxRoughDate(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+  if (!m) return '—';
+  const part = +m[3] <= 10 ? 'early' : +m[3] <= 20 ? 'mid' : 'late';
+  return `${part}-${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m[2] - 1]} ${m[1]}`;
 }
 
-function buildBSEShareAnalysis() {
-  const el = document.getElementById('bse-share-inner');
-  if (!el) return;
+// Range buttons: the fit window plus the fixed spans the series is long enough for
+function shareRanges(series, regStart) {
+  const first = series.length ? series[0].date : regStart;
+  const last = series.length ? series[series.length - 1].date : regStart;
+  const back = (months) => { const d = new Date(last + 'T00:00:00Z'); d.setUTCMonth(d.getUTCMonth() - months); return d.toISOString().slice(0, 10); };
+  const out = [['3m', '3 M', 3], ['6m', '6 M', 6], ['1y', '1 Y', 12], ['2y', '2 Y', 24]]
+    .filter(([, , months]) => back(months) >= first || months <= 3)
+    .map(([k, label]) => [k, label]);
+  const m = /^(\d{4})-(\d{2})/.exec(regStart || '');
+  const fitLabel = m ? `Since ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m[2] - 1]} ${m[1].slice(2)}` : 'Fit window';
+  return out.concat([['fit', fitLabel]]);
+}
 
-  if (!SHARE_DATA) {
-    el.innerHTML = `<div class="chart-panel" style="text-align:center;padding:48px;color:var(--color-text-muted)">
-      <div style="font-size:14px;font-weight:600;margin-bottom:8px">Share analytics data not available</div>
-      <div style="font-size:12px">Run scripts/bse_share_analysis.py to generate bse_share_analysis.json</div>
-    </div>`;
+// Mean and population σ of price ÷ revenue MA over the rows used in the fit
+function shareRatioStats(series, regStart) {
+  const fit = series.filter(r => (r.in_fit === undefined ? r.date >= regStart : r.in_fit) && r.rev_ma > 0 && r.price > 0);
+  if (fit.length < 2) return null;
+  const ratios = fit.map(r => r.price / r.rev_ma);
+  const mean = ratios.reduce((a, b) => a + b, 0) / ratios.length;
+  const sd = Math.sqrt(ratios.reduce((a, b) => a + (b - mean) ** 2, 0) / ratios.length);
+  return { mean, sd };
+}
+
+function shareChecksHTML(d) {
+  const m = d.meth;
+  if (!m) return rxAlert('This share file predates the significance checks (Newey-West t, Durbin-Watson, holdout), so none are shown.', 'info');
+  const n = d.n, t = m.t_stat_newey_west, h = m.holdout, dw = m.durbin_watson;
+  const items = [];
+  items.push(n >= SHARE_GATE.minN
+    ? rxCheck('ok', `${fmtNum(n, 0)} sessions`, `needs ≥ ${SHARE_GATE.minN}`)
+    : rxCheck('fail', `${fmtNum(n, 0)} sessions`, `needs ≥ ${SHARE_GATE.minN} before a fair value is published`));
+  if (d.reg.slope <= 0) items.push(rxCheck('fail', 'Slope not positive', 'price does not rise with revenue in this fit'));
+  else if (t == null || t < SHARE_GATE.minT) items.push(rxCheck('fail', `Newey-West t = ${t == null ? '—' : t.toFixed(2)}`, `slope not significant (needs ≥ ${SHARE_GATE.minT})`));
+  else items.push(rxCheck('ok', `Newey-West t = ${t.toFixed(2)}`, `slope significant (needs ≥ ${SHARE_GATE.minT}), ${m.newey_west_lags} lags`));
+  if (m.ma_spread != null) {
+    const moved = `₹${fmtNum(m.ma_min, 1)}–${fmtNum(m.ma_max, 1)} Cr`;
+    items.push(m.ma_spread >= SHARE_GATE.minSpread
+      ? rxCheck('ok', `Revenue MA ${moved}`, `moved ${Math.round(m.ma_spread * 100)} % over the fit (needs ≥ ${Math.round(SHARE_GATE.minSpread * 100)} %)`)
+      : rxCheck('fail', `Revenue MA ${moved}`, `moved only ${Math.round(m.ma_spread * 100)} % (needs ≥ ${Math.round(SHARE_GATE.minSpread * 100)} %)`));
+  }
+  if (!h) items.push(rxCheck('warn', 'No holdout test', 'too few sessions to hold any back'));
+  else items.push(h.beats_naive
+    ? rxCheck('ok', `Holdout ${h.mape_pct.toFixed(1)} % vs ${h.naive_mape_pct.toFixed(1)} %`, `beats “price unchanged” over the last ${h.n_test} sessions`)
+    : rxCheck('warn', `Holdout ${h.mape_pct.toFixed(1)} % vs ${h.naive_mape_pct.toFixed(1)} %`, `loses to “price unchanged” over the last ${h.n_test} sessions`));
+  if (dw != null) items.push(dw < 1
+    ? rxCheck('warn', `Durbin-Watson ${dw.toFixed(2)}`, 'errors strongly autocorrelated: gaps from fair value persist for weeks')
+    : dw < 1.5
+      ? rxCheck('warn', `Durbin-Watson ${dw.toFixed(2)}`, 'some autocorrelation in the errors')
+      : rxCheck('ok', `Durbin-Watson ${dw.toFixed(2)}`, 'errors close to independent'));
+  return `<section class="rx-checks" aria-label="Model checks">${items.join('')}</section>`;
+}
+
+function shareHeroHTML(ex, s, d, regStart, w, lag) {
+  const lat = s.latest || {};
+  const row = latestShareRow(d.series, lat.date);
+  const price = lat.is_live ? lat.price_actual : row.price;
+  const fv = row.price_pred;
+  const m = d.meth, h = m && m.holdout;
+  const priceWhen = lat.is_live ? `${s.ticker} live ${rxChip('Live', 'ok')}` : `${s.ticker} close ${rxDate(lat.date)}`;
+  const lagTxt = 1 + lag === 1 ? 'one session' : `${1 + lag} sessions`;
+  const eq = `Price = ${d.reg.slope.toFixed(2)} × RevMA${w}[t−${1 + lag}] ${d.reg.intercept >= 0 ? '+' : '−'} ${fmtNum(Math.abs(d.reg.intercept), 2)}`;
+
+  let main;
+  if (fv != null && price) {
+    const gap = price / fv - 1;
+    const word = gap >= 0 ? 'above' : 'below';
+    let ctx = '';
+    if (h && !h.beats_naive) ctx = `The model loses to “price unchanged” out of sample (${h.mape_pct.toFixed(1)} % vs ${h.naive_mape_pct.toFixed(1)} % error): read the gap as context, not a signal.`;
+    else if (h && Math.abs(gap * 100) < h.mape_pct) ctx = `Inside the model’s ${h.mape_pct.toFixed(1)} % out-of-sample error, so not a signal on its own.`;
+    else if (h) ctx = `Wider than the model’s ${h.mape_pct.toFixed(1)} % out-of-sample error.`;
+    main = `<div class="rx-lbl">Price vs revenue fair value</div>
+      <div class="rx-hero-v">${rxRupee(price)} <small>vs fair value</small> ${rxRupee(fv)}</div>
+      <div class="rx-hero-line">Price is <strong>${Math.abs(gap * 100).toFixed(1)} % ${word}</strong> the model. <span class="rx-foot" style="font-size:13px">${ctx}</span></div>`;
+  } else {
+    const why = m && m.gate_reasons && m.gate_reasons.length ? m.gate_reasons.join('; ') : 'the fit does not pass the significance checks';
+    main = `<div class="rx-lbl">Price vs revenue fair value</div>
+      <div class="rx-hero-v">${rxRupee(price)} <small>· fair value withheld</small></div>
+      <div class="rx-hero-line">No fair value for this window: ${escHtml(why)}.</div>`;
+  }
+  main += `<div class="rx-mono">${eq}</div>
+    <p class="rx-foot" style="margin-top:3px">n ${fmtNum(d.n, 0)} sessions · fitted from ${rxDate(regStart)} · revenue lagged ${lagTxt} · R² ${d.reg.r_squared.toFixed(2)}, r ${d.reg.pearson_r.toFixed(2)} (in-sample) · ${priceWhen}</p>`;
+
+  const rs = shareRatioStats(d.series, regStart);
+  let side = '';
+  if (rs && rs.sd > 0 && row.rev_ma > 0) {
+    const ratio = price / row.rev_ma;
+    const z = (ratio - rs.mean) / rs.sd;
+    const where = z <= -1 ? 'low against' : z >= 1 ? 'high against' : 'near';
+    const pin = Math.max(0, Math.min(100, (z + 2) / 4 * 100));
+    side = `<div class="rx-lbl">Price ÷ revenue MA${w}</div>
+      <div class="rx-hero-v">${fmtNum(ratio, 0)} <small>mean ${fmtNum(rs.mean, 0)} · σ ${fmtNum(rs.sd, 1)}</small></div>
+      <div class="rx-hero-line">${z >= 0 ? '+' : '−'}${Math.abs(z).toFixed(1)} σ: <strong>${where}</strong> its fit-window average</div>
+      <div class="rx-gauge" role="img" aria-label="Ratio at ${z >= 0 ? 'plus' : 'minus'} ${Math.abs(z).toFixed(1)} standard deviations, on a scale from minus 2 to plus 2">
+        <div class="rx-gauge-track"><div style="background:#C9D6F3"></div><div style="background:#EAF0FB"></div><div style="background:#EAF0FB"></div><div style="background:#C9D6F3"></div></div>
+        <div class="rx-gauge-mid"></div>
+        <div class="rx-gauge-pin" style="left:${pin.toFixed(1)}%"></div>
+      </div>
+      <div class="rx-gauge-axis"><span>−2σ ${fmtNum(rs.mean - 2 * rs.sd, 0)}</span><span>mean</span><span>+2σ ${fmtNum(rs.mean + 2 * rs.sd, 0)}</span></div>
+      <p class="rx-foot" style="margin-top:6px">At the average ratio the price would be ${rxRupee(rs.mean * row.rev_ma)} (MA ₹${fmtNum(row.rev_ma, 2)} Cr).</p>`;
+  }
+
+  const how = rxHow('How this model works', `<ul>
+    <li>Each close is paired with the ${w}-session average of daily transaction revenue up to the previous session${lag ? `, shifted back a further ${lag} sessions` : ''}. The average runs over every revenue day, so missing quotes do not shorten it.</li>
+    <li>The fit is ordinary least squares over the sessions from ${rxDate(regStart)}${ex === 'mcx' ? '; modelled MCX revenue (before 2 Sep 2024) is left out' : ''}. R² and r describe that same window (in-sample).</li>
+    <li>Slope significance uses Newey-West standard errors (bandwidth 1.3·√n), which allow for the autocorrelation Durbin-Watson measures.</li>
+    <li>Holdout: the model is refitted on the first 80 % of the window and scored on the last 20 % against “price unchanged”.</li>
+    <li>A fair value is shown only with ≥ ${SHARE_GATE.minN} sessions, a positive slope with t ≥ ${SHARE_GATE.minT}, and a revenue MA that moved ≥ ${Math.round(SHARE_GATE.minSpread * 100)} %.</li>
+  </ul>`);
+
+  return `<section class="rx-panel"><div class="rx-hero"><div class="rx-hero-main">${main}</div>${side ? `<div class="rx-hero-side">${side}</div>` : ''}</div>${how}</section>`;
+}
+
+function buildShareAnalysis(ex) {
+  const el = document.getElementById(`${ex}-share-inner`);
+  if (!el) return;
+  const s = SHARE_DATA;
+  if (!s) {
+    el.innerHTML = `<div class="rx">${rxPanel({ title: 'Share price regression',
+      body: `<div class="rx-empty"><b>Share analysis not available</b>scripts/${ex}_share_analysis.py writes dashboard/data/${ex}_share_analysis.json after each daily run.</div>` })}</div>`;
     return;
   }
+  if (s.status === 'collecting' || !s.regression) { renderShareCollecting(el, ex); return; }
 
-  const reg      = SHARE_DATA.regression;
-  const lat      = SHARE_DATA.latest;
-  const ser      = SHARE_DATA.series || [];
-  const maWin    = SHARE_DATA.ma_window;
-  const regStart = SHARE_DATA.regression_start || '2025-03-01';
+  const name = SHARE_EXCHANGE_NAMES[ex];
+  const regStart = s.regression_start;
+  const state = { dma: SHARE_MA_WINDOWS.includes(s.ma_window) ? s.ma_window : 45, lag: 0, range: 'fit' };
+  const cache = {};
+  const model = (w, lag) => {
+    const k = w + '_' + lag;
+    if (!(k in cache)) cache[k] = computeShareModel(s, w, lag);
+    return cache[k];
+  };
+  const id = k => `rxShare${k}-${ex}`;
 
-  const infoHTML = shareRegressionInfoHTML(
-    reg, lat.price_pred, lat.price_actual, lat.is_live, lat.date,
-    maWin, regStart, SHARE_DATA.n_days, SHARE_DATA.ticker, 0, SHARE_DATA.methodology
-  );
-
-  const regLabel = new Date(regStart + 'T00:00:00').toLocaleString('en-IN', { month: 'short', year: 'numeric' }) + '+';
-  const ranges = [
-    { key: '1m',      label: '1M' },
-    { key: '3m',      label: '3M' },
-    { key: '6m',      label: '6M' },
-    { key: 'nov2024', label: regLabel },
-    { key: '1y',      label: '1Y' },
-    { key: '2y',      label: '2Y' },
-  ];
-  const rangeToggleHTML = `
-  <div class="share-range-toggle">
-    ${ranges.map(r => `<button class="share-range-btn bse-range-btn${r.key === 'nov2024' ? ' active' : ''}" data-range="${r.key}">${r.label}</button>`).join('')}
+  el.innerHTML = `<div class="rx">
+    ${s.limited_data ? rxAlert(`<strong>Limited data.</strong> ${name} listed on ${rxDate(s.listing_date)}; this fit uses ${s.n_days} sessions of price history and refits every day.`) : ''}
+    <div data-rx="hero"></div>
+    <div data-rx="checks"></div>
+    <div class="rx-bar" role="toolbar" aria-label="Model and chart controls">
+      <div class="rx-grp"><span class="rx-lbl">MA window</span>${rxSeg('dma', SHARE_MA_WINDOWS.map(w => [w, w + ' D']), state.dma, 'Revenue moving-average window')}</div>
+      <div class="rx-grp"><span class="rx-lbl">Extra lag</span>${rxSeg('lag', SHARE_LAGS.map(l => [l, l ? l + ' D' : 'None']), state.lag, 'Extra revenue lag')}</div>
+      <div class="rx-grp"><span class="rx-lbl">Range</span>${rxSeg('range', shareRanges(s.series || [], regStart), state.range, 'Chart range')}</div>
+      <p class="rx-foot" data-rx="r2"></p>
+    </div>
+    ${rxPanel({ title: 'Share price: actual vs model', meta: `₹ · <span data-rx="span"></span>`,
+      right: `<span data-rx="legPrice"></span>`,
+      body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas(id('Price'))}<div data-rx="residWrap">${rxCanvas(id('Resid'))}</div></div>`,
+      foot: `<span data-rx="residNote"></span>` })}
+    <div class="rx-row">
+      ${rxPanel({ cls: 'rx-col-half', title: `Price ÷ revenue MA<span data-rx="w"></span>`, meta: 'mean ± 1σ and ± 2σ over the fit window',
+        body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas(id('Ratio'))}</div><div class="rx-chart-note" data-rx="legRatio"></div>` })}
+      ${rxPanel({ cls: 'rx-col-half', title: `Revenue MA<span data-rx="w"></span> → price`, meta: 'each session, shaded by date',
+        body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas(id('Scatter'))}</div><div class="rx-chart-note" data-rx="legScatter"></div>` })}
+    </div>
+    ${rxPanel({ title: `Price and revenue MA<span data-rx="w"></span>, indexed`, meta: 'start of range = 100 · one axis, so the two lines compare like for like',
+      right: `<span data-rx="legIndex"></span>`,
+      body: `<div class="rx-pb" style="padding-bottom:10px">${rxCanvas(id('Index'))}</div>` })}
   </div>`;
 
-  const dmaToggleHTML = `
-  <div class="share-dma-toggle">
-    <span class="share-dma-label">DMA</span>
-    ${[10, 20, 45].map(w => `<button class="share-range-btn bse-dma-btn${w === 45 ? ' active' : ''}" data-dma="${w}">${w}D</button>`).join('')}
-  </div>`;
+  const q = k => el.querySelector(`[data-rx="${k}"]`);
+  const setAll = (k, html) => el.querySelectorAll(`[data-rx="${k}"]`).forEach(n => { n.innerHTML = html; });
 
-  const lagToggleHTML = `
-  <div class="share-dma-toggle">
-    <span class="share-dma-label">Lag</span>
-    ${[0, 45, 60, 90].map(l => `<button class="share-range-btn bse-lag-btn${l === 0 ? ' active' : ''}" data-lag="${l}">${l === 0 ? 'None' : l + 'D'}</button>`).join('')}
-  </div>`;
-
-  const chartsHTML = `
-  <div style="margin-top:var(--space-4)">
-    <div class="chart-panel" style="margin-bottom:var(--space-4)">
-      <div class="chart-title">BSE Share Price: Actual vs Model</div>
-      <div class="chart-wrapper"><canvas id="chartBseSharePrice"></canvas></div>
-    </div>
-    <div class="chart-panel" style="margin-bottom:var(--space-4)">
-      <div class="chart-title" id="bseDmaChartTitle">${maWin}-Day MA Revenue vs BSE Share Price</div>
-      <div class="chart-wrapper"><canvas id="chartBseRevMaVsPrice"></canvas></div>
-    </div>
-    <div class="chart-panel" style="margin-bottom:var(--space-4)">
-      <div class="chart-title" id="bseRatioChartTitle">Price ÷ Rev MA${maWin} Ratio — Mean ± SD</div>
-      <div class="chart-wrapper"><canvas id="chartBseRatioSD"></canvas></div>
-    </div>
-    <div class="chart-panel">
-      <div class="chart-title">Revenue → Price Scatter</div>
-      <div class="chart-wrapper chart-wrapper--scatter"><canvas id="chartBseShareScatter"></canvas></div>
-    </div>
-  </div>`;
-
-  const sectionHTML = `
-  <div style="margin-top:var(--space-5)">
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:var(--space-4);padding-bottom:var(--space-2);border-bottom:1px solid var(--color-border)">
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--color-text-muted)">Charts</span>
-        ${dmaToggleHTML}
-        ${lagToggleHTML}
-      </div>
-      ${rangeToggleHTML}
-    </div>
-    ${chartsHTML}
-  </div>`;
-
-  el.innerHTML = `<div id="bseShareInfo">${infoHTML}</div>` + sectionHTML;
-
-  let bseActiveDma   = 45;
-  let bseActiveLag   = 0;
-  let bseActiveRange = 'nov2024';
-  const bseDmaCache  = {};
-
-  function getBseDmaData(w, lag) {
-    const key = `${w}_${lag}`;
-    if (!bseDmaCache[key]) bseDmaCache[key] = computeShareModel(SHARE_DATA, w, lag);
-    return bseDmaCache[key];
-  }
-
-  function refreshBSECharts() {
-    const d = getBseDmaData(bseActiveDma, bseActiveLag);
-    if (!d) return;
-    buildBSECharts(filterShareSeries(d.series, bseActiveRange, regStart), d.reg, bseActiveDma);
-    const lagSuffix = bseActiveLag ? ` (lag ${bseActiveLag}d)` : '';
-    const t1 = document.getElementById('bseDmaChartTitle');
-    if (t1) t1.textContent = `${bseActiveDma}-Day MA Revenue vs BSE Share Price${lagSuffix}`;
-    const t2 = document.getElementById('bseRatioChartTitle');
-    if (t2) t2.textContent = `Price ÷ Rev MA${bseActiveDma} Ratio — Mean ± SD${lagSuffix}`;
-    const infoEl = document.getElementById('bseShareInfo');
-    if (infoEl) {
-      const latestRow = latestShareRow(d.series, lat.date);
-      infoEl.innerHTML = shareRegressionInfoHTML(
-        d.reg, latestRow.price_pred, lat.is_live ? lat.price_actual : latestRow.price, lat.is_live, lat.date,
-        bseActiveDma, regStart, d.n, SHARE_DATA.ticker, bseActiveLag, d.meth
-      );
+  function renderText() {
+    const d = model(state.dma, state.lag);
+    setAll('w', String(state.dma));
+    if (!d) {
+      q('hero').innerHTML = rxAlert(`Too few overlapping price and revenue sessions to fit a ${state.dma}-session MA${state.lag ? ` with a ${state.lag}-session lag` : ''}.`);
+      q('checks').innerHTML = '';
+      return null;
     }
+    q('hero').innerHTML = shareHeroHTML(ex, s, d, regStart, state.dma, state.lag);
+    q('checks').innerHTML = shareChecksHTML(d);
+    const r2 = SHARE_MA_WINDOWS.map(w => {
+      const m = model(w, state.lag);
+      const v = m ? m.reg.r_squared.toFixed(2) : '—';
+      return w === state.dma ? `<strong class="rx-strong">${w} D ${v}</strong>` : `${w} D ${v}`;
+    }).join(' · ');
+    q('r2').innerHTML = `R² by window (in-sample): ${r2}`;
+    return d;
   }
 
-  // Initial render
-  refreshBSECharts();
+  function renderCharts() {
+    const d = model(state.dma, state.lag);
+    ['shPrice', 'shResid', 'shRatio', 'shScatter', 'shIndex'].forEach(k => { if (charts[k]) { charts[k].destroy(); delete charts[k]; } });
+    if (!d || !d.series.length) return;
+    const lat = s.latest || {};
+    const view = filterShareSeries(d.series, state.range, regStart);
+    if (!view.length) return;
+    const w = state.dma;
+    const hasFv = view.some(r => r.price_pred != null);
+    const labels = view.map(r => fmtChartDate(r.date));
+    const dateTitle = items => rxDate(view[items[0].dataIndex].date);
+    q('span').textContent = `${rxDate(view[0].date)} – ${rxDate(view[view.length - 1].date)}`;
 
-  el.querySelectorAll('.bse-dma-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      el.querySelectorAll('.bse-dma-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      bseActiveDma = parseInt(btn.dataset.dma);
-      refreshBSECharts();
+    q('legPrice').innerHTML = rxLegend([{ label: 'Close', color: RX.ink, kind: 'line' }]
+      .concat(hasFv ? [{ label: 'Model (fair value)', color: RX.model, kind: 'dash' }, { label: 'Close above model', color: RX.above }, { label: 'Below', color: RX.below }] : []));
+    rxChart('shPrice', id('Price'), 300, {
+      type: 'line',
+      data: { labels, datasets: [
+        { label: 'Close', data: view.map(r => r.price), borderColor: RX.ink, borderWidth: 1.75, pointRadius: 0, tension: 0 },
+        { label: 'Model', data: view.map(r => r.price_pred), borderColor: RX.model, borderWidth: 1.75, borderDash: [5, 3], pointRadius: 0, tension: 0 },
+      ] },
+      options: {
+        interaction: { mode: 'index', intersect: false },
+        plugins: { tooltip: { callbacks: {
+          title: dateTitle,
+          label: ctx => ctx.raw == null ? null : ` ${ctx.dataset.label}: ₹${fmtNum(ctx.raw, 0)}`,
+          footer: items => { const r = view[items[0].dataIndex]; return r.price_pred ? `Close vs model ${rxSignedPct(r.price / r.price_pred - 1)}` : ''; },
+        } } },
+        scales: {
+          x: { grid: { display: false }, ticks: { maxTicksLimit: 8, maxRotation: 0, autoSkip: true } },
+          y: { ticks: { callback: v => '₹' + fmtNum(v, 0) } },
+        },
+      },
     });
-  });
 
-  el.querySelectorAll('.bse-lag-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      el.querySelectorAll('.bse-lag-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      bseActiveLag = parseInt(btn.dataset.lag);
-      refreshBSECharts();
-    });
-  });
+    const residWrap = q('residWrap');
+    residWrap.hidden = !hasFv;
+    q('residNote').textContent = hasFv
+      ? 'Lower strip: close ÷ model − 1. Long runs on one side are the Durbin-Watson warning made visible.'
+      : 'No model line: the fair value is withheld for this window (see the checks above).';
+    if (hasFv) {
+      const gaps = view.map(r => r.price_pred ? (r.price / r.price_pred - 1) * 100 : null);
+      const lim = Math.max(10, Math.ceil(Math.max(...gaps.filter(g => g != null).map(Math.abs)) / 10) * 10);
+      rxChart('shResid', id('Resid'), 84, {
+        type: 'line',
+        data: { labels, datasets: [{ label: 'Close vs model', data: gaps, borderWidth: 0, pointRadius: 0, tension: 0,
+          fill: { target: 'origin', above: RX.above, below: RX.below } }] },
+        options: {
+          interaction: { mode: 'index', intersect: false },
+          plugins: { tooltip: { callbacks: { title: dateTitle, label: ctx => ctx.raw == null ? null : ` Close vs model: ${ctx.raw >= 0 ? '+' : '−'}${Math.abs(ctx.raw).toFixed(1)} %` } } },
+          scales: {
+            x: { display: false },
+            y: { min: -lim, max: lim, ticks: { stepSize: lim, callback: v => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v) + ' %' } },
+          },
+        },
+      });
+      rxFixHeight(charts.shResid);
+    }
 
-  el.querySelectorAll('.bse-range-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      el.querySelectorAll('.bse-range-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      bseActiveRange = btn.dataset.range;
-      refreshBSECharts();
+    const rs = shareRatioStats(d.series, regStart);
+    if (rs) {
+      const ratios = view.map(r => r.price / r.rev_ma);
+      const flat = v => view.map(() => v);
+      const band = (lbl, v, fill, bg) => ({ label: lbl, data: flat(v), borderWidth: 0, pointRadius: 0, fill, backgroundColor: bg, tension: 0 });
+      rxChart('shRatio', id('Ratio'), 260, {
+        type: 'line',
+        data: { labels, datasets: [
+          band('+2σ', rs.mean + 2 * rs.sd, { target: 4 }, 'rgba(43, 92, 200, 0.07)'),
+          band('+1σ', rs.mean + rs.sd, { target: 3 }, 'rgba(43, 92, 200, 0.12)'),
+          { label: 'Mean', data: flat(rs.mean), borderColor: RX.muted, borderWidth: 1, borderDash: [4, 3], pointRadius: 0, fill: false },
+          band('−1σ', rs.mean - rs.sd, false, 'transparent'),
+          band('−2σ', rs.mean - 2 * rs.sd, false, 'transparent'),
+          { label: 'Price ÷ MA', data: ratios, borderColor: RX.ink, borderWidth: 1.75, pointRadius: 0, tension: 0, fill: false },
+        ] },
+        options: {
+          interaction: { mode: 'index', intersect: false },
+          plugins: { tooltip: {
+            filter: item => item.datasetIndex === 5,
+            callbacks: {
+              title: dateTitle,
+              label: ctx => { const z = (ctx.raw - rs.mean) / rs.sd; return ` Ratio ${fmtNum(ctx.raw, 0)} (${z >= 0 ? '+' : '−'}${Math.abs(z).toFixed(1)}σ)`; },
+              footer: items => `At the mean ratio: ₹${fmtNum(rs.mean * view[items[0].dataIndex].rev_ma, 0)}`,
+            },
+          } },
+          scales: {
+            x: { grid: { display: false }, ticks: { maxTicksLimit: 6, maxRotation: 0, autoSkip: true } },
+            y: { ticks: { callback: v => fmtNum(v, 0) } },
+          },
+        },
+      });
+      q('legRatio').innerHTML = rxLegend([
+        { label: 'Price ÷ MA', color: RX.ink, kind: 'line' },
+        { label: `± 1σ (${fmtNum(rs.mean - rs.sd, 0)}–${fmtNum(rs.mean + rs.sd, 0)})`, color: 'rgba(43, 92, 200, 0.19)' },
+        { label: `± 2σ (${fmtNum(rs.mean - 2 * rs.sd, 0)}–${fmtNum(rs.mean + 2 * rs.sd, 0)})`, color: 'rgba(43, 92, 200, 0.07)', style: 'box-shadow:inset 0 0 0 1px #DCE5F7' },
+        { label: `Mean ${fmtNum(rs.mean, 0)}`, color: RX.muted, kind: 'dash' },
+      ]);
+    }
+
+    const last = view[view.length - 1];
+    const lastPrice = last.date === lat.date && lat.is_live ? lat.price_actual : last.price;
+    const pts = view.slice(0, -1);
+    const xs = view.map(r => r.rev_ma);
+    const xMin = Math.min(...xs), xMax = Math.max(...xs);
+    const scatterSets = [
+      { type: 'scatter', label: 'Session', data: pts.map(r => ({ x: r.rev_ma, y: r.price, date: r.date })),
+        pointBackgroundColor: pts.map((r, i) => RX.seq[Math.min(4, Math.floor(i / Math.max(pts.length, 1) * 5))]),
+        pointBorderColor: '#FFFFFF', pointBorderWidth: 0.5, pointRadius: 3.2, pointHoverRadius: 5 },
+      { type: 'scatter', label: 'Latest', data: [{ x: last.rev_ma, y: lastPrice, date: last.date }],
+        pointBackgroundColor: '#FFFFFF', pointBorderColor: RX.ink, pointBorderWidth: 2, pointRadius: 6, pointHoverRadius: 7 },
+    ];
+    if (hasFv) scatterSets.push({ type: 'line', label: 'Fit', data: [{ x: xMin, y: d.reg.slope * xMin + d.reg.intercept }, { x: xMax, y: d.reg.slope * xMax + d.reg.intercept }],
+      borderColor: RX.model, borderDash: [5, 3], borderWidth: 1.75, pointRadius: 0, tension: 0 });
+    rxChart('shScatter', id('Scatter'), 260, {
+      type: 'scatter',
+      data: { datasets: scatterSets },
+      options: {
+        plugins: { tooltip: {
+          filter: item => item.dataset.label !== 'Fit',
+          callbacks: {
+            title: items => rxDate(items[0].raw.date),
+            label: ctx => ` MA ₹${fmtNum(ctx.parsed.x, 2)} Cr · close ₹${fmtNum(ctx.parsed.y, 0)}`,
+          },
+        } },
+        scales: {
+          x: { type: 'linear', grace: '4%', title: { display: true, text: `Revenue MA${w}, ₹ Cr / day` }, ticks: { callback: v => '₹' + fmtNum(v, 0) } },
+          y: { grace: '4%', ticks: { callback: v => '₹' + fmtNum(v, 0) } },
+        },
+      },
     });
-  });
+    q('legScatter').innerHTML = rxLegend([
+      { label: 'Older', color: RX.seq[0] }, { label: 'Recent', color: RX.seq[4] },
+      { label: `Latest (${fmtTradeDate(last.date)})`, color: '#FFFFFF', style: `border:2px solid ${RX.ink};border-radius:50%;width:11px;height:11px` },
+    ].concat(hasFv ? [{ label: 'Fit', color: RX.model, kind: 'dash' }] : []));
+
+    const p0 = view[0].price, m0 = view[0].rev_ma;
+    const pIdx = view.map(r => r.price / p0 * 100), mIdx = view.map(r => r.rev_ma / m0 * 100);
+    rxChart('shIndex', id('Index'), 240, {
+      type: 'line',
+      data: { labels, datasets: [
+        { label: 'Share price', data: pIdx, borderColor: RX.ink, borderWidth: 1.75, pointRadius: 0, tension: 0 },
+        { label: `Revenue MA${w}`, data: mIdx, borderColor: RX.rev, borderWidth: 1.75, pointRadius: 0, tension: 0 },
+      ] },
+      options: {
+        interaction: { mode: 'index', intersect: false },
+        plugins: { tooltip: { callbacks: {
+          title: dateTitle,
+          label: ctx => {
+            const r = view[ctx.dataIndex];
+            return ctx.datasetIndex === 0 ? ` Price ${fmtNum(ctx.raw, 0)} (₹${fmtNum(r.price, 0)})` : ` Revenue MA ${fmtNum(ctx.raw, 0)} (₹${fmtNum(r.rev_ma, 2)} Cr)`;
+          },
+        } } },
+        scales: {
+          x: { grid: { display: false }, ticks: { maxTicksLimit: 8, maxRotation: 0, autoSkip: true } },
+          y: { ticks: { callback: v => fmtNum(v, 0) } },
+        },
+      },
+    });
+    rxFixHeight(charts.shIndex);
+    q('legIndex').innerHTML = rxLegend([
+      { label: `Share price ${fmtNum(pIdx[pIdx.length - 1], 0)}`, color: RX.ink, kind: 'line' },
+      { label: `Revenue MA${w} ${fmtNum(mIdx[mIdx.length - 1], 0)}`, color: RX.rev, kind: 'line' },
+    ]);
+  }
+
+  rxOnSeg(el, 'dma', v => { state.dma = +v; renderText(); renderCharts(); });
+  rxOnSeg(el, 'lag', v => { state.lag = +v; renderText(); renderCharts(); });
+  rxOnSeg(el, 'range', v => { state.range = v; renderCharts(); });
+  renderText();
+  renderCharts();
+  RX_TAB_REFRESH.share = renderCharts;
+}
+
+// Before a newly listed share has SHARE_GATE.minN sessions (NSE listed
+// 2026-09-24) there is nothing to fit: show collection progress, how price
+// and the revenue MA have moved since listing, and the raw rows.
+function renderShareCollecting(el, ex) {
+  const s = SHARE_DATA;
+  const name = SHARE_EXCHANGE_NAMES[ex];
+  const n = s.n_days || 0;
+  const need = s.min_days_required || SHARE_GATE.minN;
+  const lat = s.latest || {};
+  const left = Math.max(need - n, 0);
+  const eta = rxAddWeekdays(lat.date, left);
+  const since = s.first_price && lat.price_actual ? lat.price_actual / s.first_price - 1 : null;
+  const pct = Math.min(100, Math.round(n / need * 100));
+  const ser = s.series || [];
+  const w = s.ma_window || 45;
+
+  const rows = [...ser].reverse().map(r => `<tr><td>${rxDate(r.date)}</td><td>₹${fmtNum(r.price, 2)}</td><td>${fmtNum(r.revenue_cr, 2)}</td><td>${fmtNum(r.rev_ma, 2)}</td></tr>`).join('');
+  el.innerHTML = `<div class="rx">
+    ${rxKpis([
+      rxKpi('Sessions collected', `${n} <small>/ ${need}</small>`, `${pct} % of the minimum for a fit`, { extra: `<div class="rx-progress" role="img" aria-label="${n} of ${need} sessions"><div style="width:${pct}%"></div></div>` }),
+      rxKpi('Share price', rxRupee(lat.price_actual, 2), `${s.ticker} · ${lat.is_live ? 'live' : 'close ' + rxDate(lat.date)}`),
+      rxKpi('Since listing', rxChangeHTML(since), `first close ₹${fmtNum(s.first_price, 2)} on ${rxDate(s.listing_date)}`),
+      rxKpi('Regression unlocks', left ? '≈ ' + rxRoughDate(eta) : 'Next run', left ? `${left} more sessions, holidays aside` : 'enough sessions collected'),
+    ], 'Collection progress')}
+    ${rxAlert(`<strong>No fit yet.</strong> ${name} shares started trading on ${rxDate(s.listing_date)}. With ${n} sessions a regression would not pass the significance checks, so the fair value, checks and charts appear here on their own once ${need} sessions are in (same method as BSE and MCX).`, 'info')}
+    ${rxPanel({ title: `Price and revenue MA${w} since listing, indexed`, meta: 'listing day = 100 · not fitted',
+      right: rxLegend([{ label: 'Share price', color: RX.ink, kind: 'line' }, { label: `Revenue MA${w} to previous session`, color: RX.rev, kind: 'line' }]),
+      body: `<div class="rx-pb" style="padding-bottom:10px">${rxCanvas(`rxShareCollect-${ex}`)}</div>` })}
+    ${rxPanel({ title: 'Daily closes since listing', meta: `${n} sessions`,
+      body: `<div class="rx-scroll" style="max-height:360px;overflow-y:auto"><table class="rx-table"><thead><tr><th scope="col">Date</th><th scope="col">Close</th><th scope="col">Revenue, ₹ Cr</th><th scope="col">MA${w} to prev. session, ₹ Cr</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="4" class="rx-l">No overlapping price and revenue days yet</td></tr>'}</tbody></table></div>` })}
+  </div>`;
+
+  function renderChart() {
+    if (!ser.length) return;
+    const p0 = ser[0].price, m0 = ser[0].rev_ma;
+    rxChart('shCollect', `rxShareCollect-${ex}`, 240, {
+      type: 'line',
+      data: { labels: ser.map(r => fmtTradeDate(r.date)), datasets: [
+        { label: 'Share price', data: ser.map(r => r.price / p0 * 100), borderColor: RX.ink, borderWidth: 1.75, pointRadius: 2, pointBackgroundColor: RX.ink, tension: 0 },
+        { label: 'Revenue MA', data: ser.map(r => r.rev_ma / m0 * 100), borderColor: RX.rev, borderWidth: 1.75, pointRadius: 2, pointBackgroundColor: RX.rev, tension: 0 },
+      ] },
+      options: {
+        interaction: { mode: 'index', intersect: false },
+        plugins: { tooltip: { callbacks: {
+          title: items => rxDate(ser[items[0].dataIndex].date),
+          label: ctx => { const r = ser[ctx.dataIndex]; return ctx.datasetIndex === 0 ? ` Price ${fmtNum(ctx.raw, 1)} (₹${fmtNum(r.price, 2)})` : ` Revenue MA ${fmtNum(ctx.raw, 1)} (₹${fmtNum(r.rev_ma, 2)} Cr)`; },
+        } } },
+        scales: {
+          x: { grid: { display: false }, ticks: { maxTicksLimit: 8, maxRotation: 0, autoSkip: true } },
+          y: { ticks: { callback: v => fmtNum(v, 0) } },
+        },
+      },
+    });
+  }
+  renderChart();
+  rxFixHeight(charts.shCollect);
+  RX_TAB_REFRESH.share = () => { renderChart(); rxFixHeight(charts.shCollect); };
 }
 
 // ========================
 // SHARES OUTSTANDING — the one place share counts live
 // ========================
 
-// Crore shares, used for every EPS in the valuation views (Quick Valuation,
-// BSE Annual Predictor default, NSE PAT predictor). Nothing fetches share
+// Crore shares, the default for every EPS on the Revenue Predictor and
+// Valuation Model tabs (editable there). Nothing fetches share
 // counts — yfinance supplies prices only — so these are static, and each view
 // shows the value with its source and as-of note. as_of is null where the repo
 // records no date; source says how far the figure can be trusted.
-// BSE's 40.73 is also the Excel-replica Annual Predictor's starting value; the
+// BSE's 40.73 is also the Excel model's Annual Predictor starting value; the
 // workbook it mirrors read shares from a Bloomberg/FactSet plugin (see
 // docs/superpowers/specs/2026-07-02-bse-excel-valuation-replication-design.md),
 // but neither the figure nor its date is recorded anywhere checkable.
@@ -5611,34 +5774,9 @@ function escHtml(text) {
   return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// "source · as of X" line shown with a share count (HTML-escaped).
-function sharesSourceNote(exchange) {
-  const s = SHARES_OUTSTANDING_CR[exchange];
-  if (!s) return '';
-  return escHtml(`${s.source} · ${s.as_of ? 'as of ' + s.as_of : 'as-of date not recorded'}`);
-}
-
 // ========================
-// BSE VALUATION MODEL — mirrors Excel "BSE" sheet, 7-part layout
+// VALUATION HELPERS
 // ========================
-
-const BSE_VALUATION_DEFAULTS = {
-  fy27TotalTradingDays:    247,
-  adrGrowthBearPct:         -5,    // D30/E30/F30 in Excel — independent per scenario
-  adrGrowthBasePct:          0,
-  adrGrowthBullPct:          5,
-  otherIncomeAnnualCr: 2055.39,
-  patMarginAnnualPct:       52,
-  peBear:                   40,
-  peBase:                   45,
-  peBull:                   50,
-  discountPct:              18,
-  sharesOutstandingCr:   SHARES_OUTSTANDING_CR.bse.value,
-
-  q1TotalTradingDays:       61,
-  otherIncomeQuarterlyCr: 472.16,
-  patMarginQuarterlyPct:    50,
-};
 
 // Indian FY convention: Apr-Jun=Q1, Jul-Sep=Q2, Oct-Dec=Q3, Jan-Mar=Q4, FY named for the March-ending year
 function currentFYQuarterLabel(d) {
@@ -5653,20 +5791,6 @@ function fmtChartDate(dateStr) {
   const d = new Date(dateStr + 'T00:00:00');
   if (isNaN(d)) return dateStr;
   return d.toLocaleString('en-IN', { month: 'short', year: '2-digit' }).replace(' ', '-');
-}
-const BSE_VALUATION_STORAGE_KEY = 'bseValuationAssumptions_v1';
-
-function loadBSEValuationAssumptions() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(BSE_VALUATION_STORAGE_KEY) || '{}');
-    return { ...BSE_VALUATION_DEFAULTS, ...saved };
-  } catch {
-    return { ...BSE_VALUATION_DEFAULTS };
-  }
-}
-
-function saveBSEValuationAssumptions(a) {
-  try { localStorage.setItem(BSE_VALUATION_STORAGE_KEY, JSON.stringify(a)); } catch {}
 }
 
 function debounce(fn, ms) {
@@ -5692,58 +5816,6 @@ function combinedMarketADRForRows(bseRows, nseSeries) {
 
 function combinedMarketADR(bseSeries, nseSeries, n) {
   return combinedMarketADRForRows(bseSeries.slice(-n), nseSeries);
-}
-
-// Method 1 extrapolates remaining days using the 45-day average BSE market share;
-// Method 2 extrapolates remaining days using the 20-day average BSE market share.
-function computeBSEAnnualPredictor(a, mkt) {
-  const growth = { bear: a.adrGrowthBearPct / 100, base: a.adrGrowthBasePct / 100, bull: a.adrGrowthBullPct / 100 };
-  const cmp = SHARE_DATA?.latest?.price_actual ?? null;
-  const remainingDays = a.fy27TotalTradingDays - mkt.daysElapsed;
-  const scenarios = {};
-  ['bear', 'base', 'bull'].forEach(key => {
-    const projectedTotalMarketADR = mkt.totalMarketADR45 * (1 + growth[key]);
-    const targetADRMethod1 = ((mkt.bseADRFYTodate * mkt.daysElapsed) + (projectedTotalMarketADR * mkt.bseShare45 * remainingDays)) / a.fy27TotalTradingDays;
-    // Used downstream, matches Excel row 37
-    const targetADRMethod2 = ((mkt.bseADRFYTodate * mkt.daysElapsed) + (projectedTotalMarketADR * mkt.bseShare20 * remainingDays)) / a.fy27TotalTradingDays;
-    const totalIncome = targetADRMethod2 * a.fy27TotalTradingDays + a.otherIncomeAnnualCr;
-    const pat          = totalIncome * a.patMarginAnnualPct / 100;
-    const eps           = pat / a.sharesOutstandingCr;
-    const pe            = key === 'bear' ? a.peBear : key === 'bull' ? a.peBull : a.peBase;
-    const priceTarget   = eps * pe;
-    const targetPrice   = priceTarget / (1 + a.discountPct / 100);
-    const upside        = cmp ? targetPrice / cmp - 1 : null;
-    scenarios[key] = {
-      growthPct: growth[key] * 100, projectedTotalMarketADR,
-      targetADRMethod1, targetADRMethod2, totalIncome, pat, eps, pe, priceTarget, targetPrice, upside,
-    };
-  });
-  return scenarios;
-}
-
-function computeBSEQuarterlyPredictor(a, mkt) {
-  const remainingDays = Math.max(a.q1TotalTradingDays - mkt.qDaysElapsed, 0);
-  // Used downstream, matches Excel's quarterly block
-  const method1ADR = ((mkt.bseADRQtdToDate * mkt.qDaysElapsed) + (mkt.totalMarketADR45 * mkt.bseShare45 * remainingDays)) / (a.q1TotalTradingDays || 1);
-  const method2ADR = ((mkt.bseADRQtdToDate * mkt.qDaysElapsed) + (mkt.totalMarketADR20 * mkt.bseShare20 * remainingDays)) / (a.q1TotalTradingDays || 1);
-  const transactionRev = method1ADR * a.q1TotalTradingDays;
-  const totalRevenue   = transactionRev + a.otherIncomeQuarterlyCr;
-  const pat            = totalRevenue * a.patMarginQuarterlyPct / 100;
-  return { method1ADR, method2ADR, transactionRev, otherIncome: a.otherIncomeQuarterlyCr, totalRevenue, pat };
-}
-
-function computeBSETriangulatedTarget(a, annualBase, analystTargets) {
-  const cmp = SHARE_DATA?.latest?.price_actual ?? null;
-  const regressionTarget = SHARE_DATA?.latest?.price_pred ?? null;
-  const adrModel = annualBase?.targetPrice ?? null;
-  const analystAvgRaw = analystTargets.length
-    ? analystTargets.reduce((s, t) => s + t.target_price, 0) / analystTargets.length
-    : null;
-  const analystTarget = analystAvgRaw != null ? analystAvgRaw / (1 + a.discountPct / 100) : null;
-  const values  = [adrModel, regressionTarget, analystTarget].filter(v => v != null);
-  const average = values.length ? values.reduce((s, v) => s + v, 0) / values.length : null;
-  const upside  = (average != null && cmp) ? average / cmp - 1 : null;
-  return { cmp, adrModel, regressionTarget, analystAvgRaw, analystTarget, average, upside };
 }
 
 let BSE_ANALYST_TARGETS_CACHE = null;
@@ -5780,1293 +5852,352 @@ function safeHttpUrl(u) {
   } catch { return null; }
 }
 
-function analystTargetAgeHTML(t) {
-  const age = daysSinceIso(t.date);
-  if (age == null) return '';
-  const stale = age > ANALYST_TARGET_STALE_DAYS;
-  return `<span class="target-age${stale ? ' target-age--stale' : ''}"${stale ? ` title="Older than ${ANALYST_TARGET_STALE_DAYS} days"` : ''}>${age} day${age === 1 ? '' : 's'} old</span>`;
-}
+// ========================
+// VALUATION MODEL TAB — one model per exchange
+// ========================
+// FY average daily revenue (ADR) → transaction revenue → + other income →
+// × PAT margin → PAT → ÷ shares → FY EPS → × P/E → FY-end target, optionally
+// discounted to today. Bear / Base / Bull differ by rest-of-year ADR growth and
+// P/E. The base ADR is either the FY projection (FY revenue to date + trailing
+// 45-session average for the sessions left) or, for BSE, the Excel "Annual
+// Predictor" method (BSE's FY revenue to date + NSE+BSE market ADR × BSE's
+// 20-session share for the sessions left). Inputs are saved per exchange.
 
-function bseAssumptionRow(label, key, value, suffix, step) {
-  return `<div class="param-row">
-    <label>${label}</label>
-    <input type="number" step="${step ?? '0.1'}" class="param-input" data-bse-assump="${key}" value="${value}">
-    ${suffix ? `<span class="param-suffix">${suffix}</span>` : ''}
-  </div>`;
-}
-
-// Inline <input> for use directly inside an Excel-replica table cell — centered, unit-free
-function bseCellInput(key, value, step) {
-  return `<input type="number" step="${step ?? '0.1'}" class="param-input" style="width:80px;text-align:center" data-bse-assump="${key}" value="${value}">`;
-}
-
-function bseContextRow(label, valueHtml) {
-  return `<tr><td>${label}</td><td style="text-align:center;font-variant-numeric:tabular-nums">${valueHtml}</td></tr>`;
-}
-
-// ── Quick Valuation (45-Day ADR → EPS → PE target) — shared by BSE & MCX ──────
-// ADR always defaults to the trailing 45-day average revenue on load/refresh and
-// is deliberately excluded from persistence; PAT margin, other income, and PE
-// ratio persist per exchange via localStorage.
-// NOTE: MCX has no prior valuation baseline in this codebase (unlike BSE's
-// Excel-sourced figures) — its PAT margin/other income/PE defaults below are
-// round-number placeholders, not real financial figures, and the panel labels
-// them so (QUICK_VAL_PROVENANCE). Shares outstanding come from
-// SHARES_OUTSTANDING_CR, which is hard-coded: no share-count feed exists.
-const QUICK_VAL_DEFAULTS = {
-  bse: { patMarginPct: 52, otherIncomeMode: 'fixed', otherIncomeCr: 2055.39, peBear: 40, peBase: 45, peBull: 50, tradingDays: 247 },
-  // MCX runs a fuller trading calendar than the equity exchanges (fewer holidays) —
-  // 243/251/257 trading days in FY24/FY25/FY26 respectively, a rising trend, so the
-  // most recent completed year (257) is used rather than NSE/BSE's ~247.
-  mcx: { patMarginPct: 50, otherIncomeMode: 'fixed', otherIncomeCr: 0,        peBear: 25, peBase: 30, peBull: 35, tradingDays: 257 },
-  // NSE's other income is modeled as a % of total revenue (incl. other income)
-  // rather than a fixed ₹Cr figure, per the user's explicit assumption. (NSE
-  // listed 2026-09-24, so it now has a CMP like BSE/MCX.)
-  nse: { patMarginPct: 55, otherIncomeMode: 'pctOfTotal', otherIncomePct: 30, peBear: 25, peBase: 35, peBull: 45, tradingDays: 247 },
+const VALUATION_DEFAULTS = {
+  // Excel "BSE" sheet starting values (Annual Predictor and Quick Valuation)
+  bse: { src: 'mkt', g0: -5, g1: 0, g2: 5, days: 247, oiMode: 'fixed', oi: 2055.39, margin: 52, pe0: 40, pe1: 45, pe2: 50, disc: 18 },
+  // Owner assumptions: other income as a % of total income, no discounting
+  nse: { src: 'proj', g0: 0, g1: 0, g2: 0, days: 247, oiMode: 'pct', oi: 30, margin: 55, pe0: 25, pe1: 35, pe2: 45, disc: 0 },
+  // Placeholders (no MCX valuation baseline exists); MCX trades ~257 sessions a year
+  mcx: { src: 'proj', g0: 0, g1: 0, g2: 0, days: 257, oiMode: 'fixed', oi: 0, margin: 50, pe0: 25, pe1: 30, pe2: 35, disc: 0 },
 };
-const QUICK_VAL_SCENARIOS = ['bear', 'base', 'bull'];
-
-// Provenance tags: every valuation input says where its value comes from, so a
-// placeholder is never read as a sourced figure.
-const PROV_KINDS = {
-  data:        { cls: 'prov-tag--data',        label: 'From data' },
-  excel:       { cls: 'prov-tag--model',       label: 'Excel model' },
-  assumption:  { cls: 'prov-tag--assumed',     label: 'Owner assumption' },
-  placeholder: { cls: 'prov-tag--placeholder', label: 'Placeholder — not sourced' },
-  unverified:  { cls: 'prov-tag--placeholder', label: 'Hard-coded — unverified' },
-  edited:      { cls: 'prov-tag--edited',      label: 'Edited' },
+const VALUATION_SOURCE = {
+  bse: { kind: '', label: 'Excel model' },
+  nse: { kind: '', label: 'Owner assumption' },
+  mcx: { kind: 'warn', label: 'Placeholder' },
 };
+const VALUATION_SCENARIOS = ['bear', 'base', 'bull'];
+const valuationStorageKey = ex => `valuation_${ex}_v2`;
 
-function provTag(kind, title, label) {
-  const k = PROV_KINDS[kind] || PROV_KINDS.assumption;
-  return `<span class="prov-tag ${k.cls}"${title ? ` title="${escHtml(title)}"` : ''}>${label || k.label}</span>`;
-}
-
-// Where each exchange's Quick Valuation defaults for PAT margin, other income
-// and P/E multiples come from (all three share one provenance per exchange).
-const QUICK_VAL_PROVENANCE = {
-  bse: { kind: 'excel',       badge: 'Excel-model inputs', note: 'Starting value from the "BSE" sheet of the Excel valuation model (20260121_Exchanges_Dashboard.xlsx), as in the Annual Predictor below' },
-  nse: { kind: 'assumption',  badge: 'Owner assumptions',  note: "Explicit modelling assumption set by the dashboard's owner; not computed from reported financials" },
-  mcx: { kind: 'placeholder', badge: 'Placeholder inputs', note: 'Round-number placeholder: there is no MCX valuation baseline in this codebase, so this is not a real financial figure' },
-};
-
-function quickValStorageKey(exchange) { return `quickValuation_${exchange}_v1`; }
-
-function loadQuickValAssumptions(exchange, defaultAdr) {
-  let saved = {};
-  try { saved = JSON.parse(localStorage.getItem(quickValStorageKey(exchange)) || '{}'); } catch {}
-  // adr is intentionally excluded from what's restored — always the fresh 45-day average
-  return { ...QUICK_VAL_DEFAULTS[exchange], ...saved, adr: defaultAdr };
-}
-
-function saveQuickValAssumptions(exchange, a) {
-  const { adr, ...persisted } = a; // never persist adr
-  try { localStorage.setItem(quickValStorageKey(exchange), JSON.stringify(persisted)); } catch {}
-}
-
-function computeQuickValuation(exchange, a, cmp) {
-  const annualRevenue = a.adr * a.tradingDays;
-  let otherIncomeCr, totalIncome;
-  if (a.otherIncomeMode === 'pctOfTotal') {
-    // otherIncome = pct% of (annualRevenue + otherIncome), solved algebraically:
-    // otherIncome = annualRevenue * pct/(100-pct)
-    const pct = Math.min(a.otherIncomePct, 99.9);
-    otherIncomeCr = annualRevenue * (pct / (100 - pct));
-    totalIncome   = annualRevenue + otherIncomeCr;
-  } else {
-    otherIncomeCr = a.otherIncomeCr;
-    totalIncome   = annualRevenue + otherIncomeCr;
+// Saved inputs; on first use, carries over values saved by the earlier Quick
+// Valuation panel (quickValuation_{ex}_v1) and BSE Annual Predictor
+// (bseValuationAssumptions_v1).
+function loadValuationInputs(ex) {
+  const d = { ...VALUATION_DEFAULTS[ex], shares: SHARES_OUTSTANDING_CR[ex].value };
+  const read = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
+  const saved = read(valuationStorageKey(ex));
+  if (saved) return { ...d, ...saved };
+  const out = { ...d };
+  const qv = read(`quickValuation_${ex}_v1`);
+  if (qv) {
+    if (qv.patMarginPct != null) out.margin = qv.patMarginPct;
+    if (d.oiMode === 'pct' && qv.otherIncomePct != null) out.oi = qv.otherIncomePct;
+    if (d.oiMode === 'fixed' && qv.otherIncomeCr != null) out.oi = qv.otherIncomeCr;
+    ['Bear', 'Base', 'Bull'].forEach((s, i) => { if (qv['pe' + s] != null) out['pe' + i] = qv['pe' + s]; });
   }
-  const pat            = totalIncome * a.patMarginPct / 100;
-  const shares          = SHARES_OUTSTANDING_CR[exchange]?.value;
-  const eps              = shares ? pat / shares : null;
-  const scenarios = {};
-  QUICK_VAL_SCENARIOS.forEach(key => {
-    const pe          = a['pe' + key[0].toUpperCase() + key.slice(1)]; // peBear/peBase/peBull
-    const targetPrice = eps != null ? eps * pe : null;
-    const upside       = (targetPrice != null && cmp) ? targetPrice / cmp - 1 : null;
-    scenarios[key] = { pe, targetPrice, upside };
-  });
-  return { annualRevenue, otherIncomeCr, totalIncome, pat, eps, cmp, scenarios };
+  const bv = ex === 'bse' ? read('bseValuationAssumptions_v1') : null;
+  if (bv) {
+    ['Bear', 'Base', 'Bull'].forEach((s, i) => { if (bv[`adrGrowth${s}Pct`] != null) out['g' + i] = bv[`adrGrowth${s}Pct`]; });
+    if (bv.discountPct != null) out.disc = bv.discountPct;
+    if (bv.sharesOutstandingCr != null) out.shares = bv.sharesOutstandingCr;
+    if (bv.fy27TotalTradingDays != null) out.days = bv.fy27TotalTradingDays;
+  }
+  return out;
 }
 
-function qvCellInput(exchange, key, value, step) {
-  return `<input type="number" step="${step ?? '0.1'}" class="param-input" style="width:90px;text-align:center" data-qv-exch="${exchange}" data-qv-key="${key}" value="${value}">`;
+function saveValuationInputs(ex, v) {
+  try { localStorage.setItem(valuationStorageKey(ex), JSON.stringify(v)); } catch (e) { /* storage blocked: not remembered */ }
 }
 
-// Renders the Quick Valuation panel into `el` and wires up its inputs.
-// `dailySeries` = the exchange's sorted daily rows (drives the ADR default).
-// `cmp` = current market price for the upside readout, may be null.
-//
-// ADR default = a projected full-year average for the current FY: actual
-// reported revenue for trading days elapsed so far this FY, plus the trailing
-// 45-day average revenue applied to the remaining trading days (per
-// `tradingDays`), all divided by `tradingDays`. Only trading revenue is
-// projected this way — Other Income keeps its existing (fixed or %-of-total)
-// logic untouched.
-function buildQuickValuationPanel(el, exchange, dailySeries, cmp) {
-  if (!el) return;
-  let a = loadQuickValAssumptions(exchange, 0); // peek tradingDays; adr set below
-
-  const last45 = dailySeries.slice(-45);
-  const adr45 = last45.length ? last45.reduce((s, r) => s + (r.total_rev || 0), 0) / last45.length : 0;
-
-  const curFY = currentFYQuarterLabel(new Date()).fy;
-  const fyRowsToDate = dailySeries.filter(r => r.fy === curFY);
-  const daysElapsed = fyRowsToDate.length;
-  const revenueToDate = fyRowsToDate.reduce((s, r) => s + (r.total_rev || 0), 0);
-  const daysRemaining = Math.max(a.tradingDays - daysElapsed, 0);
-  const projectedAnnualRevenue = revenueToDate + adr45 * daysRemaining;
-  const defaultAdr = a.tradingDays ? projectedAnnualRevenue / a.tradingDays : adr45;
-  // Fee-basis / modelled markers for the rows the projected ADR is built from
-  const adrTags = flagTags(mergeFlags([rowsFlags(fyRowsToDate, 'total'), rowsFlags(last45, 'total')]));
-
-  a.adr = defaultAdr;
-  let result = computeQuickValuation(exchange, a, cmp);
-
-  const pctMode = a.otherIncomeMode === 'pctOfTotal';
-
-  // ── Provenance: where each input's current value comes from ──
-  const defaults = QUICK_VAL_DEFAULTS[exchange];
-  const prov     = QUICK_VAL_PROVENANCE[exchange];
-  const shares   = SHARES_OUTSTANDING_CR[exchange];
-  const otherKey = pctMode ? 'otherIncomePct' : 'otherIncomeCr';
-  const peKeys   = ['peBear', 'peBase', 'peBull'];
-  let adrEdited  = false;
-  const isEdited = key => key === 'adr' ? adrEdited
-    : key === 'pe' ? peKeys.some(k => a[k] !== defaults[k])
-    : a[key] !== defaults[key];
-  const inputProv = key => {
-    if (isEdited(key)) {
-      return provTag('edited', key === 'adr'
-        ? 'Typed in this session; resets to the projection on reload'
-        : 'Changed from the default and saved in this browser');
-    }
-    if (key === 'adr') return provTag('data', `${curFY} actual revenue to date plus the trailing 45-day average for the remaining trading days`);
-    return provTag(prov.kind, prov.note);
+// FY revenue to date, trailing averages and (BSE) market-share inputs
+function valuationContext(ex, series, nseSeries) {
+  const fy = currentFYQuarterLabel(new Date()).fy;
+  const fyRows = series.filter(r => r.fy === fy);
+  const sum = rows => rows.reduce((s, r) => s + (r.total_rev || 0), 0);
+  const avg = rows => rows.length ? sum(rows) / rows.length : 0;
+  const prevFY = 'FY ' + (Number(fy.match(/\d{4}/)[0]) - 1);
+  const ctx = {
+    fy, fyShort: `FY${fy.slice(-2)}`, fyRows, elapsed: fyRows.length, revToDate: sum(fyRows), adr45: avg(series.slice(-45)),
+    prevFY, prevFYDays: series.filter(r => r.fy === prevFY).length,
+    flags: mergeFlags([rowsFlags(fyRows, 'total'), rowsFlags(series.slice(-45), 'total')]),
   };
-  const provSlot = key => `<span id="qv-${exchange}-prov-${key}">${inputProv(key)}</span>`;
-  const badgeText = () => (['patMarginPct', otherKey, 'pe'].some(isEdited) ? 'Custom inputs' : prov.badge);
-  const placeholderLeft = () => prov.kind === 'placeholder' && ['patMarginPct', otherKey, 'pe'].some(k => !isEdited(k));
-
-  // Trading days per year vs the last completed FY's count in the data
-  const prevFY = 'FY ' + (Number(curFY.match(/\d{4}/)[0]) - 1);
-  const prevFYDays = dailySeries.filter(r => r.fy === prevFY).length;
-  const tdMatches = prevFYDays > 0 && a.tradingDays === prevFYDays;
-  const tdLabel = 'Trading Days / Year '
-    + (tdMatches
-      ? provTag('data', `Equals the number of ${prevFY} trading days in the data`)
-      : provTag('assumption', 'Not taken from the data', 'Assumption'))
-    + (prevFYDays ? `<div class="prov-note">${prevFY} had ${prevFYDays} trading days</div>` : '');
-
-  const sharesLabel = 'Shares Outstanding (Cr) '
-    + (shares ? provTag(shares.source === 'hard-coded, unverified' ? 'unverified' : 'data', shares.source)
-        + `<div class="prov-note">${sharesSourceNote(exchange)}</div>` : '');
-
-  // CMP comes from this exchange's share feed: an intraday quote or the last close
-  const lat = SHARE_DATA?.latest;
-  const cmpTag = cmp == null ? ''
-    : lat?.is_live ? provTag('data', 'Intraday quote from the live poller', 'Live quote')
-    : provTag('data', 'Latest daily close in the share-price feed', lat?.date ? 'Close ' + fmtTradeDate(lat.date) : 'Latest close');
-
-  function updateOutputs() {
-    const set = (id, html) => { const node = document.getElementById(id); if (node) node.innerHTML = html; };
-    set(`qv-${exchange}-annualRevenue`, fmt(result.annualRevenue));
-    if (pctMode) set(`qv-${exchange}-otherIncomeComputed`, fmt(result.otherIncomeCr));
-    set(`qv-${exchange}-totalIncome`,   fmt(result.totalIncome));
-    set(`qv-${exchange}-pat`,           fmt(result.pat));
-    set(`qv-${exchange}-eps`,           result.eps != null ? '₹' + fmtNum(result.eps, 2) : '—');
-    set(`qv-${exchange}-cmp`,           result.cmp != null ? fmtPrice(result.cmp) : '— (no price yet)');
-    QUICK_VAL_SCENARIOS.forEach(key => {
-      const s = result.scenarios[key];
-      set(`qv-${exchange}-target-${key}`, s.targetPrice != null ? fmtPrice(s.targetPrice) : '—');
-      set(`qv-${exchange}-upside-${key}`, fmtPctSigned(s.upside));
-    });
+  if (ex === 'bse' && nseSeries && nseSeries.length) {
+    const fyM = combinedMarketADRForRows(fyRows, nseSeries);
+    const m45 = combinedMarketADR(series, nseSeries, 45);
+    const m20 = combinedMarketADR(series, nseSeries, 20);
+    ctx.mkt = {
+      adrFY: avg(fyRows), adr45: avg(series.slice(-45)), adr20: avg(series.slice(-20)),
+      totalFY: fyM.totalMarketADR, total45: m45.totalMarketADR, total20: m20.totalMarketADR,
+      shareFY: fyM.bseShare, share45: m45.bseShare, share20: m20.bseShare,
+    };
   }
-
-  function updateProvenance() {
-    ['adr', otherKey, 'patMarginPct', 'pe'].forEach(key => {
-      const node = document.getElementById(`qv-${exchange}-prov-${key}`);
-      if (node) node.innerHTML = inputProv(key);
-    });
-    const badge = document.getElementById(`qv-${exchange}-badge`);
-    if (badge) {
-      badge.textContent = badgeText();
-      badge.classList.toggle('chart-badge--warn', placeholderLeft());
-    }
-    const warn = document.getElementById(`qv-${exchange}-placeholder-warning`);
-    if (warn) warn.hidden = !placeholderLeft();
-  }
-
-  const scenarioCols = QUICK_VAL_SCENARIOS.map(key => `
-    <td style="text-align:center">${qvCellInput(exchange, 'pe' + key[0].toUpperCase() + key.slice(1), a['pe' + key[0].toUpperCase() + key.slice(1)], '1')}</td>`).join('');
-  const targetCols = QUICK_VAL_SCENARIOS.map(key => `<td id="qv-${exchange}-target-${key}" style="text-align:center"></td>`).join('');
-  const upsideCols = QUICK_VAL_SCENARIOS.map(key => `<td id="qv-${exchange}-upside-${key}" style="text-align:center"></td>`).join('');
-
-  const otherIncomeRows = pctMode
-    ? bseContextRow(`Other Income (% of Total Revenue) ${provSlot(otherKey)}`, qvCellInput(exchange, 'otherIncomePct', a.otherIncomePct, '1'))
-      + bseContextRow('Other Income, implied (₹ Cr)', `<span id="qv-${exchange}-otherIncomeComputed"></span>`)
-    : bseContextRow(`Other Income (₹ Cr) ${provSlot(otherKey)}`, qvCellInput(exchange, 'otherIncomeCr', a.otherIncomeCr, '1'));
-
-  // EPS (and everything downstream of it) is built off the full projected FY
-  // income, not a trailing/current-date run rate — so the target price is a
-  // full-year-forward (FYxxE) target, not a spot fair value. Label it as such.
-  const fyShort = curFY.match(/\d{4}/)[0].slice(-2);
-  const fyeLabel = `FY${fyShort}E`;
-
-  el.innerHTML = `
-  <div class="chart-panel" style="margin-bottom:var(--space-4)">
-    <div class="chart-title">Quick Valuation — ${curFY} Projected ADR <span class="chart-badge${placeholderLeft() ? ' chart-badge--warn' : ''}" id="qv-${exchange}-badge">${badgeText()}</span></div>
-    <p class="section-desc">ADR defaults to a projected full-year average for ${curFY} every time this page loads — actual reported revenue for the ${daysElapsed} trading day${daysElapsed === 1 ? '' : 's'} elapsed so far, plus the trailing 45-day average applied to the ${daysRemaining} remaining trading day${daysRemaining === 1 ? '' : 's'} (of ${a.tradingDays} assumed for the year). Edit it freely, it just won't be remembered on refresh. PAT margin, other income, PE ratios, and CMP-derived targets are saved.${pctMode ? ' Other income here is solved so it equals the given % of total revenue (transaction revenue + other income), not a flat add-on.' : ''} The tag beside each input says where its value comes from.</p>
-    ${prov.kind === 'placeholder' ? `<p class="prov-warning" id="qv-${exchange}-placeholder-warning"${placeholderLeft() ? '' : ' hidden'}>PAT margin, other income and P/E multiples below are round-number placeholders, not sourced figures, so these ${exchange.toUpperCase()} targets are illustrative only.</p>` : ''}
-    <div style="overflow-x:auto;margin-bottom:var(--space-3)">
-      <table class="data-table">
-        <tbody>
-          ${bseContextRow(`Average Daily Revenue — ${curFY} Projected (₹ Cr) ${provSlot('adr')}${adrTags}`, qvCellInput(exchange, 'adr', fmtNum(a.adr, 2), '0.01'))}
-          ${bseContextRow(tdLabel, a.tradingDays)}
-          ${bseContextRow('Annual Transaction Revenue (₹ Cr)', `<span id="qv-${exchange}-annualRevenue"></span>`)}
-          ${otherIncomeRows}
-          ${bseContextRow('Total Income (₹ Cr)', `<span id="qv-${exchange}-totalIncome"></span>`)}
-          ${bseContextRow(`PAT Margin (%) ${provSlot('patMarginPct')}`, qvCellInput(exchange, 'patMarginPct', a.patMarginPct, '0.5'))}
-          ${bseContextRow('<strong>PAT (₹ Cr)</strong>', `<strong><span id="qv-${exchange}-pat"></span></strong>`)}
-          ${bseContextRow(sharesLabel, shares ? fmtNum(shares.value, 2) : '—')}
-          ${bseContextRow(`<strong>Expected EPS — ${fyeLabel} (₹)</strong>`, `<strong><span id="qv-${exchange}-eps"></span></strong>`)}
-          ${bseContextRow(`CMP — Current Price Estimate (₹) ${cmpTag}`, `<span id="qv-${exchange}-cmp"></span>`)}
-        </tbody>
-      </table>
-    </div>
-    <div style="overflow-x:auto">
-      <table class="data-table scenario-table">
-        <thead><tr><th>Metric</th><th style="text-align:center">Bear</th><th style="text-align:center">Base</th><th style="text-align:center">Bull</th></tr></thead>
-        <tbody>
-          <tr><td>PE Ratio (x) ${provSlot('pe')}</td>${scenarioCols}</tr>
-          <tr style="font-weight:600"><td>Target Share Price — ${fyeLabel}<span style="font-weight:400;font-size:11px;color:var(--color-text-muted)"> (full-year forward, not spot)</span></td>${targetCols}</tr>
-          <tr><td>Upside vs CMP</td>${upsideCols}</tr>
-        </tbody>
-      </table>
-    </div>
-  </div>`;
-
-  updateOutputs();
-
-  el.querySelectorAll(`[data-qv-exch="${exchange}"]`).forEach(input => {
-    input.addEventListener('input', () => {
-      a[input.dataset.qvKey] = parseFloat(input.value) || 0;
-      if (input.dataset.qvKey === 'adr') adrEdited = Math.abs(a.adr - Number(defaultAdr.toFixed(2))) > 1e-9;
-      result = computeQuickValuation(exchange, a, cmp);
-      updateOutputs();
-      updateProvenance();
-      saveQuickValAssumptions(exchange, a);
-    });
-  });
+  return ctx;
 }
 
-async function buildBSEValuation() {
-  const el = document.getElementById('bseValuationContent');
+// One scenario: g = rest-of-year ADR growth %, pe = multiple
+function valuationScenario(ctx, v, g, pe, cmp) {
+  const rest = Math.max(v.days - ctx.elapsed, 0);
+  const restAdr = v.src === 'mkt' && ctx.mkt ? ctx.mkt.total45 * ctx.mkt.share20 : ctx.adr45;
+  const adr = v.days ? (ctx.revToDate + restAdr * (1 + g / 100) * rest) / v.days : 0;
+  return valuationFromAdr(adr, v, pe, cmp);
+}
+
+function valuationFromAdr(adr, v, pe, cmp) {
+  const txn = adr * v.days;
+  const pct = Math.min(v.oi, 99.9);
+  const oi = v.oiMode === 'pct' ? txn * pct / (100 - pct) : v.oi;
+  const total = txn + oi;
+  const pat = total * v.margin / 100;
+  const eps = v.shares ? pat / v.shares : null;
+  const fwd = eps != null ? eps * pe : null;
+  const now = fwd != null ? fwd / (1 + v.disc / 100) : null;
+  return { adr, txn, oi, total, pat, eps, pe, fwd, now, upFwd: fwd && cmp ? fwd / cmp - 1 : null, upNow: now && cmp ? now / cmp - 1 : null };
+}
+
+// Rounded axis bounds and tick step for a ₹ range
+function niceRange(lo, hi, ticks = 6) {
+  const span = Math.max(hi - lo, 1);
+  const raw = span / ticks;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw) || 10 * mag;
+  return { lo: Math.floor(lo / step) * step, hi: Math.ceil(hi / step) * step, step };
+}
+
+async function buildValuation(ex) {
+  const el = document.getElementById(`${ex}ValuationContent`);
   if (!el) return;
-
-  if (!SHARE_DATA) {
-    el.innerHTML = `<div class="chart-panel" style="text-align:center;padding:48px;color:var(--color-text-muted)">
-      <div style="font-size:14px;font-weight:600">Valuation model needs share analysis data</div>
-      <div style="font-size:12px;margin-top:6px">Run scripts/bse_share_analysis.py to generate bse_share_analysis.json</div>
-    </div>`;
-    return;
+  const series = bseDailySeries(DATA);
+  if (!series.length) { el.innerHTML = ''; return; }
+  let nseSeries = null, analysts = [];
+  if (ex === 'bse') {
+    await ensureFreshMarketData(['nse']);
+    nseSeries = bseDailySeries(MARKET_RAW.nse || {});
+    analysts = await loadBSEAnalystTargets();
+    if (currentExchange !== ex) return;  // switched away while loading
+    // This view combines BSE's own rows with NSE's from the shared cache
+    VIEW_BUILT_FROM.nse = marketSig('nse');
+    VIEW_SOURCES.valuation = [{ ex: 'bse', date: lastTradeDate(series) }, { ex: 'nse', date: lastTradeDate(nseSeries) }];
+    updateSnapshotNotice();
+    updateFeeNotice();
   }
-  await ensureFreshMarketData(['nse']);
 
-  const bseSeries = bseDailySeries(DATA);
-  const nseSeries = bseDailySeries(MARKET_RAW.nse || {});
-  const analystTargets = await loadBSEAnalystTargets();
-  if (currentExchange !== 'bse') return;  // switched away while loading
-  if (!bseSeries.length) { el.innerHTML = ''; return; }
+  const ctx = valuationContext(ex, series, nseSeries);
+  const name = SHARE_EXCHANGE_NAMES[ex];
+  const defaults = { ...VALUATION_DEFAULTS[ex], shares: SHARES_OUTSTANDING_CR[ex].value };
+  const v = loadValuationInputs(ex);
+  if (v.src === 'mkt' && !ctx.mkt) v.src = 'proj';
+  const state = { basis: v.disc > 0 ? 'now' : 'fwd' };
+  const lat = SHARE_DATA?.latest || {};
+  const cmp = lat.price_actual ?? null;
+  const prov = VALUATION_SOURCE[ex];
+  const shareSrc = SHARES_OUTSTANDING_CR[ex];
 
-  // This view combines BSE's own rows with NSE's from the shared cache
-  VIEW_BUILT_FROM.nse = marketSig('nse');
-  VIEW_SOURCES.valuation = [{ ex: 'bse', date: lastTradeDate(bseSeries) }, { ex: 'nse', date: lastTradeDate(nseSeries) }];
-  updateSnapshotNotice();
-  updateFeeNotice();
+  // Market-based ranges for the football field (from the share feed)
+  const shareSer = SHARE_DATA?.series || [];
+  const lastShareDate = shareSer.length ? shareSer[shareSer.length - 1].date : null;
+  const yearAgo = lastShareDate ? (() => { const d = new Date(lastShareDate + 'T00:00:00Z'); d.setUTCFullYear(d.getUTCFullYear() - 1); return d.toISOString().slice(0, 10); })() : null;
+  const yr = shareSer.filter(r => r.date >= yearAgo && r.price > 0).map(r => r.price);
+  const sinceListing = SHARE_DATA?.listing_date && shareSer.length && shareSer[0].date >= yearAgo;
+  const fv = lat.price_pred ?? null;
+  const meth = SHARE_DATA?.methodology || null;
+  const mape = meth?.holdout?.mape_pct ?? null;
+  const shareModel = SHARE_DATA?.regression && SHARE_DATA.status !== 'collecting' ? computeShareModel(SHARE_DATA, SHARE_DATA.ma_window || 45) : null;
+  const ratio = shareModel ? shareRatioStats(shareModel.series, SHARE_DATA.regression_start) : null;
+  const lastMa = shareModel ? latestShareRow(shareModel.series, lat.date)?.rev_ma : null;
+  const brokerAvg = analysts.length ? analysts.reduce((s, t) => s + t.target_price, 0) / analysts.length : null;
+  const oldest = analysts.reduce((mn, t) => (t.date && (!mn || t.date < mn) ? t.date : mn), null);
+  const oldestAge = daysSinceIso(oldest);
 
-  // Current FY/quarter is derived from today's real date, not the latest data row —
-  // a quarter with data through its last trading day is a COMPLETED quarter, not the one in progress.
-  const today    = currentFYQuarterLabel(new Date());
-  const latestFY = today.fy;
-  const latestQ  = today.quarter;
-  const fyRows   = bseSeries.filter(r => r.fy === latestFY);
-  const qRows    = bseSeries.filter(r => r.fy_quarter === latestQ);
-  const avg      = (rows) => rows.length ? rows.reduce((s, r) => s + (r.total_rev || 0), 0) / rows.length : 0;
-  const mktFY    = combinedMarketADRForRows(fyRows, nseSeries);
-  const mkt45    = combinedMarketADR(bseSeries, nseSeries, 45);
-  const mkt20    = combinedMarketADR(bseSeries, nseSeries, 20);
-
-  const mkt = {
-    daysElapsed:         fyRows.length,
-    bseADRFYTodate:      avg(fyRows),
-    bseADR45:            avg(bseSeries.slice(-45)),
-    bseADR20:            avg(bseSeries.slice(-20)),
-    totalMarketADRFY:    mktFY.totalMarketADR,
-    totalMarketADR45:    mkt45.totalMarketADR,
-    totalMarketADR20:    mkt20.totalMarketADR,
-    bseShareFY:          mktFY.bseShare,
-    bseShare45:          mkt45.bseShare,
-    bseShare20:          mkt20.bseShare,
-    qDaysElapsed:        qRows.length,
-    bseADRQtdToDate:     avg(qRows),
+  const cmpWhen = cmp == null ? 'no price yet' : lat.is_live ? 'live quote' : `close ${fmtTradeDate(lat.date)}`;
+  const fyE = `${ctx.fyShort}E`;
+  const chip = (kind, label) => rxChip(label, kind);
+  const srcChip = () => chip(prov.kind, prov.label);
+  const fieldChip = {
+    g: () => ex === 'bse' ? chip('', 'Excel model') : chip('', 'No growth assumed'),
+    days: () => chip(ctx.prevFYDays && v.days === ctx.prevFYDays ? 'data' : '', ctx.prevFYDays ? `${ctx.prevFY.replace(' ', '')} had ${ctx.prevFYDays}` : 'Assumption'),
+    oi: srcChip, margin: srcChip, pe: srcChip,
+    shares: () => shareSrc.source === 'hard-coded, unverified' ? chip('warn', 'Hard-coded · unverified') : chip('data', 'PAT ÷ EPS, reported'),
+    disc: () => ex === 'bse' ? chip('', 'Excel model') : chip('', 'Not discounted'),
   };
+  const edited = keys => keys.some(k => Math.abs(Number(v[k]) - Number(defaults[k])) > 1e-9);
+  const editedChip = keys => edited(keys) ? ' ' + rxChip('Edited', 'edit') : '';
 
-  // Fee-basis markers for the ADR inputs (date-effective files: BSE's latest
-  // cash revenue is at a provisional calibrated rate until BSE reports)
-  const mktRowFlags = rows => {
-    const dates = new Set(rows.map(r => r.date));
-    return mergeFlags([rowsFlags(rows, 'total'), rowsFlags(nseSeries.filter(r => dates.has(r.date)), 'total')]);
-  };
-  const fBseFY = rowsFlags(fyRows, 'total'), fBse45 = rowsFlags(bseSeries.slice(-45), 'total'), fBse20 = rowsFlags(bseSeries.slice(-20), 'total');
-  const fMktFY = mktRowFlags(fyRows), fMkt45 = mktRowFlags(bseSeries.slice(-45)), fMkt20 = mktRowFlags(bseSeries.slice(-20));
-  const fQtd = rowsFlags(qRows, 'total');
+  const inp = (key, step, aria, w = '') => `<input class="rx-in rx-num-in" type="number" step="${step}" inputmode="decimal" data-key="${key}" aria-label="${escHtml(aria)}" value="${v[key]}"${w ? ` style="width:${w}"` : ''}>`;
 
-  let assumptions = loadBSEValuationAssumptions();
-  let annual, quarterly, tri;
-  function recompute() {
-    annual    = computeBSEAnnualPredictor(assumptions, mkt);
-    quarterly = computeBSEQuarterlyPredictor(assumptions, mkt);
-    tri       = computeBSETriangulatedTarget(assumptions, annual.base, analystTargets);
-  }
-  recompute();
+  const adrSrcOptions = [['proj', 'FY projection']].concat(ctx.mkt ? [['mkt', 'Market × BSE share (Excel)']] : []);
+  const mkt = ctx.mkt;
+  const mktTable = mkt ? `<div class="rx-scroll" style="margin-top:6px"><table class="rx-table"><thead><tr><th scope="col">Market input</th><th scope="col">FY to date</th><th scope="col">Last 45</th><th scope="col">Last 20</th></tr></thead><tbody>
+      <tr><td>NSE + BSE ADR, ₹ Cr</td><td>${fmtNum(mkt.totalFY, 2)}</td><td>${fmtNum(mkt.total45, 2)}</td><td>${fmtNum(mkt.total20, 2)}</td></tr>
+      <tr><td>BSE share</td><td>${fmtPct(mkt.shareFY)}</td><td>${fmtPct(mkt.share45)}</td><td>${fmtPct(mkt.share20)}</td></tr>
+      <tr><td>BSE ADR, ₹ Cr</td><td>${fmtNum(mkt.adrFY, 2)}</td><td>${fmtNum(mkt.adr45, 2)}</td><td>${fmtNum(mkt.adr20, 2)}</td></tr></tbody></table></div>` : '';
 
-  function updateOutputs() {
-    const set = (id, html) => { const e = document.getElementById(id); if (e) e.innerHTML = html; };
-    set('triAdrModel',   tri.adrModel        != null ? fmtPrice(tri.adrModel)        : '—');
-    set('triRegression', tri.regressionTarget != null ? fmtPrice(tri.regressionTarget) : '—');
-    set('triAnalyst',    tri.analystTarget    != null ? fmtPrice(tri.analystTarget)    : '—');
-    set('triAverage',    tri.average          != null ? fmtPrice(tri.average)          : '—');
-    set('triCmp',        tri.cmp              != null ? fmtPrice(tri.cmp)              : '—');
-    set('triUpside',     fmtPctSigned(tri.upside));
-
-    set('annSharesProv', assumptions.sharesOutstandingCr === BSE_VALUATION_DEFAULTS.sharesOutstandingCr
-      ? provTag('unverified', SHARES_OUTSTANDING_CR.bse.source)
-      : provTag('edited', 'Changed from the default and saved in this browser'));
-    set('annCtxDaysElapsed', `${mkt.daysElapsed} of ${assumptions.fy27TotalTradingDays}`);
-    ['bear', 'base', 'bull'].forEach(k => {
-      const s = annual[k];
-      set(`annProjADR-${k}`, fmtNum(s.projectedTotalMarketADR, 2));
-      set(`annM1-${k}`,      fmtNum(s.targetADRMethod1, 2));
-      set(`annM2-${k}`,      fmtNum(s.targetADRMethod2, 2));
-      set(`annIncome-${k}`,  fmt(s.totalIncome));
-      set(`annPat-${k}`,     fmt(s.pat));
-      set(`annEps-${k}`,     '₹' + fmtNum(s.eps, 2));
-      set(`annPriceT-${k}`,  fmtPrice(s.priceTarget));
-      set(`annTarget-${k}`,  fmtPrice(s.targetPrice));
-      set(`annUpside-${k}`,  fmtPctSigned(s.upside));
-    });
-
-    set('qtrCtxDaysElapsed', `${mkt.qDaysElapsed} of ${assumptions.q1TotalTradingDays}`);
-    set('qtrM1',       fmtNum(quarterly.method1ADR, 2));
-    set('qtrM2',       fmtNum(quarterly.method2ADR, 2));
-    set('qtrTxnRev',   fmt(quarterly.transactionRev));
-    set('qtrTotalRev', fmt(quarterly.totalRevenue));
-    set('qtrPat',      fmt(quarterly.pat));
-  }
-
-  const analystRows = analystTargets.map(t => {
-    const url = safeHttpUrl(t.source_url);
-    return `
-    <tr>
-      <td>${t.broker}</td>
-      <td>₹ ${fmtNum(t.target_price, 0)}</td>
-      <td style="white-space:nowrap">${t.date}<br>${analystTargetAgeHTML(t)}</td>
-      <td>${t.rating}</td>
-      <td>${url ? `<a href="${url}" target="_blank" rel="noopener noreferrer">Report ↗</a>` : '<span style="color:var(--color-text-muted)">not on file</span>'}</td>
-      <td style="color:var(--color-text-muted);font-size:11.5px">${t.methodology}</td>
-    </tr>`;
-  }).join('');
-
-  // The analyst leg of the triangulated target is only as fresh as its oldest broker note.
-  const oldestTarget = analystTargets.reduce((mn, t) => (t.date && (!mn || t.date < mn) ? t.date : mn), null);
-  const oldestAge    = daysSinceIso(oldestTarget);
-  const analystStale = oldestAge != null && oldestAge > ANALYST_TARGET_STALE_DAYS;
-  const analystAsOf  = oldestTarget
-    ? `<p class="tri-asof${analystStale ? ' tri-asof--stale' : ''}">Analyst component uses broker targets as of ${oldestTarget} (oldest of ${analystTargets.length}, ${oldestAge} day${oldestAge === 1 ? '' : 's'} old)${analystStale ? ` — older than ${ANALYST_TARGET_STALE_DAYS} days, so it may not reflect current broker views` : ''}.</p>`
-    : '';
-  const cmpState = SHARE_DATA?.latest?.is_live ? 'live' : 'close';
-  const cmpDate  = SHARE_DATA?.latest?.date ? fmtTradeDate(SHARE_DATA.latest.date) : '';
-
-  el.innerHTML = `
-  <div id="bseQuickValPanel"></div>
-  <div class="chart-panel" style="margin-bottom:var(--space-4)">
-    <div class="chart-title">1 · Triangulated Target Price <span class="chart-badge">${cmpState === 'live' ? 'CMP live' : cmpDate ? 'CMP: close ' + cmpDate : 'CMP: latest close'}</span></div>
-    <p class="section-desc">Average of the ADR (Annual Predictor Base case), 45-day regression, and analyst-consensus target prices, shown against CMP.</p>
-    <div class="tri-target-grid">
-      ${kpi('ADR Model', `<span id="triAdrModel"></span>`, 'Annual Predictor · Base', '')}
-      ${kpi('Regression', `<span id="triRegression"></span>`, '45-day DMA model', '')}
-      ${kpi('Analyst Target', `<span id="triAnalyst"></span>`, `avg of ${analystTargets.length} brokers, discounted`, '')}
-      ${kpi('Average Target', `<span id="triAverage"></span>`, `<span id="triUpside"></span> vs CMP`, '')}
-      ${kpi('CMP', `<span id="triCmp"></span>`, cmpState === 'live' ? '🟢 live' : cmpDate ? 'close ' + cmpDate : 'latest close', '')}
+  el.innerHTML = `<div class="rx">
+    ${ex === 'mcx' ? rxAlert('<strong>Placeholder inputs.</strong> There is no MCX valuation baseline in this repo: PAT margin, other income and P/E multiples are round-number placeholders, so these targets are illustrative until you set them.') : ''}
+    <section class="rx-kpis" aria-label="Valuation summary" data-rx="kpis"></section>
+    ${rxPanel({ title: 'Valuation range by method', meta: '₹ per share · bars span the range, tick = base or centre',
+      right: rxLegend([{ label: 'This model', color: RX.model }, { label: 'Market-based', color: RX.grey }, { label: cmp != null ? `CMP ${rxRupee(cmp)}` : 'CMP', color: RX.neg, kind: 'tick' }]),
+      body: '<div class="rx-pb"><div class="rx-ff" data-rx="ff"></div></div>', foot: '<span data-rx="ffNote"></span>' })}
+    <div class="rx-row">
+      <section class="rx-panel rx-col-wide" aria-label="Assumptions">
+        <div class="rx-ph"><h2>Assumptions</h2><span class="rx-meta">One model, three scenarios · saved in this browser</span>
+          <div class="rx-ph-right"><span class="rx-lbl">Targets as</span>${rxSeg('basis', [['fwd', `${ctx.fyShort} end`], ['now', 'Today (discounted)']], state.basis, 'Target basis')}<button type="button" class="rx-link" data-rx="reset">Reset to defaults</button></div></div>
+        <div class="rx-pb" style="padding-bottom:6px">
+          <div style="display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center"><span class="rx-lbl">Base ADR from</span>${rxSeg('src', adrSrcOptions, v.src, 'Base ADR method')}</div>
+          <p class="rx-foot" data-rx="srcNote" style="margin-top:6px"></p>
+        </div>
+        <div class="rx-scroll"><table class="rx-table">
+          <thead><tr><th scope="col">Line</th><th scope="col">Bear</th><th scope="col">Base</th><th scope="col">Bull</th><th scope="col" class="rx-l">Source</th></tr></thead>
+          <tbody>
+            <tr><td>ADR growth, rest of year, %</td><td>${inp('g0', 1, 'Bear ADR growth')}</td><td>${inp('g1', 1, 'Base ADR growth')}</td><td>${inp('g2', 1, 'Bull ADR growth')}</td><td class="rx-src" data-src="g"></td></tr>
+            <tr><td>ADR, ₹ Cr / session${flagTags(ctx.flags)}</td><td data-out="adr-0"></td><td data-out="adr-1"></td><td data-out="adr-2"></td><td class="rx-src">${chip('data', `${ctx.elapsed} sessions actual`)}</td></tr>
+            <tr><td>Trading sessions in ${ctx.fy}</td><td colspan="3" class="rx-c">${inp('days', 1, 'Trading sessions in the year')}</td><td class="rx-src" data-src="days"></td></tr>
+            <tr><td>Transaction revenue, ₹ Cr</td><td data-out="txn-0"></td><td data-out="txn-1"></td><td data-out="txn-2"></td><td class="rx-src"></td></tr>
+            <tr><td>${v.oiMode === 'pct' ? 'Other income, % of total income' : 'Other income, ₹ Cr'}</td><td colspan="3" class="rx-c">${inp('oi', 1, 'Other income', '96px')}</td><td class="rx-src" data-src="oi"></td></tr>
+            ${v.oiMode === 'pct' ? '<tr><td>Other income, ₹ Cr</td><td data-out="oi-0"></td><td data-out="oi-1"></td><td data-out="oi-2"></td><td class="rx-src">solved from the %</td></tr>' : ''}
+            <tr class="rx-sub"><td>Total income, ₹ Cr</td><td data-out="total-0"></td><td data-out="total-1"></td><td data-out="total-2"></td><td class="rx-src"></td></tr>
+            <tr><td>PAT margin, %</td><td colspan="3" class="rx-c">${inp('margin', 0.5, 'PAT margin')}</td><td class="rx-src" data-src="margin"></td></tr>
+            <tr class="rx-sub"><td>PAT, ₹ Cr</td><td data-out="pat-0"></td><td data-out="pat-1"></td><td data-out="pat-2"></td><td class="rx-src"></td></tr>
+            <tr><td>Shares, Cr</td><td colspan="3" class="rx-c">${inp('shares', 0.01, 'Shares outstanding')}</td><td class="rx-src" data-src="shares"></td></tr>
+            <tr class="rx-sub"><td>EPS ${fyE}, ₹</td><td data-out="eps-0"></td><td data-out="eps-1"></td><td data-out="eps-2"></td><td class="rx-src"></td></tr>
+            <tr><td>P/E, ×</td><td>${inp('pe0', 1, 'Bear P/E')}</td><td>${inp('pe1', 1, 'Base P/E')}</td><td>${inp('pe2', 1, 'Bull P/E')}</td><td class="rx-src" data-src="pe"></td></tr>
+            <tr class="rx-sub"><td>Target at ${ctx.fyShort} end, ₹</td><td data-out="fwd-0"></td><td data-out="fwd-1"></td><td data-out="fwd-2"></td><td class="rx-src">EPS × P/E</td></tr>
+            <tr><td>Discount to today, %</td><td colspan="3" class="rx-c">${inp('disc', 0.5, 'Discount rate')}</td><td class="rx-src" data-src="disc"></td></tr>
+            <tr class="rx-sub"><td>Target today, ₹</td><td data-out="now-0"></td><td data-out="now-1"></td><td data-out="now-2"></td><td class="rx-src">÷ (1 + discount)</td></tr>
+            <tr class="rx-out"><td>Upside vs CMP · <span data-rx="basisName"></span></td><td data-out="up-0"></td><td data-out="up-1"></td><td data-out="up-2"></td><td class="rx-src">CMP ${cmp != null ? rxRupee(cmp) : '—'}, ${cmpWhen}</td></tr>
+          </tbody>
+        </table></div>
+        ${rxHow('How this model works', `<ul>
+          <li><strong>FY projection:</strong> ${ctx.fy} revenue to date (${ctx.elapsed} sessions, ${rxCr(ctx.revToDate, 0)}) plus the trailing 45-session average (${rxCr(ctx.adr45, 2)}) for the sessions left, divided by the sessions in the year.</li>
+          ${ctx.mkt ? `<li><strong>Market × BSE share (Excel “Annual Predictor”):</strong> the sessions left earn the NSE + BSE 45-session market ADR × BSE’s 20-session share (${rxCr(mkt.total45 * mkt.share20, 2)} a session).</li>` : ''}
+          <li>Scenario growth applies to the sessions left only; P/E differs by scenario. Other income${v.oiMode === 'pct' ? ' is solved so it is the given % of total income (transaction revenue + other income)' : ' is a fixed annual figure'}.</li>
+          <li>The ${ctx.fyShort}-end target is EPS × P/E on the full-year ${fyE} EPS, not a spot fair value; “Today” discounts it by the discount rate.</li>
+        </ul>${mktTable}`)}
+      </section>
+      ${rxPanel({ cls: 'rx-col-narrow', title: 'Sensitivity', meta: '<span data-rx="sensMeta"></span>',
+        body: `<div class="rx-pb rx-scroll"><table class="rx-table rx-sens" data-rx="sens"></table>
+          <div style="margin-top:10px">${rxLegend([{ label: 'Downside', color: '#E9B48C' }, { label: '', color: '#F5D9C4' }, { label: '±5 %', color: '#F1F1EE' }, { label: '', color: '#CBD8F4' }, { label: 'Upside', color: '#9DB4E8' }])}</div>
+          <p class="rx-foot" style="margin-top:6px">Outlined: base case. Other inputs as set.</p></div>` })}
     </div>
-    ${analystAsOf}
-  </div>
-
-  <div class="chart-panel" style="margin-bottom:var(--space-4)">
-    <div class="chart-title">2 &amp; 3 · Annual Predictor — ${latestFY} <span class="chart-badge">Bear / Base / Bull</span></div>
-    <p class="section-desc">Same layout and formulas as the Excel "Annual Predictor" block. Editable cells are inputs — everything else recomputes automatically. Their defaults are the Excel model's starting values, except shares outstanding, which is hard-coded and unverified.</p>
-    <div style="overflow-x:auto;margin-bottom:var(--space-3)">
-      <table class="data-table">
-        <tbody>
-          ${bseContextRow('FY Total Trading Days', bseCellInput('fy27TotalTradingDays', assumptions.fy27TotalTradingDays, '1'))}
-          ${bseContextRow('FY Trading Days Elapsed', `<span id="annCtxDaysElapsed"></span>`)}
-          ${bseContextRow(`Shares Outstanding (Cr) <span id="annSharesProv"></span><div class="prov-note">default ${fmtNum(SHARES_OUTSTANDING_CR.bse.value, 2)}: ${sharesSourceNote('bse')}</div>`, bseCellInput('sharesOutstandingCr', assumptions.sharesOutstandingCr, '0.01'))}
-          ${bseContextRow('Total Market ADR — FY to Date (₹ Cr/day)' + flagTags(fMktFY), fmtNum(mkt.totalMarketADRFY, 2))}
-          ${bseContextRow('Total Market ADR — Last 45 Days (₹ Cr/day)' + flagTags(fMkt45), fmtNum(mkt.totalMarketADR45, 2))}
-          ${bseContextRow('Total Market ADR — Last 20 Days (₹ Cr/day)' + flagTags(fMkt20), fmtNum(mkt.totalMarketADR20, 2))}
-          ${bseContextRow('BSE Market Share — FY to Date' + flagTags(fMktFY), fmtPctRaw(mkt.bseShareFY * 100))}
-          ${bseContextRow('BSE Market Share — Last 45 Days' + flagTags(fMkt45), fmtPctRaw(mkt.bseShare45 * 100))}
-          ${bseContextRow('BSE Market Share — Last 20 Days' + flagTags(fMkt20), fmtPctRaw(mkt.bseShare20 * 100))}
-          ${bseContextRow('BSE ADR — FY to Date (₹ Cr/day)' + flagTags(fBseFY), fmtNum(mkt.bseADRFYTodate, 2))}
-          ${bseContextRow('BSE ADR — Last 45 Days (₹ Cr/day)' + flagTags(fBse45), fmtNum(mkt.bseADR45, 2))}
-          ${bseContextRow('BSE ADR — Last 20 Days (₹ Cr/day)' + flagTags(fBse20), fmtNum(mkt.bseADR20, 2))}
-        </tbody>
-      </table>
-    </div>
-    <div style="overflow-x:auto">
-      <table class="data-table scenario-table">
-        <thead><tr><th>Metric</th><th style="text-align:center">Bear</th><th style="text-align:center">Base</th><th style="text-align:center">Bull</th></tr></thead>
-        <tbody>
-          <tr>
-            <td>Total Market ADR Growth (%)</td>
-            <td style="text-align:center">${bseCellInput('adrGrowthBearPct', assumptions.adrGrowthBearPct, '0.5')}</td>
-            <td style="text-align:center">${bseCellInput('adrGrowthBasePct', assumptions.adrGrowthBasePct, '0.5')}</td>
-            <td style="text-align:center">${bseCellInput('adrGrowthBullPct', assumptions.adrGrowthBullPct, '0.5')}</td>
-          </tr>
-          <tr><td>Projected Total Market ADR (₹ Cr/day)</td><td id="annProjADR-bear" style="text-align:center"></td><td id="annProjADR-base" style="text-align:center"></td><td id="annProjADR-bull" style="text-align:center"></td></tr>
-          <tr style="color:var(--color-text-muted)"><td>BSE Target ADR (₹ Cr/day) — Method 1, 45-day share <span style="font-size:11px">(informational)</span>${flagTags(mergeFlags([fBseFY, fMkt45]))}</td><td id="annM1-bear" style="text-align:center"></td><td id="annM1-base" style="text-align:center"></td><td id="annM1-bull" style="text-align:center"></td></tr>
-          <tr><td>BSE Target ADR (₹ Cr/day) — Method 2, 20-day share <span style="font-size:11px;color:var(--color-text-muted)">(used)</span>${flagTags(mergeFlags([fBseFY, fMkt20]))}</td><td id="annM2-bear" style="text-align:center"></td><td id="annM2-base" style="text-align:center"></td><td id="annM2-bull" style="text-align:center"></td></tr>
-          <tr>
-            <td>Other Income — Annual (₹ Cr, same for all scenarios)</td>
-            <td colspan="3" style="text-align:center">${bseCellInput('otherIncomeAnnualCr', assumptions.otherIncomeAnnualCr, '1')}</td>
-          </tr>
-          <tr><td>Total Income</td><td id="annIncome-bear" style="text-align:center"></td><td id="annIncome-base" style="text-align:center"></td><td id="annIncome-bull" style="text-align:center"></td></tr>
-          <tr>
-            <td>PAT Margin (%, same for all scenarios)</td>
-            <td colspan="3" style="text-align:center">${bseCellInput('patMarginAnnualPct', assumptions.patMarginAnnualPct, '0.5')}</td>
-          </tr>
-          <tr><td>PAT</td><td id="annPat-bear" style="text-align:center"></td><td id="annPat-base" style="text-align:center"></td><td id="annPat-bull" style="text-align:center"></td></tr>
-          <tr><td>EPS</td><td id="annEps-bear" style="text-align:center"></td><td id="annEps-base" style="text-align:center"></td><td id="annEps-bull" style="text-align:center"></td></tr>
-          <tr>
-            <td>PE (x)</td>
-            <td style="text-align:center">${bseCellInput('peBear', assumptions.peBear, '1')}</td>
-            <td style="text-align:center">${bseCellInput('peBase', assumptions.peBase, '1')}</td>
-            <td style="text-align:center">${bseCellInput('peBull', assumptions.peBull, '1')}</td>
-          </tr>
-          <tr><td>Price Target ${latestFY}</td><td id="annPriceT-bear" style="text-align:center"></td><td id="annPriceT-base" style="text-align:center"></td><td id="annPriceT-bull" style="text-align:center"></td></tr>
-          <tr>
-            <td>Discount Rate (%, same for all scenarios)</td>
-            <td colspan="3" style="text-align:center">${bseCellInput('discountPct', assumptions.discountPct, '0.5')}</td>
-          </tr>
-          <tr style="font-weight:600"><td>Target Price</td><td id="annTarget-bear" style="text-align:center"></td><td id="annTarget-base" style="text-align:center"></td><td id="annTarget-bull" style="text-align:center"></td></tr>
-          <tr><td>Upside vs CMP</td><td id="annUpside-bear" style="text-align:center"></td><td id="annUpside-base" style="text-align:center"></td><td id="annUpside-bull" style="text-align:center"></td></tr>
-        </tbody>
-      </table>
-    </div>
-    <button class="share-range-btn" id="bseValuationReset" style="margin:var(--space-3) 14px 14px">Reset to Excel defaults</button>
-  </div>
-
-  <div class="chart-panel" style="margin-bottom:var(--space-4)">
-    <div class="chart-title">4 · Quarterly Predictor — ${latestQ}</div>
-    <p class="section-desc">Same layout as Excel's "Quarterly Predictor" — stops at PAT, doesn't carry through to EPS/PE.</p>
-    <div style="overflow-x:auto">
-      <table class="data-table">
-        <tbody>
-          ${bseContextRow('Quarter Total Trading Days', bseCellInput('q1TotalTradingDays', assumptions.q1TotalTradingDays, '1'))}
-          ${bseContextRow('Quarter Trading Days Elapsed', `<span id="qtrCtxDaysElapsed"></span>`)}
-          ${bseContextRow('BSE Target ADR (₹ Cr/day) — Method 1, 45-day share <span style="font-size:11px;color:var(--color-text-muted)">(used)</span>' + flagTags(mergeFlags([fQtd, fMkt45])), `<span id="qtrM1"></span>`)}
-          ${bseContextRow('BSE Target ADR (₹ Cr/day) — Method 2, 20-day share <span style="font-size:11px;color:var(--color-text-muted)">(informational)</span>' + flagTags(mergeFlags([fQtd, fMkt20])), `<span id="qtrM2"></span>`)}
-          ${bseContextRow('Transaction Revenue (₹ Cr)', `<span id="qtrTxnRev"></span>`)}
-          ${bseContextRow('Other Income — Quarter (₹ Cr)', bseCellInput('otherIncomeQuarterlyCr', assumptions.otherIncomeQuarterlyCr, '1'))}
-          ${bseContextRow('Total Revenue (₹ Cr)', `<span id="qtrTotalRev"></span>`)}
-          ${bseContextRow('PAT Margin — Quarter (%)', bseCellInput('patMarginQuarterlyPct', assumptions.patMarginQuarterlyPct, '0.5'))}
-          ${bseContextRow('<strong>PAT (₹ Cr)</strong>', `<strong><span id="qtrPat"></span></strong>`)}
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="chart-panel" style="margin-bottom:var(--space-4)">
-    <div class="chart-title">1 (cont.) · Analyst Targets</div>
-    <p class="section-desc">Hand-maintained in dashboard/data/bse_analyst_targets.json. Ages count from each note's date; notes older than ${ANALYST_TARGET_STALE_DAYS} days are flagged. A source link appears when the entry has a <code>source_url</code>.</p>
-    <div style="overflow-x:auto">
-      <table class="data-table">
-        <thead><tr><th>Broker</th><th>Target</th><th>Date · Age</th><th>Rating</th><th>Source</th><th>Methodology</th></tr></thead>
-        <tbody>${analystRows || '<tr><td colspan="6" style="color:var(--color-text-muted)">No analyst targets on file — add to dashboard/data/bse_analyst_targets.json</td></tr>'}</tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="chart-panel" style="margin-bottom:var(--space-4)">
-    <div class="chart-title">5 · Revenue Trend Tables</div>
-    <p class="section-desc">FY / Quarterly / Monthly / Weekly, YoY / QoQ / MoM / WoW — see also the Revenue Summary tab.</p>
-    <div id="bseValTrendTables"></div>
-  </div>
-
-  <div class="chart-panel" style="margin-bottom:var(--space-4)">
-    <div class="chart-title">6 &amp; 7 · 10-Day vs 45-Day DMA Revenue</div>
-    <p class="section-desc">See the Regression tab for the 45/20/10-day DMA regression, Price÷DMA ratio bands, and scatter charts.</p>
-    <div class="chart-wrapper"><canvas id="chartBse10v45"></canvas></div>
-  </div>
-
-  <div class="chart-panel">
-    <div class="chart-title">6 (cont.) · Log-Scale DMA Revenue vs Share Price</div>
-    <div class="chart-grid chart-grid-2">
-      <div>
-        <div style="font-size:12px;font-weight:600;color:var(--color-text-muted);margin-bottom:6px;padding:10px 14px 0">Jun 2023 onwards</div>
-        <div class="chart-wrapper"><canvas id="chartBseLogLog1"></canvas></div>
-      </div>
-      <div>
-        <div style="font-size:12px;font-weight:600;color:var(--color-text-muted);margin-bottom:6px;padding:10px 14px 0">Apr 2024 onwards</div>
-        <div class="chart-wrapper"><canvas id="chartBseLogLog2"></canvas></div>
-      </div>
-    </div>
+    ${ex === 'bse' ? rxPanel({ title: 'Analyst targets', meta: 'bse_analyst_targets.json · 12-month targets',
+      right: oldestAge != null && oldestAge > ANALYST_TARGET_STALE_DAYS ? rxChip(`Oldest ${oldestAge} days old`, 'warn') : '',
+      body: `<div class="rx-scroll"><table class="rx-table"><thead><tr><th scope="col">Broker</th><th scope="col">Target</th><th scope="col">vs CMP</th><th scope="col" class="rx-l">Rating</th><th scope="col">Date</th><th scope="col">Age</th><th scope="col" class="rx-l">Method</th><th scope="col" class="rx-l">Source</th></tr></thead><tbody>
+        ${analysts.length ? analysts.slice().sort((a, b) => b.target_price - a.target_price).map(t => {
+          const age = daysSinceIso(t.date);
+          const url = safeHttpUrl(t.source_url);
+          return `<tr><td>${escHtml(t.broker)}</td><td>${rxRupee(t.target_price)}</td><td>${cmp ? rxChangeHTML(t.target_price / cmp - 1) : '—'}</td><td class="rx-l">${escHtml(t.rating || '')}</td><td>${rxDate(t.date)}</td><td>${age == null ? '—' : rxChip(`${age} d`, age > ANALYST_TARGET_STALE_DAYS ? 'warn' : '')}</td><td class="rx-wrap">${escHtml(t.methodology || '')}</td><td class="rx-l">${url ? `<a class="rx-link" href="${url}" target="_blank" rel="noopener noreferrer">Report ↗</a>` : '<span class="rx-foot">not on file</span>'}</td></tr>`;
+        }).join('') : '<tr><td colspan="8" class="rx-l">No analyst targets on file: add them to dashboard/data/bse_analyst_targets.json</td></tr>'}
+      </tbody></table></div>`,
+      foot: `Notes older than ${ANALYST_TARGET_STALE_DAYS} days are flagged. Revenue trend tables are on <button type="button" class="rx-link" data-rx-goto="revenue">Revenue Summary</button>; the moving-average charts on <button type="button" class="rx-link" data-rx-goto="share">Regression</button>.` }) : ''}
   </div>`;
 
-  updateOutputs();
-  buildQuickValuationPanel(el.querySelector('#bseQuickValPanel'), 'bse', bseSeries, tri.cmp);
-  el.querySelector('#bseValTrendTables').innerHTML =
-    xlStaticSegmentBlock(ENRICHED_DATA.summary_total, 'Total', 'total') +
-    xlStaticSegmentBlock(ENRICHED_DATA.seg_options, 'Options', 'options') +
-    xlStaticSegmentBlock(ENRICHED_DATA.seg_cash, 'Cash', 'cash');
+  const q = k => el.querySelector(`[data-rx="${k}"]`);
 
-  const debouncedSave = debounce(() => saveBSEValuationAssumptions(assumptions), 500);
-  el.querySelectorAll('[data-bse-assump]').forEach(input => {
-    input.addEventListener('input', () => {
-      assumptions[input.dataset.bseAssump] = parseFloat(input.value) || 0;
-      recompute();
-      updateOutputs();
-      debouncedSave();
-    });
-  });
-  const resetBtn = document.getElementById('bseValuationReset');
-  if (resetBtn) resetBtn.addEventListener('click', () => {
-    assumptions = { ...BSE_VALUATION_DEFAULTS };
-    saveBSEValuationAssumptions(assumptions);
-    buildBSEValuation();
-  });
-
-  buildBSEDMADiagnosticCharts(bseSeries);
-}
-
-function buildBSEDMADiagnosticCharts(bseSeries) {
-  const d10 = computeShareModel(SHARE_DATA, 10);
-  const d45 = computeShareModel(SHARE_DATA, 45);
-  if (!d10 || !d45) return;
-
-  ['bse10v45', 'bseLogLog1', 'bseLogLog2'].forEach(k => {
-    if (charts[k]) { charts[k].destroy(); charts[k] = null; }
-  });
-
-  // ── 10-vs-45 DMA revenue overlay ──
-  const byDate10 = new Map(d10.series.map(r => [r.date, r.rev_ma]));
-  const merged = d45.series.filter(r => byDate10.has(r.date));
-  setCanvasHeight('chartBse10v45', 280);
-  charts.bse10v45 = new Chart(document.getElementById('chartBse10v45'), {
-    type: 'line',
-    data: {
-      labels: merged.map(r => fmtChartDate(r.date)),
-      datasets: [
-        { label: '45-Day MA Revenue', data: merged.map(r => r.rev_ma), borderColor: CHART_COLORS[0], backgroundColor: 'transparent', borderWidth: 2, pointRadius: 0, tension: 0.25 },
-        { label: '10-Day MA Revenue', data: merged.map(r => byDate10.get(r.date)), borderColor: CHART_COLORS[4], backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 0, tension: 0.25 },
-      ]
-    },
-    options: {
-      interaction: { mode: 'index', intersect: false },
-      plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 2) + ' Cr' } } },
-      scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
-        y: { ticks: { callback: v => '₹' + fmtNum(v, 0) + ' Cr' } }
-      }
-    }
-  });
-
-  // ── Log-scale DMA Revenue vs Price, two eras ──
-  const eras = [
-    { key: 'bseLogLog1', canvasId: 'chartBseLogLog1', start: '2023-06-01' },
-    { key: 'bseLogLog2', canvasId: 'chartBseLogLog2', start: '2024-04-01' },
-  ];
-  eras.forEach(era => {
-    const ser = d45.series.filter(r => r.date >= era.start);
-    if (!ser.length) return;
-    setCanvasHeight(era.canvasId, 260);
-    charts[era.key] = new Chart(document.getElementById(era.canvasId), {
-      type: 'line',
-      data: {
-        labels: ser.map(r => fmtChartDate(r.date)),
-        datasets: [
-          { label: '45-Day MA Revenue (₹ Cr)', data: ser.map(r => r.rev_ma), borderColor: CHART_COLORS[4], backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 0, tension: 0.2, yAxisID: 'yRev' },
-          { label: 'Share Price (₹)', data: ser.map(r => r.price), borderColor: CHART_COLORS[0], backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 0, tension: 0.2, yAxisID: 'yPrice' },
-        ]
-      },
-      options: {
-        interaction: { mode: 'index', intersect: false },
-        scales: {
-          x: { ticks: { maxTicksLimit: 8, font: { size: CHART_FONT.tick } } },
-          yRev:   { type: 'logarithmic', position: 'left',  ticks: { font: { size: CHART_FONT.tick }, callback: v => fmtNum(v, 0) } },
-          yPrice: { type: 'logarithmic', position: 'right', ticks: { font: { size: CHART_FONT.tick }, callback: v => fmtNum(v, 0) }, grid: { drawOnChartArea: false } },
-        }
-      }
-    });
-  });
-}
-
-function buildMCXCharts(viewSer, reg, maWin) {
-  ['mcxSharePrice', 'mcxRevMaVsPrice', 'mcxRatioSD', 'mcxShareScatter'].forEach(k => {
-    if (charts[k]) { charts[k].destroy(); charts[k] = null; }
-  });
-  if (!viewSer.length) return;
-
-  const labels  = viewSer.map(r => fmtChartDate(r.date));
-  const actuals = viewSer.map(r => r.price);
-  const preds   = viewSer.map(r => r.price_pred);
-  const revMA   = viewSer.map(r => r.rev_ma);
-  const revRaw  = viewSer.map(r => r.revenue_cr);
-
-  setCanvasHeight('chartMcxSharePrice', 280);
-  charts.mcxSharePrice = new Chart(document.getElementById('chartMcxSharePrice'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        { label: 'Actual Price',    data: actuals, borderColor: CHART_COLORS[0], backgroundColor: 'transparent', borderWidth: 2,   pointRadius: 0, tension: 0.2 },
-        { label: 'Model Prediction', data: preds,  borderColor: CHART_COLORS[2], backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 0, tension: 0.2, borderDash: [5, 3] },
-      ]
-    },
-    options: {
-      interaction: { mode: 'index', intersect: false },
-      plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 0) } } },
-      scales: {
-        x: { ticks: { maxTicksLimit: 8, font: { size: CHART_FONT.tick } } },
-        y: { ticks: { callback: v => '₹' + fmtNum(v, 0) } }
-      }
-    }
-  });
-
-  setCanvasHeight('chartMcxRevMaVsPrice', 300);
-  charts.mcxRevMaVsPrice = new Chart(document.getElementById('chartMcxRevMaVsPrice'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        { label: maWin + '-Day MA Revenue (₹ Cr)', data: revMA,   borderColor: CHART_COLORS[4], backgroundColor: 'transparent', borderWidth: 2, pointRadius: 0, tension: 0.3, yAxisID: 'yRev' },
-        { label: 'MCX Share Price (₹)',             data: actuals, borderColor: CHART_COLORS[0], backgroundColor: 'transparent', borderWidth: 2, pointRadius: 0, tension: 0.3, yAxisID: 'yPrice' },
-      ]
-    },
-    options: {
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        tooltip: {
-          callbacks: {
-            label: ctx => ctx.dataset.yAxisID === 'yRev'
-              ? ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 2) + ' Cr'
-              : ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 0)
-          }
-        }
-      },
-      scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
-        yRev: {
-          type: 'linear', position: 'left',
-          title: { display: true, text: maWin + '-Day MA Rev (₹ Cr)', font: { size: CHART_FONT.title } },
-          ticks: { callback: v => '₹' + fmtNum(v, 1) + ' Cr', font: { size: CHART_FONT.tick } },
-        },
-        yPrice: {
-          type: 'linear', position: 'right',
-          title: { display: true, text: 'Share Price (₹)', font: { size: CHART_FONT.title } },
-          ticks: { callback: v => '₹' + fmtNum(v, 0), font: { size: CHART_FONT.tick } },
-          grid: { drawOnChartArea: false },
-        },
-      }
-    }
-  });
-
-  const ratios = viewSer.map(r => r.price / r.rev_ma);
-  const n      = ratios.length;
-  const mean   = ratios.reduce((a, b) => a + b, 0) / n;
-  const std    = Math.sqrt(ratios.reduce((a, b) => a + (b - mean) ** 2, 0) / n);
-  const flat   = val => viewSer.map(() => val);
-  const sdBandOuter = CHART_COLORS[0] + '18';
-  const sdBandInner = CHART_COLORS[0] + '30';
-  const sdLineOuter = CHART_COLORS[0] + '55';
-  const sdLineInner = CHART_COLORS[0] + '80';
-
-  setCanvasHeight('chartMcxRatioSD', 300);
-  charts.mcxRatioSD = new Chart(document.getElementById('chartMcxRatioSD'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        { label: '+2σ',          data: flat(mean + 2 * std), borderColor: sdLineOuter, borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: { target: 4 }, backgroundColor: sdBandOuter },
-        { label: '+1σ',          data: flat(mean + std),     borderColor: sdLineInner, borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: { target: 3 }, backgroundColor: sdBandInner },
-        { label: 'Mean',         data: flat(mean),           borderColor: CHART_COLORS[4], borderWidth: 1.5, borderDash: [5, 3], pointRadius: 0, fill: false, backgroundColor: 'transparent' },
-        { label: '−1σ',          data: flat(mean - std),     borderColor: sdLineInner, borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: false, backgroundColor: 'transparent' },
-        { label: '−2σ',          data: flat(mean - 2 * std), borderColor: sdLineOuter, borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: false, backgroundColor: 'transparent' },
-        { label: 'Price / Rev MA', data: ratios, borderColor: CHART_COLORS[1], backgroundColor: 'transparent', borderWidth: 2, pointRadius: 0, tension: 0.2, fill: false },
-      ]
-    },
-    options: {
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        tooltip: {
-          callbacks: {
-            label: ctx => {
-              const v = ctx.raw.toFixed(1);
-              if (ctx.dataset.label === 'Price / Rev MA') {
-                const zVal = (ctx.raw - mean) / std;
-                return `Ratio: ${v}  (${zVal >= 0 ? '+' : ''}${zVal.toFixed(1)}σ)`;
-              }
-              const target = ctx.raw * revMA[ctx.dataIndex];
-              return `${ctx.dataset.label}: ${v}  →  ₹${fmtNum(target, 0)} target`;
-            }
-          }
-        }
-      },
-      scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
-        y: {
-          ticks: { font: { size: CHART_FONT.tick }, callback: v => v.toFixed(0) },
-          title: { display: true, text: 'Price ÷ Rev MA' + maWin, font: { size: CHART_FONT.title } },
-        }
-      }
-    }
-  });
-
-  const scatterData = viewSer.map(r => ({ x: r.rev_ma, y: r.price }));
-  const xVals = viewSer.map(r => r.rev_ma);
-  const xMin  = Math.min(...xVals);
-  const xMax  = Math.max(...xVals);
-  const regLine = [
-    { x: xMin, y: reg.slope * xMin + reg.intercept },
-    { x: xMax, y: reg.slope * xMax + reg.intercept },
-  ];
-
-  setCanvasHeight('chartMcxShareScatter', 260);
-  charts.mcxShareScatter = new Chart(document.getElementById('chartMcxShareScatter'), {
-    type: 'scatter',
-    data: {
-      datasets: [
-        { label: 'Price vs Rev MA',  data: scatterData, backgroundColor: CHART_COLORS[0] + '88', pointRadius: 3 },
-        { label: 'Regression Line', data: regLine, type: 'line', borderColor: CHART_COLORS[2], backgroundColor: 'transparent', borderWidth: 2, borderDash: [5, 3], pointRadius: 0 },
-      ]
-    },
-    options: {
-      plugins: {
-        tooltip: { callbacks: { label: ctx => `Rev MA${maWin}: ₹${fmtNum(ctx.parsed.x, 1)} Cr | Price: ₹${fmtNum(ctx.parsed.y, 0)}` } }
-      },
-      scales: {
-        x: { title: { display: true, text: maWin + '-Day MA Revenue (₹ Cr)' }, ticks: { callback: v => '₹' + fmtNum(v, 1) } },
-        y: { title: { display: true, text: 'MCX Share Price (₹)' },            ticks: { callback: v => '₹' + fmtNum(v, 0) } }
-      }
-    }
-  });
-}
-
-function buildMCXShareAnalysis() {
-  const el = document.getElementById('mcx-share-inner');
-  if (!el) return;
-
-  if (!SHARE_DATA) {
-    el.innerHTML = `<div class="chart-panel" style="text-align:center;padding:48px;color:var(--color-text-muted)">
-      <div style="font-size:14px;font-weight:600;margin-bottom:8px">Share analytics data not available</div>
-      <div style="font-size:12px">Run scripts/mcx_share_analysis.py to generate mcx_share_analysis.json</div>
-    </div>`;
-    return;
+  function compute() {
+    return VALUATION_SCENARIOS.map((s, i) => valuationScenario(ctx, v, v['g' + i], v['pe' + i], cmp));
   }
 
-  const reg      = SHARE_DATA.regression;
-  const lat      = SHARE_DATA.latest;
-  const ser      = SHARE_DATA.series || [];
-  const maWin    = SHARE_DATA.ma_window;
-  const regStart = SHARE_DATA.regression_start || '2025-01-01';
+  function render() {
+    const sc = compute();
+    const base = sc[1];
+    const pick = s => state.basis === 'now' ? s.now : s.fwd;
+    const up = s => state.basis === 'now' ? s.upNow : s.upFwd;
+    const basisName = state.basis === 'now' ? 'today' : `${ctx.fyShort} end`;
+    q('basisName').textContent = basisName;
+    q('srcNote').textContent = v.src === 'mkt' && ctx.mkt
+      ? `${ctx.elapsed} sessions actual (${rxCr(ctx.revToDate, 0)}), then ${rxCr(ctx.mkt.total45 * ctx.mkt.share20, 2)} a session: market ADR ${fmtNum(ctx.mkt.total45, 2)} × BSE 20-session share ${fmtPct(ctx.mkt.share20)}.`
+      : `${ctx.elapsed} sessions actual (${rxCr(ctx.revToDate, 0)}), then the trailing 45-session average ${rxCr(ctx.adr45, 2)} a session.`;
 
-  const infoHTML = shareRegressionInfoHTML(
-    reg, lat.price_pred, lat.price_actual, lat.is_live, lat.date,
-    maWin, regStart, SHARE_DATA.n_days, SHARE_DATA.ticker, 0, SHARE_DATA.methodology
-  );
+    // Assumption table outputs
+    sc.forEach((s, i) => {
+      const set = (k, html) => { const n = el.querySelector(`[data-out="${k}-${i}"]`); if (n) n.innerHTML = html; };
+      set('adr', fmtNum(s.adr, 2)); set('txn', fmtNum(s.txn, 0)); set('oi', fmtNum(s.oi, 0)); set('total', fmtNum(s.total, 0));
+      set('pat', fmtNum(s.pat, 0)); set('eps', fmtNum(s.eps, 2)); set('fwd', fmtNum(s.fwd, 0)); set('now', fmtNum(s.now, 0));
+      set('up', up(s) == null ? '—' : `<span class="${up(s) >= 0 ? 'rx-up' : 'rx-dn'}">${rxSignedPct(up(s))}</span>`);
+    });
+    Object.entries({ g: ['g0', 'g1', 'g2'], days: ['days'], oi: ['oi'], margin: ['margin'], shares: ['shares'], pe: ['pe0', 'pe1', 'pe2'], disc: ['disc'] })
+      .forEach(([k, keys]) => { const n = el.querySelector(`[data-src="${k}"]`); if (n) n.innerHTML = fieldChip[k]() + editedChip(keys); });
+    el.querySelectorAll('input[data-key]').forEach(i => i.classList.toggle('is-edited', Math.abs(Number(v[i.dataset.key]) - Number(defaults[i.dataset.key])) > 1e-9));
 
-  const regLabel = new Date(regStart + 'T00:00:00').toLocaleString('en-IN', { month: 'short', year: 'numeric' }) + '+';
-  const ranges = [
-    { key: '1m',      label: '1M' },
-    { key: '3m',      label: '3M' },
-    { key: '6m',      label: '6M' },
-    { key: 'nov2024', label: regLabel },
-    { key: '1y',      label: '1Y' },
-    { key: '2y',      label: '2Y' },
-  ];
-  const rangeToggleHTML = `
-  <div class="share-range-toggle">
-    ${ranges.map(r => `<button class="share-range-btn mcx-range-btn${r.key === 'nov2024' ? ' active' : ''}" data-range="${r.key}">${r.label}</button>`).join('')}
-  </div>`;
+    // KPIs
+    const blendParts = [base.now, fv, brokerAvg != null ? brokerAvg / (1 + v.disc / 100) : null].filter(x => x != null && isFinite(x));
+    const blend = blendParts.length ? blendParts.reduce((a, b) => a + b, 0) / blendParts.length : null;
+    const range = yr.length ? `${sinceListing ? 'since listing' : '52-week'} ${rxRupee(Math.min(...yr))} – ${fmtNum(Math.max(...yr), 0)}` : cmpWhen;
+    q('kpis').innerHTML = [
+      rxKpi('CMP', cmp != null ? rxRupee(cmp) : '—', `${cmpWhen}${yr.length ? ' · ' + range : ''}`),
+      rxKpi(`EPS ${fyE} · base`, rxRupee(base.eps, 2), `PAT ${rxCr(base.pat, 0)} on ${fmtNum(v.shares, 2)} Cr shares`),
+      rxKpi('P/E at CMP', cmp && base.eps ? `${fmtNum(cmp / base.eps, 1)}×` : '—', `vs base multiple ${fmtNum(v.pe1, 0)}×`),
+      rxKpi(`Base target · ${basisName}`, rxRupee(pick(base)), up(base) == null ? 'no CMP yet' : `${rxChangeHTML(up(base))} vs CMP`, { accent: true }),
+      blendParts.length > 1
+        ? rxKpi('Blended target · today', rxRupee(blend), cmp ? `${rxChangeHTML(blend / cmp - 1)} · avg of ${['model (today)', fv != null ? 'regression' : null, brokerAvg != null ? 'analysts (discounted)' : null].filter(Boolean).join(', ')}` : 'needs a CMP')
+        : rxKpi('Blended target · today', '—', 'needs a regression fair value or analyst targets beside the model'),
+    ].join('');
 
-  const dmaToggleHTML = `
-  <div class="share-dma-toggle">
-    <span class="share-dma-label">DMA</span>
-    ${[10, 20, 45].map(w => `<button class="share-range-btn mcx-dma-btn${w === 45 ? ' active' : ''}" data-dma="${w}">${w}D</button>`).join('')}
-  </div>`;
-
-  const lagToggleHTML = `
-  <div class="share-dma-toggle">
-    <span class="share-dma-label">Lag</span>
-    ${[0, 45, 60, 90].map(l => `<button class="share-range-btn mcx-lag-btn${l === 0 ? ' active' : ''}" data-lag="${l}">${l === 0 ? 'None' : l + 'D'}</button>`).join('')}
-  </div>`;
-
-  const chartsHTML = `
-  <div style="margin-top:var(--space-4)">
-    <div class="chart-panel" style="margin-bottom:var(--space-4)">
-      <div class="chart-title">MCX Share Price: Actual vs Model</div>
-      <div class="chart-wrapper"><canvas id="chartMcxSharePrice"></canvas></div>
-    </div>
-    <div class="chart-panel" style="margin-bottom:var(--space-4)">
-      <div class="chart-title" id="mcxDmaChartTitle">${maWin}-Day MA Revenue vs MCX Share Price</div>
-      <div class="chart-wrapper"><canvas id="chartMcxRevMaVsPrice"></canvas></div>
-    </div>
-    <div class="chart-panel" style="margin-bottom:var(--space-4)">
-      <div class="chart-title" id="mcxRatioChartTitle">Price ÷ Rev MA${maWin} Ratio — Mean ± SD</div>
-      <div class="chart-wrapper"><canvas id="chartMcxRatioSD"></canvas></div>
-    </div>
-    <div class="chart-panel">
-      <div class="chart-title">Revenue → Price Scatter</div>
-      <div class="chart-wrapper chart-wrapper--scatter"><canvas id="chartMcxShareScatter"></canvas></div>
-    </div>
-  </div>`;
-
-  const sectionHTML = `
-  <div style="margin-top:var(--space-5)">
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:var(--space-4);padding-bottom:var(--space-2);border-bottom:1px solid var(--color-border)">
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--color-text-muted)">Charts</span>
-        ${dmaToggleHTML}
-        ${lagToggleHTML}
-      </div>
-      ${rangeToggleHTML}
-    </div>
-    ${chartsHTML}
-  </div>`;
-
-  el.innerHTML = `<div id="mcxShareInfo">${infoHTML}</div>` + sectionHTML;
-
-  let mcxActiveDma   = 45;
-  let mcxActiveLag   = 0;
-  let mcxActiveRange = 'nov2024';
-  const mcxDmaCache  = {};
-
-  function getMcxDmaData(w, lag) {
-    const key = `${w}_${lag}`;
-    if (!mcxDmaCache[key]) mcxDmaCache[key] = computeShareModel(SHARE_DATA, w, lag);
-    return mcxDmaCache[key];
-  }
-
-  function refreshMCXCharts() {
-    const d = getMcxDmaData(mcxActiveDma, mcxActiveLag);
-    if (!d) return;
-    buildMCXCharts(filterShareSeries(d.series, mcxActiveRange, regStart), d.reg, mcxActiveDma);
-    const lagSuffix = mcxActiveLag ? ` (lag ${mcxActiveLag}d)` : '';
-    const t1 = document.getElementById('mcxDmaChartTitle');
-    if (t1) t1.textContent = `${mcxActiveDma}-Day MA Revenue vs MCX Share Price${lagSuffix}`;
-    const t2 = document.getElementById('mcxRatioChartTitle');
-    if (t2) t2.textContent = `Price ÷ Rev MA${mcxActiveDma} Ratio — Mean ± SD${lagSuffix}`;
-    const infoEl = document.getElementById('mcxShareInfo');
-    if (infoEl) {
-      const latestRow = latestShareRow(d.series, lat.date);
-      infoEl.innerHTML = shareRegressionInfoHTML(
-        d.reg, latestRow.price_pred, lat.is_live ? lat.price_actual : latestRow.price, lat.is_live, lat.date,
-        mcxActiveDma, regStart, d.n, SHARE_DATA.ticker, mcxActiveLag, d.meth
-      );
+    // Football field
+    const rows = [{ label: 'P/E × EPS', note: `this model · ${basisName}`, lo: pick(sc[0]), mid: pick(base), hi: pick(sc[2]), color: RX.model, midLabel: 'base' }];
+    if (fv != null) rows.push({ label: 'Regression fair value', note: mape != null ? `${rxRupee(fv)} ± ${mape.toFixed(1)} % holdout error${meth?.holdout && !meth.holdout.beats_naive ? ' · loses to “price unchanged”' : ''}` : 'published fair value', lo: mape != null ? fv * (1 - mape / 100) : fv, mid: fv, hi: mape != null ? fv * (1 + mape / 100) : fv, color: RX.grey, midLabel: 'fair value' });
+    else rows.push({ label: 'Regression fair value', note: SHARE_DATA?.status === 'collecting' ? `${SHARE_DATA.n_days} of ${SHARE_DATA.min_days_required} sessions collected` : 'withheld: fit not significant', na: true });
+    if (ratio && lastMa) rows.push({ label: 'Price ÷ revenue MA band', note: `mean ± 1σ × MA ₹${fmtNum(lastMa, 2)} Cr`, lo: (ratio.mean - ratio.sd) * lastMa, mid: ratio.mean * lastMa, hi: (ratio.mean + ratio.sd) * lastMa, color: RX.grey, midLabel: 'mean' });
+    if (analysts.length) {
+      const tp = analysts.map(t => t.target_price);
+      rows.push({ label: 'Analyst targets', note: `${analysts.length} brokers, 12-month${oldest ? ` · ${rxDate(oldest).replace(/^\d+ /, '')}` : ''}`, lo: Math.min(...tp), mid: brokerAvg, hi: Math.max(...tp), color: RX.grey, midLabel: 'mean' });
     }
+    if (yr.length) rows.push({ label: sinceListing ? 'Range since listing' : '52-week range', note: `${SHARE_DATA.ticker} closes`, lo: Math.min(...yr), mid: cmp, hi: Math.max(...yr), color: RX.light, midLabel: 'CMP' });
+    const vals = rows.filter(r => !r.na).flatMap(r => [r.lo, r.hi]).concat(cmp != null ? [cmp] : []).filter(x => x != null && isFinite(x));
+    const nr = niceRange(Math.min(...vals) * 0.97, Math.max(...vals) * 1.03, 6);
+    const pos = x => ((Math.max(nr.lo, Math.min(nr.hi, x)) - nr.lo) / (nr.hi - nr.lo) * 100).toFixed(2);
+    const cmpLine = cmp != null ? `<div class="rx-ff-cmp" style="left:${pos(cmp)}%" title="CMP ${rxRupee(cmp)}"></div>` : '';
+    const ticks = [];
+    for (let t = nr.lo; t <= nr.hi + 1e-9; t += nr.step) ticks.push(t);
+    q('ff').innerHTML = rows.map(r => `
+      <div class="rx-ff-lab">${r.label}<span>${r.note}</span></div>
+      <div class="rx-ff-trk">${r.na ? '<span class="rx-ff-na">not available</span>' : `
+        <div class="rx-ff-bar" style="left:${pos(r.lo)}%;width:${Math.max(pos(r.hi) - pos(r.lo), 0.6).toFixed(2)}%;background:${r.color}" title="${r.label}: ${rxRupee(r.lo)} – ${rxRupee(r.hi)}"></div>
+        ${r.mid != null ? `<div class="rx-ff-tick" style="left:${pos(r.mid)}%"></div>` : ''}`}${cmpLine}</div>
+      <div class="rx-ff-val">${r.na ? '<span>—</span>' : `<strong>${rxRupee(r.lo)} – ${fmtNum(r.hi, 0)}</strong><span>${r.midLabel} ${rxRupee(r.mid)}</span>`}</div>`).join('') + `
+      <div class="rx-ff-axis-pad"></div><div class="rx-ff-axis">${ticks.map(t => `<span style="left:${pos(t)}%">${rxRupee(t)}</span>`).join('')}</div><div class="rx-ff-axis-pad"></div>`;
+    q('ffNote').innerHTML = `The model row follows “Targets as”. ${fv != null ? 'Regression and ratio rows use the published 45-session fit; see the Regression tab.' : ''} ${analysts.length && oldestAge > ANALYST_TARGET_STALE_DAYS ? `Analyst targets are raw 12-month figures and up to ${oldestAge} days old.` : ''}`;
+
+    // Sensitivity: P/E rows × ADR columns around the base case
+    const peStep = 5, adrStep = niceRange(0, base.adr * 0.2, 4).step;
+    const pes = [-2, -1, 0, 1, 2].map(k => v.pe1 + k * peStep).filter(x => x > 0);
+    const adrs = [-2, -1, 0, 1, 2].map(k => base.adr + k * adrStep).filter(x => x > 0);
+    const shade = u => u == null ? '#F1F1EE' : u <= -0.15 ? '#E9B48C' : u <= -0.05 ? '#F5D9C4' : u < 0.05 ? '#F1F1EE' : u < 0.15 ? '#CBD8F4' : '#9DB4E8';
+    q('sensMeta').textContent = `Target ${basisName}, ₹ · P/E × ADR (₹ Cr / session)`;
+    q('sens').innerHTML = `<thead><tr><th scope="col">P/E · ADR</th>${adrs.map((a, j) => `<th scope="col">${fmtNum(a, adrStep < 1 ? 2 : 1)}${j === 2 ? '<br><span class="rx-foot">base</span>' : ''}</th>`).join('')}</tr></thead><tbody>${pes.map(pe => `<tr><th scope="row">${fmtNum(pe, 0)}×</th>${adrs.map((a, j) => {
+      const r = valuationFromAdr(a, v, pe, cmp);
+      const u = up(r);
+      return `<td class="${pe === v.pe1 && j === 2 ? 'is-base' : ''}" style="background:${shade(u)}">${rxRupee(pick(r))}<small>${u == null ? '' : rxSignedPct(u, 0)}</small></td>`;
+    }).join('')}</tr>`).join('')}</tbody>`;
   }
 
-  refreshMCXCharts();
-
-  el.querySelectorAll('.mcx-dma-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      el.querySelectorAll('.mcx-dma-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      mcxActiveDma = parseInt(btn.dataset.dma);
-      refreshMCXCharts();
-    });
+  const save = debounce(() => saveValuationInputs(ex, v), 400);
+  el.addEventListener('input', e => {
+    const key = e.target.dataset && e.target.dataset.key;
+    if (!key) return;
+    const num = parseFloat(e.target.value);
+    if (!isFinite(num)) return;
+    v[key] = num;
+    render();
+    save();
   });
-
-  el.querySelectorAll('.mcx-lag-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      el.querySelectorAll('.mcx-lag-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      mcxActiveLag = parseInt(btn.dataset.lag);
-      refreshMCXCharts();
-    });
+  el.addEventListener('change', e => { const key = e.target.dataset && e.target.dataset.key; if (key) e.target.value = v[key]; });
+  q('reset').addEventListener('click', () => {
+    Object.assign(v, defaults);
+    if (v.src === 'mkt' && !ctx.mkt) v.src = 'proj';
+    el.querySelectorAll('input[data-key]').forEach(i => { i.value = v[i.dataset.key]; });
+    el.querySelectorAll('[data-rx-seg="src"] button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.value === v.src)));
+    try { localStorage.removeItem(valuationStorageKey(ex)); } catch (e) { /* storage blocked */ }
+    render();
   });
-
-  el.querySelectorAll('.mcx-range-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      el.querySelectorAll('.mcx-range-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      mcxActiveRange = btn.dataset.range;
-      refreshMCXCharts();
-    });
-  });
+  rxOnSeg(el, 'basis', b => { state.basis = b; render(); });
+  rxOnSeg(el, 'src', s => { v.src = s; render(); save(); });
+  render();
 }
 
 // ========================
-// NSE SHARE ANALYTICS — cloned from the MCX block above (same layout/behaviour).
-// NSE listed 2026-09-24; see renderNSECollecting for the pre-regression state.
-// ========================
-
-// NSE listed on 2026-09-24, so there is no price history to regress against yet.
-// Until nse_share_analysis.json reaches status="ready" (min_days_required trading
-// days) this shows collection progress plus the raw price / revenue-MA rows.
-function renderNSECollecting(el) {
-  const s      = SHARE_DATA;
-  const n      = s.n_days || 0;
-  const need   = s.min_days_required || 20;
-  const lat    = s.latest || {};
-  const pct    = Math.min(100, Math.round(n / need * 100));
-  const sinceListing = s.first_price && lat.price_actual ? (lat.price_actual / s.first_price - 1) : null;
-
-  const rows = [...(s.series || [])].reverse().map(r => `
-    <tr>
-      <td>${r.date}</td>
-      <td class="wire-value">₹${fmtNum(r.price, 2)}</td>
-      <td class="wire-value">${fmtNum(r.revenue_cr, 2)}</td>
-      <td class="wire-value">${fmtNum(r.rev_ma, 2)}</td>
-    </tr>`).join('');
-
-  el.innerHTML = `
-  <div class="share-kpi-grid">
-    ${kpi('Days Collected', `${n} / ${need}`, 'regression starts at ' + need + ' trading days', '')}
-    ${kpi(lat.is_live ? 'Share Price 🟢 Live' : 'Share Price', '₹' + fmtNum(lat.price_actual, 2), 'ticker ' + s.ticker, '')}
-    ${kpi('Since Listing', sinceListing == null ? '—' : fmtPctSigned(sinceListing), 'vs first close ₹' + fmtNum(s.first_price, 2), sinceListing == null ? '' : (sinceListing >= 0 ? 'positive' : 'negative'))}
-    ${kpi('Listed On', s.listing_date, 'NSE (National Stock Exchange of India)', '')}
-  </div>
-  <div class="chart-panel" style="margin-bottom:var(--space-4);padding:20px 24px">
-    <div class="chart-title">Collecting price history</div>
-    <p class="section-desc">NSE shares only started trading on ${s.listing_date}, so there aren't enough price observations to fit a revenue → price regression yet. Daily closes are being collected automatically; once ${need} trading days are available the regression and charts appear here on their own (using the 45-day revenue moving average up to the previous session, same as BSE and MCX). A predicted price is shown only when the fit passes the significance checks.</p>
-    <div style="height:10px;border-radius:5px;background:var(--color-border);overflow:hidden;margin-top:12px">
-      <div style="height:100%;width:${pct}%;background:${CHART_COLORS[0]}"></div>
-    </div>
-    <div style="font-size:11px;color:var(--color-text-muted);margin-top:6px">${n} of ${need} trading days · ${pct}%</div>
-  </div>
-  <div class="chart-panel">
-    <div class="chart-title">Daily closes since listing</div>
-    <div style="overflow-x:auto">
-      <table class="data-table">
-        <thead><tr><th>Date</th><th>Close</th><th>Revenue (₹ Cr)</th><th>45D Rev MA to prev. day (₹ Cr)</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="4" style="color:var(--color-text-muted)">No overlapping price / revenue days yet</td></tr>'}</tbody>
-      </table>
-    </div>
-  </div>`;
-}
-
-function buildNSECharts(viewSer, reg, maWin) {
-  ['nseSharePrice', 'nseRevMaVsPrice', 'nseRatioSD', 'nseShareScatter'].forEach(k => {
-    if (charts[k]) { charts[k].destroy(); charts[k] = null; }
-  });
-  if (!viewSer.length) return;
-
-  const labels  = viewSer.map(r => fmtChartDate(r.date));
-  const actuals = viewSer.map(r => r.price);
-  const preds   = viewSer.map(r => r.price_pred);
-  const revMA   = viewSer.map(r => r.rev_ma);
-  const revRaw  = viewSer.map(r => r.revenue_cr);
-
-  setCanvasHeight('chartNseSharePrice', 280);
-  charts.nseSharePrice = new Chart(document.getElementById('chartNseSharePrice'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        { label: 'Actual Price',    data: actuals, borderColor: CHART_COLORS[0], backgroundColor: 'transparent', borderWidth: 2,   pointRadius: 0, tension: 0.2 },
-        { label: 'Model Prediction', data: preds,  borderColor: CHART_COLORS[2], backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 0, tension: 0.2, borderDash: [5, 3] },
-      ]
-    },
-    options: {
-      interaction: { mode: 'index', intersect: false },
-      plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 0) } } },
-      scales: {
-        x: { ticks: { maxTicksLimit: 8, font: { size: CHART_FONT.tick } } },
-        y: { ticks: { callback: v => '₹' + fmtNum(v, 0) } }
-      }
-    }
-  });
-
-  setCanvasHeight('chartNseRevMaVsPrice', 300);
-  charts.nseRevMaVsPrice = new Chart(document.getElementById('chartNseRevMaVsPrice'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        { label: maWin + '-Day MA Revenue (₹ Cr)', data: revMA,   borderColor: CHART_COLORS[4], backgroundColor: 'transparent', borderWidth: 2, pointRadius: 0, tension: 0.3, yAxisID: 'yRev' },
-        { label: 'NSE Share Price (₹)',             data: actuals, borderColor: CHART_COLORS[0], backgroundColor: 'transparent', borderWidth: 2, pointRadius: 0, tension: 0.3, yAxisID: 'yPrice' },
-      ]
-    },
-    options: {
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        tooltip: {
-          callbacks: {
-            label: ctx => ctx.dataset.yAxisID === 'yRev'
-              ? ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 2) + ' Cr'
-              : ctx.dataset.label + ': ₹' + fmtNum(ctx.raw, 0)
-          }
-        }
-      },
-      scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
-        yRev: {
-          type: 'linear', position: 'left',
-          title: { display: true, text: maWin + '-Day MA Rev (₹ Cr)', font: { size: CHART_FONT.title } },
-          ticks: { callback: v => '₹' + fmtNum(v, 1) + ' Cr', font: { size: CHART_FONT.tick } },
-        },
-        yPrice: {
-          type: 'linear', position: 'right',
-          title: { display: true, text: 'Share Price (₹)', font: { size: CHART_FONT.title } },
-          ticks: { callback: v => '₹' + fmtNum(v, 0), font: { size: CHART_FONT.tick } },
-          grid: { drawOnChartArea: false },
-        },
-      }
-    }
-  });
-
-  const ratios = viewSer.map(r => r.price / r.rev_ma);
-  const n      = ratios.length;
-  const mean   = ratios.reduce((a, b) => a + b, 0) / n;
-  const std    = Math.sqrt(ratios.reduce((a, b) => a + (b - mean) ** 2, 0) / n);
-  const flat   = val => viewSer.map(() => val);
-  const sdBandOuter = CHART_COLORS[0] + '18';
-  const sdBandInner = CHART_COLORS[0] + '30';
-  const sdLineOuter = CHART_COLORS[0] + '55';
-  const sdLineInner = CHART_COLORS[0] + '80';
-
-  setCanvasHeight('chartNseRatioSD', 300);
-  charts.nseRatioSD = new Chart(document.getElementById('chartNseRatioSD'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        { label: '+2σ',          data: flat(mean + 2 * std), borderColor: sdLineOuter, borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: { target: 4 }, backgroundColor: sdBandOuter },
-        { label: '+1σ',          data: flat(mean + std),     borderColor: sdLineInner, borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: { target: 3 }, backgroundColor: sdBandInner },
-        { label: 'Mean',         data: flat(mean),           borderColor: CHART_COLORS[4], borderWidth: 1.5, borderDash: [5, 3], pointRadius: 0, fill: false, backgroundColor: 'transparent' },
-        { label: '−1σ',          data: flat(mean - std),     borderColor: sdLineInner, borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: false, backgroundColor: 'transparent' },
-        { label: '−2σ',          data: flat(mean - 2 * std), borderColor: sdLineOuter, borderWidth: 1, borderDash: [4, 4], pointRadius: 0, fill: false, backgroundColor: 'transparent' },
-        { label: 'Price / Rev MA', data: ratios, borderColor: CHART_COLORS[1], backgroundColor: 'transparent', borderWidth: 2, pointRadius: 0, tension: 0.2, fill: false },
-      ]
-    },
-    options: {
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        tooltip: {
-          callbacks: {
-            label: ctx => {
-              const v = ctx.raw.toFixed(1);
-              if (ctx.dataset.label === 'Price / Rev MA') {
-                const zVal = (ctx.raw - mean) / std;
-                return `Ratio: ${v}  (${zVal >= 0 ? '+' : ''}${zVal.toFixed(1)}σ)`;
-              }
-              const target = ctx.raw * revMA[ctx.dataIndex];
-              return `${ctx.dataset.label}: ${v}  →  ₹${fmtNum(target, 0)} target`;
-            }
-          }
-        }
-      },
-      scales: {
-        x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
-        y: {
-          ticks: { font: { size: CHART_FONT.tick }, callback: v => v.toFixed(0) },
-          title: { display: true, text: 'Price ÷ Rev MA' + maWin, font: { size: CHART_FONT.title } },
-        }
-      }
-    }
-  });
-
-  const scatterData = viewSer.map(r => ({ x: r.rev_ma, y: r.price }));
-  const xVals = viewSer.map(r => r.rev_ma);
-  const xMin  = Math.min(...xVals);
-  const xMax  = Math.max(...xVals);
-  const regLine = [
-    { x: xMin, y: reg.slope * xMin + reg.intercept },
-    { x: xMax, y: reg.slope * xMax + reg.intercept },
-  ];
-
-  setCanvasHeight('chartNseShareScatter', 260);
-  charts.nseShareScatter = new Chart(document.getElementById('chartNseShareScatter'), {
-    type: 'scatter',
-    data: {
-      datasets: [
-        { label: 'Price vs Rev MA',  data: scatterData, backgroundColor: CHART_COLORS[0] + '88', pointRadius: 3 },
-        { label: 'Regression Line', data: regLine, type: 'line', borderColor: CHART_COLORS[2], backgroundColor: 'transparent', borderWidth: 2, borderDash: [5, 3], pointRadius: 0 },
-      ]
-    },
-    options: {
-      plugins: {
-        tooltip: { callbacks: { label: ctx => `Rev MA${maWin}: ₹${fmtNum(ctx.parsed.x, 1)} Cr | Price: ₹${fmtNum(ctx.parsed.y, 0)}` } }
-      },
-      scales: {
-        x: { title: { display: true, text: maWin + '-Day MA Revenue (₹ Cr)' }, ticks: { callback: v => '₹' + fmtNum(v, 1) } },
-        y: { title: { display: true, text: 'NSE Share Price (₹)' },            ticks: { callback: v => '₹' + fmtNum(v, 0) } }
-      }
-    }
-  });
-}
-
-function buildNSEShareAnalysis() {
-  const el = document.getElementById('nse-share-inner');
-  if (!el) return;
-
-  if (!SHARE_DATA) {
-    el.innerHTML = `<div class="chart-panel" style="text-align:center;padding:48px;color:var(--color-text-muted)">
-      <div style="font-size:14px;font-weight:600;margin-bottom:8px">Share analytics data not available</div>
-      <div style="font-size:12px">Run scripts/nse_share_analysis.py to generate nse_share_analysis.json</div>
-    </div>`;
-    return;
-  }
-
-  // Fewer than SHARE_DATA.min_days_required trading days since listing: show
-  // collection progress instead of a (statistically meaningless) fit.
-  if (SHARE_DATA.status === 'collecting' || !SHARE_DATA.regression) {
-    renderNSECollecting(el);
-    return;
-  }
-
-  const reg      = SHARE_DATA.regression;
-  const lat      = SHARE_DATA.latest;
-  const ser      = SHARE_DATA.series || [];
-  const maWin    = SHARE_DATA.ma_window;
-  const regStart = SHARE_DATA.regression_start || '2026-09-24';
-
-  const infoHTML = shareRegressionInfoHTML(
-    reg, lat.price_pred, lat.price_actual, lat.is_live, lat.date,
-    maWin, regStart, SHARE_DATA.n_days, SHARE_DATA.ticker, 0, SHARE_DATA.methodology
-  );
-
-  const regLabel = new Date(regStart + 'T00:00:00').toLocaleString('en-IN', { month: 'short', year: 'numeric' }) + '+';
-  const ranges = [
-    { key: '1m',      label: '1M' },
-    { key: '3m',      label: '3M' },
-    { key: '6m',      label: '6M' },
-    { key: 'nov2024', label: regLabel },
-  ];
-  const rangeToggleHTML = `
-  <div class="share-range-toggle">
-    ${ranges.map(r => `<button class="share-range-btn nse-range-btn${r.key === 'nov2024' ? ' active' : ''}" data-range="${r.key}">${r.label}</button>`).join('')}
-  </div>`;
-
-  const dmaToggleHTML = `
-  <div class="share-dma-toggle">
-    <span class="share-dma-label">DMA</span>
-    ${[10, 20, 45].map(w => `<button class="share-range-btn nse-dma-btn${w === 45 ? ' active' : ''}" data-dma="${w}">${w}D</button>`).join('')}
-  </div>`;
-
-  const lagToggleHTML = `
-  <div class="share-dma-toggle">
-    <span class="share-dma-label">Lag</span>
-    ${[0, 45, 60, 90].map(l => `<button class="share-range-btn nse-lag-btn${l === 0 ? ' active' : ''}" data-lag="${l}">${l === 0 ? 'None' : l + 'D'}</button>`).join('')}
-  </div>`;
-
-  const chartsHTML = `
-  <div style="margin-top:var(--space-4)">
-    <div class="chart-panel" style="margin-bottom:var(--space-4)">
-      <div class="chart-title">NSE Share Price: Actual vs Model</div>
-      <div class="chart-wrapper"><canvas id="chartNseSharePrice"></canvas></div>
-    </div>
-    <div class="chart-panel" style="margin-bottom:var(--space-4)">
-      <div class="chart-title" id="nseDmaChartTitle">${maWin}-Day MA Revenue vs NSE Share Price</div>
-      <div class="chart-wrapper"><canvas id="chartNseRevMaVsPrice"></canvas></div>
-    </div>
-    <div class="chart-panel" style="margin-bottom:var(--space-4)">
-      <div class="chart-title" id="nseRatioChartTitle">Price ÷ Rev MA${maWin} Ratio — Mean ± SD</div>
-      <div class="chart-wrapper"><canvas id="chartNseRatioSD"></canvas></div>
-    </div>
-    <div class="chart-panel">
-      <div class="chart-title">Revenue → Price Scatter</div>
-      <div class="chart-wrapper chart-wrapper--scatter"><canvas id="chartNseShareScatter"></canvas></div>
-    </div>
-  </div>`;
-
-  const sectionHTML = `
-  <div style="margin-top:var(--space-5)">
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:var(--space-4);padding-bottom:var(--space-2);border-bottom:1px solid var(--color-border)">
-      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--color-text-muted)">Charts</span>
-        ${dmaToggleHTML}
-        ${lagToggleHTML}
-      </div>
-      ${rangeToggleHTML}
-    </div>
-    ${chartsHTML}
-  </div>`;
-
-  const limitedBanner = SHARE_DATA.limited_data ? `
-  <div class="chart-panel" style="margin-bottom:var(--space-4);padding:12px 18px;border-left:3px solid var(--color-warning, #d97706);font-size:12px;color:var(--color-text-muted)">
-    <strong style="color:var(--color-text)">Limited data.</strong> NSE listed on ${SHARE_DATA.listing_date}; this fit uses only ${SHARE_DATA.n_days} trading days of price history. Treat R² and the predicted price as indicative until ~60 days accumulate — the model refits automatically every day.
-  </div>` : '';
-
-  el.innerHTML = limitedBanner + `<div id="nseShareInfo">${infoHTML}</div>` + sectionHTML;
-
-  let nseActiveDma   = 45;
-  let nseActiveLag   = 0;
-  let nseActiveRange = 'nov2024';
-  const nseDmaCache  = {};
-
-  function getNseDmaData(w, lag) {
-    const key = `${w}_${lag}`;
-    if (!nseDmaCache[key]) nseDmaCache[key] = computeShareModel(SHARE_DATA, w, lag);
-    return nseDmaCache[key];
-  }
-
-  function refreshNSECharts() {
-    const d = getNseDmaData(nseActiveDma, nseActiveLag);
-    if (!d) return;
-    buildNSECharts(filterShareSeries(d.series, nseActiveRange, regStart), d.reg, nseActiveDma);
-    const lagSuffix = nseActiveLag ? ` (lag ${nseActiveLag}d)` : '';
-    const t1 = document.getElementById('nseDmaChartTitle');
-    if (t1) t1.textContent = `${nseActiveDma}-Day MA Revenue vs NSE Share Price${lagSuffix}`;
-    const t2 = document.getElementById('nseRatioChartTitle');
-    if (t2) t2.textContent = `Price ÷ Rev MA${nseActiveDma} Ratio — Mean ± SD${lagSuffix}`;
-    const infoEl = document.getElementById('nseShareInfo');
-    if (infoEl) {
-      const latestRow = latestShareRow(d.series, lat.date);
-      infoEl.innerHTML = shareRegressionInfoHTML(
-        d.reg, latestRow.price_pred, lat.is_live ? lat.price_actual : latestRow.price, lat.is_live, lat.date,
-        nseActiveDma, regStart, d.n, SHARE_DATA.ticker, nseActiveLag, d.meth
-      );
-    }
-  }
-
-  refreshNSECharts();
-
-  el.querySelectorAll('.nse-dma-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      el.querySelectorAll('.nse-dma-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      nseActiveDma = parseInt(btn.dataset.dma);
-      refreshNSECharts();
-    });
-  });
-
-  el.querySelectorAll('.nse-lag-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      el.querySelectorAll('.nse-lag-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      nseActiveLag = parseInt(btn.dataset.lag);
-      refreshNSECharts();
-    });
-  });
-
-  el.querySelectorAll('.nse-range-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      el.querySelectorAll('.nse-range-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      nseActiveRange = btn.dataset.range;
-      refreshNSECharts();
-    });
-  });
-}
-
-// ========================
-// LIVE EOD PREDICTOR (NSE + BSE) — revenue-so-far -> predicted EOD from the
-// live poller's intraday samples, plus the historical "% of EOD revenue
-// reached by hour N" curve derived from dashboard/data/{exchange}_hourly_history.json.
+// LIVE PREDICTOR (NSE + BSE) — revenue so far → predicted close from the live
+// poller's intraday samples ({exchange}_live_hourly.json), set against how
+// archived sessions built up through the day ({exchange}_hourly_history.json).
 // MCX has no live turnover feed, so this is NSE/BSE only.
 // ========================
 
@@ -7078,11 +6209,16 @@ const INTRADAY_CHECKPOINTS = [
   ['10:00', 45], ['11:00', 105], ['12:00', 165], ['13:00', 225],
   ['14:00', 285], ['15:00', 345], ['16:00', 405],
 ];
-
-// Per-exchange "re-render my bar charts" callback, invoked by the tab click
-// handler the first time the Live Predictor tab becomes visible — see the
-// comment at that call site for why this is necessary.
-const INTRADAY_RERENDER = {};
+const SESSION_MINUTES = 405;
+// A poll older than this during market hours marks the feed as delayed
+const LIVE_STALE_MINUTES = 20;
+// Predictions from the first minutes after the open are not charted
+const LIVE_PRED_SETTLE_MIN = 10;
+const LIVE_DAY_TYPES = [['all', 'All days'], ['normal', 'Normal'], ['expiry', 'Expiry'], ['pre_expiry', 'Pre-expiry']];
+const LIVE_WINDOWS = [
+  ['09:15–10:00', 0, 45], ['10:00–11:00', 45, 105], ['11:00–12:00', 105, 165], ['12:00–13:00', 165, 225],
+  ['13:00–14:00', 225, 285], ['14:00–15:00', 285, 345], ['15:00–16:00', 345, 405],
+];
 
 function fmtElapsed(mins) {
   if (mins == null) return '—';
@@ -7096,7 +6232,7 @@ function intradayMethodLabel(method) {
   const m = /^historical\/(\w+?)(?:\/wd(\d))?$/.exec(method);
   if (!m) return method;
   const typeLabel = { expiry: 'Expiry days', pre_expiry: 'Pre-expiry days', normal: 'Normal days', overall: 'All days' }[m[1]] || m[1];
-  return m[2] != null ? `Historical (${typeLabel}, same weekday)` : `Historical (${typeLabel})`;
+  return m[2] != null ? `${typeLabel}, same weekday` : typeLabel;
 }
 
 async function fetchIntradayJSON(exchange, file) {
@@ -7109,239 +6245,297 @@ async function fetchIntradayJSON(exchange, file) {
   }
 }
 
-// Averages each checkpoint's fraction across whichever days actually have it
-// (a day with only its closing poll contributes nothing here — see live_common.py).
-function avgCheckpointFractions(days) {
-  const acc = {};
-  days.forEach(day => {
-    Object.entries(day.checkpoints || {}).forEach(([label, cp]) => {
-      if (cp && cp.fraction != null) (acc[label] = acc[label] || []).push(cp.fraction);
-    });
-  });
-  const out = {};
-  Object.entries(acc).forEach(([label, vals]) => { out[label] = vals.reduce((a, b) => a + b, 0) / vals.length; });
-  return out;
+// "HH:MM" for minutes after the 09:15 open
+function sessionClock(m) {
+  const t = 555 + Math.round(m);
+  return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
 }
 
-async function buildIntradayPredictor(exchange, containerId) {
-  const el = document.getElementById(containerId);
+// Share of the close an archived day had reached `m` minutes after the open,
+// interpolated between its hourly checkpoints (null if a checkpoint is missing)
+function dayFractionAt(day, m) {
+  const pts = [[0, 0]];
+  for (const [label, min] of INTRADAY_CHECKPOINTS) {
+    const cp = day.checkpoints && day.checkpoints[label];
+    if (!cp || cp.fraction == null) return null;
+    pts.push([min, cp.fraction]);
+  }
+  for (let i = 1; i < pts.length; i++) {
+    if (m <= pts[i][0]) return pts[i - 1][1] + (m - pts[i - 1][0]) / (pts[i][0] - pts[i - 1][0]) * (pts[i][1] - pts[i - 1][1]);
+  }
+  return 1;
+}
+
+function quantile(vals, p) {
+  const xs = vals.slice().sort((a, b) => a - b);
+  if (!xs.length) return null;
+  const k = (xs.length - 1) * p, f = Math.floor(k), c = Math.min(f + 1, xs.length - 1);
+  return xs[f] + (xs[c] - xs[f]) * (k - f);
+}
+
+// Revenue at minute m from a list of {elapsed_minutes, total_revenue} polls
+function revenueAt(samples, m) {
+  if (!samples.length || m > samples[samples.length - 1].elapsed_minutes) return null;
+  let prev = { elapsed_minutes: 0, total_revenue: 0 };
+  for (const s of samples) {
+    if (m <= s.elapsed_minutes) {
+      const span = s.elapsed_minutes - prev.elapsed_minutes;
+      return span ? prev.total_revenue + (m - prev.elapsed_minutes) / span * (s.total_revenue - prev.total_revenue) : s.total_revenue;
+    }
+    prev = s;
+  }
+  return prev.total_revenue;
+}
+
+// Feed state from the poll file: live, delayed, or closed (with the session shown)
+function liveStatus(hourly, latest) {
+  const now = new Date(Date.now() + 330 * 60000);   // IST wall clock as UTC fields
+  const wd = now.getUTCDay();
+  const mins = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const open = wd >= 1 && wd <= 5 && mins >= 555 && mins < 960;
+  const isToday = !!hourly?.date && hourly.date === istDateOf();
+  let age = null;
+  if (latest && latest.captured_ist) {
+    const t = Date.parse(latest.captured_ist + 'Z');
+    if (isFinite(t)) age = Math.round((now.getTime() - t) / 60000);
+  }
+  if (isToday && open && age != null && age <= LIVE_STALE_MINUTES) return { kind: 'live', isToday, age };
+  if (isToday && open) return { kind: 'stale', isToday, age };
+  return { kind: 'closed', isToday, age };
+}
+
+async function buildLivePredictor(ex) {
+  const el = document.getElementById(`${ex}IntradayContent`);
   if (!el) return;
+  const [hourly, history] = await Promise.all([fetchIntradayJSON(ex, 'hourly'), fetchIntradayJSON(ex, 'history')]);
+  if (currentExchange !== ex) return;  // switched away while loading
 
-  const [hourly, history] = await Promise.all([
-    fetchIntradayJSON(exchange, 'hourly'),
-    fetchIntradayJSON(exchange, 'history'),
-  ]);
+  const days = ((history && history.days) || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+  const complete = days.filter(d => dayFractionAt(d, SESSION_MINUTES) != null);
+  // Only polls after the 09:15 open describe the session: pre-open polls repeat the previous session's totals
+  const samples = ((hourly && hourly.samples) || []).filter(s => s.elapsed_minutes > 0 && s.total_revenue != null);
+  const latest = samples.length ? samples[samples.length - 1] : null;
+  const st = liveStatus(hourly, latest);
+  const sessDate = hourly?.date || null;
+  const sessLong = sessDate ? fmtTradeDate(sessDate, true) : '';
+  const dayType = hourly?.day_type || 'normal';
+  const countOf = k => k === 'all' ? complete.length : complete.filter(d => d.day_type === k).length;
+  const state = { type: countOf(dayType) >= 3 ? dayType : 'all' };
+  // The session's official close, once the daily pipeline has it
+  const closeRow = sessDate ? (DATA.daily_all || []).find(r => r.date === sessDate) : null;
+  const actualClose = closeRow && !st.isToday ? closeRow.total_rev : (closeRow && st.kind === 'closed' ? closeRow.total_rev : null);
+  const pred = latest?.predicted_eod ?? null;
+  const q = DATA.quarterly || [];
+  const cq = q.length ? q[q.length - 1] : null;
+  const qtdAvg = cq && cq.days ? cq.total_rev / cq.days : null;
+  // Benchmark for the predicted close: archived days of the same type, else the quarter-to-date average
+  const sameType = complete.filter(d => d.day_type === dayType && d.date !== sessDate);
+  const refAvg = sameType.length >= 3
+    ? { value: sameType.reduce((a, d) => a + d.eod_revenue, 0) / sameType.length, label: `${dayType.replace('_', '-')}-day avg` }
+    : qtdAvg ? { value: qtdAvg, label: 'QTD avg' } : null;
+  const name = SHARE_EXCHANGE_NAMES[ex];
 
-  const days    = (history && history.days) || [];
-  const exLabel = exchange.toUpperCase();
+  const statusHTML = st.kind === 'live'
+    ? `<span class="rx-status rx-status--live" role="status"><span class="rx-dot" aria-hidden="true"></span>Live · last poll ${(latest.captured_ist || '').slice(11, 16)} IST</span>`
+    : st.kind === 'stale'
+      ? `<span class="rx-status rx-status--stale" role="status"><span class="rx-dot" aria-hidden="true"></span>Delayed · last poll ${latest ? (latest.captured_ist || '').slice(11, 16) + ' IST' : 'none yet today'}${st.age != null ? ` (${st.age} min ago)` : ''}</span>`
+      : `<span class="rx-status" role="status"><span class="rx-dot" aria-hidden="true"></span>Market closed${sessLong ? ` · showing ${sessLong}` : ''}</span>`;
 
-  // ── Live KPI row ──
-  // Only polls after the 09:15 open (elapsed_minutes > 0) describe the session:
-  // pre-open polls still repeat the previous session's totals.
-  const samples  = (hourly && hourly.samples) || [];
-  const intraday = samples.filter(s => s.elapsed_minutes > 0);
-  const latest   = intraday.length ? intraday[intraday.length - 1] : null;
-  // The file holds one trade date's polls. After the close, at weekends and on
-  // holidays it is still the last session's, so it must not be labelled today.
-  const isToday   = !!hourly?.date && hourly.date === istDateOf();
-  const sessLong  = fmtTradeDate(hourly?.date, true);   // "Fri 16 Oct"
-  const sessShort = fmtTradeDate(hourly?.date, false);  // "16 Oct"
-  const asOf = latest
-    ? `as of ${(latest.captured_ist || '').slice(11, 16)} IST (+${fmtElapsed(latest.elapsed_minutes)})`
-    : 'no poll since the 09:15 open';
-  const revTitle  = isToday ? 'Revenue So Far Today' : 'Revenue — Last Session';
-  const revSub    = isToday ? asOf : [sessLong, asOf].filter(Boolean).join(' · ');
-  const predTitle = isToday ? 'Predicted EOD Revenue' : 'Predicted EOD — Last Session';
-  const predSub   = latest ? intradayMethodLabel(latest.pred_method) : '—';
-  const pollTitle = isToday ? 'Polls Landed Today' : `Polls Landed${sessShort ? ` (${sessShort})` : ''}`;
+  if (!samples.length) {
+    el.innerHTML = `<div class="rx">
+      <div class="rx-bar" style="position:static">${statusHTML}<p class="rx-foot">${name} · live polls run about every 5 minutes, 09:15–16:00 IST on trading days</p></div>
+      ${rxPanel({ title: 'Live predictor', body: `<div class="rx-empty"><b>No poll since the 09:15 open${sessLong ? ` on ${sessLong}` : ''}</b>GitHub Actions polls every few minutes during market hours, though not on a precise schedule. The prediction appears with the first poll.</div>` })}
+    </div>`;
+    return;
+  }
 
-  const liveHTML = samples.length ? `
-  <div class="share-kpi-grid">
-    ${kpi(revTitle, latest ? '₹' + fmtNum(latest.total_revenue, 2) + ' Cr' : '—', revSub, '')}
-    ${kpi(predTitle, latest?.predicted_eod != null ? '₹' + fmtNum(latest.predicted_eod, 2) + ' Cr' : '—',
-          isToday || !sessLong ? predSub : `${sessLong} · ${predSub}`, 'positive')}
-    ${kpi('Day Type', (hourly.day_type || '—').replace('_', '-'), hourly.weekday_name || '', '')}
-    ${kpi(pollTitle, String(intraday.length), `${intraday.length === 1 ? 'sample' : 'samples'} after the 09:15 open`, '')}
-  </div>` : `
-  <div class="chart-panel" style="text-align:center;padding:32px;color:var(--color-text-muted);margin-bottom:var(--space-4)">
-    <div style="font-size:14px;font-weight:600">No live poll recorded yet today</div>
-    <div style="font-size:12px;margin-top:6px">GitHub Actions polls every few minutes during market hours, though not on a precise schedule — check back shortly.</div>
-  </div>`;
+  const segs = [['Options', latest.options_revenue, RX.model], ['Cash', latest.cash_revenue, RX.rev], ['Futures', latest.futures_revenue, RX.ink2]].filter(s => s[1] != null);
+  const segTotal = segs.reduce((a, s) => a + s[1], 0);
 
-  // ── Historical "% of EOD revenue by hour" curve ──
-  const byType = {
-    all:        days,
-    normal:     days.filter(d => d.day_type === 'normal'),
-    expiry:     days.filter(d => d.day_type === 'expiry'),
-    pre_expiry: days.filter(d => d.day_type === 'pre_expiry'),
-  };
-  const typeOptions = [
-    { key: 'all',        label: 'All Days' },
-    { key: 'normal',     label: 'Normal' },
-    { key: 'expiry',     label: 'Expiry' },
-    { key: 'pre_expiry', label: 'Pre-Expiry' },
-  ];
-  const toggleHTML = `
-  <div class="share-dma-toggle">
-    <span class="share-dma-label">Days</span>
-    ${typeOptions.map(t => `<button class="share-range-btn intraday-daytype-btn-${exchange}${t.key === 'all' ? ' active' : ''}" data-daytype="${t.key}">${t.label} (${byType[t.key].length})</button>`).join('')}
-  </div>`;
-
-  const tableRows = days.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 20).map(d => `
-    <tr>
-      <td>${d.date}</td>
-      <td>${d.weekday_name}</td>
-      <td style="text-transform:capitalize">${(d.day_type || '').replace('_', '-')}</td>
-      <td style="text-align:right">₹${fmtNum(d.eod_revenue, 2)} Cr</td>
-      <td style="text-align:right">${d.n_samples}</td>
-    </tr>`).join('');
-
-  el.innerHTML = `
-  ${liveHTML}
-  <div class="chart-panel" style="margin-bottom:var(--space-4)">
-    <div class="chart-title">${exLabel} — Trading Activity by Period of Day</div>
-    <p class="section-desc">% of EOD revenue earned within each window, not cumulative — this is what tells you which part of the day is busiest. Based on ${days.length} archived trading day${days.length === 1 ? '' : 's'}; only days with a real intraday poll besides the closing figure contribute (see below).</p>
-    <div class="panel-inset" style="margin-bottom:var(--space-3)">${toggleHTML}</div>
-    <div class="panel-inset panel-inset--bottom" id="barsIntradayPeriod${exLabel}"></div>
-  </div>
-  <div class="chart-panel" style="margin-bottom:var(--space-4)">
-    <div class="chart-title">${exLabel} — % of EOD Revenue Reached, by Time of Day (Cumulative)</div>
-    <p class="section-desc">The running total behind the chart above — e.g. "by 12:00 we're typically at X% of the day's revenue."</p>
-    <div class="chart-wrapper"><canvas id="chartIntraday${exLabel}"></canvas></div>
-  </div>
-  <div class="chart-panel">
-    <div class="chart-title">Archived Days (most recent 20)</div>
-    <div style="overflow-x:auto">
-      <table class="data-table">
-        <thead><tr><th>Date</th><th>Weekday</th><th>Day Type</th><th style="text-align:right">EOD Revenue</th><th style="text-align:right">Samples</th></tr></thead>
-        <tbody>${tableRows || '<tr><td colspan="5" style="text-align:center;color:var(--color-text-muted)">No archived days yet</td></tr>'}</tbody>
-      </table>
+  el.innerHTML = `<div class="rx">
+    <div class="rx-bar" style="position:static">${statusHTML}<p class="rx-foot" style="margin-left:0">${name} · trade date ${sessLong} · ${dayType.replace('_', '-')} day · ${samples.length} polls since 09:15</p></div>
+    <section class="rx-kpis" data-rx="kpis" aria-label="Session so far"></section>
+    ${rxPanel({ title: 'Cumulative revenue through the session', meta: '₹ Cr, 09:15–16:00 IST',
+      right: rxSeg('type', LIVE_DAY_TYPES.map(([k, l]) => [k, `${l} (${countOf(k)})`]), state.type, 'Archived days the band is built from'),
+      body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas(`rxLiveCum-${ex}`)}</div><div class="rx-chart-note" data-rx="legCum"></div>`,
+      foot: '<span data-rx="cumNote"></span>' })}
+    <div class="rx-row">
+      ${rxPanel({ cls: 'rx-col-wide', title: 'Where the day’s revenue comes from', meta: 'by hour window',
+        body: '<div class="rx-scroll"><table class="rx-table" data-rx="wins"></table></div>', foot: '<span data-rx="winNote"></span>' })}
+      ${rxPanel({ cls: 'rx-col-narrow', title: 'Prediction through the day', meta: 'predicted close at each poll, ₹ Cr',
+        body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas(`rxLivePred-${ex}`)}</div>`, foot: '<span data-rx="predNote"></span>' })}
     </div>
+    ${rxPanel({ title: 'How early estimates have done', meta: 'archived sessions · estimate = revenue at the hour ÷ the median share other days of that type had reached',
+      body: '<div class="rx-scroll"><table class="rx-table" data-rx="arch"></table></div>',
+      foot: 'Amber: off by 5 % or more. The live model’s own predictions are not archived yet, so this scores the simple share-of-day method on past sessions; logging each poll’s prediction would let it score the live model.' })}
   </div>`;
+  const qx = k => el.querySelector(`[data-rx="${k}"]`);
 
-  // Fixed windows the cumulative checkpoints imply — first one starts at market
-  // open (9:15), so it's the only one with a known, non-computed left edge (0%).
-  const PERIODS = [
-    { label: 'Open–10:00', fromMin: 0,   toMin: 45  },
-    { label: '10:00–11:00', fromMin: 45,  toMin: 105 },
-    { label: '11:00–12:00', fromMin: 105, toMin: 165 },
-    { label: '12:00–13:00', fromMin: 165, toMin: 225 },
-    { label: '13:00–14:00', fromMin: 225, toMin: 285 },
-    { label: '14:00–15:00', fromMin: 285, toMin: 345 },
-    { label: '15:00–16:00', fromMin: 345, toMin: 405 },
-  ];
-  const minToFrac = (fracs, mins) => mins === 0 ? 0 : (fracs[INTRADAY_CHECKPOINTS.find(([, m]) => m === mins)[0]] ?? null);
-
-  function periodDeltas(fracs) {
-    return PERIODS.map(p => {
-      const a = minToFrac(fracs, p.fromMin), b = minToFrac(fracs, p.toMin);
-      return (a != null && b != null) ? Math.round((b - a) * 1000) / 10 : null;
-    });
+  function typeDays(t, exclude) {
+    const pool = complete.filter(d => d !== exclude);
+    const same = t === 'all' ? pool : pool.filter(d => d.day_type === t);
+    return same.length >= 3 ? same : pool;
   }
 
-  // Plain CSS bars instead of a Chart.js bar chart — this dashboard's Chart.js
-  // setup (see applyChartDefaults' Chart.defaults.scale.grid/border overrides)
-  // reliably breaks bar-element geometry (rect() ends up called with a null
-  // y/height, painting nothing) while leaving line charts unaffected; simple
-  // divs sidestep that entirely for this 7-category comparison.
-  function renderPeriodBars(daytype) {
-    const fracs = avgCheckpointFractions(byType[daytype] || []);
-    const values = periodDeltas(fracs);
-    const maxVal = Math.max(1, ...values.filter(v => v != null));
-    const rowsHTML = PERIODS.map((p, i) => {
-      const v = values[i];
-      const widthPct = v != null ? Math.max(2, (v / maxVal) * 100) : 0;
-      return `
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
-        <div style="width:110px;flex-shrink:0;font-size:11px;color:var(--color-text-muted)">${p.label}</div>
-        <div style="flex:1;background:var(--color-border);border-radius:3px;overflow:hidden;height:22px">
-          ${v != null ? `<div style="width:${widthPct}%;height:100%;background:${CHART_COLORS[1]};border-radius:3px"></div>` : ''}
-        </div>
-        <div style="width:56px;flex-shrink:0;text-align:right;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums">${v != null ? v.toFixed(1) + '%' : '—'}</div>
-      </div>`;
-    }).join('');
-    const barsEl = document.getElementById(`barsIntradayPeriod${exLabel}`);
-    if (barsEl) barsEl.innerHTML = rowsHTML;
+  function renderKpis(band) {
+    const at = latest.elapsed_minutes;
+    const fr = typeDays(state.type).map(d => dayFractionAt(d, at)).filter(x => x > 0);
+    const lo = fr.length ? latest.total_revenue / quantile(fr, 0.9) : null;
+    const hi = fr.length ? latest.total_revenue / quantile(fr, 0.1) : null;
+    const when = `${(latest.captured_ist || '').slice(11, 16)} IST · ${fmtElapsed(at)} of 6h 45m`;
+    const items = [
+      rxKpi(st.isToday && st.kind !== 'closed' ? 'Revenue so far' : 'Revenue at last poll', rxCr(latest.total_revenue, 2), when),
+      rxKpi(st.isToday && st.kind !== 'closed' ? 'Predicted close, 16:00' : 'Predicted close at last poll', rxCr(pred, 2),
+        `${refAvg && pred ? rxChangeHTML(pred / refAvg.value - 1) + ` vs ${refAvg.label} ${rxCr(refAvg.value, 1)} · ` : ''}${intradayMethodLabel(latest.pred_method)}`, { accent: true }),
+    ];
+    if (actualClose != null) {
+      items.push(rxKpi(`Actual close · trading data${flagTags(periodFlags(closeRow, 'total'))}`, rxCr(actualClose, 2), pred ? `Last prediction was ${rxSignedPct(pred / actualClose - 1)} off` : fmtTradeDate(sessDate, true)));
+    } else {
+      items.push(rxKpi('Typical-path range', lo != null ? `₹${fmtNum(lo, 1)} – ${fmtNum(hi, 1)} Cr` : '—',
+        lo != null ? `revenue so far ÷ 10th–90th pct. share reached by ${sessionClock(at)} · n = ${fr.length}` : 'needs complete archived sessions'));
+    }
+    const mixBar = `<div style="display:flex;height:10px;gap:2px;margin:9px 0 7px" role="img" aria-label="${segs.map(s => `${s[0]} ${fmtNum(s[1], 2)} crore`).join(', ')}">${segs.map(s => `<div style="flex:${Math.max(s[1], 0)} 1 0;background:${s[2]}" title="${s[0]} ${rxCr(s[1], 2)}"></div>`).join('')}</div>`;
+    items.push(rxKpi('Segment mix so far', mixBar, segs.map(s => `${s[0]} ${segTotal ? fmtPct(s[1] / segTotal) : '—'}`).join(' · ')));
+    qx('kpis').innerHTML = items.join('');
   }
 
-  function renderCumulativeChart(daytype) {
-    const fracs = avgCheckpointFractions(byType[daytype] || []);
-    const cumKey = `intraday${exLabel}`;
-    if (charts[cumKey]) { charts[cumKey].destroy(); charts[cumKey] = null; }
-    const cumLabels = INTRADAY_CHECKPOINTS.map(([label]) => label);
-    const cumValues = INTRADAY_CHECKPOINTS.map(([label]) => fracs[label] != null ? Math.round(fracs[label] * 1000) / 10 : null);
-
-    setCanvasHeight(`chartIntraday${exLabel}`, 240);
-    charts[cumKey] = new Chart(document.getElementById(`chartIntraday${exLabel}`), {
+  function renderCum() {
+    const pool = typeDays(state.type);
+    const endValue = actualClose ?? pred;
+    const grid = [];
+    for (let m = 0; m <= SESSION_MINUTES; m += 15) grid.push(m);
+    if (grid[grid.length - 1] !== SESSION_MINUTES) grid.push(SESSION_MINUTES);
+    const bandAt = p => grid.map(m => ({ x: m, y: endValue ? quantile(pool.map(d => dayFractionAt(d, m)), p) * endValue : null }));
+    // Comparison line: the latest earlier session of the same day type
+    const prevDay = complete.filter(d => d.date < (sessDate || '9999') && d.day_type === dayType).slice(-1)[0];
+    const ds = [
+      { label: '90th pct.', data: bandAt(0.9), borderWidth: 0, pointRadius: 0, fill: '+1', backgroundColor: 'rgba(43, 92, 200, 0.14)', tension: 0 },
+      { label: '10th pct.', data: bandAt(0.1), borderWidth: 0, pointRadius: 0, fill: false, tension: 0 },
+    ];
+    if (prevDay) ds.push({ label: `Last ${dayType.replace('_', '-')} day, ${fmtTradeDate(prevDay.date, true)}`, data: [{ x: 0, y: 0 }].concat(INTRADAY_CHECKPOINTS.map(([l, m]) => ({ x: m, y: prevDay.checkpoints[l].revenue }))),
+      borderColor: RX.grey, borderWidth: 1.5, pointRadius: 0, tension: 0 });
+    const proj = [{ x: latest.elapsed_minutes, y: latest.total_revenue }, { x: SESSION_MINUTES, y: endValue }];
+    if (endValue != null) ds.push({ label: actualClose != null ? 'To the close' : 'Projection', data: proj, borderColor: RX.model, borderWidth: 2, borderDash: [2, 4], pointRadius: [0, 4], pointBackgroundColor: RX.model, tension: 0 });
+    ds.push({ label: sessLong || 'Session', data: [{ x: 0, y: 0 }].concat(samples.map(s => ({ x: s.elapsed_minutes, y: s.total_revenue }))), borderColor: RX.ink, borderWidth: 2, pointRadius: 0, tension: 0 });
+    rxChart('liveCum', `rxLiveCum-${ex}`, 300, {
       type: 'line',
-      data: {
-        labels: cumLabels,
-        datasets: [{
-          label: '% of EOD revenue', data: cumValues,
-          borderColor: CHART_COLORS[0], backgroundColor: CHART_COLORS[0] + '22',
-          borderWidth: 2, pointRadius: 4, tension: 0.25, fill: true, spanGaps: true,
-        }],
-      },
+      data: { datasets: ds },
       options: {
-        plugins: {
-          legend: { display: false },
-          tooltip: { callbacks: { label: ctx => ctx.raw != null ? `${ctx.raw.toFixed(1)}% of EOD revenue by ${ctx.label}` : 'No data for this checkpoint' } },
-        },
+        parsing: false,
+        interaction: { mode: 'nearest', axis: 'x', intersect: false },
+        plugins: { tooltip: {
+          filter: item => item.dataset.label !== '10th pct.' && item.dataset.label !== '90th pct.',
+          callbacks: {
+            title: items => sessionClock(items[0].parsed.x),
+            label: c => ` ${c.dataset.label}: ${rxCr(c.parsed.y, 2)}`,
+            footer: items => {
+              const m = items[0].parsed.x;
+              const lo = bandAt(0.1).find(p => p.x >= m), hi = bandAt(0.9).find(p => p.x >= m);
+              return lo && hi && lo.y != null ? `Typical path at ${sessionClock(lo.x)}: ₹${fmtNum(lo.y, 1)}–${fmtNum(hi.y, 1)} Cr` : '';
+            },
+          },
+        } },
         scales: {
-          y: { min: 0, max: 100, ticks: { callback: v => v + '%' }, title: { display: true, text: '% of EOD Revenue' } },
-          x: { title: { display: true, text: 'Time of Day (IST)' } },
+          x: { type: 'linear', min: 0, max: SESSION_MINUTES, grid: { display: false },
+            afterBuildTicks: axis => { axis.ticks = [0].concat(INTRADAY_CHECKPOINTS.map(c => c[1])).map(v => ({ value: v })); },
+            ticks: { callback: v => sessionClock(v), maxRotation: 0 } },
+          y: { beginAtZero: true, ticks: { callback: v => fmtNum(v, 0) } },
         },
       },
     });
+    const typeName = (LIVE_DAY_TYPES.find(t => t[0] === state.type) || [])[1] || 'All days';
+    qx('legCum').innerHTML = rxLegend([
+      { label: sessLong || 'Session', color: RX.ink, kind: 'line' },
+      { label: actualClose != null ? `To the actual close ${rxCr(actualClose, 2)}` : `Projection to ${rxCr(pred, 2)}`, color: RX.model, kind: 'dot' },
+      { label: `${typeName} path, 10th–90th pct.`, color: 'rgba(43, 92, 200, 0.22)' },
+    ].concat(prevDay ? [{ label: `Last ${dayType.replace('_', '-')} day, ${fmtTradeDate(prevDay.date, true)}`, color: RX.grey, kind: 'line' }] : []));
+    qx('cumNote').textContent = `Band = the share of the close that ${pool.length} complete ${state.type === 'all' || pool.length !== countOf(state.type) ? 'archived' : typeName.toLowerCase()} sessions had reached by each time × ${actualClose != null ? 'the actual close' : 'the predicted close'}, so it shows where the session would sit if it closes there.`;
   }
 
-  function renderAll(daytype) {
-    renderPeriodBars(daytype);
-    renderCumulativeChart(daytype);
+  function renderWindows() {
+    const pool = typeDays(state.type);
+    const endValue = actualClose ?? pred;
+    const last = latest.elapsed_minutes;
+    let ahead = null;
+    const rows = LIVE_WINDOWS.map(([label, a, b]) => {
+      const typ = pool.length ? (quantile(pool.map(d => dayFractionAt(d, b) - dayFractionAt(d, a)), 0.5)) : null;
+      const ra = revenueAt(samples, a) ?? (a === 0 ? 0 : null);
+      const partial = last < b && last > a;
+      const rb = partial ? latest.total_revenue : revenueAt(samples, b);
+      const today = ra != null && rb != null ? rb - ra : null;
+      const share = today != null && endValue ? today / endValue : null;
+      const diff = share != null && typ != null && !partial ? share - typ : null;
+      if (diff != null && Math.abs(diff) > 0.03 && ahead == null) ahead = { label, diff };
+      return `<tr><td>${label}</td><td class="rx-l" style="width:34%"><div class="rx-meter" style="width:${typ != null ? (typ / 0.2 * 100).toFixed(1) : 0}%;max-width:100%"></div></td><td>${typ != null ? fmtPct(typ) : '—'}</td><td>${today != null ? fmtNum(today, 2) + (partial ? ` <span class="rx-foot">to ${sessionClock(last)}</span>` : '') : '—'}</td><td class="${diff == null ? '' : diff > 0.03 ? 'rx-up' : diff < -0.03 ? 'rx-dn' : ''}">${share != null ? fmtPct(share) : '—'}</td></tr>`;
+    }).join('');
+    qx('wins').innerHTML = `<thead><tr><th scope="col">Window</th><th scope="col" class="rx-l">Typical share of the close</th><th scope="col">Typical</th><th scope="col">${st.isToday ? 'Today' : fmtTradeDate(sessDate)}, ₹ Cr</th><th scope="col">% of ${actualClose != null ? 'close' : 'predicted close'}</th></tr></thead><tbody>${rows}</tbody>`;
+    qx('winNote').textContent = ahead
+      ? `${ahead.label} ran ${ahead.diff > 0 ? 'busier' : 'quieter'} than usual: ${Math.abs(ahead.diff * 100).toFixed(1)} points ${ahead.diff > 0 ? 'above' : 'below'} its typical share. Green / red marks windows more than 3 points off.`
+      : 'Every finished window is within 3 points of its typical share so far.';
   }
 
-  let activeDaytype = 'all';
-  renderAll(activeDaytype);
-  // The cumulative line chart is still Chart.js-based, and (like every other
-  // chart in this app) can end up built while its tab is still display:none —
-  // line charts don't get the bar bug above, but do need a resize once
-  // visible; the CSS bars need no such recovery.
-  INTRADAY_RERENDER[exchange] = () => renderCumulativeChart(activeDaytype);
-
-  el.querySelectorAll(`.intraday-daytype-btn-${exchange}`).forEach(btn => {
-    btn.addEventListener('click', () => {
-      el.querySelectorAll(`.intraday-daytype-btn-${exchange}`).forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      activeDaytype = btn.dataset.daytype;
-      renderAll(activeDaytype);
+  function renderPred() {
+    // The first minutes' predictions extrapolate a handful of trades; leave them out
+    const pts = samples.filter(s => s.predicted_eod != null && s.elapsed_minutes >= LIVE_PRED_SETTLE_MIN).map(s => ({ x: s.elapsed_minutes, y: s.predicted_eod }));
+    const ds = [{ label: 'Predicted close', data: pts, borderColor: RX.model, borderWidth: 2, pointRadius: 0, tension: 0 }];
+    if (actualClose != null) ds.push({ label: 'Actual close', data: [{ x: 0, y: actualClose }, { x: SESSION_MINUTES, y: actualClose }], borderColor: RX.ink, borderWidth: 1.5, borderDash: [5, 3], pointRadius: 0 });
+    rxChart('livePred', `rxLivePred-${ex}`, 200, {
+      type: 'line',
+      data: { datasets: ds },
+      options: {
+        parsing: false,
+        interaction: { mode: 'nearest', axis: 'x', intersect: false },
+        plugins: { tooltip: { callbacks: { title: items => sessionClock(items[0].parsed.x), label: c => ` ${c.dataset.label}: ${rxCr(c.parsed.y, 2)}` } } },
+        scales: {
+          x: { type: 'linear', min: 0, max: SESSION_MINUTES, grid: { display: false },
+            afterBuildTicks: axis => { axis.ticks = [0, 105, 225, 345].map(v => ({ value: v })); },
+            ticks: { callback: v => sessionClock(v), maxRotation: 0 } },
+          y: { ticks: { callback: v => fmtNum(v, 0) } },
+        },
+      },
     });
-  });
+    rxFixHeight(charts.livePred);
+    const early = pts.filter(p => p.x <= 60).map(p => p.y), late = pts.filter(p => p.x >= 180).map(p => p.y);
+    const parts = [];
+    if (early.length > 1) parts.push(`${sessionClock(LIVE_PRED_SETTLE_MIN)}–10:15: ₹${fmtNum(Math.min(...early), 1)}–${fmtNum(Math.max(...early), 1)} Cr.`);
+    if (late.length > 1) parts.push(`From 12:15: ₹${fmtNum(Math.min(...late), 1)}–${fmtNum(Math.max(...late), 1)} Cr.`);
+    if (actualClose != null) parts.push(`Dashed: actual close ${rxCr(actualClose, 2)}.`);
+    qx('predNote').textContent = parts.join(' ') || 'Too few polls yet.';
+  }
+
+  function renderArchive() {
+    const rows = complete.slice(-8).reverse().map(d => {
+      const err = label => {
+        const m = INTRADAY_CHECKPOINTS.find(c => c[0] === label)[1];
+        const med = quantile(typeDays(d.day_type, d).map(o => dayFractionAt(o, m)), 0.5);
+        const rev = d.checkpoints[label]?.revenue;
+        return med && rev != null && d.eod_revenue ? (rev / med) / d.eod_revenue - 1 : null;
+      };
+      return { d, e12: err('12:00'), e14: err('14:00') };
+    });
+    const cell = e => e == null ? '<td>—</td>' : `<td class="${Math.abs(e) >= 0.05 ? 'rx-warn' : ''}">${rxSignedPct(e)}</td>`;
+    const mae = k => { const v = rows.map(r => r[k]).filter(x => x != null); return v.length ? v.reduce((a, b) => a + Math.abs(b), 0) / v.length : null; };
+    qx('arch').innerHTML = rows.length
+      ? `<thead><tr><th scope="col">Trade date</th><th scope="col" class="rx-l">Day</th><th scope="col" class="rx-l">Type</th><th scope="col">Close, ₹ Cr</th><th scope="col">Polls</th><th scope="col">Error at 12:00</th><th scope="col">Error at 14:00</th></tr></thead>
+        <tbody>${rows.map(({ d, e12, e14 }) => `<tr><td>${rxDate(d.date)}</td><td class="rx-l">${(d.weekday_name || '').slice(0, 3)}</td><td class="rx-l">${rxChip(d.day_type.replace('_', '-'), d.day_type === 'normal' ? '' : 'warn')}</td><td>${fmtNum(d.eod_revenue, 2)}</td><td>${d.n_samples ?? '—'}</td>${cell(e12)}${cell(e14)}</tr>`).join('')}</tbody>
+        <tfoot><tr><td colspan="5">Mean absolute error, ${rows.length} sessions</td><td>${mae('e12') == null ? '—' : fmtPct(mae('e12'))}</td><td>${mae('e14') == null ? '—' : fmtPct(mae('e14'))}</td></tr></tfoot>`
+      : '<tbody><tr><td class="rx-l">No complete archived sessions yet</td></tr></tbody>';
+  }
+
+  function renderAll() { renderKpis(); renderCum(); renderWindows(); renderPred(); renderArchive(); }
+  rxOnSeg(el, 'type', t => { state.type = t; renderAll(); });
+  renderAll();
+  RX_TAB_REFRESH.intraday = () => { renderCum(); renderPred(); };
 }
 
-// NSE listed on 2026-09-24 (ticker NSE.BO), so CMP comes from the same share
-// feed as BSE/MCX. Before the first price posts it is null and upside shows "—".
-function buildNSEValuation() {
-  const el = document.getElementById('nseValuationContent');
-  if (!el) return;
-
-  const nseSeries = bseDailySeries(DATA);
-  if (!nseSeries.length) { el.innerHTML = ''; return; }
-
-  el.innerHTML = `<div id="nseQuickValPanel"></div>`;
-  buildQuickValuationPanel(el.querySelector('#nseQuickValPanel'), 'nse', nseSeries, SHARE_DATA?.latest?.price_actual ?? null);
-}
-
-function buildMCXValuation() {
-  const el = document.getElementById('mcxValuationContent');
-  if (!el) return;
-
-  const mcxSeries = bseDailySeries(DATA);
-  if (!mcxSeries.length) { el.innerHTML = ''; return; }
-  const cmp = SHARE_DATA?.latest?.price_actual ?? null;
-
-  el.innerHTML = `<div id="mcxQuickValPanel"></div>`;
-  buildQuickValuationPanel(el.querySelector('#mcxQuickValPanel'), 'mcx', mcxSeries, cmp);
-}
+// The live tab refreshes itself while it is open during market hours
+setInterval(() => {
+  const tab = document.querySelector('.nav-item.active')?.dataset.tab;
+  if (tab !== 'intraday' || document.hidden || !(currentExchange === 'nse' || currentExchange === 'bse')) return;
+  const now = new Date(Date.now() + 330 * 60000);
+  const mins = now.getUTCHours() * 60 + now.getUTCMinutes();
+  if (now.getUTCDay() >= 1 && now.getUTCDay() <= 5 && mins >= 550 && mins <= 975) buildLivePredictor(currentExchange);
+}, 5 * 60 * 1000);
 
 // Shared KPI tile; styles live in style.css (.kpi-tile*).
 function kpi(title, value, sub, sentiment) {
