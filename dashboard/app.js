@@ -4391,7 +4391,7 @@ function predictorFields(ex, ctx) {
         { key: 'dep', label: 'Depreciation, % of operating revenue', step: 0.1, tag: rxChip(base) },
         { key: 'assoc', label: 'Share of associates, ₹ Cr', step: 0.5, tag: rxChip(base) },
         { key: 'tax', label: 'Tax rate, %', step: 0.1, tag: rxChip(`${taxQ} effective`) },
-        { key: 'shares', label: 'Shares outstanding, Cr', step: 0.1, tag: rxChip('PAT ÷ EPS, reported', 'data') },
+        { key: 'shares', label: 'Shares outstanding, Cr', step: 0.1, tag: sharesChip('nse') },
       ],
     });
   }
@@ -4400,7 +4400,7 @@ function predictorFields(ex, ctx) {
     fields: [
       { key: 'oiQ', label: 'Other income, ₹ Cr for the quarter', step: 1, tag: rxChip('Excel model') },
       { key: 'margin', label: 'PAT margin, % of total income', step: 0.5, tag: rxChip('Excel model') },
-      { key: 'shares', label: 'Shares outstanding, Cr', step: 0.01, tag: rxChip('Hard-coded · unverified', 'warn') },
+      { key: 'shares', label: 'Shares outstanding, Cr', step: 0.01, tag: sharesChip('bse') },
     ],
   });
   return groups;
@@ -5757,17 +5757,24 @@ function renderShareCollecting(el, ex) {
 // counts — yfinance supplies prices only — so these are static, and each view
 // shows the value with its source and as-of note. as_of is null where the repo
 // records no date; source says how far the figure can be trusted.
-// BSE's 40.73 is also the Excel model's Annual Predictor starting value; the
-// workbook it mirrors read shares from a Bloomberg/FactSet plugin (see
-// docs/superpowers/specs/2026-07-02-bse-excel-valuation-replication-design.md),
-// but neither the figure nor its date is recorded anywhere checkable.
+// BSE's 40.79 is the 407.88m shares PL Capital's initiation (18 Jun 2026)
+// lists; Motilal Oswal's 1QFY27 update (4 Aug 2026) rounds the same count to
+// 408m. It replaced 40.73, which the Excel workbook read from a
+// Bloomberg/FactSet plugin with no recorded date (see
+// docs/superpowers/specs/2026-07-02-bse-excel-valuation-replication-design.md).
 // NSE's 247.5 is the share count implied by reported PAT ÷ EPS in
 // nse_dashboard_data.json's pnl: 247.4–247.6 Cr in every reported quarter.
+// chip/kind: the input's provenance tag on the Predictor and Valuation tabs.
 const SHARES_OUTSTANDING_CR = {
-  bse: { value: 40.73, as_of: null, source: 'hard-coded, unverified' },
-  mcx: { value: 25.45, as_of: null, source: 'hard-coded, unverified' },
-  nse: { value: 247.5, as_of: 'Q3 FY 2026', source: 'implied by reported PAT ÷ EPS in the NSE P&L data (247.4–247.6 Cr each reported quarter since Q3 FY 2024)' },
+  bse: { value: 40.79, as_of: '2026-06-18', source: 'PL Capital initiation, 18 Jun 2026 (407.88m); MOSL 1QFY27 update, 4 Aug 2026 (408m)', chip: 'Broker reports · Jun 2026', kind: 'data' },
+  mcx: { value: 25.45, as_of: null, source: 'hard-coded, unverified', chip: 'Hard-coded · unverified', kind: 'warn' },
+  nse: { value: 247.5, as_of: 'Q3 FY 2026', source: 'implied by reported PAT ÷ EPS in the NSE P&L data (247.4–247.6 Cr each reported quarter since Q3 FY 2024)', chip: 'PAT ÷ EPS, reported', kind: 'data' },
 };
+
+function sharesChip(ex) {
+  const s = SHARES_OUTSTANDING_CR[ex];
+  return `<span class="rx-chip rx-chip--${s.kind}" title="${escHtml(s.source)}">${s.chip}</span>`;
+}
 
 // Escapes text for HTML content and double-quoted attributes.
 function escHtml(text) {
@@ -5834,6 +5841,14 @@ async function loadBSEAnalystTargets() {
 
 // Broker targets older than this are flagged as stale wherever they are shown.
 const ANALYST_TARGET_STALE_DAYS = 90;
+
+// "May 2026", "May–Aug 2026" or "Dec 2025–Aug 2026": the span of the broker notes' dates.
+function analystMonths(oldest, newest) {
+  const [lo, hi] = [rxDate(oldest).replace(/^\d+ /, ''), rxDate(newest || oldest).replace(/^\d+ /, '')];
+  if (lo === hi) return lo;
+  const [loM, loY] = lo.split(' ');
+  return loY === hi.split(' ')[1] ? `${loM}–${hi}` : `${lo}–${hi}`;
+}
 
 // Whole days from an ISO date ("2026-05-08") to today's IST date.
 function daysSinceIso(iso) {
@@ -5990,7 +6005,6 @@ async function buildValuation(ex) {
   const lat = SHARE_DATA?.latest || {};
   const cmp = lat.price_actual ?? null;
   const prov = VALUATION_SOURCE[ex];
-  const shareSrc = SHARES_OUTSTANDING_CR[ex];
 
   // Market-based ranges for the football field (from the share feed)
   const shareSer = SHARE_DATA?.series || [];
@@ -6006,6 +6020,7 @@ async function buildValuation(ex) {
   const lastMa = shareModel ? latestShareRow(shareModel.series, lat.date)?.rev_ma : null;
   const brokerAvg = analysts.length ? analysts.reduce((s, t) => s + t.target_price, 0) / analysts.length : null;
   const oldest = analysts.reduce((mn, t) => (t.date && (!mn || t.date < mn) ? t.date : mn), null);
+  const newest = analysts.reduce((mx, t) => (t.date && (!mx || t.date > mx) ? t.date : mx), null);
   const oldestAge = daysSinceIso(oldest);
 
   const cmpWhen = cmp == null ? 'no price yet' : lat.is_live ? 'live quote' : `close ${fmtTradeDate(lat.date)}`;
@@ -6016,7 +6031,7 @@ async function buildValuation(ex) {
     g: () => ex === 'bse' ? chip('', 'Excel model') : chip('', 'No growth assumed'),
     days: () => chip(ctx.prevFYDays && v.days === ctx.prevFYDays ? 'data' : '', ctx.prevFYDays ? `${ctx.prevFY.replace(' ', '')} had ${ctx.prevFYDays}` : 'Assumption'),
     oi: srcChip, margin: srcChip, pe: srcChip,
-    shares: () => shareSrc.source === 'hard-coded, unverified' ? chip('warn', 'Hard-coded · unverified') : chip('data', 'PAT ÷ EPS, reported'),
+    shares: () => sharesChip(ex),
     disc: () => ex === 'bse' ? chip('', 'Excel model') : chip('', 'Not discounted'),
   };
   const edited = keys => keys.some(k => Math.abs(Number(v[k]) - Number(defaults[k])) > 1e-9);
@@ -6139,7 +6154,7 @@ async function buildValuation(ex) {
     if (ratio && lastMa) rows.push({ label: 'Price ÷ revenue MA band', note: `mean ± 1σ × MA ₹${fmtNum(lastMa, 2)} Cr`, lo: (ratio.mean - ratio.sd) * lastMa, mid: ratio.mean * lastMa, hi: (ratio.mean + ratio.sd) * lastMa, color: RX.grey, midLabel: 'mean' });
     if (analysts.length) {
       const tp = analysts.map(t => t.target_price);
-      rows.push({ label: 'Analyst targets', note: `${analysts.length} brokers, 12-month${oldest ? ` · ${rxDate(oldest).replace(/^\d+ /, '')}` : ''}`, lo: Math.min(...tp), mid: brokerAvg, hi: Math.max(...tp), color: RX.grey, midLabel: 'mean' });
+      rows.push({ label: 'Analyst targets', note: `${analysts.length} brokers, 12-month${oldest ? ` · ${analystMonths(oldest, newest)}` : ''}`, lo: Math.min(...tp), mid: brokerAvg, hi: Math.max(...tp), color: RX.grey, midLabel: 'mean' });
     }
     if (yr.length) rows.push({ label: sinceListing ? 'Range since listing' : '52-week range', note: `${SHARE_DATA.ticker} closes`, lo: Math.min(...yr), mid: cmp, hi: Math.max(...yr), color: RX.light, midLabel: 'CMP' });
     const vals = rows.filter(r => !r.na).flatMap(r => [r.lo, r.hi]).concat(cmp != null ? [cmp] : []).filter(x => x != null && isFinite(x));
