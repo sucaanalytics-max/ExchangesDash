@@ -461,4 +461,3 @@ async function buildValuation(ex) {
   rxOnSeg(el, 'src', s => { v.src = s; render(); save(); });
   render();
 }
-

@@ -772,4 +772,3 @@ function updateHeaderInfo() {
     document.querySelectorAll('#currentQuarterSpan, .js-current-quarter').forEach(el => { el.textContent = cq; });
   }
 }
-

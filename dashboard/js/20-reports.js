@@ -796,4 +796,3 @@ ${body}
     setReportBtnBusy(btn, false);
   }
 }
-

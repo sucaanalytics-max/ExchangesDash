@@ -378,4 +378,3 @@ function kpi(title, value, sub, sentiment) {
     <div class="kpi-tile-sub">${sub}</div>
   </div>`;
 }
-

@@ -441,4 +441,3 @@ function buildMarketShareChartImgs(nseRaw, bseRaw) {
     return { label: def.label, img };
   });
 }
-

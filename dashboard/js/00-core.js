@@ -37,42 +37,10 @@ function fmtPct(num) {
   return pct + ' %';
 }
 
-function fmtPctSigned(val) {
-  if (val == null || isNaN(val)) return '<span class="neutral">—</span>';
-  const abs = Math.abs(Number(val) * 100).toFixed(1);
-  const sign = val > 0.001 ? '+' : val < -0.001 ? '−' : '';
-  const cls = val > 0.001 ? 'positive' : val < -0.001 ? 'negative' : 'neutral';
-  return `<span class="${cls}">${sign}${abs} %</span>`;
-}
-
-function deltaClass(val) {
-  if (val > 0.001) return 'positive';
-  if (val < -0.001) return 'negative';
-  return 'neutral';
-}
-
-function deltaStr(val) {
-  if (val == null || isNaN(val)) return '';
-  const abs = Math.abs(val * 100).toFixed(1);
-  const arrow = val > 0 ? '▲' : val < 0 ? '▼' : '—';
-  return abs + ' % ' + arrow;
-}
-
 // ========================
 // CHART COLORS — from CSS tokens
 // ========================
 
-function getChartColors() {
-  const s = getComputedStyle(document.documentElement);
-  return [
-    s.getPropertyValue('--chart-1').trim(),
-    s.getPropertyValue('--chart-2').trim(),
-    s.getPropertyValue('--chart-3').trim(),
-    s.getPropertyValue('--chart-4').trim(),
-    s.getPropertyValue('--chart-5').trim(),
-    s.getPropertyValue('--chart-6').trim(),
-  ];
-}
 const CHART_COLORS = ['#2563EB', '#C0392B', '#16A34A', '#7C3AED', '#D97706', '#0891B2'];
 const FONT_FAMILY = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Inter', system-ui, sans-serif";
 
@@ -96,16 +64,8 @@ function getTooltipText() {
   return getTheme() === 'light' ? '#1d1d1f' : '#f5f5f7';
 }
 
-function getDonutBorderColor() {
-  return getTheme() === 'light' ? '#f5f5f7' : '#1c1c1e';
-}
-
 function getScaleBorderColor() {
   return getTheme() === 'light' ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.08)';
-}
-
-function getHeatmapRgb() {
-  return '0, 113, 227';
 }
 
 // Text size for on-screen chart ticks and axis titles (the base font, legend and
@@ -438,52 +398,6 @@ function rxAddWeekdays(iso, n) {
   }
   return d.toISOString().slice(0, 10);
 }
-
-// ========================
-// THEME TOGGLE
-// ========================
-
-function initThemeToggle() {
-  const toggle = document.getElementById('themeToggle');
-  toggle.addEventListener('click', () => {
-    const current = getTheme();
-    const next = current === 'dark' ? 'light' : 'dark';
-    document.documentElement.setAttribute('data-theme', next);
-    updateChartsForTheme();
-  });
-}
-
-function updateChartsForTheme() {
-  applyChartDefaults();
-  Object.entries(charts).forEach(([key, chart]) => {
-    if (!chart) return;
-    if (chart.options && chart.options.scales) {
-      Object.values(chart.options.scales).forEach(scale => {
-        if (scale.grid) scale.grid.color = getGridColor();
-        if (scale.border) scale.border.color = getScaleBorderColor();
-        if (scale.ticks) scale.ticks.color = getTickColor();
-      });
-    }
-    if (chart.options && chart.options.plugins && chart.options.plugins.tooltip) {
-      chart.options.plugins.tooltip.backgroundColor = getTooltipBg();
-      chart.options.plugins.tooltip.titleColor = getTooltipText();
-      chart.options.plugins.tooltip.bodyColor = getTooltipText();
-      chart.options.plugins.tooltip.borderColor = getTheme() === 'light' ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)';
-    }
-    if (key === 'donut' && chart.data && chart.data.datasets[0]) {
-      chart.data.datasets[0].borderColor = getDonutBorderColor();
-      chart.data.datasets[0].hoverBorderColor = getDonutBorderColor();
-    }
-    chart.update('none');
-  });
-  // Rebuild heatmap if NSE
-  const hm = document.getElementById('heatmapContainer');
-  if (currentExchange === 'nse' && hm && hm.innerHTML) {
-    buildHeatmap();
-  }
-}
-
-// Theme toggle removed — light mode only
 
 // ========================
 // LOADING OVERLAY
@@ -833,4 +747,3 @@ function toggleExchangeContent(exchange) {
   // Market share panel — visible for nsebse (NSE+BSE) and all (NSE+BSE+MCX)
   show('marketSharePanel', exchange === 'nsebse' || exchange === 'all');
 }
-
