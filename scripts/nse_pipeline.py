@@ -38,6 +38,7 @@ DASHBOARD_DIR = PROJECT_ROOT / "dashboard"
 # ── Take Rates: today's rates from scripts/take_rates.py; the date-effective
 # variant prices each day with scripts/fee_register.py ──
 import fee_register
+import nse_reported_pnl
 import trading_calendar
 from take_rates import NSE_TR_FUT as TR_FUT, NSE_TR_OPT as TR_OPT, NSE_TR_CASH as TR_CASH
 
@@ -597,8 +598,10 @@ def _next_quarter(quarter_name):
 # sebi_settlement. The stored `ebitda` column is total_revenue − total_expense:
 # after depreciation and including non-operating income, so it is not EBITDA.
 # pbt = that + share_profit_associates + profit_sale_investment +
-# discontinued_operations (Q3 FY 2026 is ₹126 Cr below that sum: an item no
-# column captures; it is reported below as unreconciled_pbt_gap).
+# labour_codes + discontinued_operations (labour_codes: the new Labour Codes
+# provision and its reversal, a column only rows from nse_reported_pnl carry;
+# Q3 FY 2026's ₹126 Cr provision is in no nse_pnl column, so it is reported
+# below as unreconciled_pbt_gap).
 PNL_OPERATING_REVENUE = (
     "transaction_rev", "listing_income", "data_centre", "data_feed",
     "index_licensing", "clearing_settlement", "operating_investment", "other_operating",
@@ -608,7 +611,7 @@ PNL_NON_OPERATING_INCOME = ("investment_income", "other_non_operating")
 # actual quarters (and footnoted), left out of the forecast ratios.
 PNL_ONE_OFF_EXPENSES = ("sebi_settlement",)
 # Non-recurring items between EBITDA and PBT; forecasts never include them.
-PNL_EXCEPTIONAL_ITEMS = ("profit_sale_investment", "discontinued_operations")
+PNL_EXCEPTIONAL_ITEMS = ("profit_sale_investment", "labour_codes", "discontinued_operations")
 # A base quarter whose one-offs exceed this share of PBT is skipped for the tax
 # rate: nse_pnl does not report the tax effect of a one-off (Q2 FY 2026, with the
 # ₹1,297 Cr settlement and a ₹1,201 Cr investment gain, shows a 31 % rate).
@@ -625,8 +628,9 @@ def _pnl_num(row, key):
 def _pnl_has_revenue_split(row):
     """Manual forecast rows leave the non-operating lines empty and put all
     non-transaction revenue in operating_investment, so operating revenue
-    cannot be separated from other income there."""
-    return all(row.get(k) is not None for k in PNL_NON_OPERATING_INCOME)
+    cannot be separated from other income there. A reported row may leave one
+    non-operating line empty when the filing does not split other income."""
+    return any(row.get(k) is not None for k in PNL_NON_OPERATING_INCOME)
 
 
 def pnl_operating_view(row):
@@ -1056,6 +1060,8 @@ def main():
         else:
             all_daily = sorted(new_parsed, key=lambda x: x["date"])
             pnl, pnl_fy, cost_ratios = [], [], {}
+    # Reported quarters from NSE's results filings replace nse_pnl's rows
+    pnl = sorted(nse_reported_pnl.apply(pnl), key=lambda r: quarter_sort_key(r.get("quarter")))
 
     print(f"Total daily records: {len(all_daily)}")
 
