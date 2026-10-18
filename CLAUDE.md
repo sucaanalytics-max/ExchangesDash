@@ -12,7 +12,7 @@ Exchange revenue analytics for NSE, BSE and MCX: Python pipelines on GitHub Acti
 | `scripts/*_live_poller.py` + `live_common.py` | `*-live.yml`, dispatched every 5 min by an external cron via `dashboard/api/trigger-live-polls.js`; no-op outside Mon–Fri 08:55–16:30 IST | NSE/BSE live turnover, yfinance quote | `dashboard/data/*_live.json`, `*_live_hourly.json`, `*_hourly_history.json` (committed to `main`); each NSE/BSE sample also to Supabase `live_samples` (`live_samples_schema.sql`) when the repository variable `ENABLE_LIVE_SAMPLES` is `true` |
 | `scripts/excel_sync.py` | after daily jobs | Supabase | OneDrive Excel (append-only) |
 
-Dashboard: `dashboard/index.html` + `app.js` (vanilla JS, Chart.js) + `style.css`. The Revenue Predictor, Live Predictor, Regression and Valuation Model tabs are built from the shared `rx*` components (helpers after the chart-sizing code in `app.js`, `.rx` styles at the end of `style.css`); Revenue Summary keeps its own Excel-mirroring layout. Serverless: `dashboard/api/live.js` (proxies live JSON from GitHub raw, so live commits need no deploy), `revenue.js` (direct NSE/BSE scrape), `trigger-live-polls.js`. `/api/live` and `/api/revenue` are cached at Vercel's edge (`s-maxage`, set identically in `vercel.json` and the function), so the browser must not add cache-busting query parameters to `/api/*` URLs. Vercel project root is `dashboard/`, so its config is `dashboard/vercel.json`; its `ignoreCommand` (`vercel-ignore-build.sh`) skips builds for live-only commits.
+Dashboard: `dashboard/index.html` + `app.js` (vanilla JS, Chart.js) + `style.css`. The Revenue Predictor, Live Predictor, Regression and Valuation Model tabs are built from the shared `rx*` components (helpers after the chart-sizing code in `app.js`, `.rx` styles at the end of `style.css`); Revenue Summary keeps its own Excel-mirroring layout. Serverless: `dashboard/api/live.js` (proxies live JSON from GitHub raw, so live commits need no deploy), `revenue.js` (direct NSE/BSE scrape), `trigger-live-polls.js`. `/api/live` and `/api/revenue` are cached at Vercel's edge (`s-maxage`, set identically in `vercel.json` and the function), so the browser must not add cache-busting query parameters to `/api/*` URLs. Vercel project root is `dashboard/`, so its config is `dashboard/vercel.json`; its `ignoreCommand` (`vercel-ignore-build.sh`) skips builds for live-only commits and for the daily bots' data commits, so the day's data goes live with the empty `[deploy]` commit that `exchange-update.yml` pushes after the 15:30 UTC run and after every manual run (any commit whose message contains `[deploy]` builds).
 
 ## Business rules
 
@@ -30,9 +30,10 @@ Dashboard: `dashboard/index.html` + `app.js` (vanilla JS, Chart.js) + `style.css
 
 ## Working here efficiently
 
-- Do not read `dashboard/data/*.json` or `data/*.json` whole (up to ~850 KB each). Query them: `python3 -I -c "import json; d=json.load(open('dashboard/data/nse_dashboard_data.json')); print(d.keys())"`.
+- Do not read `dashboard/data/*.json` or `data/*.json` whole (up to ~850 KB each; `.claude/settings.json` denies Read on the generated ones, leaving the hand-edited `bse_analyst_targets.json` and `bse_revenue_seed.csv` readable). Query them: `python3 -I -c "import json; d=json.load(open('dashboard/data/nse_dashboard_data.json')); print(d.keys())"`.
 - `app.js` is ~7,400 lines: grep for the function, then read only that range.
 - Most commits are bot data updates. For human history: `git log --invert-grep --grep='📡' --grep='📈' --grep='📊'`.
+- Results day (a reported NSE/BSE quarter, a new Muhurat or DR session): follow the `results-day` skill (`.claude/skills/results-day/SKILL.md`).
 - Never edit committed live/data JSON by hand on a branch: bots rewrite those files on `main` every few minutes. Fix the generating code instead.
 
 ## Verify before pushing
