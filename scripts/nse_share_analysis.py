@@ -130,11 +130,8 @@ def main():
         "first_price":       out["series"][0]["price"],
     })
 
-    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    # allow_nan=False: fail the run loudly rather than ship invalid JSON (a bare
-    # NaN token makes the browser's JSON.parse throw and blanks the whole tab).
-    OUTPUT_FILE.write_text(json.dumps(out, indent=2, allow_nan=False))
-    print(f"\nWrote {OUTPUT_FILE.name}: status={out['status']}, {n}/{sr.MIN_N} days")
+    wrote = sr.write_if_changed(OUTPUT_FILE, out)
+    print(f"\n{'Wrote' if wrote else 'Unchanged:'} {OUTPUT_FILE.name}: status={out['status']}, {n}/{sr.MIN_N} days")
     print(sr.describe(out))
 
 

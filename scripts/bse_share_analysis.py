@@ -174,13 +174,8 @@ def main():
     if out is None or out["regression"] is None:
         raise SystemExit(f"ERROR: MA{FIXED_MA} fit unavailable — aborting")
 
-    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    # allow_nan=False: fail the run loudly if a NaN/Inf ever reaches this
-    # point instead of silently writing invalid JSON (a literal `NaN` token
-    # is not valid JSON — the browser's JSON.parse() throws on it, which is
-    # exactly what broke the Regression/Valuation tabs last time).
-    OUTPUT_FILE.write_text(json.dumps(out, indent=2, allow_nan=False))
-    print(f"\nWrote {OUTPUT_FILE.name} ({len(out['series'])} rows)")
+    wrote = sr.write_if_changed(OUTPUT_FILE, out)
+    print(f"\n{'Wrote' if wrote else 'Unchanged:'} {OUTPUT_FILE.name} ({len(out['series'])} rows)")
     print(sr.describe(out))
 
 

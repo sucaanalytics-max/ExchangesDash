@@ -1,8 +1,10 @@
 import json
 import math
 import random
+import tempfile
 import unittest
 from datetime import date, timedelta
+from pathlib import Path
 
 from helpers import NODE, ROOT, js_eval
 
@@ -139,6 +141,58 @@ class DashboardMirror(unittest.TestCase):
                 continue
             with self.subTest(ex=ex):
                 self.check(out, window=out["ma_window"])
+
+
+
+class WriteIfChanged(unittest.TestCase):
+    """A rerun on unchanged prices must leave the file alone, so the workflow
+    commits nothing; any change to the analysis itself must be written."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "data" / "x_share_analysis.json"
+        self.out = {"updated_at": "2026-10-17T16:38:58Z", "status": "ready",
+                    "series": [{"date": "2026-10-16", "price": 271.67, "price_pred": 876.01}],
+                    "latest": {"price_pred": 876.01}}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def rerun(self, **changes):
+        out = json.loads(json.dumps(self.out))
+        out["updated_at"] = "2026-10-18T11:27:59Z"
+        for key, value in changes.items():
+            out[key] = value
+        return out
+
+    def test_first_write_creates_the_file(self):
+        self.assertTrue(sr.write_if_changed(self.path, self.out))
+        self.assertEqual(json.loads(self.path.read_text()), self.out)
+
+    def test_only_updated_at_changed_is_not_written(self):
+        sr.write_if_changed(self.path, self.out)
+        before = self.path.read_text()
+        self.assertFalse(sr.write_if_changed(self.path, self.rerun()))
+        self.assertEqual(self.path.read_text(), before)
+
+    def test_analysis_change_is_written(self):
+        for changes in ({"latest": {"price_pred": 876.02}},
+                        {"series": self.out["series"] + [{"date": "2026-10-19", "price": 272.0, "price_pred": None}]},
+                        {"status": "collecting"}):
+            with self.subTest(changes=list(changes)):
+                sr.write_if_changed(self.path, self.out)
+                self.assertTrue(sr.write_if_changed(self.path, self.rerun(**changes)))
+                self.assertEqual(json.loads(self.path.read_text())["updated_at"], "2026-10-18T11:27:59Z")
+
+    def test_unreadable_file_is_replaced(self):
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text("{not json")
+        self.assertTrue(sr.write_if_changed(self.path, self.out))
+
+    def test_nan_still_fails_loudly(self):
+        with self.assertRaises(ValueError):
+            sr.write_if_changed(self.path, {"x": float("nan")})
+        self.assertFalse(self.path.exists())
 
 
 if __name__ == "__main__":

@@ -30,9 +30,10 @@ Dashboard: `dashboard/index.html` + `app.js` (vanilla JS, Chart.js) + `style.css
 
 ## Working here efficiently
 
-- Do not read `dashboard/data/*.json` or `data/*.json` whole (up to ~850 KB each). Query them: `python3 -I -c "import json; d=json.load(open('dashboard/data/nse_dashboard_data.json')); print(d.keys())"`.
+- Do not read `dashboard/data/*.json` or `data/*.json` whole (up to ~850 KB each; `.claude/settings.json` denies Read on the generated ones, leaving the hand-edited `bse_analyst_targets.json` and `bse_revenue_seed.csv` readable). Query them: `python3 -I -c "import json; d=json.load(open('dashboard/data/nse_dashboard_data.json')); print(d.keys())"`.
 - `app.js` is ~7,400 lines: grep for the function, then read only that range.
 - Most commits are bot data updates. For human history: `git log --invert-grep --grep='📡' --grep='📈' --grep='📊'`.
+- Results day (a reported NSE/BSE quarter, a new Muhurat or DR session): follow the `results-day` skill (`.claude/skills/results-day/SKILL.md`).
 - Never edit committed live/data JSON by hand on a branch: bots rewrite those files on `main` every few minutes. Fix the generating code instead.
 
 ## Verify before pushing
