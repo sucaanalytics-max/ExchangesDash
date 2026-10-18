@@ -398,9 +398,46 @@ jobs:
           echo "::error::Push still rejected after 5 attempts — data was NOT published"
           exit 1
 
-  summary:
-    # Vercel's GitHub integration deploys each pushed commit; no deploy hook needed.
+  deploy:
+    # Vercel skips the bot data commits above (dashboard/vercel-ignore-build.sh),
+    # so the day's data is deployed once, by an empty "[deploy]" commit after
+    # the last scheduled run (15:30 UTC), and after every manual run. Nothing is
+    # pushed when main's head is not a bot data commit (already deployed).
     needs: [nse-update, bse-update, mcx-update, nse-share-analysis, bse-share-analysis, mcx-share-analysis]
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || github.event.schedule == '30 15 * * 1-5') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Push deploy marker
+        run: |
+          git config user.name "Research-Tusk"
+          git config user.email "research@tuskinvest.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          for i in 1 2 3 4 5; do
+            HEAD_MSG=$(git log -1 --format=%B)
+            case "$HEAD_MSG" in
+              *"[deploy]"*) echo "Head already deploys"; exit 0 ;;
+              "📊 "*|"📈 "*|"📡 "*) ;;
+              *) echo "Head is not a bot data commit — nothing pending"; exit 0 ;;
+            esac
+            git commit --allow-empty -m "🚀 Deploy data: $(date +%Y-%m-%d) [deploy]"
+            git push && exit 0
+            echo "Push rejected (a live poller likely pushed first) — retrying, attempt $i…"
+            sleep $((RANDOM % 5 + 1))
+            git fetch origin main
+            git reset -q --hard origin/main
+          done
+          echo "::error::Deploy marker still rejected after 5 attempts — today's data is NOT deployed"
+          exit 1
+
+  summary:
+    needs: [nse-update, bse-update, mcx-update, nse-share-analysis, bse-share-analysis, mcx-share-analysis, deploy]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -415,3 +452,4 @@ jobs:
           echo "- **BSE:** ${{ needs.bse-update.result }}, new days ${{ needs.bse-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **MCX:** ${{ needs.mcx-update.result }}, new days ${{ needs.mcx-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Share analysis:** NSE ${{ needs.nse-share-analysis.result }}, BSE ${{ needs.bse-share-analysis.result }}, MCX ${{ needs.mcx-share-analysis.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Vercel deploy marker:** ${{ needs.deploy.result }}" >> $GITHUB_STEP_SUMMARY

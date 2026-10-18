@@ -14,7 +14,7 @@ Repository notes for contributors (data flow, business rules, how to verify chan
 | `nse-live.yml`, `bse-live.yml`, `mcx-live.yml` | every 5 min via the external cron, Mon–Fri 08:55–16:30 IST only | NSE/BSE live turnover, yfinance quotes | `dashboard/data/*_live.json`, `*_live_hourly.json`, `*_hourly_history.json` |
 | `checks.yml` | every human push and pull request | — | take-rate consistency, Python compile, JS parse |
 
-The dashboard reads live data through `/api/live`, which serves the latest committed JSON straight from GitHub, so live-only commits are not deployed (`dashboard/vercel-ignore-build.sh`).
+The dashboard reads live data through `/api/live`, which serves the latest committed JSON straight from GitHub, so live-only commits are not deployed (`dashboard/vercel-ignore-build.sh`). The daily bots' data commits are not deployed one by one either: the workflow pushes one empty `[deploy]` commit after the day's last run (15:30 UTC) and after each manual run, and that deploy carries all of the day's data.
 
 ## Setup
 
