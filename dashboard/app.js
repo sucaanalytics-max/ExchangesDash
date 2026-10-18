@@ -5762,13 +5762,13 @@ function renderShareCollecting(el, ex) {
 // 408m. It replaced 40.73, which the Excel workbook read from a
 // Bloomberg/FactSet plugin with no recorded date (see
 // docs/superpowers/specs/2026-07-02-bse-excel-valuation-replication-design.md).
-// NSE's 247.5 is the share count implied by reported PAT ÷ EPS in
-// nse_dashboard_data.json's pnl: 247.4–247.6 Cr in every reported quarter.
+// NSE's 247.5 is its paid-up equity capital (₹247.50 Cr at ₹1 face value) in
+// the audited Q1 FY27 results; reported PAT ÷ EPS gives 247.4–247.6 every quarter.
 // chip/kind: the input's provenance tag on the Predictor and Valuation tabs.
 const SHARES_OUTSTANDING_CR = {
   bse: { value: 40.79, as_of: '2026-06-18', source: 'PL Capital initiation, 18 Jun 2026 (407.88m); MOSL 1QFY27 update, 4 Aug 2026 (408m)', chip: 'Broker reports · Jun 2026', kind: 'data' },
   mcx: { value: 25.45, as_of: null, source: 'hard-coded, unverified', chip: 'Hard-coded · unverified', kind: 'warn' },
-  nse: { value: 247.5, as_of: 'Q3 FY 2026', source: 'implied by reported PAT ÷ EPS in the NSE P&L data (247.4–247.6 Cr each reported quarter since Q3 FY 2024)', chip: 'PAT ÷ EPS, reported', kind: 'data' },
+  nse: { value: 247.5, as_of: '2026-06-30', source: 'paid-up equity capital ₹247.50 Cr at ₹1 face value, audited Q1 FY27 results (30 Jul 2026)', chip: 'Results filing · Jun 2026', kind: 'data' },
 };
 
 function sharesChip(ex) {
