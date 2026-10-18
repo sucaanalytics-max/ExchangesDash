@@ -68,6 +68,18 @@ class Snapshots(unittest.TestCase):
         self.assertEqual([d["date"] for d in hist], ["2026-10-19"])
         self.assertEqual(hist[0]["eod_revenue"], 50.0)
 
+    def test_archive_records_live_predictions(self):
+        self.snap("19-Oct-2026", datetime(2026, 10, 19, 10, 15), 12.0)   # +60 min
+        self.snap("19-Oct-2026", datetime(2026, 10, 19, 11, 50), 26.0)   # +155 min
+        self.snap("19-Oct-2026", datetime(2026, 10, 19, 15, 55), 50.0)   # +400 min
+        preds = {s["elapsed_minutes"]: s["predicted_eod"] for s in json.loads(self.hourly.read_text())["samples"]}
+        self.snap("20-Oct-2026", datetime(2026, 10, 20, 9, 30), 4.0)
+        cps = json.loads(self.history.read_text())["days"][0]["checkpoints"]
+        self.assertEqual((cps["12:00"]["predicted_eod"], cps["12:00"]["predicted_at_min"]), (preds[155], 155))
+        self.assertNotIn("predicted_eod", cps["11:00"])   # latest poll before it is 45 min old
+        self.assertNotIn("predicted_eod", cps["10:00"])   # no poll before 10:00
+        self.assertNotIn("predicted_eod", cps["16:00"])   # the close itself is not a prediction
+
     def test_linear_forecast_without_history(self):
         pred, method = lc.predict_eod_live(135, 20.0, self.history)
         self.assertEqual(method, "linear")

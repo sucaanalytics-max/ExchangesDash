@@ -37,10 +37,15 @@ Historical file: dashboard/data/{exchange}_hourly_history.json
         "eod_revenue": 92.3,
         "n_samples":   4,          // how many raw polls actually landed that day
         "checkpoints": {
-          "10:00": {"revenue": 28.1, "fraction": 0.305},
+          "10:00": {"revenue": 28.1, "fraction": 0.305,
+                    "predicted_eod": 88.4, "predicted_at_min": 41},
           ...
           "16:00": {"revenue": 92.3, "fraction": 1.0}
         }
+        // predicted_eod / predicted_at_min: the live model's prediction from the
+        // latest poll at or before an intraday checkpoint (at most
+        // PRED_MAX_AGE_MIN earlier), absent when no such poll landed. Days
+        // archived before this was recorded have neither.
       }
     ]
   }
@@ -77,6 +82,7 @@ MARKET_OPEN_MIN  = 9 * 60 + 15   # 9:15 AM IST
 MARKET_TOTAL_MIN = 405            # → 16:00
 MIN_SAMPLES       = 3              # minimum archived days to trust historical fractions
 EOD_MIN_ELAPSED   = 360            # a day's last sample must be at/after ~15:00 IST to trust as EOD
+PRED_MAX_AGE_MIN  = 30             # a checkpoint's recorded prediction is from a poll at most this much earlier
 
 WEEKDAY_NAMES = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 
@@ -390,6 +396,12 @@ def archive_completed_day(day_record: dict, history_file: Path, exchange: str = 
     points = [(0, 0.0)] + [(s["elapsed_minutes"], s["total_revenue"])
                            for s in ordered if s["elapsed_minutes"] > 0]
 
+    # The live model's own predictions, so the dashboard can score it against
+    # the close on archived days (predictions are not interpolated: each
+    # checkpoint takes what the latest poll before it actually predicted).
+    preds = [(s["elapsed_minutes"], s["predicted_eod"]) for s in ordered
+             if s["elapsed_minutes"] > 0 and s.get("predicted_eod") is not None]
+
     checkpoints = {}
     for label, mins in REFERENCE_CHECKPOINTS:
         if mins == MARKET_TOTAL_MIN:
@@ -398,10 +410,16 @@ def archive_completed_day(day_record: dict, history_file: Path, exchange: str = 
             rev = _interp(points, mins)
         else:
             rev = None
-        checkpoints[label] = {
+        cp = {
             "revenue":  round(rev, 4) if rev is not None else None,
             "fraction": round(rev / eod_revenue, 4) if rev is not None else None,
         }
+        if mins < MARKET_TOTAL_MIN:
+            before = [p for p in preds if p[0] <= mins and mins - p[0] <= PRED_MAX_AGE_MIN]
+            if before:
+                cp["predicted_eod"] = before[-1][1]
+                cp["predicted_at_min"] = before[-1][0]
+        checkpoints[label] = cp
 
     market_dates = {d["date"] for d in days}
     market_dates.add(date_str)

@@ -6266,6 +6266,22 @@ function dayFractionAt(day, m) {
   return 1;
 }
 
+// Archived day: the live model's prediction at checkpoint `label` vs the close
+// (null when no poll landed shortly before it, or the day predates the field)
+function liveModelError(day, label) {
+  const cp = day.checkpoints && day.checkpoints[label];
+  return cp && cp.predicted_eod != null && day.eod_revenue ? cp.predicted_eod / day.eod_revenue - 1 : null;
+}
+
+// Archived day: revenue at `label` ÷ the median share of the close that
+// `others` had reached by then, vs the close
+function shareOfDayError(day, label, others) {
+  const cp = INTRADAY_CHECKPOINTS.find(c => c[0] === label);
+  const med = cp ? quantile(others.map(o => dayFractionAt(o, cp[1])).filter(x => x != null), 0.5) : null;
+  const rev = day.checkpoints && day.checkpoints[label] && day.checkpoints[label].revenue;
+  return med && rev != null && day.eod_revenue ? (rev / med) / day.eod_revenue - 1 : null;
+}
+
 function quantile(vals, p) {
   const xs = vals.slice().sort((a, b) => a - b);
   if (!xs.length) return null;
@@ -6365,9 +6381,9 @@ async function buildLivePredictor(ex) {
       ${rxPanel({ cls: 'rx-col-narrow', title: 'Prediction through the day', meta: 'predicted close at each poll, ₹ Cr',
         body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas(`rxLivePred-${ex}`)}</div>`, foot: '<span data-rx="predNote"></span>' })}
     </div>
-    ${rxPanel({ title: 'How early estimates have done', meta: 'archived sessions · estimate = revenue at the hour ÷ the median share other days of that type had reached',
+    ${rxPanel({ title: 'How early estimates have done', meta: 'archived sessions · error vs the actual close',
       body: '<div class="rx-scroll"><table class="rx-table" data-rx="arch"></table></div>',
-      foot: 'Amber: off by 5 % or more. The live model’s own predictions are not archived yet, so this scores the simple share-of-day method on past sessions; logging each poll’s prediction would let it score the live model.' })}
+      foot: '<span data-rx="archNote"></span>' })}
   </div>`;
   const qx = k => el.querySelector(`[data-rx="${k}"]`);
 
@@ -6504,22 +6520,29 @@ async function buildLivePredictor(ex) {
   }
 
   function renderArchive() {
-    const rows = complete.slice(-8).reverse().map(d => {
-      const err = label => {
-        const m = INTRADAY_CHECKPOINTS.find(c => c[0] === label)[1];
-        const med = quantile(typeDays(d.day_type, d).map(o => dayFractionAt(o, m)), 0.5);
-        const rev = d.checkpoints[label]?.revenue;
-        return med && rev != null && d.eod_revenue ? (rev / med) / d.eod_revenue - 1 : null;
-      };
-      return { d, e12: err('12:00'), e14: err('14:00') };
-    });
+    const labels = ['12:00', '14:00'];
+    const rows = complete.slice(-8).reverse().map(d => ({
+      d,
+      model: labels.map(l => liveModelError(d, l)),
+      share: labels.map(l => shareOfDayError(d, l, typeDays(d.day_type, d))),
+    }));
+    const hasModel = rows.some(r => r.model.some(e => e != null));
     const cell = e => e == null ? '<td>—</td>' : `<td class="${Math.abs(e) >= 0.05 ? 'rx-warn' : ''}">${rxSignedPct(e)}</td>`;
-    const mae = k => { const v = rows.map(r => r[k]).filter(x => x != null); return v.length ? v.reduce((a, b) => a + Math.abs(b), 0) / v.length : null; };
+    // A column with fewer scored sessions than the table says so (n)
+    const mae = vals => { const v = vals.filter(x => x != null); return v.length ? fmtPct(v.reduce((a, b) => a + Math.abs(b), 0) / v.length) + (v.length < rows.length ? ` <span class="rx-foot">n ${v.length}</span>` : '') : '—'; };
+    const cols = (hasModel ? labels.map(l => `<th scope="col">Live model ${l}</th>`) : [])
+      .concat(labels.map(l => `<th scope="col">${hasModel ? 'Share-of-day ' : 'Error at '}${l}</th>`)).join('');
+    const vals = r => (hasModel ? r.model : []).concat(r.share);
+    const nCols = (hasModel ? 2 : 0) + 2;
     qx('arch').innerHTML = rows.length
-      ? `<thead><tr><th scope="col">Trade date</th><th scope="col" class="rx-l">Day</th><th scope="col" class="rx-l">Type</th><th scope="col">Close, ₹ Cr</th><th scope="col">Polls</th><th scope="col">Error at 12:00</th><th scope="col">Error at 14:00</th></tr></thead>
-        <tbody>${rows.map(({ d, e12, e14 }) => `<tr><td>${rxDate(d.date)}</td><td class="rx-l">${(d.weekday_name || '').slice(0, 3)}</td><td class="rx-l">${rxChip(d.day_type.replace('_', '-'), d.day_type === 'normal' ? '' : 'warn')}</td><td>${fmtNum(d.eod_revenue, 2)}</td><td>${d.n_samples ?? '—'}</td>${cell(e12)}${cell(e14)}</tr>`).join('')}</tbody>
-        <tfoot><tr><td colspan="5">Mean absolute error, ${rows.length} sessions</td><td>${mae('e12') == null ? '—' : fmtPct(mae('e12'))}</td><td>${mae('e14') == null ? '—' : fmtPct(mae('e14'))}</td></tr></tfoot>`
+      ? `<thead><tr><th scope="col">Trade date</th><th scope="col" class="rx-l">Day</th><th scope="col" class="rx-l">Type</th><th scope="col">Close, ₹ Cr</th><th scope="col">Polls</th>${cols}</tr></thead>
+        <tbody>${rows.map(r => `<tr><td>${rxDate(r.d.date)}</td><td class="rx-l">${(r.d.weekday_name || '').slice(0, 3)}</td><td class="rx-l">${rxChip(r.d.day_type.replace('_', '-'), r.d.day_type === 'normal' ? '' : 'warn')}</td><td>${fmtNum(r.d.eod_revenue, 2)}</td><td>${r.d.n_samples ?? '—'}</td>${vals(r).map(cell).join('')}</tr>`).join('')}</tbody>
+        <tfoot><tr><td colspan="5">Mean absolute error, ${rows.length} sessions</td>${Array.from({ length: nCols }, (_, i) => `<td>${mae(rows.map(r => vals(r)[i]))}</td>`).join('')}</tr></tfoot>`
       : '<tbody><tr><td class="rx-l">No complete archived sessions yet</td></tr></tbody>';
+    qx('archNote').textContent = (hasModel
+      ? 'Live model = what the dashboard predicted at the last poll before each hour (at most 30 minutes earlier); sessions archived before predictions were recorded show —. '
+      : 'The live model’s predictions are recorded for sessions archived from now on; until then this scores the simple method only. ')
+      + 'Share-of-day = revenue at the hour ÷ the median share of the close other sessions of that type had reached. Amber: off by 5 % or more.';
   }
 
   function renderAll() { renderKpis(); renderCum(); renderWindows(); renderPred(); renderArchive(); }
