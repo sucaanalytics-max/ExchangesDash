@@ -164,6 +164,12 @@ class QuarterLabels(unittest.TestCase):
         self.assertEqual(js, ["Q2 FY 2027", "Q4 FY 2026", "Q3 FY 2026", "Q1 FY 2028",
                               "Q2–Q3 FY26", "Q4 FY26–Q1 FY27", "Q3 FY26"])
 
+    def test_analyst_note_month_span(self):
+        js = js_eval(["rxDate", "analystMonths"],
+                     "[analystMonths('2026-05-08', '2026-05-18'), analystMonths('2026-05-08', '2026-08-04'),"
+                     " analystMonths('2025-12-02', '2026-08-04'), analystMonths('2026-05-08', null)]")
+        self.assertEqual(js, ["May 2026", "May–Aug 2026", "Dec 2025–Aug 2026", "May 2026"])
+
 
 if __name__ == "__main__":
     unittest.main()
