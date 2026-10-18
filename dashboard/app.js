@@ -1607,16 +1607,36 @@ function updateHeaderInfo() {
 // LATEST REVENUE BANNER
 // ========================
 
+// The banner's last resort is the latest full day at today's rates, the basis
+// /api/revenue reports in. The preloaded MARKET_RAW copy serves unless it is
+// the _eff variant, whose BSE cash is priced at the calibrated rate instead.
+const BANNER_DASH = {};    // exchange → { json, at } at-today's-rates file
+async function bannerDashData(ex) {
+  if (MARKET_RAW[ex] && !MARKET_EFF[ex]) return MARKET_RAW[ex];
+  const c = BANNER_DASH[ex];
+  if (c && Date.now() - c.at < DATA_MAX_AGE_MS) return c.json;
+  try {
+    const json = (await fetchDataFile(`./data/${ex}_dashboard_data.json`)).json;
+    BANNER_DASH[ex] = { json, at: Date.now() };
+    return json;
+  } catch (e) {
+    return null;
+  }
+}
+
+// /api/* responses are cached at Vercel's edge (vercel.json), so their URLs
+// carry no cache-busting parameter: one function call serves every viewer.
+let BANNER_AT = 0;         // ms of the banner's last refresh
 async function updateLatestRevBanner() {
   const el = document.getElementById('latestRevBanner');
   if (!el) return;
 
-  const bust = Date.now();
+  BANNER_AT = Date.now();
   let nse = null, bse = null;
 
   // 1. Try /api/revenue — fetches directly from NSE & BSE websites on demand
   try {
-    const res = await fetch('/api/revenue?t=' + bust);
+    const res = await fetch('/api/revenue');
     if (res.ok) {
       const data = await res.json();
       nse = data.nse;
@@ -1629,8 +1649,8 @@ async function updateLatestRevBanner() {
   const needBse = !bse || !bse.has_data;
   if (needNse || needBse) {
     const [nseRes, bseRes] = await Promise.all([
-      needNse ? fetch('/api/live?exchange=nse&file=live&t=' + bust).catch(() => null) : null,
-      needBse ? fetch('/api/live?exchange=bse&file=live&t=' + bust).catch(() => null) : null,
+      needNse ? fetch('/api/live?exchange=nse&file=live').catch(() => null) : null,
+      needBse ? fetch('/api/live?exchange=bse&file=live').catch(() => null) : null,
     ]);
     if (needNse && nseRes && nseRes.ok) {
       const d = await nseRes.json().catch(() => null);
@@ -1647,8 +1667,8 @@ async function updateLatestRevBanner() {
   const needBse2 = !bse || !bse.has_data;
   if (needNse2 || needBse2) {
     const [nseDash, bseDash] = await Promise.all([
-      needNse2 ? fetch('./data/nse_dashboard_data.json').then(r => r.json()).catch(() => null) : null,
-      needBse2 ? fetch('./data/bse_dashboard_data.json').then(r => r.json()).catch(() => null) : null,
+      needNse2 ? bannerDashData('nse') : null,
+      needBse2 ? bannerDashData('bse') : null,
     ]);
     function lastFromDash(data) {
       if (!data) return null;
@@ -1782,7 +1802,7 @@ async function glanceShare(ex) {
 async function glanceLiveFiles(ex) {
   if (ex !== 'nse' && ex !== 'bse') return { live: null, hourly: null };
   const hourly = async () => {
-    for (const url of [`/api/live?exchange=${ex}&file=hourly&t=${Date.now()}`, `./data/${ex}_live_hourly.json`]) {
+    for (const url of [`/api/live?exchange=${ex}&file=hourly`, `./data/${ex}_live_hourly.json`]) {
       try {
         const res = await fetch(url);
         if (res.ok) return await res.json();
@@ -6252,7 +6272,7 @@ function intradayMethodLabel(method) {
 
 async function fetchIntradayJSON(exchange, file) {
   try {
-    const res = await fetch(`/api/live?exchange=${exchange}&file=${file}&t=${Date.now()}`);
+    const res = await fetch(`/api/live?exchange=${exchange}&file=${file}`);
     if (!res.ok) return null;
     return await res.json().catch(() => null);
   } catch {
@@ -6607,7 +6627,20 @@ async function init() {
   // Loads NSE and opens its first tab; a failure shows the overlay's Retry
   await switchExchange('nse');
   updateLatestRevBanner();
-  setInterval(updateLatestRevBanner, 5 * 60 * 1000);
+  setInterval(() => { if (bannerDue(false)) updateLatestRevBanner(); }, 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (bannerDue(true)) updateLatestRevBanner(); });
+}
+
+// The banner refreshes every 5 min while the tab is visible in market hours
+// (Mon–Fri 08:50–16:40 IST) and every 30 min otherwise, so an open tab still
+// drops its LIVE tag once the day changes. A tab coming back into view
+// catches up if its banner is more than 5 min old; a hidden tab never polls.
+function bannerDue(returning) {
+  if (document.hidden) return false;
+  const now = new Date(Date.now() + 330 * 60000);   // IST wall clock as UTC fields
+  const day = now.getUTCDay(), mins = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const open = day >= 1 && day <= 5 && mins >= 530 && mins <= 1000;
+  return Date.now() - BANNER_AT >= (returning || open ? 5 : 30) * 60 * 1000;
 }
 
 

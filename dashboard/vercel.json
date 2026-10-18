@@ -12,7 +12,7 @@
       "headers": [
         {
           "key": "Cache-Control",
-          "value": "public, max-age=30, stale-while-revalidate=60"
+          "value": "public, max-age=30, s-maxage=60, stale-while-revalidate=120"
         }
       ]
     },
@@ -21,7 +21,7 @@
       "headers": [
         {
           "key": "Cache-Control",
-          "value": "public, max-age=30, stale-while-revalidate=60"
+          "value": "public, max-age=30, s-maxage=30, stale-while-revalidate=60"
         }
       ]
     },

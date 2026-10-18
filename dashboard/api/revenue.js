@@ -196,7 +196,7 @@ module.exports = async function handler(req, res) {
   if (!nse?.has_data && nseFallback) nse = nseFallback;
   if (!bse?.has_data && bseFallback) bse = bseFallback;
 
-  res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+  res.setHeader('Cache-Control', 'public, max-age=30, s-maxage=60, stale-while-revalidate=120');
   res.setHeader('Content-Type', 'application/json');
   return res.status(200).json({ nse, bse, fetched_at: new Date().toISOString() });
 };
