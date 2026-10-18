@@ -3,7 +3,7 @@ Effective-dated expiry calendar for NSE and BSE index options — the single
 source of truth for which weekday is the weekly expiry (and whose last
 occurrence in a calendar month is the monthly expiry) on any given date.
 
-dashboard/app.js keeps a JS copy (const EXPIRY_RULES) for the Revenue Summary
+dashboard/js/10-revenue-summary.js keeps a JS copy (const EXPIRY_RULES) for the Revenue Summary
 expiry tables; scripts/check_expiry_calendar.py fails CI if the two drift.
 
 Each rule: exchange, effective_from / effective_to (inclusive 'YYYY-MM-DD',
