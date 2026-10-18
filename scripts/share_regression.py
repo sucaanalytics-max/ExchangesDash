@@ -27,6 +27,7 @@ toggles; tests/test_share_regression.py checks the two agree.
 """
 
 import bisect
+import json
 import math
 
 import numpy as np
@@ -301,3 +302,25 @@ def describe(out):
             f"holdout MAPE {h.get('mape_pct')}% vs naive {h.get('naive_mape_pct')}% · "
             f"fair value {'supported' if m['fair_value_supported'] else 'withheld: ' + '; '.join(m['gate_reasons'])} · "
             f"latest {lat['date']} ₹{lat['price_actual']} pred {lat['price_pred']}")
+
+
+def write_if_changed(path, out):
+    """Write `out` to `path` as JSON unless the file already holds the same
+    analysis, ignoring `updated_at`. A rerun on unchanged prices then leaves the
+    file alone and the workflow commits nothing. Returns True when it wrote.
+    allow_nan=False: fail the run loudly rather than ship invalid JSON (a bare
+    NaN token makes the browser's JSON.parse throw and blanks the whole tab)."""
+    text = json.dumps(out, indent=2, allow_nan=False)
+    try:
+        old = json.loads(path.read_text())
+    except (OSError, ValueError):
+        old = None
+    if isinstance(old, dict):
+        new = json.loads(text)
+        old.pop("updated_at", None)
+        new.pop("updated_at", None)
+        if old == new:
+            return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return True
