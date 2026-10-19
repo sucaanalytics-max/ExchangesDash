@@ -1,8 +1,22 @@
-// dashboard/js/00-core.js — Core: global state, utilities, chart colours and sizing, shared rx* tab components, loading overlay, sidebar and tab navigation, exchange switcher.
+// dashboard/js/00-core.js — Core: global state, shared helpers, chart colours and sizing, shared rx* tab components, loading overlay, sidebar and tab navigation, exchange switcher.
 // index.html loads dashboard/js/*.js in name order as classic scripts sharing one global scope.
 
 // Unified NSE+BSE+MCX Analytics Dashboard
 // Data loaded dynamically from ./data/ via fetch()
+
+// A dashboard script that fails to download, or throws while it loads, would
+// leave the files after it running against missing functions, and the page
+// would break later on whichever tab needs them. Failures are recorded here,
+// first thing, and startDashboard() (99-init.js) shows them instead of
+// starting a half-loaded page.
+const SCRIPT_LOAD_ERRORS = [];
+function recordScriptLoadError(e) {
+  const el = e.target;
+  if (el && el.tagName === 'SCRIPT') SCRIPT_LOAD_ERRORS.push(el.src.split('/').pop());
+  else if (e.filename && /\/js\/[^/]+\.js/.test(e.filename)) SCRIPT_LOAD_ERRORS.push(`${e.filename.split('/').pop()}: ${e.message}`);
+}
+// Capture phase: a script's load error does not bubble
+window.addEventListener('error', recordScriptLoadError, true);
 
 // ========================
 // GLOBAL STATE
@@ -38,35 +52,100 @@ function fmtPct(num) {
 }
 
 // ========================
+// SHARED HELPERS — used by several tabs
+// ========================
+
+// Escapes text for HTML content and double-quoted attributes.
+function escHtml(text) {
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function fmtChartDate(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  if (isNaN(d)) return dateStr;
+  return d.toLocaleString('en-IN', { month: 'short', year: '2-digit' }).replace(' ', '-');
+}
+
+// Shared KPI tile; styles live in style.css (.kpi-tile*).
+function kpi(title, value, sub, sentiment) {
+  const tone = sentiment === 'positive' ? ' kpi-tile-value--positive'
+             : sentiment === 'negative' ? ' kpi-tile-value--negative'
+             : '';
+  return `<div class="chart-panel kpi-tile">
+    <div class="kpi-tile-label">${title}</div>
+    <div class="kpi-tile-value${tone}">${value}</div>
+    <div class="kpi-tile-sub">${sub}</div>
+  </div>`;
+}
+
+// ── Fee-basis and modelled-history labels ─────────────────────────────────────
+// Date-effective NSE/BSE rows and periods carry fee_basis / fee_basis_by_product
+// (scripts/fee_register.py); MCX rows carry `modelled` and MCX periods
+// `modelled_days`. A displayed value is flagged when any row behind it was
+// priced at a slab-era flat estimate (slab) or a provisional calibrated BSE cash
+// rate (prov), or is modelled MCX history (modelled). Values get an "est." or
+// "modelled" marker; a % change with modelled days on either side is shown as
+// "—". Files without these fields (today's rates, older pipeline output) carry
+// no flags, so nothing is marked.
+const SEG_PRODUCT = { options: 'opt', futures: 'fut', cash: 'cash' };
+const NO_FLAGS = Object.freeze({ slab: false, prov: false, modelled: false });
+const FEE_EST_TITLES = {
+  slab: 'Slab-era estimate: transaction fees were tiered by volume slab before 1 Oct 2024 (NSE; BSE options from 1 Nov 2023), so this figure uses a flat estimate of the blended rate (fee register).',
+  prov: "Provisional: BSE cash revenue here uses a calibrated rate from BSE's last four reported quarters; it is updated when BSE reports the quarter.",
+};
+const MCX_MODELLED_TITLE = 'MCX revenue before 2 Sep 2024 is modelled — scaled to reported quarters, options split derived';
+
+// Flags of one daily row or aggregate period, for a segment ('total' = any product)
+function periodFlags(item, segKey) {
+  if (!item) return NO_FLAGS;
+  const prod = SEG_PRODUCT[segKey];
+  const byProd = item.fee_basis_by_product;
+  const bases = byProd ? (prod ? [byProd[prod]] : Object.values(byProd)) : (item.fee_basis ? [item.fee_basis] : []);
+  const slab = bases.includes('slab_estimate');
+  const prov = bases.includes('calibrated_provisional');
+  const modelled = item.modelled === true || item.modelled_days > 0;
+  return slab || prov || modelled ? { slab, prov, modelled } : NO_FLAGS;
+}
+
+function mergeFlags(list) {
+  const out = { slab: false, prov: false, modelled: false };
+  list.forEach(f => { if (f) { out.slab = out.slab || f.slab; out.prov = out.prov || f.prov; out.modelled = out.modelled || f.modelled; } });
+  return out;
+}
+
+function rowsFlags(rows, segKey) { return mergeFlags((rows || []).map(r => periodFlags(r, segKey))); }
+
+// "est." / "modelled" markers for a value with these flags ('' when none)
+function flagTags(f) {
+  if (!f) return '';
+  let html = '';
+  if (f.slab || f.prov) {
+    const title = [f.slab && FEE_EST_TITLES.slab, f.prov && FEE_EST_TITLES.prov].filter(Boolean).join(' ');
+    html += `<span class="fee-est" title="${title}">est.</span>`;
+  }
+  if (f.modelled) html += `<span class="mcx-modelled" title="${MCX_MODELLED_TITLE}">modelled</span>`;
+  return html;
+}
+
+function anyModelled(...flags) { return flags.some(f => f && f.modelled); }
+
+// ========================
 // CHART COLORS — from CSS tokens
 // ========================
 
 const CHART_COLORS = ['#2563EB', '#C0392B', '#16A34A', '#7C3AED', '#D97706', '#0891B2'];
 const FONT_FAMILY = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Inter', system-ui, sans-serif";
 
-function getTheme() {
-  return document.documentElement.getAttribute('data-theme') || 'dark';
-}
+// Chart chrome for the light theme, the only one (index.html sets data-theme="light")
+function getGridColor() { return 'rgba(0,0,0,0.06)'; }
 
-function getGridColor() {
-  return getTheme() === 'light' ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.05)';
-}
+function getTickColor() { return '#6e6e73'; }
 
-function getTickColor() {
-  return getTheme() === 'light' ? '#6e6e73' : '#86868b';
-}
+function getTooltipBg() { return 'rgba(255, 255, 255, 0.95)'; }
 
-function getTooltipBg() {
-  return getTheme() === 'light' ? 'rgba(255, 255, 255, 0.95)' : 'rgba(28, 28, 30, 0.95)';
-}
+function getTooltipText() { return '#1d1d1f'; }
 
-function getTooltipText() {
-  return getTheme() === 'light' ? '#1d1d1f' : '#f5f5f7';
-}
-
-function getScaleBorderColor() {
-  return getTheme() === 'light' ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.08)';
-}
+function getScaleBorderColor() { return 'rgba(0,0,0,0.08)'; }
 
 // Text size for on-screen chart ticks and axis titles (the base font, legend and
 // tooltip are 11 too). The off-screen report image builders keep their own
@@ -151,7 +230,7 @@ function applyChartDefaults() {
   Chart.defaults.plugins.tooltip.backgroundColor = getTooltipBg();
   Chart.defaults.plugins.tooltip.titleColor = getTooltipText();
   Chart.defaults.plugins.tooltip.bodyColor = getTooltipText();
-  Chart.defaults.plugins.tooltip.borderColor = getTheme() === 'light' ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)';
+  Chart.defaults.plugins.tooltip.borderColor = 'rgba(0,0,0,0.1)';
   Chart.defaults.plugins.tooltip.borderWidth = 1;
   Chart.defaults.plugins.tooltip.titleFont = { size: 11, weight: '600' };
   Chart.defaults.plugins.tooltip.bodyFont = { size: 11 };
@@ -428,12 +507,10 @@ function clearLoadError() {
 
 const NAV_ICONS = {
   revenue: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/></svg>',
-  segment: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 0 20"/><path d="M2 12h20"/></svg>',
   temporal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>',
   prediction: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>',
   advanced: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>',
   share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>',
-  overview: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>',
 };
 
 // ========================

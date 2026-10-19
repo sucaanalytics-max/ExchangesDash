@@ -367,14 +367,3 @@ setInterval(() => {
   if (now.getUTCDay() >= 1 && now.getUTCDay() <= 5 && mins >= 550 && mins <= 975) buildLivePredictor(currentExchange);
 }, 5 * 60 * 1000);
 
-// Shared KPI tile; styles live in style.css (.kpi-tile*).
-function kpi(title, value, sub, sentiment) {
-  const tone = sentiment === 'positive' ? ' kpi-tile-value--positive'
-             : sentiment === 'negative' ? ' kpi-tile-value--negative'
-             : '';
-  return `<div class="chart-panel kpi-tile">
-    <div class="kpi-tile-label">${title}</div>
-    <div class="kpi-tile-value${tone}">${value}</div>
-    <div class="kpi-tile-sub">${sub}</div>
-  </div>`;
-}

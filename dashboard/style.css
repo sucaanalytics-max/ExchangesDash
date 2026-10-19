@@ -71,14 +71,6 @@
   --color-error:          #ff453a;
   --color-warning:        #ffd60a;
 
-  /* Chart Palette — financial */
-  --chart-1: #2563EB;
-  --chart-2: #C0392B;
-  --chart-3: #16A34A;
-  --chart-4: #7C3AED;
-  --chart-5: #D97706;
-  --chart-6: #0891B2;
-
   /* Shadows — none in dark mode */
   --shadow-sm: none;
   --shadow-md: none;
@@ -94,12 +86,6 @@
   /* Grid/tick for charts */
   --color-grid: rgba(255,255,255,0.05);
   --color-tick: #86868b;
-
-  /* Donut border */
-  --color-donut-border: #1c1c1e;
-
-  /* Heatmap */
-  --heatmap-color: 0, 113, 227;
 
   /* Table row hover */
   --color-table-hover: rgba(0, 113, 227, 0.05);
@@ -177,22 +163,10 @@
   --color-grid: rgba(0,0,0,0.07);
   --color-tick: #686B72;
 
-  --color-donut-border: #FFFFFF;
-
-  --heatmap-color: 189, 17, 23;
-
   --color-table-hover: rgba(189, 17, 23, 0.04);
 
   /* No glassmorphism in ledger style */
   --backdrop-blur: none;
-
-  /* Chart colors — financial palette (kept in sync with CHART_COLORS in app.js) */
-  --chart-1: #2563EB;
-  --chart-2: #C0392B;
-  --chart-3: #16A34A;
-  --chart-4: #7C3AED;
-  --chart-5: #D97706;
-  --chart-6: #0891B2;
 }
 
 /* ===========================
@@ -452,64 +426,6 @@ html, body {
 }
 
 /* =========================
-   THEME TOGGLE
-   ========================= */
-
-.theme-toggle {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--color-border);
-  background: var(--color-surface-solid);
-  cursor: pointer;
-  transition: background-color var(--transition-interactive),
-              border-color var(--transition-interactive);
-  position: relative;
-  flex-shrink: 0;
-}
-
-.theme-toggle:hover {
-  border-color: var(--color-border-strong);
-}
-
-.theme-toggle svg {
-  width: 18px;
-  height: 18px;
-  color: var(--color-text-muted);
-  transition: color var(--transition-interactive),
-              transform 0.3s var(--ease-apple),
-              opacity 0.3s var(--ease-apple);
-}
-
-.theme-toggle:hover svg {
-  color: var(--color-text);
-}
-
-.theme-toggle .icon-sun {
-  position: absolute;
-  opacity: 0;
-  transform: rotate(-90deg) scale(0.5);
-}
-
-.theme-toggle .icon-moon {
-  opacity: 1;
-  transform: rotate(0deg) scale(1);
-}
-
-[data-theme="light"] .theme-toggle .icon-sun {
-  opacity: 1;
-  transform: rotate(0deg) scale(1);
-}
-
-[data-theme="light"] .theme-toggle .icon-moon {
-  opacity: 0;
-  transform: rotate(90deg) scale(0.5);
-}
-
-/* =========================
    MAIN CONTENT
    ========================= */
 
@@ -684,7 +600,7 @@ html, body {
   border: none;
 }
 
-/* Shared KPI tile, rendered by kpi() in app.js (share analysis, valuation,
+/* Shared KPI tile, rendered by kpi() in js/00-core.js (share analysis, valuation,
    intraday). The value scales from 20px on a 390px phone to 28px at 1440px+. */
 .chart-panel.kpi-tile {
   padding: 16px 20px;
@@ -768,7 +684,7 @@ html, body {
 }
 
 /* Price-vs-revenue scatters: kept short on small screens; on desktop they grow
-   with the width like other charts (app.js caps every chart at 440px). */
+   with the width like other charts (js/00-core.js caps every chart at 440px, CHART_MAX_HEIGHT). */
 
 /* =========================
    TABLES
@@ -1022,24 +938,6 @@ span.neutral {
 .table-scroll {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
-}
-
-/* =========================
-   HEATMAP
-   ========================= */
-
-.heatmap-grid {
-  display: grid;
-  gap: 2px;
-}
-
-.heatmap-cell {
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-3);
-  text-align: center;
-  font-size: var(--text-xs);
-  font-variant-numeric: tabular-nums;
-  font-weight: 500;
 }
 
 /* =========================
@@ -2457,157 +2355,6 @@ span.pr-neu {
   .expiry-quarter-table th:first-child { width: 36%; }
 }
 
-/* =========================
-   MARKET OVERVIEW
-   ========================= */
-
-#overviewContent {
-  padding: var(--space-3) var(--space-4) var(--space-6);
-}
-
-.ov-summary-panel {
-  background: var(--color-bg-card);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-
-.ov-summary-title {
-  background: var(--color-primary);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  padding: 6px 12px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.ov-table {
-  border-collapse: collapse;
-  width: 100%;
-  font-size: 12px;
-}
-
-.ov-table thead tr.xl-sec-hdr td {
-  background: #f0f2f5;
-  color: var(--color-text-muted);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  padding: 5px 10px;
-  border-bottom: 1px solid var(--color-border);
-  border-right: 2px solid var(--color-border);
-  text-align: center;
-}
-
-.ov-table thead tr.xl-sec-hdr td:first-child {
-  border-right: 2px solid var(--color-border);
-  min-width: 80px;
-}
-
-.ov-table thead tr.xl-col-hdr th {
-  background: #f7f8fa;
-  color: var(--color-text-faint);
-  font-size: 11px;
-  font-weight: 600;
-  padding: 3px 8px;
-  border-bottom: 1px solid var(--color-border);
-  white-space: nowrap;
-  text-align: right;
-}
-
-.ov-table thead tr.xl-col-hdr th:first-child {
-  text-align: left;
-  border-right: 2px solid var(--color-border);
-}
-
-.ov-table tbody tr {
-  border-bottom: 1px solid #eef0f3;
-}
-
-.ov-table tbody tr:last-child {
-  border-bottom: none;
-}
-
-.ov-table td {
-  padding: 6px 10px;
-  white-space: nowrap;
-  vertical-align: middle;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  font-size: 12px;
-  color: var(--color-text);
-}
-
-.ov-table td:nth-child(2n+1):not(:first-child) {
-  border-right: 1px dashed var(--color-border);
-}
-
-.ov-exchange {
-  text-align: left !important;
-  font-weight: 600;
-  border-right: 2px solid var(--color-border) !important;
-  min-width: 80px;
-}
-
-.ov-ex-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-
-.ov-ex-nse { background: rgba(37,99,235,0.1);  color: #2563eb; }
-.ov-ex-bse { background: rgba(5,150,105,0.1);  color: #059669; }
-.ov-ex-mcx { background: rgba(217,119,6,0.1);  color: #d97706; }
-
-.ov-row-total td {
-  background: #f7f8fa;
-  font-weight: 700;
-  border-top: 2px solid var(--color-border);
-}
-
-/* Market share inline bar */
-.ms-bar-wrap {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 80px;
-}
-
-.ms-bar-fill {
-  height: 6px;
-  background: var(--color-primary);
-  border-radius: 3px;
-  min-width: 2px;
-  opacity: 0.7;
-}
-
-.ms-bar-label {
-  font-size: 11px;
-  color: var(--color-text-secondary);
-  font-weight: 600;
-  white-space: nowrap;
-  min-width: 36px;
-}
-
-.ov-row-nse .ms-bar-fill { background: #2563eb; }
-.ov-row-bse .ms-bar-fill { background: #059669; }
-.ov-row-mcx .ms-bar-fill { background: #d97706; }
-
-@media (max-width: 768px) {
-  #overviewInner {
-    padding: var(--space-2);
-    gap: var(--space-4);
-  }
-}
-
 /* ── Valuation provenance: a tag beside each input says where its value
    comes from (data, Excel model, owner assumption, placeholder, edited) ── */
 
@@ -2791,7 +2538,7 @@ span.pr-neu {
 }
 
 /* =========================
-   GLANCE VIEW — phones (≤640 px), renderGlance() in app.js
+   GLANCE VIEW — phones (≤640 px), renderGlance() in js/02-banner-glance.js
    ========================= */
 
 .nav-item--glance { display: none; }
@@ -2945,7 +2692,7 @@ span.pr-neu {
    Revenue Summary tab and the shared header/sidebar keep their own look.
    Colour jobs: ink = actual / subtotal, --rx-model = model or forecast,
    --rx-rev = revenue, positive/negative only for up/down, amber for
-   warnings and estimates. Kept in sync with RX in app.js.
+   warnings and estimates. Kept in sync with RX in js/00-core.js.
    ===================================================================== */
 
 .rx {

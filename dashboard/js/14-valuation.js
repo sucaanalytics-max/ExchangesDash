@@ -29,11 +29,6 @@ function sharesChip(ex) {
   return `<span class="rx-chip rx-chip--${s.kind}" title="${escHtml(s.source)}">${s.chip}</span>`;
 }
 
-// Escapes text for HTML content and double-quoted attributes.
-function escHtml(text) {
-  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 // ========================
 // VALUATION HELPERS
 // ========================
@@ -45,12 +40,6 @@ function currentFYQuarterLabel(d) {
   const fyYear = month >= 3 ? year + 1 : year;
   const q = month >= 3 && month <= 5 ? 1 : month >= 6 && month <= 8 ? 2 : month >= 9 && month <= 11 ? 3 : 4;
   return { fy: `FY ${fyYear}`, quarter: `Q${q} FY ${fyYear}` };
-}
-
-function fmtChartDate(dateStr) {
-  const d = new Date(dateStr + 'T00:00:00');
-  if (isNaN(d)) return dateStr;
-  return d.toLocaleString('en-IN', { month: 'short', year: '2-digit' }).replace(' ', '-');
 }
 
 function debounce(fn, ms) {

@@ -16,8 +16,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
 DASHBOARD = ROOT / "dashboard"
-# index.html is the one place that lists the dashboard's scripts and their order
-JS_FILES = re.findall(r'<script src="\./(js/[^"]+\.js)"></script>', (DASHBOARD / "index.html").read_text())
+# index.html is the one place that lists the dashboard's scripts and their order.
+# Any tag whose src is js/<name>.js counts, whatever its other attributes or quotes.
+JS_FILES = re.findall(r"""<script\b[^>]*\bsrc=["'](?:\./)?(js/[^"'?#]+\.js)(?:[?#][^"']*)?["']""", (DASHBOARD / "index.html").read_text())
 APP_JS = "\n".join((DASHBOARD / f).read_text() for f in JS_FILES)
 NODE = shutil.which("node")
 
