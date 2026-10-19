@@ -99,7 +99,7 @@
 
   <!-- MAIN CONTENT -->
   <main class="main" id="mainContent">
-    <!-- Phones: the default "At a glance" screen (renderGlance in app.js) -->
+    <!-- Phones: the default "At a glance" screen (renderGlance in js/02-banner-glance.js) -->
     <div id="glanceView" class="glance" aria-label="At a glance" hidden></div>
     <!-- Shown when a view combines exchanges whose latest data dates differ -->
     <div id="snapshotNotice" class="snapshot-notice" role="status" hidden></div>
@@ -123,7 +123,7 @@
       <p class="fee-note" id="feeModeNote" hidden></p>
     </section>
 
-    <!-- TAB: Revenue Predictor (buildRevenuePredictor in app.js fills the current exchange's block) -->
+    <!-- TAB: Revenue Predictor (buildRevenuePredictor in js/12-revenue-predictor.js fills the current exchange's block) -->
     <section class="tab-content" id="tab-prediction">
       <div id="nsePredictionContent"></div>
       <div id="bsePredictionContent" style="display:none"></div>
@@ -201,6 +201,17 @@
 
 <div id="print-report"></div>
 
-<script src="./app.js"></script>
+<!-- dashboard/js/*.js in name order: classic scripts sharing one global scope; 99-init.js starts the app -->
+<script src="./js/00-core.js"></script>
+<script src="./js/01-data.js"></script>
+<script src="./js/02-banner-glance.js"></script>
+<script src="./js/10-revenue-summary.js"></script>
+<script src="./js/11-market-share.js"></script>
+<script src="./js/12-revenue-predictor.js"></script>
+<script src="./js/13-regression.js"></script>
+<script src="./js/14-valuation.js"></script>
+<script src="./js/15-live-predictor.js"></script>
+<script src="./js/20-reports.js"></script>
+<script src="./js/99-init.js"></script>
 </body>
 </html>

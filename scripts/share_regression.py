@@ -22,7 +22,7 @@ Method (remediation plan, Phase 5):
   significant on Newey-West errors, and the revenue MA moved enough over the
   window to identify a slope.
 
-dashboard/app.js (computeShareModel) mirrors this maths for the DMA/lag
+dashboard/js/13-regression.js (computeShareModel) mirrors this maths for the DMA/lag
 toggles; tests/test_share_regression.py checks the two agree.
 """
 

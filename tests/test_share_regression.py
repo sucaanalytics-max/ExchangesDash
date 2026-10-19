@@ -105,7 +105,7 @@ class RegressionMaths(unittest.TestCase):
 
 @unittest.skipUnless(NODE, "node not installed")
 class DashboardMirror(unittest.TestCase):
-    """dashboard/app.js computeShareModel must reproduce share_regression.py."""
+    """computeShareModel (dashboard/js/13-regression.js) must reproduce share_regression.py."""
 
     def check(self, out, window=5, lag=0, modelled=False):
         js = js_eval(SHARE_JS, f"computeShareModel(DATA, {window}, {lag})", out)

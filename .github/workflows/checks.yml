@@ -30,14 +30,14 @@ jobs:
       - name: Python scripts compile
         run: python -m py_compile scripts/*.py
 
-      - name: Unit tests (tiny fixtures; Python and the app.js mirrors)
+      - name: Unit tests (tiny fixtures; Python and the dashboard JS mirrors)
         run: |
           pip install --quiet numpy requests openpyxl
           python -m unittest discover -s tests
 
       - name: Dashboard JS parses
         run: |
-          for f in dashboard/app.js dashboard/api/*.js; do
+          for f in dashboard/js/*.js dashboard/api/*.js; do
             node -e "new (require('vm').Script)(require('fs').readFileSync('$f','utf8'), {filename: '$f'})"
           done
           echo "JS OK"

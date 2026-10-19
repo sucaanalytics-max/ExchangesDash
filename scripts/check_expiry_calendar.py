@@ -1,5 +1,5 @@
 """
-Fail if the JS expiry calendar (const EXPIRY_RULES in dashboard/app.js) drifts
+Fail if the JS expiry calendar (const EXPIRY_RULES in dashboard/js/) drifts
 from scripts/expiry_calendar.py (the Python source of truth), or if the Python
 table itself is malformed: per exchange the rules must be sorted, contiguous
 (no gap, no overlap), open-ended at both ends, and change only on week edges
@@ -17,7 +17,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import expiry_calendar as ec
 
-JS_FILE = Path(__file__).parent.parent / "dashboard" / "app.js"
+# Searched across every dashboard script, so moving EXPIRY_RULES between files is safe
+JS_DIR = Path(__file__).parent.parent / "dashboard" / "js"
 FIELDS = ("exchange", "effective_from", "effective_to", "weekday")
 
 
@@ -61,17 +62,17 @@ def table_problems():
 
 def main():
     bad = table_problems()
-    got = js_rules(JS_FILE.read_text())
+    got = js_rules("\n".join(p.read_text() for p in sorted(JS_DIR.glob("*.js"))))
     want = [{k: r[k] for k in FIELDS} for r in ec.EXPIRY_RULES]
     if got is None:
-        bad.append(f"const EXPIRY_RULES not found in {JS_FILE.name}")
+        bad.append("const EXPIRY_RULES not found in dashboard/js/*.js")
     elif got != want:
-        bad.append(f"{JS_FILE.name} EXPIRY_RULES != expiry_calendar.py EXPIRY_RULES")
+        bad.append("dashboard/js EXPIRY_RULES != expiry_calendar.py EXPIRY_RULES")
         for i in range(max(len(got), len(want))):
             g = got[i] if i < len(got) else None
             w = want[i] if i < len(want) else None
             if g != w:
-                bad.append(f"  rule {i}: app.js {g} vs python {w}")
+                bad.append(f"  rule {i}: dashboard/js {g} vs python {w}")
     if bad:
         print("Expiry calendar problems:\n  " + "\n  ".join(bad))
         sys.exit(1)

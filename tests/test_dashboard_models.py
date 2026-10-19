@@ -1,4 +1,4 @@
-"""Calculation helpers behind the redesigned dashboard tabs (app.js), run in Node.
+"""Calculation helpers behind the redesigned dashboard tabs (dashboard/js), run in Node.
 
 The Revenue Predictor's NSE path must reproduce scripts/nse_pipeline.py's ratio
 model, BSE's valuation must keep the Excel "Annual Predictor" formulas, and the

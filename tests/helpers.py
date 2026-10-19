@@ -1,8 +1,9 @@
-"""Shared test helpers: put scripts/ on the path and run app.js functions in Node.
+"""Shared test helpers: put scripts/ on the path and run dashboard JS functions in Node.
 
-app.js is a browser script (DOM, Chart.js), so it cannot be loaded whole.
-js_eval() lifts the named top-level functions / consts out of it and runs them
-in a bare Node VM, which is enough for the pure calculation helpers."""
+The dashboard JS (dashboard/js/*.js) is browser script (DOM, Chart.js), so it
+cannot be loaded whole. js_eval() lifts the named top-level functions / consts
+out of it and runs them in a bare Node VM, which is enough for the pure
+calculation helpers."""
 
 import json
 import re
@@ -14,7 +15,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
-APP_JS = (ROOT / "dashboard" / "app.js").read_text()
+DASHBOARD = ROOT / "dashboard"
+# index.html is the one place that lists the dashboard's scripts and their order
+JS_FILES = re.findall(r'<script src="\./(js/[^"]+\.js)"></script>', (DASHBOARD / "index.html").read_text())
+APP_JS = "\n".join((DASHBOARD / f).read_text() for f in JS_FILES)
 NODE = shutil.which("node")
 
 
@@ -34,7 +38,7 @@ def _block_end(src, start):
 
 
 def js_source(name):
-    """Source of a top-level `function name(` or `const name =` in app.js."""
+    """Source of a top-level `function name(` or `const name =` in the dashboard JS."""
     m = re.search(rf"^(?:async )?function {name}\(", APP_JS, re.M)
     if m:
         return APP_JS[m.start():_block_end(APP_JS, APP_JS.index(")", m.end()))]
@@ -42,11 +46,11 @@ def js_source(name):
     if m:
         end = APP_JS.index(";\n", m.end())
         return APP_JS[m.start():end + 1]
-    raise KeyError(f"{name} not found in app.js")
+    raise KeyError(f"{name} not found in dashboard/js")
 
 
 def js_eval(names, expr, data=None):
-    """Evaluate `expr` (JS) after defining `names` from app.js; `data` is
+    """Evaluate `expr` (JS) after defining `names` from the dashboard JS; `data` is
     available as DATA. Returns the JSON-decoded result."""
     code = "\n".join(js_source(n) for n in names)
     script = (f"const DATA = {json.dumps(data)};\n{code}\n"
