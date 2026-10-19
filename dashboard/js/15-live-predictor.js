@@ -124,6 +124,8 @@ function liveStatus(hourly, latest) {
   }
   if (isToday && open && age != null && age <= LIVE_STALE_MINUTES) return { kind: 'live', isToday, age };
   if (isToday && open) return { kind: 'stale', isToday, age };
+  // In session (15 min after the open) with no poll for today: a holiday, or the pollers are not running
+  if (open && mins >= 570) return { kind: 'nopoll', isToday, age };
   return { kind: 'closed', isToday, age };
 }
 
@@ -162,11 +164,17 @@ async function buildLivePredictor(ex) {
     ? `<span class="rx-status rx-status--live" role="status"><span class="rx-dot" aria-hidden="true"></span>Live · last poll ${(latest.captured_ist || '').slice(11, 16)} IST</span>`
     : st.kind === 'stale'
       ? `<span class="rx-status rx-status--stale" role="status"><span class="rx-dot" aria-hidden="true"></span>Delayed · last poll ${latest ? (latest.captured_ist || '').slice(11, 16) + ' IST' : 'none yet today'}${st.age != null ? ` (${st.age} min ago)` : ''}</span>`
-      : `<span class="rx-status" role="status"><span class="rx-dot" aria-hidden="true"></span>Market closed${sessLong ? ` · showing ${sessLong}` : ''}</span>`;
+      : st.kind === 'nopoll'
+        ? `<span class="rx-status rx-status--stale" role="status"><span class="rx-dot" aria-hidden="true"></span>No poll today${sessLong ? ` · showing ${sessLong}` : ''}</span>`
+        : `<span class="rx-status" role="status"><span class="rx-dot" aria-hidden="true"></span>Market closed${sessLong ? ` · showing ${sessLong}` : ''}</span>`;
+  const noPollHTML = st.kind === 'nopoll'
+    ? rxAlert(`<strong>No live poll yet today.</strong>${sessLong ? ` Showing the last session polled, ${sessLong}.` : ''} On a trading day this means the live pollers are not running: check the ${ex}-live Actions runs and the external cron that calls /api/trigger-live-polls.`)
+    : '';
 
   if (!samples.length) {
     el.innerHTML = `<div class="rx">
       <div class="rx-bar" style="position:static">${statusHTML}<p class="rx-foot">${name} · live polls run about every 5 minutes, 09:15–16:00 IST on trading days</p></div>
+      ${noPollHTML}
       ${rxPanel({ title: 'Live predictor', body: `<div class="rx-empty"><b>No poll since the 09:15 open${sessLong ? ` on ${sessLong}` : ''}</b>GitHub Actions polls every few minutes during market hours, though not on a precise schedule. The prediction appears with the first poll.</div>` })}
     </div>`;
     return;
@@ -177,6 +185,7 @@ async function buildLivePredictor(ex) {
 
   el.innerHTML = `<div class="rx">
     <div class="rx-bar" style="position:static">${statusHTML}<p class="rx-foot" style="margin-left:0">${name} · trade date ${sessLong} · ${dayType.replace('_', '-')} day · ${samples.length} polls since 09:15</p></div>
+    ${noPollHTML}
     <section class="rx-kpis" data-rx="kpis" aria-label="Session so far"></section>
     ${rxPanel({ title: 'Cumulative revenue through the session', meta: '₹ Cr, 09:15–16:00 IST',
       right: rxSeg('type', LIVE_DAY_TYPES.map(([k, l]) => [k, `${l} (${countOf(k)})`]), state.type, 'Archived days the band is built from'),

@@ -154,6 +154,17 @@ class LiveArchiveScoring(unittest.TestCase):
         js = js_eval(LIVE_JS, "[revenueAt(DATA, 15), revenueAt(DATA, 60), revenueAt(DATA, 120)]", polls)
         self.assertEqual(js, [3, 12, None])
 
+    def test_status_flags_a_missing_day_in_session(self):
+        # liveStatus at a given UTC time; istDateOf stubbed to that IST date
+        def status(utc, today, hourly_date, captured=None):
+            expr = (f"(() => {{ Date.now = () => Date.parse('{utc}'); globalThis.istDateOf = () => '{today}';"
+                    f" return liveStatus({{ date: '{hourly_date}' }}, {json.dumps({'captured_ist': captured} if captured else None)}).kind; }})()")
+            return js_eval(["LIVE_STALE_MINUTES", "liveStatus"], expr)
+        self.assertEqual(status("2026-10-19T05:31:00Z", "2026-10-19", "2026-10-16"), "nopoll")    # Mon 11:01 IST, Friday's file
+        self.assertEqual(status("2026-10-19T05:31:00Z", "2026-10-19", "2026-10-19", "2026-10-19T10:55:00"), "live")
+        self.assertEqual(status("2026-10-19T03:50:00Z", "2026-10-19", "2026-10-16"), "closed")    # 09:20 IST: first polls not due yet
+        self.assertEqual(status("2026-10-17T05:31:00Z", "2026-10-17", "2026-10-16"), "closed")    # Saturday
+
 
 @unittest.skipUnless(NODE, "node not installed")
 class QuarterLabels(unittest.TestCase):
