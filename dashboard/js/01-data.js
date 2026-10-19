@@ -593,7 +593,7 @@ async function reloadForFeeMode() {
 // Each exchange's revenue is divided by its own trading days before summing,
 // so the combined value is a true sum-of-daily-averages regardless of each
 // exchange having a different number of trading days in a period.
-// days=1 is stored so computeQuarterMetrics / getMAvg return the value as-is.
+// days=1 is stored so getMAvg returns the value as-is.
 // Longer or differently cut periods (FY, weekday × quarter, 125 days) are not
 // averages of these rows: they are summed per exchange from DATA.components.
 // "Q2 FY 2027" → chronological sort key. Indian FY: Q1=Apr-Jun, Q2=Jul-Sep,

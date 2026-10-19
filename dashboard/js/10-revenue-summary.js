@@ -365,35 +365,6 @@ function buildWeeklyVsMonthEndHTML(exchange, segKey) {
   </div>`;
 }
 
-function computeQuarterMetrics(qIdx, segKey) {
-  const rf = getRevFieldObj(segKey);
-  const allQ = DATA.quarterly;
-  const sel = allQ[qIdx];
-  const days = sel.days || sel.trading_days || 1;
-  const selAvg = sel[rf.qField] / days;
-  const prev = qIdx > 0 ? allQ[qIdx - 1] : null;
-  const prevDays = prev ? (prev.days || prev.trading_days || 1) : 1;
-  const prevAvg = prev ? prev[rf.qField] / prevDays : null;
-  const qoq = prevAvg ? (selAvg - prevAvg) / prevAvg : null;
-
-  const yoyLabel = getYoYQuarter(sel.quarter);
-  const yoyQ = yoyLabel ? allQ.find(q => q.quarter === yoyLabel) : null;
-  const yoyDays = yoyQ ? (yoyQ.days || yoyQ.trading_days || 1) : 1;
-  const yoyAvg = yoyQ ? yoyQ[rf.qField] / yoyDays : null;
-  const yoy = yoyAvg ? (selAvg - yoyAvg) / yoyAvg : null;
-
-  return {
-    label: sel.quarter,
-    value: selAvg,
-    prevLabel: prev ? prev.quarter : '—',
-    prevValue: prevAvg,
-    qoq: qoq,
-    yoyLabel: yoyLabel || '—',
-    yoyValue: yoyAvg,
-    yoy: yoy
-  };
-}
-
 // ── Excel-style Revenue Summary ──────────────────────────────────────────────
 
 // ── Wire-table formatters — exact match to the reference's bare-number style
@@ -437,43 +408,6 @@ function sumOverSources(perSource) {
   return vals.length ? vals.reduce((a, v) => a + v, 0) : null;
 }
 
-// ── Fee-basis and modelled-history labels ─────────────────────────────────────
-// Date-effective NSE/BSE rows and periods carry fee_basis / fee_basis_by_product
-// (scripts/fee_register.py); MCX rows carry `modelled` and MCX periods
-// `modelled_days`. A displayed value is flagged when any row behind it was
-// priced at a slab-era flat estimate (slab) or a provisional calibrated BSE cash
-// rate (prov), or is modelled MCX history (modelled). Values get an "est." or
-// "modelled" marker; a % change with modelled days on either side is shown as
-// "—". Files without these fields (today's rates, older pipeline output) carry
-// no flags, so nothing is marked.
-const SEG_PRODUCT = { options: 'opt', futures: 'fut', cash: 'cash' };
-const NO_FLAGS = Object.freeze({ slab: false, prov: false, modelled: false });
-const FEE_EST_TITLES = {
-  slab: 'Slab-era estimate: transaction fees were tiered by volume slab before 1 Oct 2024 (NSE; BSE options from 1 Nov 2023), so this figure uses a flat estimate of the blended rate (fee register).',
-  prov: "Provisional: BSE cash revenue here uses a calibrated rate from BSE's last four reported quarters; it is updated when BSE reports the quarter.",
-};
-const MCX_MODELLED_TITLE = 'MCX revenue before 2 Sep 2024 is modelled — scaled to reported quarters, options split derived';
-
-// Flags of one daily row or aggregate period, for a segment ('total' = any product)
-function periodFlags(item, segKey) {
-  if (!item) return NO_FLAGS;
-  const prod = SEG_PRODUCT[segKey];
-  const byProd = item.fee_basis_by_product;
-  const bases = byProd ? (prod ? [byProd[prod]] : Object.values(byProd)) : (item.fee_basis ? [item.fee_basis] : []);
-  const slab = bases.includes('slab_estimate');
-  const prov = bases.includes('calibrated_provisional');
-  const modelled = item.modelled === true || item.modelled_days > 0;
-  return slab || prov || modelled ? { slab, prov, modelled } : NO_FLAGS;
-}
-
-function mergeFlags(list) {
-  const out = { slab: false, prov: false, modelled: false };
-  list.forEach(f => { if (f) { out.slab = out.slab || f.slab; out.prov = out.prov || f.prov; out.modelled = out.modelled || f.modelled; } });
-  return out;
-}
-
-function rowsFlags(rows, segKey) { return mergeFlags((rows || []).map(r => periodFlags(r, segKey))); }
-
 // Over every exchange behind the view (one for single-exchange views)
 function sourcesFlags(perSource) { return mergeFlags(revenueSources().map(perSource)); }
 
@@ -515,23 +449,9 @@ function weekdayQuarterFlags(weekday, qLabel, segKey) {
   return sourcesFlags(src => rowsFlags(src.daily_all.filter(r => r.day === weekday && r.fy_quarter === qLabel), segKey));
 }
 
-// "est." / "modelled" markers for a value with these flags ('' when none)
-function flagTags(f) {
-  if (!f) return '';
-  let html = '';
-  if (f.slab || f.prov) {
-    const title = [f.slab && FEE_EST_TITLES.slab, f.prov && FEE_EST_TITLES.prov].filter(Boolean).join(' ');
-    html += `<span class="fee-est" title="${title}">est.</span>`;
-  }
-  if (f.modelled) html += `<span class="mcx-modelled" title="${MCX_MODELLED_TITLE}">modelled</span>`;
-  return html;
-}
-
 // A % change between periods, one of which contains modelled MCX days, is not shown
 const CMP_MODELLED_SPAN = `<span class="xl-chg xl-neu cmp-na" title="${MCX_MODELLED_TITLE}">—</span>`;
 const CMP_MODELLED_TD = `<td class="wire-delta neutral cmp-na" title="${MCX_MODELLED_TITLE}">—</td>`;
-
-function anyModelled(...flags) { return flags.some(f => f && f.modelled); }
 
 // ── Simple avg getters (no derived comparisons) ───────────────────────────────
 function getFYAvg(fyStr, segKey) {

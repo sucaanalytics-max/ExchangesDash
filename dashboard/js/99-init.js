@@ -1,4 +1,4 @@
-// dashboard/js/99-init.js — Start-up: init(), called last, once every other file has loaded.
+// dashboard/js/99-init.js — Start-up: startDashboard() runs init() last, once every other file has loaded.
 // index.html loads dashboard/js/*.js in name order as classic scripts sharing one global scope.
 
 // ========================
@@ -37,5 +37,22 @@ function bannerDue(returning) {
   return Date.now() - BANNER_AT >= (returning || open ? 5 : 30) * 60 * 1000;
 }
 
+// Starts the dashboard only when Chart.js and every dashboard script loaded and
+// ran (SCRIPT_LOAD_ERRORS, 00-core.js). Otherwise the loading overlay names what
+// failed and offers a reload, as a single-file app would have failed as a whole.
+function startDashboard() {
+  const failed = typeof SCRIPT_LOAD_ERRORS === 'undefined' ? ['00-core.js'] : SCRIPT_LOAD_ERRORS.slice();
+  if (typeof recordScriptLoadError === 'function') window.removeEventListener('error', recordScriptLoadError, true);
+  if (typeof Chart === 'undefined') failed.unshift('Chart.js');
+  if (!failed.length) { init(); return; }
+  console.error('Dashboard not started; failed to load:', failed);
+  document.getElementById('loadingText').textContent =
+    `Part of the dashboard failed to load (${failed.join('; ')}). Reload the page; if this persists, a deploy may be in progress.`;
+  const actions = document.getElementById('loadingActions');
+  actions.innerHTML = '<button type="button" class="loading-btn loading-btn--primary">Reload</button>';
+  actions.hidden = false;
+  actions.firstChild.onclick = () => location.reload();
+  document.getElementById('loadingOverlay').classList.add('visible', 'is-error');
+}
 
-init();
+startDashboard();
