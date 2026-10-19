@@ -1,62 +1,62 @@
 {
-  "updated_at": "2026-10-18T11:27:59Z",
+  "updated_at": "2026-10-19T04:58:50Z",
   "ticker": "NSE.BO",
   "ma_window": 45,
   "regression_start": "2026-09-24",
-  "n_days": 16,
+  "n_days": 17,
   "ma_window_comparison": {
     "20": {
-      "r_squared": 0.2755,
-      "pearson_r": -0.5249,
-      "n": 16
+      "r_squared": 0.2838,
+      "pearson_r": -0.5328,
+      "n": 17
     },
     "30": {
-      "r_squared": 0.2864,
-      "pearson_r": -0.5352,
-      "n": 16
+      "r_squared": 0.2976,
+      "pearson_r": -0.5455,
+      "n": 17
     },
     "45": {
-      "r_squared": 0.1248,
-      "pearson_r": -0.3533,
-      "n": 16
+      "r_squared": 0.1401,
+      "pearson_r": -0.3742,
+      "n": 17
     },
     "50": {
-      "r_squared": 0.1872,
-      "pearson_r": -0.4326,
-      "n": 16
+      "r_squared": 0.2009,
+      "pearson_r": -0.4482,
+      "n": 17
     },
     "60": {
-      "r_squared": 0.2863,
-      "pearson_r": -0.5351,
-      "n": 16
+      "r_squared": 0.2955,
+      "pearson_r": -0.5436,
+      "n": 17
     },
     "90": {
-      "r_squared": 0.0623,
-      "pearson_r": 0.2495,
-      "n": 16
+      "r_squared": 0.0775,
+      "pearson_r": 0.2784,
+      "n": 17
     }
   },
   "regression": {
-    "slope": -7.5199,
-    "intercept": 2095.76,
-    "r_squared": 0.1248,
-    "pearson_r": -0.3533,
-    "equation": "Price = -7.52 \u00d7 Rev_MA45[t-1] + 2095.76",
+    "slope": -7.1268,
+    "intercept": 2078.18,
+    "r_squared": 0.1401,
+    "pearson_r": -0.3742,
+    "equation": "Price = -7.13 \u00d7 Rev_MA45[t-1] + 2078.18",
     "fit": "weak"
   },
   "methodology": {
     "revenue_lag_days": 1,
     "ma_basis": "all revenue trading days",
-    "slope_se_newey_west": 7.2233,
-    "t_stat_newey_west": -1.04,
+    "slope_se_newey_west": 5.9962,
+    "t_stat_newey_west": -1.19,
     "newey_west_lags": 5,
-    "durbin_watson": 0.637,
+    "durbin_watson": 0.634,
     "holdout": null,
     "fair_value_supported": false,
     "gate_reasons": [
-      "only 16 observations (needs 60)",
+      "only 17 observations (needs 60)",
       "slope is not positive",
-      "revenue MA moved only 8% over the window (needs 10%)"
+      "revenue MA moved only 9% over the window (needs 10%)"
     ],
     "thresholds": {
       "min_n": 60,
@@ -66,10 +66,10 @@
     }
   },
   "latest": {
-    "date": "2026-10-16",
-    "revenue_cr": 65.0738,
-    "rev_ma": 47.1038,
-    "price_actual": 1749.45,
+    "date": "2026-10-19",
+    "revenue_cr": null,
+    "rev_ma": 47.7487,
+    "price_actual": 1741.25,
     "price_pred": null,
     "error_pct": null
   },
@@ -184,6 +184,13 @@
       "revenue_cr": 65.0738,
       "rev_ma": 47.1038,
       "price": 1749.45,
+      "price_pred": null
+    },
+    {
+      "date": "2026-10-19",
+      "revenue_cr": null,
+      "rev_ma": 47.7487,
+      "price": 1741.25,
       "price_pred": null
     }
   ],
