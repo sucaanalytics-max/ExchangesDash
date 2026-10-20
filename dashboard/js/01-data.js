@@ -481,6 +481,10 @@ function buildFeeNote() {
       parts.push(`${flagTags({ modelled: true })} marks MCX history ${fmtLongDate(mh.first_date)} – ${fmtLongDate(mh.last_date)}, which is modelled (scaled to reported quarters, options split derived) and left out of YoY, QoQ, segment-mix and market-share comparisons, shown as —.`);
     }
   }
+  // Expiry-day counts (expiryCountHTML in 10-revenue-summary.js)
+  if (exs.includes('nse') || exs.includes('bse')) {
+    parts.push(`<strong>Expiries</strong> counts the period's expiry days: each exchange's weekly index expiry (NSE Nifty, BSE Sensex) on the weekday then in force, moved to the previous trading day for a holiday; this week's counts once it has traded.${multi ? ' N = NSE, B = BSE; amber marks counts that differ, where the daily averages are not like for like.' : ''} Before 20 Nov 2024 both exchanges also had other weekly index expiries, not counted; BSE counts before the Sensex relaunch (15 May 2023) are notional.`);
+  }
   // Muhurat / DR test sessions (scripts/trading_calendar.py): left out of every
   // average and day count, listed here with their revenue
   const special = exs.flatMap(ex => (rawFor(ex)?.special_sessions || []).map(r => ({ ex, r })));

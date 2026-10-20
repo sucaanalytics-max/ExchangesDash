@@ -26,6 +26,19 @@ function reportFlagsFor(dash) {
   };
 }
 
+// Expiry days behind the report's periods, for one exchange (countExpiryDays);
+// null for MCX or without the exchange's dashboard file
+function reportExpiriesFor(dash, exchange) {
+  const daily = dash?.daily_all || [];
+  if (!daily.length || !EXPIRY_RULES.some(r => r.exchange === exchange)) return null;
+  const count = rows => rows.length ? countExpiryDays(rows, daily, exchange) : null;
+  return {
+    q:    label => count(daily.filter(r => r.fy_quarter === label)),
+    m:    label => count(daily.filter(r => r.fy_month === label)),
+    tail: (from, to) => count(daily.slice(from, to)),
+  };
+}
+
 // Printed markers (tooltips do not print): the weekly report styles them with
 // .pr-flag; the standalone mobile report needs inline styles.
 function reportTags(f, inline) {
@@ -44,6 +57,7 @@ function reportFeeLine(nseEff, bseEff, mcxDash) {
   const today = [!nseEff && 'NSE', !bseEff && 'BSE'].filter(Boolean);
   if (charged.length) parts.push(`${charged.join('/')} fees as charged: each trading day at the transaction fees then in force (fee register); est. = slab-era flat estimate or provisional calibrated BSE cash rate.`);
   if (today.length) parts.push(`${today.join('/')} fees at today's rates: every trading day at today's statutory transaction fees (fee register)${FEE_MODE === 'charged' ? ' — date-effective data not generated yet' : ''}.`);
+  parts.push('Expiries / exp = NSE or BSE expiry days in the period (weekly index expiry, moved to the previous trading day for a holiday).');
   parts.push('MCX: source values.');
   const mh = mcxDash?.modelled_history;
   if (mh && mh.days > 0) parts.push(`modelled = MCX history ${fmtLongDate(mh.first_date)} – ${fmtLongDate(mh.last_date)}, excluded from comparisons (—).`);
@@ -227,7 +241,9 @@ async function downloadWeeklyReport() {
     const tg = f => reportTags(f);
     const prChg = (val, ...flags) => anyModelled(...flags) ? '—' : prFmt(val);
 
-    function buildTotalRevenueTable(enriched, F) {
+    // X: the exchange's expiry counts (reportExpiriesFor), adding an Expiries
+    // column; null for MCX
+    function buildTotalRevenueTable(enriched, F, X) {
       const s = enriched.summary_total;
       if (!s) return '';
       const wl5 = s.weekly.last5 || {};
@@ -244,25 +260,27 @@ async function downloadWeeklyReport() {
       const f20 = F.tail(-20, undefined, 'total'), f45 = F.tail(-45, undefined, 'total');
       const fmc = F.m(mc.label, 'total'), fmp = F.m(mp.label, 'total'), fm6 = F.tail(-125, undefined, 'total');
       const fqc = F.q(qc.label, 'total'), fqp = F.q(qp.label, 'total'), fq2 = F.q(q2.label, 'total');
+      const cols = X ? 4 : 3;
+      const ex = n => X ? `<td>${n == null ? '—' : n}</td>` : '';
       return `<div class="pr-sub-header">Total Revenue (Daily Avg, ₹ Cr)</div>
       <table class="pr-table">
-        <thead><tr><th>Metric</th><th>₹ Cr</th><th>% Change</th></tr></thead>
+        <thead><tr><th>Metric</th><th>₹ Cr</th><th>% Change</th>${X ? '<th>Expiries</th>' : ''}</tr></thead>
         <tbody>
-          <tr class="pr-group-label"><td colspan="3">Weekly</td></tr>
-          <tr><td>L5 – This Week</td><td>${n(wl5.value)}${tg(f5)}</td><td>${prChg(wl5.wow, f5, fp5)}</td></tr>
-          <tr><td>Prev5 – Last Week</td><td>${n(wp5.value)}${tg(fp5)}</td><td>—</td></tr>
-          <tr><td>L20 – 20-Day Avg</td><td>${n(w20r.value)}${tg(f20)}</td><td>—</td></tr>
-          <tr><td>L45 – 45-Day Avg</td><td>${n(w50.value)}${tg(f45)}</td><td>${prChg(wl5.wo10w, f45)}</td></tr>
-          <tr class="pr-separator"><td colspan="3"></td></tr>
-          <tr class="pr-group-label"><td colspan="3">Monthly</td></tr>
-          <tr><td>${mc.label || 'Current Month'}</td><td>${n(mc.value)}${tg(fmc)}</td><td>${prChg(mc.mom, fmc, fmp)}</td></tr>
-          <tr><td>${mp.label || 'Prev Month'}</td><td>${n(mp.value)}${tg(fmp)}</td><td>—</td></tr>
-          <tr><td>${AVG_6M_LABEL}</td><td>${n(m6.value)}${tg(fm6)}</td><td>${prChg(mc.mo6m, fmc, fm6)}</td></tr>
-          <tr class="pr-separator"><td colspan="3"></td></tr>
-          <tr class="pr-group-label"><td colspan="3">Quarterly</td></tr>
-          <tr><td>${qc.label || 'Current Q'}</td><td>${n(qc.value)}${tg(fqc)}</td><td>${prChg(qc.qoq, fqc, fqp)}</td></tr>
-          <tr><td>${qp.label || 'Prev Q'}</td><td>${n(qp.value)}${tg(fqp)}</td><td>—</td></tr>
-          <tr><td>${q2.label || 'YoY Q'}</td><td>${n(q2.value)}${tg(fq2)}</td><td>${prChg(qc.yoy, fqc, fq2)}</td></tr>
+          <tr class="pr-group-label"><td colspan="${cols}">Weekly</td></tr>
+          <tr><td>L5 – This Week</td><td>${n(wl5.value)}${tg(f5)}</td><td>${prChg(wl5.wow, f5, fp5)}</td>${ex(X?.tail(-5))}</tr>
+          <tr><td>Prev5 – Last Week</td><td>${n(wp5.value)}${tg(fp5)}</td><td>—</td>${ex(X?.tail(-10, -5))}</tr>
+          <tr><td>L20 – 20-Day Avg</td><td>${n(w20r.value)}${tg(f20)}</td><td>—</td>${ex(X?.tail(-20))}</tr>
+          <tr><td>L45 – 45-Day Avg</td><td>${n(w50.value)}${tg(f45)}</td><td>${prChg(wl5.wo10w, f45)}</td>${ex(X?.tail(-45))}</tr>
+          <tr class="pr-separator"><td colspan="${cols}"></td></tr>
+          <tr class="pr-group-label"><td colspan="${cols}">Monthly</td></tr>
+          <tr><td>${mc.label || 'Current Month'}</td><td>${n(mc.value)}${tg(fmc)}</td><td>${prChg(mc.mom, fmc, fmp)}</td>${ex(X?.m(mc.label))}</tr>
+          <tr><td>${mp.label || 'Prev Month'}</td><td>${n(mp.value)}${tg(fmp)}</td><td>—</td>${ex(X?.m(mp.label))}</tr>
+          <tr><td>${AVG_6M_LABEL}</td><td>${n(m6.value)}${tg(fm6)}</td><td>${prChg(mc.mo6m, fmc, fm6)}</td>${ex(X?.tail(-125))}</tr>
+          <tr class="pr-separator"><td colspan="${cols}"></td></tr>
+          <tr class="pr-group-label"><td colspan="${cols}">Quarterly</td></tr>
+          <tr><td>${qc.label || 'Current Q'}</td><td>${n(qc.value)}${tg(fqc)}</td><td>${prChg(qc.qoq, fqc, fqp)}</td>${ex(X?.q(qc.label))}</tr>
+          <tr><td>${qp.label || 'Prev Q'}</td><td>${n(qp.value)}${tg(fqp)}</td><td>—</td>${ex(X?.q(qp.label))}</tr>
+          <tr><td>${q2.label || 'YoY Q'}</td><td>${n(q2.value)}${tg(fq2)}</td><td>${prChg(qc.yoy, fqc, fq2)}</td>${ex(X?.q(q2.label))}</tr>
         </tbody>
       </table>`;
     }
@@ -405,10 +423,11 @@ async function downloadWeeklyReport() {
     // flagDash: the exchange's dashboard file, for the fee-basis / modelled markers
     function buildExchangeSection(label, enriched, includeSegments, dashData, exchangeKey, flagDash) {
       const F = reportFlagsFor(flagDash || dashData);
+      const X = exchangeKey ? reportExpiriesFor(dashData, exchangeKey) : null;
       return `<div class="pr-section">
         <div class="pr-section-header">${label}</div>
         <div class="pr-section-body">
-          ${buildTotalRevenueTable(enriched, F)}
+          ${buildTotalRevenueTable(enriched, F, X)}
           ${buildDowTable(enriched, F)}
           ${includeSegments ? buildSegmentTable(enriched, F) : ''}
           ${dashData && exchangeKey ? buildExpiryReportTable(dashData, exchangeKey) : ''}
@@ -600,8 +619,11 @@ async function downloadMobileReport() {
     }
 
     // dash: the exchange's dashboard file, for the fee-basis / modelled markers
-    function exchangeSection(name, color, enriched, dash) {
+    // and (NSE/BSE) the expiry-day counts appended to the card labels
+    function exchangeSection(name, color, enriched, dash, exchange) {
       const F = reportFlagsFor(dash);
+      const X = reportExpiriesFor(dash, exchange);
+      const xp = n => X && n != null ? ` · ${n} exp` : '';
       const s   = enriched.summary_total || {};
       const wl5 = s.weekly?.last5 || {};
       const wp5 = s.weekly?.prev5 || {};
@@ -638,16 +660,16 @@ async function downloadMobileReport() {
         <div style="background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 10px 10px;padding:14px 14px 6px">
 
           <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px">
-            ${kpiCard('This Week (L5)', wl5.value, wl5.wow, 'WoW', f5, anyModelled(f5, fp5))}
-            ${kpiCard('Last Week (P5)', wp5.value, null, '', fp5)}
-            ${kpiCard('20-Day Avg', w20.value, null, '', f20)}
-            ${kpiCard('45-Day Avg', w45.value, wl5.wo10w, 'Wo45', f45, anyModelled(f45))}
+            ${kpiCard('This Week (L5)' + xp(X?.tail(-5)), wl5.value, wl5.wow, 'WoW', f5, anyModelled(f5, fp5))}
+            ${kpiCard('Last Week (P5)' + xp(X?.tail(-10, -5)), wp5.value, null, '', fp5)}
+            ${kpiCard('20-Day Avg' + xp(X?.tail(-20)), w20.value, null, '', f20)}
+            ${kpiCard('45-Day Avg' + xp(X?.tail(-45)), w45.value, wl5.wo10w, 'Wo45', f45, anyModelled(f45))}
           </div>
           <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px">
-            ${kpiCard(qc.label || 'Current Q', qc.value, qc.qoq, 'QoQ', fqc, anyModelled(fqc, fqp))}
-            ${kpiCard(qp.label || 'Prev Q', qp.value, null, '', fqp)}
-            ${kpiCard(s.quarterly?.prev2?.label || 'Year-ago Q', s.quarterly?.prev2?.value, qc.yoy, 'YoY (current Q)', fq2, anyModelled(fqc, fq2))}
-            ${kpiCard(mc.label || 'Current Month', mc.value, mc.mom, 'MoM', fmc, anyModelled(fmc, fmp))}
+            ${kpiCard((qc.label || 'Current Q') + xp(X?.q(qc.label)), qc.value, qc.qoq, 'QoQ', fqc, anyModelled(fqc, fqp))}
+            ${kpiCard((qp.label || 'Prev Q') + xp(X?.q(qp.label)), qp.value, null, '', fqp)}
+            ${kpiCard((s.quarterly?.prev2?.label || 'Year-ago Q') + xp(X?.q(s.quarterly?.prev2?.label)), s.quarterly?.prev2?.value, qc.yoy, 'YoY (current Q)', fq2, anyModelled(fqc, fq2))}
+            ${kpiCard((mc.label || 'Current Month') + xp(X?.m(mc.label)), mc.value, mc.mom, 'MoM', fmc, anyModelled(fmc, fmp))}
           </div>
 
           <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#6b7280;letter-spacing:.05em;margin:10px 0 6px">Day of Week (₹ Cr daily avg)</div>
@@ -750,11 +772,11 @@ async function downloadMobileReport() {
     }
 
     const body = `
-      ${exchangeSection('NSE Update', '#1d4ed8', nseEnrich, nseDash)}
-      ${exchangeSection('BSE Update', '#0f766e', bseEnrich, bseDash)}
+      ${exchangeSection('NSE Update', '#1d4ed8', nseEnrich, nseDash, 'nse')}
+      ${exchangeSection('BSE Update', '#0f766e', bseEnrich, bseDash, 'bse')}
       ${regressionSection(bseShare, 'BSE', '#0f766e')}
       ${marketShareSection()}
-      ${mcxEnrich ? exchangeSection('MCX Update', '#7c3aed', mcxEnrich, mcxDash) : ''}
+      ${mcxEnrich ? exchangeSection('MCX Update', '#7c3aed', mcxEnrich, mcxDash, 'mcx') : ''}
       ${regressionSection(mcxShare, 'MCX', '#7c3aed')}
     `;
 

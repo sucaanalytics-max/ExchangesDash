@@ -5,10 +5,20 @@
 // NSE vs BSE MARKET SHARE TREND (Options + Total, live chart + report)
 // ========================
 
+// Each exchange's expiry days per fy_month, for the share tooltips
+function expiryDaysByMonth(raw, exchange) {
+  const daily = raw?.daily_all || [];
+  const set = expiryDateSet(daily, exchange);
+  const out = new Map();
+  daily.forEach(r => { if (set.has(r.date)) out.set(r.fy_month, (out.get(r.fy_month) || 0) + 1); });
+  return out;
+}
+
 // Monthly NSE-vs-BSE market share — one point per calendar month (smooth, low-noise default view)
 function buildNSEBSEMonthlyShareSeries(nseRaw, bseRaw) {
   const nseM = nseRaw?.monthly || [];
   const bseByMonth = new Map((bseRaw?.monthly || []).map(m => [m.month, m]));
+  const nseExp = expiryDaysByMonth(nseRaw, 'nse'), bseExp = expiryDaysByMonth(bseRaw, 'bse');
   const rows = [];
   nseM.forEach(n => {
     const b = bseByMonth.get(n.month);
@@ -21,6 +31,8 @@ function buildNSEBSEMonthlyShareSeries(nseRaw, bseRaw) {
       totalShareBSE: totalSum ? (b.total_rev || 0) / totalSum * 100 : null,
       optShareNSE:   optSum   ? (n.opt_rev   || 0) / optSum   * 100 : null,
       optShareBSE:   optSum   ? (b.opt_rev   || 0) / optSum   * 100 : null,
+      nseExp: nseExp.get(n.month) || 0,
+      bseExp: bseExp.get(n.month) || 0,
     });
   });
   return rows;
@@ -31,6 +43,8 @@ function buildNSEBSEMonthlyShareSeries(nseRaw, bseRaw) {
 function buildNSEBSERollingShareSeries(nseRaw, bseRaw, windowSize) {
   const nseDaily = (nseRaw?.daily_all || []).slice().sort((a, b) => a.date.localeCompare(b.date));
   const bseByDate = new Map((bseRaw?.daily_all || []).map(r => [r.date, r]));
+  const nseExpDates = expiryDateSet(nseRaw?.daily_all || [], 'nse');
+  const bseExpDates = expiryDateSet(bseRaw?.daily_all || [], 'bse');
   const merged = [];
   nseDaily.forEach(n => {
     const b = bseByDate.get(n.date);
@@ -39,6 +53,7 @@ function buildNSEBSERollingShareSeries(nseRaw, bseRaw, windowSize) {
       date: n.date,
       nseTotalRev: n.total_rev || 0, bseTotalRev: b.total_rev || 0,
       nseOptRev:   n.opt_rev   || 0, bseOptRev:   b.opt_rev   || 0,
+      nseIsExp: nseExpDates.has(n.date) ? 1 : 0, bseIsExp: bseExpDates.has(n.date) ? 1 : 0,
     });
   });
 
@@ -56,6 +71,8 @@ function buildNSEBSERollingShareSeries(nseRaw, bseRaw, windowSize) {
       totalShareBSE: totalSum ? bseTotalSum / totalSum * 100 : null,
       optShareNSE:   optSum   ? nseOptSum   / optSum   * 100 : null,
       optShareBSE:   optSum   ? bseOptSum   / optSum   * 100 : null,
+      nseExp: slice.reduce((s, x) => s + x.nseIsExp, 0),
+      bseExp: slice.reduce((s, x) => s + x.bseIsExp, 0),
     };
   });
 
@@ -153,6 +170,12 @@ function getMarketShareRows(nseRaw, bseRaw, granularity) {
   return buildNSEBSEMonthlyShareSeries(nseRaw, bseRaw);
 }
 
+// Tooltip footer: each exchange's expiry days behind a share point
+function expiryTooltipFooter(row) {
+  if (!row || row.nseExp == null || row.bseExp == null) return '';
+  return `Expiries: NSE ${row.nseExp} · BSE ${row.bseExp}` + (row.nseExp !== row.bseExp ? ' — counts differ' : '');
+}
+
 function buildMarketShareChart(canvasId, rows, field) {
   if (charts[canvasId]) { charts[canvasId].destroy(); charts[canvasId] = null; }
   if (!rows.length) return;
@@ -170,7 +193,10 @@ function buildMarketShareChart(canvasId, rows, field) {
     },
     options: {
       interaction: { mode: 'index', intersect: false },
-      plugins: { tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + ctx.raw.toFixed(1) + ' %' } } },
+      plugins: { tooltip: { footerColor: getTooltipText(), callbacks: {
+        label: ctx => ctx.dataset.label + ': ' + ctx.raw.toFixed(1) + ' %',
+        footer: items => expiryTooltipFooter(rows[items[0]?.dataIndex]),
+      } } },
       scales: {
         x: { ticks: { maxTicksLimit: 10, font: { size: CHART_FONT.tick } } },
         y: { min: 0, max: 100, ticks: { callback: v => v + ' %' } },
@@ -331,6 +357,144 @@ function marketShareFlagNote(nseRaw, bseRaw, segKey) {
   return parts.length ? `<p class="fee-chart-note">${parts.join('; ')}.</p>` : '';
 }
 
+// ── NSE vs BSE daily-avg revenue by period, with each exchange's expiry days ──
+// NSE and BSE expire on different weekdays, so a period can hold one more
+// expiry for one of them; the bars show both averages and the labels the counts.
+const EXP_TREND_GRANULARITIES = [
+  { key: 'monthly',   label: 'Monthly',   last: 24 },
+  { key: 'quarterly', label: 'Quarterly', last: 16 },
+  { key: 'weekly',    label: 'Weekly',    last: 26 },
+];
+const EXP_TREND_SEGMENTS = [
+  { key: 'total',   label: 'Total' },
+  { key: 'options', label: 'Options' },
+];
+
+// Monday of the Mon–Sun week holding a 'YYYY-MM-DD' date
+function weekStartOf(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (d.getUTCDay() + 6) % 7);
+  return d.toISOString().slice(0, 10);
+}
+
+// Last calendar day of the period holding dateStr: month or quarter end (FY
+// quarters end with calendar quarters), or that week's Friday
+function periodEndDate(gran, dateStr) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  if (gran === 'weekly') {
+    d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() + 6) % 7);
+    return d.toISOString().slice(0, 10);
+  }
+  const m = d.getUTCMonth();
+  const endMonth = gran === 'quarterly' ? m - (m % 3) + 2 : m;
+  return new Date(Date.UTC(d.getUTCFullYear(), endMonth + 1, 0)).toISOString().slice(0, 10);
+}
+
+// One row per period both exchanges traded in, oldest first, the last N of the
+// granularity: { key, label, partial, nse, bse }, each side { avg (₹ Cr/day of
+// the segment), days, expiries, flags }. The latest period is `partial` while
+// the data stops before its calendar end.
+function buildExpiryTrendSeries(nseRaw, bseRaw, gran, segKey) {
+  const g = EXP_TREND_GRANULARITIES.find(x => x.key === gran) || EXP_TREND_GRANULARITIES[0];
+  const field = getRevFieldObj(segKey).dField;
+  const keyOf = r => g.key === 'quarterly' ? r.fy_quarter : g.key === 'weekly' ? weekStartOf(r.date) : r.fy_month;
+  const buckets = (raw, exchange) => {
+    const daily = raw?.daily_all || [];
+    const expDates = expiryDateSet(daily, exchange);
+    const out = new Map();
+    daily.forEach(r => {
+      const k = keyOf(r);
+      if (!out.has(k)) out.set(k, { rev: 0, days: 0, expiries: 0, rows: [], first: r.date, last: r.date });
+      const b = out.get(k);
+      b.rev += r[field] || 0;
+      b.days += 1;
+      if (expDates.has(r.date)) b.expiries += 1;
+      b.rows.push(r);
+      if (r.date < b.first) b.first = r.date;
+      if (r.date > b.last) b.last = r.date;
+    });
+    return out;
+  };
+  const nse = buckets(nseRaw, 'nse'), bse = buckets(bseRaw, 'bse');
+  const sortKey = k => g.key === 'quarterly' ? quarterSortKey(k) : g.key === 'monthly' ? monthSortKey(k) : k;
+  const keys = [...nse.keys()].filter(k => bse.has(k))
+    .sort((a, b) => { const x = sortKey(a), y = sortKey(b); return x < y ? -1 : x > y ? 1 : 0; })
+    .slice(-g.last);
+
+  const side = b => ({ avg: b.days ? b.rev / b.days : 0, days: b.days, expiries: b.expiries, flags: rowsFlags(b.rows, segKey) });
+  return keys.map((k, i) => {
+    const n = nse.get(k), b = bse.get(k);
+    const first = n.first < b.first ? n.first : b.first;
+    const last = n.last > b.last ? n.last : b.last;
+    const label = g.key === 'quarterly' ? k
+      : g.key === 'weekly' ? `w/c ${+k.slice(8, 10)} ${MONTHS_SHORT[+k.slice(5, 7) - 1]}`
+      : `${MONTHS_SHORT[+first.slice(5, 7) - 1]} ${first.slice(0, 4)}`;
+    return { key: k, label, partial: i === keys.length - 1 && last < periodEndDate(g.key, first), nse: side(n), bse: side(b) };
+  });
+}
+
+function buildExpiryTrendChart(canvasId, rows) {
+  if (charts[canvasId]) { charts[canvasId].destroy(); charts[canvasId] = null; }
+  const canvas = document.getElementById(canvasId);
+  if (!canvas || !rows.length) return;
+  setCanvasHeight(canvasId, 300);
+  const differ = rows.map(r => r.nse.expiries !== r.bse.expiries);
+  const warn = getComputedStyle(document.documentElement).getPropertyValue('--color-warning').trim() || '#A56000';
+  const expiryWord = n => n === 1 ? 'expiry' : 'expiries';
+  charts[canvasId] = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      // Second line: expiry days, "≠" (and amber) where NSE and BSE differ
+      labels: rows.map((r, i) => [r.label + (r.partial ? '*' : ''), `N${r.nse.expiries}${differ[i] ? '≠' : '·'}B${r.bse.expiries}`]),
+      datasets: [
+        { label: 'NSE', data: rows.map(r => r.nse.avg), backgroundColor: MS_META.nse.color, borderRadius: 2 },
+        { label: 'BSE', data: rows.map(r => r.bse.avg), backgroundColor: MS_META.bse.color, borderRadius: 2 },
+      ]
+    },
+    options: {
+      interaction: { mode: 'index', intersect: false },
+      plugins: { tooltip: { footerColor: warn, callbacks: {
+        title: items => { const r = rows[items[0].dataIndex]; return r.label + (r.partial ? ' (to date)' : ''); },
+        label: ctx => {
+          const s = rows[ctx.dataIndex][ctx.datasetIndex === 0 ? 'nse' : 'bse'];
+          return `${ctx.dataset.label}: ₹${fmtNum(s.avg, 2)} Cr/day · ${s.days} days · ${s.expiries} ${expiryWord(s.expiries)}`;
+        },
+        footer: items => differ[items[0].dataIndex] ? 'Expiry counts differ — daily averages are not like for like' : '',
+      } } },
+      scales: {
+        x: { ticks: { maxRotation: 0, font: { size: CHART_FONT.tick }, color: ctx => differ[ctx.index] ? warn : getTickColor() } },
+        y: { beginAtZero: true, ticks: { callback: v => '₹' + v } },
+      }
+    }
+  });
+}
+
+// The chart's rows as a table, newest first
+function expiryTrendTableHTML(rows) {
+  const body = rows.slice().reverse().map(r => {
+    const total = r.nse.avg + r.bse.avg;
+    const days = r.nse.days === r.bse.days ? r.nse.days : `${r.nse.days} / ${r.bse.days}`;
+    const exp = expiryCountHTML([
+      { exchange: 'nse', expiries: r.nse.expiries, days: r.nse.days },
+      { exchange: 'bse', expiries: r.bse.expiries, days: r.bse.days },
+    ]);
+    return `<tr${r.nse.expiries !== r.bse.expiries ? ' class="exp-diff-row"' : ''}>
+      <td>${r.label}${r.partial ? ' <span class="exp-partial">to date</span>' : ''}</td>
+      <td style="text-align:right">${fmtNum(r.nse.avg, 2)}${flagTags(r.nse.flags)}</td>
+      <td style="text-align:right">${fmtNum(r.bse.avg, 2)}${flagTags(r.bse.flags)}</td>
+      <td style="text-align:right">${total > 0 ? fmtNum(r.nse.avg / total * 100, 1) + ' %' : '—'}</td>
+      <td style="text-align:center">${days}</td>
+      <td style="text-align:center">${exp}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="table-scroll exp-trend-table">
+    <table class="data-table" style="margin:0">
+      <thead><tr><th>Period</th><th style="text-align:right">NSE ₹ Cr/day</th><th style="text-align:right">BSE ₹ Cr/day</th><th style="text-align:right">NSE share</th><th style="text-align:center" title="Trading days (NSE / BSE when they differ)">Days</th><th style="text-align:center" title="Expiry days: N = NSE, B = BSE">Expiries</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  </div>`;
+}
+
 function buildMarketShareTrend() {
   const el = document.getElementById('marketShareTrendContent');
   if (!el) return;
@@ -353,7 +517,23 @@ function buildMarketShareTrend() {
     ? mergeFlags([nseRaw, bseRaw].map(raw => rowsFlags((raw?.daily_all || []).filter(r => r.date >= predictor.chosenFit.startDate), 'options')))
     : NO_FLAGS;
 
+  const expToggleHTML = (cls, opts, active) => `<div class="share-range-toggle">${opts.map(o =>
+    `<button class="share-range-btn ${cls}${o.key === active ? ' active' : ''}" data-key="${o.key}">${o.label}</button>`
+  ).join('')}</div>`;
+
   el.innerHTML = `
+  <div class="chart-panel" style="margin-bottom:var(--space-4)">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:var(--space-3)">
+      <div class="chart-title" style="margin-bottom:0">Daily Avg Revenue &amp; Expiries — NSE vs BSE</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">
+        ${expToggleHTML('expGran-btn', EXP_TREND_GRANULARITIES, 'monthly')}
+        ${expToggleHTML('expSeg-btn', EXP_TREND_SEGMENTS, 'total')}
+      </div>
+    </div>
+    <div class="chart-wrapper"><canvas id="chartExpTrend"></canvas></div>
+    <p class="fee-chart-note">₹ Cr per trading day. Under each period, its expiry days (N = NSE, B = BSE: each exchange's weekly index expiry); ≠ and amber mark periods where they differ, so the two averages are not like for like. * = period to date.</p>
+    <div id="expTrendTable"></div>
+  </div>
   <div class="chart-panel" style="margin-bottom:var(--space-4)">
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:var(--space-3)">
       <div class="chart-title" style="margin-bottom:0">Options Revenue Market Share — NSE vs BSE</div>
@@ -372,6 +552,25 @@ function buildMarketShareTrend() {
   </div>
   <h3 style="margin:0 0 var(--space-3);font-size:var(--text-lg);font-weight:700;color:var(--color-text)">Options Share Predictor${flagTags(predFlags)}</h3>
   ${optionsSharePredictorHTML(predictor)}`;
+
+  let expGran = 'monthly', expSeg = 'total';
+  const refreshExp = () => {
+    const rows = buildExpiryTrendSeries(nseRaw, bseRaw, expGran, expSeg);
+    buildExpiryTrendChart('chartExpTrend', rows);
+    const tableEl = el.querySelector('#expTrendTable');
+    if (tableEl) tableEl.innerHTML = expiryTrendTableHTML(rows);
+  };
+  refreshExp();
+  [['.expGran-btn', k => { expGran = k; }], ['.expSeg-btn', k => { expSeg = k; }]].forEach(([sel, set]) => {
+    el.querySelectorAll(sel).forEach(btn => {
+      btn.addEventListener('click', () => {
+        el.querySelectorAll(sel).forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        set(btn.dataset.key);
+        refreshExp();
+      });
+    });
+  });
 
   let optGran = 'monthly', totalGran = 'monthly';
   const refreshOpt   = () => buildMarketShareChart('chartMsOptions', getMarketShareRows(nseRaw, bseRaw, optGran), 'opt');
