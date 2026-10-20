@@ -1,5 +1,11 @@
 {
   "ignoreCommand": "bash vercel-ignore-build.sh",
+  "crons": [
+    {
+      "path": "/api/trigger-live-polls",
+      "schedule": "*/5 3-11 * * 1-5"
+    }
+  ],
   "rewrites": [
     {
       "source": "/live",

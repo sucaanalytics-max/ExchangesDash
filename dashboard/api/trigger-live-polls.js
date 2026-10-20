@@ -9,15 +9,17 @@
  * with several frequent cron triggers). Adjusting the cron expressions
  * doesn't fix this; GitHub simply doesn't guarantee timely scheduled runs.
  *
- * An external always-on cron service (e.g. cron-job.org) calls this endpoint
- * every few minutes during market hours instead. This endpoint's only job is
- * to fire `workflow_dispatch` for each live poller via GitHub's REST API —
- * an on-demand trigger, which GitHub runs immediately (dispatch is not
- * subject to the same scheduling delay as `schedule:`).
+ * Vercel Cron calls this endpoint every 5 minutes on weekdays (`crons` in
+ * vercel.json; Vercel runs crons on the production deployment only), and an
+ * external cron service (e.g. cron-job.org) may call it too. This endpoint's
+ * only job is to fire `workflow_dispatch` for each live poller via GitHub's
+ * REST API — an on-demand trigger, which GitHub runs immediately (dispatch is
+ * not subject to the same scheduling delay as `schedule:`).
  *
- * Auth: requires `Authorization: Bearer <CRON_TRIGGER_SECRET>` — a shared
- * secret configured both here (Vercel env var) and in the external cron
- * service's request headers. This is deliberately a SEPARATE, narrowly-
+ * Auth: requires `Authorization: Bearer <secret>`, where the secret is
+ * CRON_SECRET (Vercel sends it on every cron invocation once that env var is
+ * set) or CRON_TRIGGER_SECRET (the shared secret given to an external cron
+ * service). Both are Vercel env vars. This is deliberately a SEPARATE, narrowly-
  * scoped credential from GITHUB_READ_PAT (used elsewhere for read-only
  * access) — GITHUB_DISPATCH_PAT should be a fine-grained PAT scoped to only
  * "Actions: write" on this one repo.
@@ -54,12 +56,16 @@ function secretMatches(header, secret) {
 
 module.exports = async function handler(req, res) {
   const authHeader = req.headers.authorization;
-  const secret = process.env.CRON_TRIGGER_SECRET;
-  if (!secret || !secretMatches(authHeader, secret)) {
+  const secrets = [process.env.CRON_SECRET, process.env.CRON_TRIGGER_SECRET].filter(Boolean);
+  // Every call is logged, so Vercel's runtime logs show whether the crons arrive
+  const caller = /vercel-cron/.test(req.headers['user-agent'] || '') ? 'vercel-cron' : 'external';
+  if (!secrets.some((secret) => secretMatches(authHeader, secret))) {
+    console.log(`trigger-live-polls: 401 from ${caller}`);
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  if (!inMarketSession() && req.query.force !== '1') {
+  if (!inMarketSession() && (req.query || {}).force !== '1') {
+    console.log(`trigger-live-polls: ${caller}, outside market session, nothing dispatched`);
     return res.status(200).json({ skipped: true, reason: 'outside market session' });
   }
 
@@ -88,6 +94,7 @@ module.exports = async function handler(req, res) {
     r.status === 'fulfilled' ? r.value : { error: r.reason?.message || String(r.reason) }
   );
   const allOk = summary.every((s) => s.ok);
+  console.log(`trigger-live-polls: ${caller}, dispatch ${summary.map((s) => `${s.workflow || '?'}=${s.status || s.error}`).join(' ')}`);
 
   return res.status(allOk ? 200 : 502).json({
     triggered_at: new Date().toISOString(),
