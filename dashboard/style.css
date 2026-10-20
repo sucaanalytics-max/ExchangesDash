@@ -1035,6 +1035,20 @@ span.neutral {
 .xl-col-chg1   { width: 18%; }
 .xl-col-chg2   { width: 18%; }
 
+/* With the Expiries column (views with NSE or BSE): "4" for one exchange,
+   "N4·B5" for several */
+.xl-has-exp .xl-col-period { width: 39%; }
+.xl-has-exp .xl-col-val    { width: 20%; }
+.xl-has-exp .xl-col-chg1   { width: 14%; }
+.xl-has-exp .xl-col-chg2   { width: 13%; }
+.xl-has-exp .xl-col-exp    { width: 14%; }
+.xl-exp-multi .xl-col-period { width: 35%; }
+.xl-exp-multi .xl-col-chg1   { width: 13%; }
+.xl-exp-multi .xl-col-chg2   { width: 14%; }
+.xl-exp-multi .xl-col-exp    { width: 18%; }
+.xl-has-exp tr.xl-col-hdr td { padding-left: 4px; padding-right: 4px; }
+.xl-period-table td.xl-exp { text-align: center; padding-left: 3px; padding-right: 3px; }
+
 /* Section header rows (e.g. "Financial Year", "Quarter") */
 .xl-sec-hdr td {
   background: #e8eaed;
@@ -1284,6 +1298,12 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
 
 .ms-seg:last-child {
   border-right: none;
+}
+
+/* The segment table that also carries the Expiries column */
+.ms-seg--exp {
+  flex: 1.35 1 0;
+  min-width: 310px;
 }
 
 .ms-seg-label {
@@ -2486,6 +2506,54 @@ span.pr-neu {
 .xl-period-table td:has(> .mcx-modelled) {
   white-space: normal;
   line-height: 1.2;
+}
+
+/* Expiry-day counts per period ("4", or "N4 · B5" across exchanges); amber
+   when NSE and BSE differ — their daily averages are then not like for like */
+.exp-count {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: help;
+}
+.exp-count.exp-diff {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--color-warning-bg, rgba(165, 96, 0, 0.08));
+  box-shadow: inset 0 0 0 1px var(--color-warning);
+}
+.exp-diff-row td { background: var(--color-warning-bg, rgba(165, 96, 0, 0.08)); }
+.exp-partial {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+/* Phones: "Exp" header, and a combined count stacks N over B, so the column
+   stays narrow enough for the period selects */
+.exp-hdr-short { display: none; }
+@media (max-width: 640px) {
+  .xl-has-exp .xl-col-period,
+  .xl-exp-multi .xl-col-period { width: 42%; }
+  .xl-has-exp .xl-col-val,
+  .xl-exp-multi .xl-col-val    { width: 19%; }
+  .xl-has-exp .xl-col-chg1,
+  .xl-exp-multi .xl-col-chg1   { width: 13%; }
+  .xl-has-exp .xl-col-chg2,
+  .xl-exp-multi .xl-col-chg2   { width: 14%; }
+  .xl-has-exp .xl-col-exp,
+  .xl-exp-multi .xl-col-exp    { width: 12%; }
+  .exp-hdr-long { display: none; }
+  .exp-hdr-short { display: inline; }
+  .xl-period-table .exp-count { display: inline-block; vertical-align: middle; }
+  .xl-period-table .exp-count > span { display: block; line-height: 1.25; }
+  .xl-period-table .exp-count > .exp-sep { display: none; }
+  .xl-period-table td.xl-exp { padding-left: 2px; padding-right: 2px; }
+}
+
+/* Period table under the expiry trend chart: scrolls inside the panel */
+.exp-trend-table {
+  max-height: 360px;
+  overflow-y: auto;
+  margin: 0 14px 14px;
 }
 
 .fee-note {

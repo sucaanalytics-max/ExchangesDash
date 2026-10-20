@@ -157,6 +157,45 @@ function computeWeekExpiryDates(dailyAll, exchange) {
   return results.sort((a, b) => a.weekStart.localeCompare(b.weekStart));
 }
 
+// ── Expiry-day counts per period (NSE & BSE only) ────────────────────────────
+// An exchange's expiry days are its weekly expiries from computeWeekExpiryDates
+// (the benchmark index — Nifty / Sensex — on the weekday in force, moved to the
+// previous trading day of the same week for a holiday; a week's expiry counts
+// once it has traded). The month-end expiry is one of them. NSE and BSE expire
+// on different weekdays, so a month or quarter can hold one more expiry for one
+// exchange than the other, which lifts its daily average; the counts show it.
+// Sets are cached per daily_all array (a fee-mode reload brings new arrays).
+const EXPIRY_DATES_CACHE = new WeakMap();
+
+function expiryDateSet(dailyAll, exchange) {
+  let byEx = EXPIRY_DATES_CACHE.get(dailyAll);
+  if (!byEx) { byEx = {}; EXPIRY_DATES_CACHE.set(dailyAll, byEx); }
+  if (!byEx[exchange]) byEx[exchange] = new Set(computeWeekExpiryDates(dailyAll, exchange).map(e => e.expiryDate));
+  return byEx[exchange];
+}
+
+// Expiry days among `rows` (rows of dailyAll); null for an exchange with no expiry rule (MCX)
+function countExpiryDays(rows, dailyAll, exchange) {
+  if (!EXPIRY_RULES.some(r => r.exchange === exchange)) return null;
+  const set = expiryDateSet(dailyAll, exchange);
+  return rows.filter(r => set.has(r.date)).length;
+}
+
+// Expiry count cell. One exchange: "4"; several: "N4·B5", amber when the
+// counts differ (the daily averages then are not like for like). '' for none.
+const EXPIRY_LETTER = { nse: 'N', bse: 'B' };
+
+function expiryCountHTML(list) {
+  if (!list || !list.length) return '';
+  const desc = e => `${e.expiries} expiry day${e.expiries === 1 ? '' : 's'} in ${e.days} trading day${e.days === 1 ? '' : 's'}`;
+  if (list.length === 1) return `<span class="exp-count" title="${desc(list[0])}">${list[0].expiries}</span>`;
+  const differ = list.some(e => e.expiries !== list[0].expiries);
+  const title = list.map(e => `${e.exchange.toUpperCase()}: ${desc(e)}`).join(' · ')
+    + (differ ? ' — counts differ, so the daily averages are not like for like' : '');
+  const parts = list.map(e => `<span class="${MS_META[e.exchange]?.cls || ''}">${EXPIRY_LETTER[e.exchange] || e.exchange.toUpperCase()}${e.expiries}</span>`);
+  return `<span class="exp-count${differ ? ' exp-diff' : ''}" title="${title}">${parts.join('<span class="exp-sep">·</span>')}</span>`;
+}
+
 // ── Month-end expiry lookups, by index into DATA.monthly/DATA.quarterly —
 // mirrors getMAvg/getQAvg's indexing scheme so the dropdown rows can reuse
 // the same mOpts/qOpts option lists and default-selection logic.
@@ -400,7 +439,7 @@ function wireDeltaTd(val) {
 // sum is just that exchange's figure. An exchange with no rows for the
 // period adds nothing (e.g. MCX alone before NSE/BSE data starts in FY 2024).
 function revenueSources() {
-  return DATA.components || [{ quarterly: DATA.quarterly || [], monthly: DATA.monthly || [], daily_all: DATA.daily_all || [] }];
+  return DATA.components || [{ exchange: currentExchange, quarterly: DATA.quarterly || [], monthly: DATA.monthly || [], daily_all: DATA.daily_all || [] }];
 }
 
 function sumOverSources(perSource) {
@@ -447,6 +486,40 @@ function weekdayFlags(weekday, n, segKey) {
 
 function weekdayQuarterFlags(weekday, qLabel, segKey) {
   return sourcesFlags(src => rowsFlags(src.daily_all.filter(r => r.day === weekday && r.fy_quarter === qLabel), segKey));
+}
+
+// Expiry days and trading days behind a period, per exchange with an expiry
+// rule that has rows in it: [{ exchange, expiries, days }] (see expiryCountHTML)
+function sourcesExpiryCounts(rowsOf) {
+  return revenueSources().map(src => {
+    const rows = rowsOf(src);
+    const n = rows.length ? countExpiryDays(rows, src.daily_all, src.exchange) : null;
+    return n == null ? null : { exchange: src.exchange, expiries: n, days: rows.length };
+  }).filter(Boolean);
+}
+
+// Exchanges behind the view that have expiry counts (NSE, BSE; not MCX)
+function viewExpiryExchanges() {
+  return revenueSources().map(src => src.exchange).filter(ex => EXPIRY_RULES.some(r => r.exchange === ex));
+}
+
+function quarterExpiryCounts(label) { return sourcesExpiryCounts(src => src.daily_all.filter(r => r.fy_quarter === label)); }
+function monthExpiryCounts(label)   { return sourcesExpiryCounts(src => src.daily_all.filter(r => r.fy_month === label)); }
+function fyExpiryCounts(fyStr)      { return sourcesExpiryCounts(src => src.daily_all.filter(r => r.fy === fyStr)); }
+function tailExpiryCounts(from, to) { return sourcesExpiryCounts(src => src.daily_all.slice(from, to)); }
+
+// The 125 trading days ending at a month's last trading day (as getM6mAvg)
+function m6ExpiryCounts(monthLabel) {
+  return sourcesExpiryCounts(src => {
+    const daily = src.daily_all;
+    const endIdx = daily.reduce((last, r, i) => r.fy_month === monthLabel ? i : last, -1);
+    return endIdx < 0 ? [] : daily.slice(Math.max(0, endIdx - 124), endIdx + 1);
+  });
+}
+
+// The latest row of each weekday (the "Mon–Fri Avg (Latest)" week)
+function latestWeekdaysExpiryCounts() {
+  return sourcesExpiryCounts(src => WEEKDAYS.map(d => src.daily_all.filter(r => r.day === d).pop()).filter(Boolean));
 }
 
 // A % change between periods, one of which contains modelled MCX days, is not shown
@@ -511,7 +584,9 @@ function renderFYRow(rowNum, fyStr, segKey) {
   const flags = fyFlags(fyStr, segKey);
   const valEl = document.getElementById('xlFYVal' + rowNum + '-' + segKey);
   const chgEl = document.getElementById('xlFYChg' + rowNum + '-' + segKey);
+  const expEl = document.getElementById('xlFYExp' + rowNum + '-' + segKey);
   if (valEl) valEl.innerHTML = xlValPlain(cur?.value, 2) + flagTags(flags);
+  if (expEl) expEl.innerHTML = cur ? expiryCountHTML(fyExpiryCounts(fyStr)) : '';
   if (chgEl) {
     if (rowNum === 0) { chgEl.innerHTML = ''; return; }
     const refFY = document.getElementById('xlFY0-' + segKey)?.value;
@@ -526,7 +601,9 @@ function renderQRow(rowNum, qIdx, segKey) {
   const flags = cur ? quarterFlags(cur.label, segKey) : NO_FLAGS;
   const valEl = document.getElementById('xlQVal' + rowNum + '-' + segKey);
   const chgEl = document.getElementById('xlQChg' + rowNum + '-' + segKey);
+  const expEl = document.getElementById('xlQExp' + rowNum + '-' + segKey);
   if (valEl) valEl.innerHTML = xlValPlain(cur?.value, 2) + flagTags(flags);
+  if (expEl) expEl.innerHTML = cur ? expiryCountHTML(quarterExpiryCounts(cur.label)) : '';
   if (chgEl) {
     if (rowNum === 0) { chgEl.innerHTML = ''; return; }
     const ref = getQAvg(parseInt(document.getElementById('xlQ0-' + segKey)?.value), segKey);
@@ -540,7 +617,9 @@ function renderMRow(rowNum, mIdx, segKey) {
   const flags = cur ? monthFlags(cur.label, segKey) : NO_FLAGS;
   const valEl = document.getElementById('xlMVal' + rowNum + '-' + segKey);
   const chgEl = document.getElementById('xlMChg' + rowNum + '-' + segKey);
+  const expEl = document.getElementById('xlMExp' + rowNum + '-' + segKey);
   if (valEl) valEl.innerHTML = xlValPlain(cur?.value, 2) + flagTags(flags);
+  if (expEl) expEl.innerHTML = cur ? expiryCountHTML(monthExpiryCounts(cur.label)) : '';
   if (chgEl) {
     if (rowNum === 0) {
       chgEl.innerHTML = '';
@@ -550,7 +629,9 @@ function renderMRow(rowNum, mIdx, segKey) {
       const avgFlags = cur ? m6Flags(cur.label, segKey) : NO_FLAGS;
       const avgValEl = document.getElementById('xlMAvgVal-' + segKey);
       const avgChgEl = document.getElementById('xlMAvgChg-' + segKey);
+      const avgExpEl = document.getElementById('xlMAvgExp-' + segKey);
       if (avgValEl) avgValEl.innerHTML = xlValPlain(avg, 2) + flagTags(avgFlags);
+      if (avgExpEl) avgExpEl.innerHTML = cur ? expiryCountHTML(m6ExpiryCounts(cur.label)) : '';
       if (avgChgEl) avgChgEl.innerHTML = anyModelled(flags, avgFlags) ? CMP_MODELLED_SPAN
         : wireChg(avg && cur ? (cur.value - avg) / avg : null);
       return;
@@ -657,12 +738,18 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
   const chgOrNA = (val, ...flags) => anyModelled(...flags) ? CMP_MODELLED_SPAN : wireChg(val);
   const tdOrNA = (val, ...flags) => anyModelled(...flags) ? CMP_MODELLED_TD : wireDeltaTd(val);
 
+  // Expiry-day counts column (views with NSE or BSE; MCX has no expiry rule)
+  const expExchanges = viewExpiryExchanges();
+  const showExp = expExchanges.length > 0;
+  const expTd = (id, html) => showExp ? `<td class="xl-exp"${id ? ` id="${id}"` : ''}>${html || ''}</td>` : '';
+  const expHdr = showExp ? '<td title="Expiry days in the period: each exchange\'s weekly index expiry (N = NSE, B = BSE)"><span class="exp-hdr-long">Expiries</span><span class="exp-hdr-short">Exp</span></td>' : '';
+
   const wRows = [
-    `<tr class="xl-r-cur"><td>Last 5 Days</td><td>${xlValPlain(wl5.value, 2)}${flagTags(fl5)}</td><td>${chgOrNA(wl5.wow, fl5, flp5)}</td><td>${chgOrNA(wl5.wo10w, fl45)}</td></tr>`,
-    `<tr><td>Prev 5 Days</td><td>${xlValPlain(wp5.value, 2)}${flagTags(flp5)}</td><td></td><td></td></tr>`,
-    `<tr><td>Last 20 Days</td><td>${xlValPlain(w20.value, 2)}${flagTags(fl20)}</td><td></td><td></td></tr>`,
-    `<tr><td>Last 45 Days</td><td>${xlValPlain(w50.value, 2)}${flagTags(fl45)}</td><td></td><td></td></tr>`,
-    `<tr><td>Mon–Fri Avg (Latest)</td><td>${xlValPlain(dowLatestAvg, 2)}${flagTags(flDow)}</td><td></td><td></td></tr>`,
+    `<tr class="xl-r-cur"><td>Last 5 Days</td><td>${xlValPlain(wl5.value, 2)}${flagTags(fl5)}</td><td>${chgOrNA(wl5.wow, fl5, flp5)}</td><td>${chgOrNA(wl5.wo10w, fl45)}</td>${expTd('', showExp && expiryCountHTML(tailExpiryCounts(-5)))}</tr>`,
+    `<tr><td>Prev 5 Days</td><td>${xlValPlain(wp5.value, 2)}${flagTags(flp5)}</td><td></td><td></td>${expTd('', showExp && expiryCountHTML(tailExpiryCounts(-10, -5)))}</tr>`,
+    `<tr><td>Last 20 Days</td><td>${xlValPlain(w20.value, 2)}${flagTags(fl20)}</td><td></td><td></td>${expTd('', showExp && expiryCountHTML(tailExpiryCounts(-20)))}</tr>`,
+    `<tr><td>Last 45 Days</td><td>${xlValPlain(w50.value, 2)}${flagTags(fl45)}</td><td></td><td></td>${expTd('', showExp && expiryCountHTML(tailExpiryCounts(-45)))}</tr>`,
+    `<tr><td>Mon–Fri Avg (Latest)</td><td>${xlValPlain(dowLatestAvg, 2)}${flagTags(flDow)}</td><td></td><td></td>${expTd('', showExp && expiryCountHTML(latestWeekdaysExpiryCounts()))}</tr>`,
   ].join('');
 
   const wireDetailRow = (label, val, flags) => label
@@ -716,6 +803,7 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
       <td id="xlFYVal${r}-${segKey}"></td>
       <td id="xlFYChg${r}-${segKey}"></td>
       <td></td>
+      ${expTd(`xlFYExp${r}-${segKey}`)}
     </tr>`).join('');
 
   // Quarter: 4 independently selectable rows (current, prev1, prev2, same-Q last year)
@@ -725,6 +813,7 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
       <td id="xlQVal${r}-${segKey}"></td>
       <td id="xlQChg${r}-${segKey}"></td>
       <td></td>
+      ${expTd(`xlQExp${r}-${segKey}`)}
     </tr>`).join('');
 
   // Month: 2 selectable rows + 1 Avg 6M (125 days) row
@@ -734,12 +823,14 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
       <td id="xlMVal${r}-${segKey}"></td>
       <td id="xlMChg${r}-${segKey}"></td>
       <td></td>
+      ${expTd(`xlMExp${r}-${segKey}`)}
     </tr>`).join('') + `
     <tr>
       <td style="color:var(--color-text-secondary);font-size:11.5px">${AVG_6M_LABEL}</td>
       <td id="xlMAvgVal-${segKey}"></td>
       <td id="xlMAvgChg-${segKey}"></td>
       <td></td>
+      ${expTd(`xlMAvgExp-${segKey}`)}
     </tr>`;
 
   return `
@@ -747,31 +838,32 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
       <div class="xl-seg-header">${label} <span class="xl-seg-unit">₹ Cr · daily avg · ${feeUnitLabel()}</span></div>
       <div class="xl-main-row">
 
-        <table class="xl-period-table">
+        <table class="xl-period-table${showExp ? ' xl-has-exp' : ''}${expExchanges.length > 1 ? ' xl-exp-multi' : ''}">
           <colgroup>
             <col class="xl-col-period">
             <col class="xl-col-val">
             <col class="xl-col-chg1">
             <col class="xl-col-chg2">
+            ${showExp ? '<col class="xl-col-exp">' : ''}
           </colgroup>
 
           <tbody class="xl-sec">
-            <tr class="xl-col-hdr"><td>Financial Year</td><td>Total</td><td>% chg</td><td></td></tr>
+            <tr class="xl-col-hdr"><td>Financial Year</td><td>Total</td><td>% chg</td><td></td>${expHdr}</tr>
             ${fyRows}
           </tbody>
 
           <tbody class="xl-sec">
-            <tr class="xl-col-hdr"><td>Quarter&gt;&gt;</td><td>Val (In Cr)</td><td>% chg</td><td></td></tr>
+            <tr class="xl-col-hdr"><td>Quarter&gt;&gt;</td><td>Val (In Cr)</td><td>% chg</td><td></td>${expHdr}</tr>
             ${qRows}
           </tbody>
 
           <tbody class="xl-sec">
-            <tr class="xl-col-hdr"><td>Month&gt;&gt;</td><td>Val (In Cr)</td><td>% chg</td><td></td></tr>
+            <tr class="xl-col-hdr"><td>Month&gt;&gt;</td><td>Val (In Cr)</td><td>% chg</td><td></td>${expHdr}</tr>
             ${mRows}
           </tbody>
 
           <tbody class="xl-sec">
-            <tr class="xl-col-hdr"><td>Week&gt;&gt;</td><td>Val (In Cr)</td><td>WoW</td><td title="Last 5 days vs the last 45 days">vs 45D</td></tr>
+            <tr class="xl-col-hdr"><td>Week&gt;&gt;</td><td>Val (In Cr)</td><td>WoW</td><td title="Last 5 days vs the last 45 days">vs 45D</td>${expHdr}</tr>
             ${wRows}
           </tbody>
         </table>
@@ -1018,6 +1110,23 @@ function buildMarketSharePanel(exList) {
   }));
   const tFlags = (from, to, sk) => mergeFlags(exList.map(ex => rowsFlags((raw(ex).daily_all || []).slice(from, to), sk)));
 
+  // Expiry days behind each period, per exchange with an expiry rule (not MCX):
+  // "N4·B5", amber when they differ. Same rows as the flags above. The counts
+  // do not depend on the segment, so only the first (Total) table shows them.
+  const expEx = exList.filter(ex => EXPIRY_RULES.some(r => r.exchange === ex));
+  const expCell = rowsOf => expiryCountHTML(expEx.map(ex => {
+    const daily = raw(ex).daily_all || [];
+    const rows = rowsOf(daily, ex);
+    return rows.length ? { exchange: ex, expiries: countExpiryDays(rows, daily, ex), days: rows.length } : null;
+  }).filter(Boolean));
+  const fyExp = label => expCell(d => d.filter(r => r.fy === label));
+  const qExp = label => expCell(d => d.filter(r => r.fy_quarter === label));
+  const mExp = (which, key) => expCell((d, ex) => {
+    const lbl = ed(ex)[key]?.monthly?.[which]?.label;
+    return lbl ? d.filter(r => r.fy_month === lbl) : [];
+  });
+  const tExp = (from, to) => expCell(d => d.slice(from, to));
+
   const SEGS = [
     { label: 'Total',   key: 'summary_total' },
     { label: 'Options', key: 'seg_options'   },
@@ -1028,41 +1137,44 @@ function buildMarketSharePanel(exList) {
   const hdrCells = exList.map(ex =>
     `<th style="color:${MS_META[ex].color}">${MS_META[ex].label} %</th>`
   ).join('');
+  const expHdr = '<th title="Expiry days in the period: each exchange\'s weekly index expiry (N = NSE, B = BSE)">Expiries</th>';
+  const expSegKey = expEx.length ? SEGS.find(({ key }) => exList.every(ex => ed(ex)[key]))?.key : null;
 
   const segHTML = SEGS.map(({ label: segLabel, key }) => {
     if (exList.some(ex => !ed(ex)[key])) return '';
+    const showExp = key === expSegKey;
     const refED = ed(refEx)[key];
     const sk = SEG_OF_MS_KEY[key];
 
     // Build period rows — quarterly from raw (correct per-exchange days), rest from enriched
     const periods = [
-      ...(curFYLabel  ? [{ lbl: curFYLabel,   vals: exList.map(ex => ed(ex)[key]?.fy?.current         || 0), flags: fyFlagsMS(curFYLabel, sk) }] : []),
-      ...(curQLabel   ? [{ lbl: curQLabel,    vals: exList.map(ex => qAvg(ex, curQLabel,   key)), cur: true, flags: qFlags(curQLabel, sk) }] : []),
-      ...(prevQLabel  ? [{ lbl: prevQLabel,   vals: exList.map(ex => qAvg(ex, prevQLabel,  key)), flags: qFlags(prevQLabel, sk) }] : []),
-      ...(prev2QLabel && prev2QLabel !== prevQLabel ? [{ lbl: prev2QLabel, vals: exList.map(ex => qAvg(ex, prev2QLabel, key)), flags: qFlags(prev2QLabel, sk) }] : []),
-      ...(yoyQLabel && yoyQLabel !== prevQLabel && yoyQLabel !== prev2QLabel ? [{ lbl: yoyQLabel, vals: exList.map(ex => qAvg(ex, yoyQLabel, key)), flags: qFlags(yoyQLabel, sk) }] : []),
-      { lbl: refED.monthly?.current?.label  || 'Cur Month',  vals: exList.map(ex => ed(ex)[key]?.monthly?.current?.value  || 0), flags: mFlags('current', key, sk) },
-      { lbl: refED.monthly?.previous?.label || 'Prev Month', vals: exList.map(ex => ed(ex)[key]?.monthly?.previous?.value || 0), flags: mFlags('previous', key, sk) },
-      { lbl: AVG_6M_LABEL,    vals: exList.map(ex => ed(ex)[key]?.monthly?.avg_6m?.value  || 0), flags: tFlags(-125, undefined, sk) },
-      { lbl: 'Last 5 Days',   vals: exList.map(ex => ed(ex)[key]?.weekly?.last5?.value    || 0), flags: tFlags(-5, undefined, sk) },
-      { lbl: 'Prev 5 Days',   vals: exList.map(ex => ed(ex)[key]?.weekly?.prev5?.value    || 0), flags: tFlags(-10, -5, sk) },
-      { lbl: 'Last 45 Days',  vals: exList.map(ex => ed(ex)[key]?.weekly?.last45?.value   || 0), flags: tFlags(-45, undefined, sk) },
+      ...(curFYLabel  ? [{ lbl: curFYLabel,   vals: exList.map(ex => ed(ex)[key]?.fy?.current         || 0), flags: fyFlagsMS(curFYLabel, sk), exp: fyExp(curFYLabel) }] : []),
+      ...(curQLabel   ? [{ lbl: curQLabel,    vals: exList.map(ex => qAvg(ex, curQLabel,   key)), cur: true, flags: qFlags(curQLabel, sk), exp: qExp(curQLabel) }] : []),
+      ...(prevQLabel  ? [{ lbl: prevQLabel,   vals: exList.map(ex => qAvg(ex, prevQLabel,  key)), flags: qFlags(prevQLabel, sk), exp: qExp(prevQLabel) }] : []),
+      ...(prev2QLabel && prev2QLabel !== prevQLabel ? [{ lbl: prev2QLabel, vals: exList.map(ex => qAvg(ex, prev2QLabel, key)), flags: qFlags(prev2QLabel, sk), exp: qExp(prev2QLabel) }] : []),
+      ...(yoyQLabel && yoyQLabel !== prevQLabel && yoyQLabel !== prev2QLabel ? [{ lbl: yoyQLabel, vals: exList.map(ex => qAvg(ex, yoyQLabel, key)), flags: qFlags(yoyQLabel, sk), exp: qExp(yoyQLabel) }] : []),
+      { lbl: refED.monthly?.current?.label  || 'Cur Month',  vals: exList.map(ex => ed(ex)[key]?.monthly?.current?.value  || 0), flags: mFlags('current', key, sk), exp: mExp('current', key) },
+      { lbl: refED.monthly?.previous?.label || 'Prev Month', vals: exList.map(ex => ed(ex)[key]?.monthly?.previous?.value || 0), flags: mFlags('previous', key, sk), exp: mExp('previous', key) },
+      { lbl: AVG_6M_LABEL,    vals: exList.map(ex => ed(ex)[key]?.monthly?.avg_6m?.value  || 0), flags: tFlags(-125, undefined, sk), exp: tExp(-125) },
+      { lbl: 'Last 5 Days',   vals: exList.map(ex => ed(ex)[key]?.weekly?.last5?.value    || 0), flags: tFlags(-5, undefined, sk), exp: tExp(-5) },
+      { lbl: 'Prev 5 Days',   vals: exList.map(ex => ed(ex)[key]?.weekly?.prev5?.value    || 0), flags: tFlags(-10, -5, sk), exp: tExp(-10, -5) },
+      { lbl: 'Last 45 Days',  vals: exList.map(ex => ed(ex)[key]?.weekly?.last45?.value   || 0), flags: tFlags(-45, undefined, sk), exp: tExp(-45) },
     ];
 
-    const rows = periods.map(({ lbl, vals, cur, flags }) => {
+    const rows = periods.map(({ lbl, vals, cur, flags, exp }) => {
       const total = vals.reduce((a, b) => a + b, 0);
       const na = anyModelled(flags);
       const cells = exList.map((ex, i) => na
         ? `<td><span class="ms-pct cmp-na" title="${MCX_MODELLED_TITLE}">—</span></td>`
         : `<td><span class="ms-pct ${MS_META[ex].cls}">${pct(vals[i], total)}</span></td>`
       ).join('');
-      return `<tr${cur ? ' class="xl-r-cur"' : ''}><td>${lbl}${flagTags(flags)}</td>${cells}</tr>`;
+      return `<tr${cur ? ' class="xl-r-cur"' : ''}><td>${lbl}${flagTags(flags)}</td>${cells}${showExp ? `<td>${exp}</td>` : ''}</tr>`;
     }).join('');
 
-    return `<div class="ms-seg">
+    return `<div class="ms-seg${showExp ? ' ms-seg--exp' : ''}">
       <div class="ms-seg-label">${segLabel}</div>
       <table class="ms-table">
-        <thead><tr class="xl-col-hdr"><th>Period</th>${hdrCells}</tr></thead>
+        <thead><tr class="xl-col-hdr"><th>Period</th>${hdrCells}${showExp ? expHdr : ''}</tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
