@@ -29,6 +29,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # The branch as it is now, not the commit this run was triggered on:
+          # a run that waited in the concurrency queue would otherwise start
+          # from before the previous run's push and conflict on the same JSON.
+          ref: main
 
       - name: Set up Python
         uses: actions/setup-python@v5
