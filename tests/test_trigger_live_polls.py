@@ -1,6 +1,7 @@
 """dashboard/api/trigger-live-polls.js in Node with a stubbed GitHub API: who may
 call it (Vercel Cron's CRON_SECRET or the external CRON_TRIGGER_SECRET), the
-market-session window, and the vercel.json cron that calls it."""
+market-session window, the vercel.json cron that calls it, and the poller
+workflows it dispatches."""
 
 import json
 import subprocess
@@ -9,6 +10,7 @@ import unittest
 from helpers import NODE, ROOT
 
 HANDLER = ROOT / "dashboard" / "api" / "trigger-live-polls.js"
+WORKFLOWS = ["nse-live.yml", "bse-live.yml", "mcx-live.yml"]
 
 # Calls the handler once with the given env, Authorization header and query;
 # prints {status, body, dispatched} where dispatched lists the workflow files
@@ -93,6 +95,21 @@ class TriggerLivePolls(unittest.TestCase):
         lo, hi = map(int, hour.split("-"))
         self.assertLessEqual(lo, 3)
         self.assertGreaterEqual(hi, 11)
+
+
+class LivePollerWorkflows(unittest.TestCase):
+    """Dispatched and late scheduled runs of one poller queue behind each other;
+    each must start from main as it is then, or it rebases onto the previous
+    run's write to the same JSON and conflicts (MCX, 20 Oct 08:25 UTC)."""
+
+    def test_one_run_at_a_time_from_the_current_main(self):
+        for wf in WORKFLOWS:
+            text = (ROOT / ".github" / "workflows" / wf).read_text()
+            with self.subTest(wf=wf):
+                self.assertIn("group: ${{ github.workflow }}", text)
+                self.assertIn("cancel-in-progress: false", text)
+                checkout = text[text.index("uses: actions/checkout@"):].split("- name:")[0]
+                self.assertRegex(checkout, r"\n\s+ref: main\s*\n")
 
 
 if __name__ == "__main__":
