@@ -1,10 +1,10 @@
 {
-  "updated_at": "2026-10-21T11:00:29Z",
+  "updated_at": "2026-10-22T03:25:28Z",
   "market_status": {
     "marketState": [
       {
         "market": "Capital Market",
-        "marketStatus": "Closed",
+        "marketStatus": "Open",
         "tradeDate": "21-Oct-2026 15:30",
         "index": "NIFTY 50",
         "last": 22811.35,
@@ -15,32 +15,32 @@
       {
         "market": "Currency",
         "marketStatus": "Open",
-        "tradeDate": "21-Oct-2026",
+        "tradeDate": "22-Oct-2026",
         "index": "",
         "last": "",
         "variation": "",
         "percentChange": "",
-        "marketStatusMessage": "Market is Open"
+        "marketStatusMessage": "Market is Closed"
       },
       {
         "market": "Commodity",
         "marketStatus": "Open",
-        "tradeDate": "21-Oct-2026",
+        "tradeDate": "22-Oct-2026",
         "index": "",
         "last": "",
         "variation": "",
         "percentChange": "",
-        "marketStatusMessage": "Market is Open"
+        "marketStatusMessage": "Market is Closed"
       },
       {
         "market": "Debt",
         "marketStatus": "Open",
-        "tradeDate": "21-Oct-2026",
+        "tradeDate": "22-Oct-2026",
         "index": "",
         "last": "",
         "variation": "",
         "percentChange": "",
-        "marketStatusMessage": "Market is Open"
+        "marketStatusMessage": "Market is Closed"
       },
       {
         "index": "NIFTY50 USD",
@@ -52,16 +52,16 @@
       {
         "market": "currencyfuture",
         "marketStatus": "Open",
-        "tradeDate": "21-Oct-2026",
+        "tradeDate": "22-Oct-2026",
         "index": "",
-        "last": "94.6000",
+        "last": "94.6200",
         "variation": "",
         "percentChange": "",
-        "marketStatusMessage": "Market is Open",
+        "marketStatusMessage": "Market is Closed",
         "expiryDate": "28-Oct-2026",
         "underlying": "USDINR",
-        "updated_time": "21-Oct-2026 16:29",
-        "tradeDateFormatted": "21-Oct-2026 16:29",
+        "updated_time": "21-Oct-2026 17:00",
+        "tradeDateFormatted": "21-Oct-2026 17:00",
         "slickclass": "slick-item"
       }
     ],
@@ -88,16 +88,16 @@
       "status": "CLOSE"
     },
     "giftnifty": {
-      "CONTRACTSTRADED": 79962,
-      "DAYCHANGE": 14,
+      "CONTRACTSTRADED": 9620,
+      "DAYCHANGE": -102,
       "EXPIRYDATE": "27-Oct-2026",
       "INSTRUMENTTYPE": "FUTIDX",
-      "LASTPRICE": 22742.5,
+      "LASTPRICE": 22646,
       "OPTIONTYPE": "-",
-      "PERCHANGE": 0.06,
+      "PERCHANGE": -0.45,
       "STRIKEPRICE": 0,
       "SYMBOL": "NIFTY",
-      "TIMESTMP": "21-Oct-2026 16:28",
+      "TIMESTMP": "22-Oct-2026 08:54",
       "id": "0/NIFTYFUTIDX27-Oct-2026--"
     },
     "niftyusd": {
@@ -125,7 +125,8 @@
     "cash_revenue": 6.7813,
     "total_revenue": 55.2082,
     "has_data": true,
-    "source": "live"
+    "source": "live",
+    "stale_since": "2026-10-21T11:00:29Z"
   },
   "history": [
     {
@@ -357,25 +358,22 @@
       }
     },
     {
-      "timestamp": "2026-10-21",
+      "timestamp": "21-Oct-2026",
       "revenue": {
-        "trade_date": "2026-10-21",
+        "has_data": true,
+        "trade_date": "21-Oct-2026",
+        "futures_turnover": 137061.67,
+        "options_premium": 61089.82,
+        "cash_traded_value": 110806.2,
         "index_futures_turnover": 20498.08,
         "stock_futures_turnover": 116563.59,
-        "futures_turnover": 137061.67,
-        "index_options_premium": 53425.46,
+        "index_options_premium": 53425.44,
         "stock_options_premium": 7664.38,
-        "options_premium": 61089.84,
-        "cash_traded_value": 110444.52,
-        "take_rate_futures": 3.66e-05,
-        "take_rate_options": 0.0007106,
-        "take_rate_cash": 6.14e-05,
         "futures_revenue": 5.0165,
         "options_revenue": 43.4104,
-        "cash_revenue": 6.7813,
-        "total_revenue": 55.2082,
-        "has_data": true,
-        "source": "live"
+        "cash_revenue": 6.8035,
+        "total_revenue": 55.2304,
+        "source": "historical"
       }
     }
   ],
