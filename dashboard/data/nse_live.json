@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-10-22T10:10:30Z",
+  "updated_at": "2026-10-22T10:15:28Z",
   "market_status": {
     "marketState": [
       {
@@ -10,7 +10,7 @@
         "last": 22687.65,
         "variation": -123.69999999999709,
         "percentChange": -0.54,
-        "marketStatusMessage": "Normal Market has Closed \u2013 Post Close will begin at 15:40 shortly"
+        "marketStatusMessage": "Market in Post-Close Session"
       },
       {
         "market": "Currency",
@@ -47,21 +47,21 @@
         "last": 8293.1,
         "change": -73.71999999999935,
         "percentChange": -0.88,
-        "timestamp": "22-Oct-2026 15:39"
+        "timestamp": "22-Oct-2026 15:40"
       },
       {
         "market": "currencyfuture",
         "marketStatus": "Open",
         "tradeDate": "22-Oct-2026",
         "index": "",
-        "last": "94.8900",
+        "last": "94.8800",
         "variation": "",
         "percentChange": "",
         "marketStatusMessage": "Market is Open",
         "expiryDate": "28-Oct-2026",
         "underlying": "USDINR",
-        "updated_time": "22-Oct-2026 15:39",
-        "tradeDateFormatted": "22-Oct-2026 15:39",
+        "updated_time": "22-Oct-2026 15:45",
+        "tradeDateFormatted": "22-Oct-2026 15:45",
         "slickclass": "slick-item"
       }
     ],
@@ -88,16 +88,16 @@
       "status": "CLOSE"
     },
     "giftnifty": {
-      "CONTRACTSTRADED": 145534,
-      "DAYCHANGE": -37,
+      "CONTRACTSTRADED": 15,
+      "DAYCHANGE": -33.5,
       "EXPIRYDATE": "27-Oct-2026",
       "INSTRUMENTTYPE": "FUTIDX",
-      "LASTPRICE": 22711,
+      "LASTPRICE": 22714.5,
       "OPTIONTYPE": "-",
-      "PERCHANGE": -0.16,
+      "PERCHANGE": -0.15,
       "STRIKEPRICE": 0,
       "SYMBOL": "NIFTY",
-      "TIMESTMP": "22-Oct-2026 15:37",
+      "TIMESTMP": "22-Oct-2026 15:39",
       "id": "0/NIFTYFUTIDX27-Oct-2026--"
     },
     "niftyusd": {
@@ -105,7 +105,7 @@
       "last": 8293.1,
       "change": -73.71999999999935,
       "percentChange": -0.88,
-      "timestamp": "22-Oct-2026 15:39"
+      "timestamp": "22-Oct-2026 15:40"
     }
   },
   "revenue": {
@@ -399,11 +399,11 @@
     }
   ],
   "stock_price": {
-    "last_price": 1698.9,
+    "last_price": 1697.15,
     "previous_close": 1709.5,
     "open": 1704.0,
     "day_high": 1705.45,
     "day_low": 1683.0,
-    "pct_change": -0.62
+    "pct_change": -0.72
   }
 }
