@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-10-23T10:10:25Z",
+  "updated_at": "2026-10-23T10:15:28Z",
   "market_status": {
     "marketState": [
       {
@@ -54,14 +54,14 @@
         "marketStatus": "Open",
         "tradeDate": "23-Oct-2026",
         "index": "",
-        "last": "94.9600",
+        "last": "94.9425",
         "variation": "",
         "percentChange": "",
         "marketStatusMessage": "Market is Open",
         "expiryDate": "28-Oct-2026",
         "underlying": "USDINR",
-        "updated_time": "23-Oct-2026 15:40",
-        "tradeDateFormatted": "23-Oct-2026 15:40",
+        "updated_time": "23-Oct-2026 15:44",
+        "tradeDateFormatted": "23-Oct-2026 15:44",
         "slickclass": "slick-item"
       }
     ],
@@ -418,11 +418,11 @@
     }
   ],
   "stock_price": {
-    "last_price": 1665.0,
+    "last_price": 1664.8,
     "previous_close": 1697.15,
     "open": 1695.6,
     "day_high": 1697.7,
     "day_low": 1640.25,
-    "pct_change": -1.89
+    "pct_change": -1.91
   }
 }
