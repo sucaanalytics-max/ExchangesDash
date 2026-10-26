@@ -1,60 +1,60 @@
 {
-  "updated_at": "2026-10-23T17:22:25Z",
+  "updated_at": "2026-10-26T05:04:17Z",
   "ticker": "NSE.BO",
   "ma_window": 45,
   "regression_start": "2026-09-24",
-  "n_days": 20,
+  "n_days": 21,
   "ma_window_comparison": {
     "20": {
-      "r_squared": 0.5692,
-      "pearson_r": -0.7545,
-      "n": 20
+      "r_squared": 0.5973,
+      "pearson_r": -0.7729,
+      "n": 21
     },
     "30": {
-      "r_squared": 0.5727,
-      "pearson_r": -0.7568,
-      "n": 20
+      "r_squared": 0.6034,
+      "pearson_r": -0.7768,
+      "n": 21
     },
     "45": {
-      "r_squared": 0.5334,
-      "pearson_r": -0.7304,
-      "n": 20
+      "r_squared": 0.5595,
+      "pearson_r": -0.748,
+      "n": 21
     },
     "50": {
-      "r_squared": 0.5623,
-      "pearson_r": -0.7499,
-      "n": 20
+      "r_squared": 0.581,
+      "pearson_r": -0.7623,
+      "n": 21
     },
     "60": {
-      "r_squared": 0.5316,
-      "pearson_r": -0.7291,
-      "n": 20
+      "r_squared": 0.5676,
+      "pearson_r": -0.7534,
+      "n": 21
     },
     "90": {
-      "r_squared": 0.009,
-      "pearson_r": 0.0948,
-      "n": 20
+      "r_squared": 0.0001,
+      "pearson_r": -0.0084,
+      "n": 21
     }
   },
   "regression": {
-    "slope": -13.3044,
-    "intercept": 2355.92,
-    "r_squared": 0.5334,
-    "pearson_r": -0.7304,
-    "equation": "Price = -13.30 \u00d7 Rev_MA45[t-1] + 2355.92",
+    "slope": -12.3904,
+    "intercept": 2314.54,
+    "r_squared": 0.5595,
+    "pearson_r": -0.748,
+    "equation": "Price = -12.39 \u00d7 Rev_MA45[t-1] + 2314.54",
     "fit": "moderate"
   },
   "methodology": {
     "revenue_lag_days": 1,
     "ma_basis": "all revenue trading days",
-    "slope_se_newey_west": 3.2935,
-    "t_stat_newey_west": -4.04,
+    "slope_se_newey_west": 2.5403,
+    "t_stat_newey_west": -4.88,
     "newey_west_lags": 5,
-    "durbin_watson": 0.675,
+    "durbin_watson": 0.845,
     "holdout": null,
     "fair_value_supported": false,
     "gate_reasons": [
-      "only 20 observations (needs 60)",
+      "only 21 observations (needs 60)",
       "slope is not positive"
     ],
     "thresholds": {
@@ -65,10 +65,10 @@
     }
   },
   "latest": {
-    "date": "2026-10-23",
-    "revenue_cr": 91.3233,
-    "rev_ma": 49.6044,
-    "price_actual": 1668.55,
+    "date": "2026-10-26",
+    "revenue_cr": null,
+    "rev_ma": 50.5733,
+    "price_actual": 1700.8,
     "price_pred": null,
     "error_pct": null
   },
@@ -211,6 +211,13 @@
       "revenue_cr": 91.3233,
       "rev_ma": 49.6044,
       "price": 1668.55,
+      "price_pred": null
+    },
+    {
+      "date": "2026-10-26",
+      "revenue_cr": null,
+      "rev_ma": 50.5733,
+      "price": 1700.8,
       "price_pred": null
     }
   ],
