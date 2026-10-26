@@ -149,9 +149,17 @@ function typicalPathRange(revenue, at, pool) {
   return { lo: revenue / quantile(fr, 0.9), hi: revenue / quantile(fr, 0.1), n: fr.length };
 }
 
+// Whether the session `date` has its official close in the view's daily rows.
+// Live figures are then compared with that close at today's rates, the polls'
+// basis (todayRatesData), never with the view's rows: under "As charged" BSE
+// cash there is priced at the calibrated rate. Until then nothing extra loads.
+function liveCloseKnown(viewRows, date) {
+  return !!date && (viewRows || []).some(r => r.date === date);
+}
+
 // Everything a Revenue Summary live card shows for one exchange, from its poll
-// file, its archive and the daily rows holding the official close (same
-// figures as this tab's KPIs). `status` defaults to liveStatus().
+// file, its archive and the daily rows at today's rates holding the official
+// close (same figures as this tab's KPIs). `status` defaults to liveStatus().
 function liveCardModel(hourly, history, dailyAll, status) {
   if (!hourly) return { kind: 'unavailable' };
   const samples = (hourly.samples || []).filter(s => s.elapsed_minutes > 0 && s.total_revenue != null);
@@ -212,18 +220,23 @@ async function buildLivePredictor(ex) {
   const dayType = hourly?.day_type || 'normal';
   const countOf = k => k === 'all' ? complete.length : complete.filter(d => d.day_type === k).length;
   const state = { type: liveDefaultType(complete, dayType) };
-  // The session's official close, once the daily pipeline has it
-  const closeRow = sessDate ? (DATA.daily_all || []).find(r => r.date === sessDate) : null;
+  // Benchmark for the predicted close: archived days of the same type (the
+  // poller's closes, at today's rates), else the quarter-to-date average
+  const sameType = complete.filter(d => d.day_type === dayType && d.date !== sessDate);
+  // The official close and the QTD average are read at today's rates, the
+  // polls' basis, whatever the Fees toggle; that file loads only when needed
+  const closeKnown = liveCloseKnown(DATA.daily_all, sessDate);
+  const todayData = closeKnown || sameType.length < 3 ? await todayRatesData(ex) : null;
+  if (currentExchange !== ex) return;
+  const closeRow = closeKnown ? ((todayData && todayData.daily_all) || []).find(r => r.date === sessDate) : null;
   const actualClose = closeRow && !st.isToday ? closeRow.total_rev : (closeRow && st.kind === 'closed' ? closeRow.total_rev : null);
   const pred = latest?.predicted_eod ?? null;
-  const q = DATA.quarterly || [];
+  const q = (todayData && todayData.quarterly) || [];
   const cq = q.length ? q[q.length - 1] : null;
   const qtdAvg = cq && cq.days ? cq.total_rev / cq.days : null;
-  // Benchmark for the predicted close: archived days of the same type, else the quarter-to-date average
-  const sameType = complete.filter(d => d.day_type === dayType && d.date !== sessDate);
   const refAvg = sameType.length >= 3
     ? { value: sameType.reduce((a, d) => a + d.eod_revenue, 0) / sameType.length, label: `${dayType.replace('_', '-')}-day avg` }
-    : qtdAvg ? { value: qtdAvg, label: 'QTD avg' } : null;
+    : qtdAvg ? { value: qtdAvg, label: "QTD avg at today's rates" } : null;
   const name = SHARE_EXCHANGE_NAMES[ex];
 
   const statusHTML = st.kind === 'live'
@@ -274,7 +287,7 @@ async function buildLivePredictor(ex) {
         `${refAvg && pred ? rxChangeHTML(pred / refAvg.value - 1) + ` vs ${refAvg.label} ${rxCr(refAvg.value, 1)} · ` : ''}${intradayMethodLabel(latest.pred_method)}`, { accent: true }),
     ];
     if (actualClose != null) {
-      items.push(rxKpi(`Actual close · trading data${flagTags(periodFlags(closeRow, 'total'))}`, rxCr(actualClose, 2), pred ? `Last prediction was ${rxSignedPct(pred / actualClose - 1)} off` : fmtTradeDate(sessDate, true)));
+      items.push(rxKpi(`Actual close · today's rates${flagTags(periodFlags(closeRow, 'total'))}`, rxCr(actualClose, 2), pred ? `Last prediction was ${rxSignedPct(pred / actualClose - 1)} off` : fmtTradeDate(sessDate, true)));
     } else {
       items.push(rxKpi('Typical-path range', rng ? `₹${fmtNum(rng.lo, 1)} – ${fmtNum(rng.hi, 1)} Cr` : '—',
         rng ? `revenue so far ÷ 10th–90th pct. share reached by ${sessionClock(at)} · n = ${rng.n}` : 'needs complete archived sessions'));
