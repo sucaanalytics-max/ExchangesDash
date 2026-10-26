@@ -389,7 +389,7 @@ function rebuildAll() {
     const sources = DATA.components.map(c => ({ ex: c.exchange, date: lastTradeDate(c.daily_all) }));
     (EXCHANGE_TABS[currentExchange] || []).forEach(t => { VIEW_SOURCES[t.id] = sources; });
   }
-  const common = [updateSnapshotNotice, updateFeeNotice, updateFeeToggle, buildFeeNote, buildRevenueSummary];
+  const common = [updateSnapshotNotice, updateFeeNotice, updateFeeToggle, buildFeeNote, buildRevenueSummary, buildLiveCards];
   const byExchange = {
     nsebse: [() => buildMarketSharePanel(['nse', 'bse']), buildMarketShareTrend],
     all:    [() => buildMarketSharePanel(['nse', 'bse', 'mcx'])],

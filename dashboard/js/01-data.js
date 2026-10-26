@@ -485,6 +485,8 @@ function buildFeeNote() {
   if (exs.includes('nse') || exs.includes('bse')) {
     parts.push(`<strong>Expiries</strong> counts the period's expiry days: each exchange's weekly index expiry (NSE Nifty, BSE Sensex) on the weekday then in force, moved to the previous trading day for a holiday; this week's counts once it has traded.${multi ? ' N = NSE, B = BSE; amber marks counts that differ, where the daily averages are not like for like.' : ''} Before 20 Nov 2024 both exchanges also had other weekly index expiries, not counted; BSE counts before the Sensex relaunch (15 May 2023) are notional.`);
   }
+  // The live cards beside the segment tabs (buildLiveCards in 10-revenue-summary.js)
+  parts.push('<strong>Live cards</strong> show NSE and BSE total revenue booked so far today at today\'s statutory fees, from the live polls (about every 5 min, 09:15–16:00 IST), with the predicted close and the typical-path range as on the Live Predictor tab; outside market hours they show the last session, and its actual close once the evening data is in.');
   // Muhurat / DR test sessions (scripts/trading_calendar.py): left out of every
   // average and day count, listed here with their revenue
   const special = exs.flatMap(ex => (rawFor(ex)?.special_sessions || []).map(r => ({ ex, r })));
