@@ -15,6 +15,8 @@ PREDICTOR_JS = ["PREDICTOR_SEGMENTS", "predictorScenario"]
 VALUATION_JS = ["valuationScenario", "valuationFromAdr"]
 LIVE_JS = ["INTRADAY_CHECKPOINTS", "SESSION_MINUTES", "dayFractionAt", "quantile", "revenueAt",
            "liveModelError", "shareOfDayError"]
+LIVE_CARD_JS = LIVE_JS + ["liveDefaultType", "liveDayPool", "typicalPathRange", "liveCardModel",
+                          "intradayMethodLabel", "sessionClock", "SEG_PRODUCT", "NO_FLAGS", "periodFlags"]
 
 
 def _nse_pnl():
@@ -153,6 +155,86 @@ class LiveArchiveScoring(unittest.TestCase):
         polls = [{"elapsed_minutes": 30, "total_revenue": 6}, {"elapsed_minutes": 90, "total_revenue": 18}]
         js = js_eval(LIVE_JS, "[revenueAt(DATA, 15), revenueAt(DATA, 60), revenueAt(DATA, 120)]", polls)
         self.assertEqual(js, [3, 12, None])
+
+
+def _path_day(frac_14, day_type="normal", date="2026-10-15"):
+    """Archived day closing at 100 that had reached `frac_14` of it by 14:00 (285 min)."""
+    d = _day(100.0, [5, 10, 15, 20, frac_14 * 100, 95, 100])
+    d.update(day_type=day_type, date=date)
+    return d
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class LiveCards(unittest.TestCase):
+    """Revenue Summary live cards: the Live Predictor's range and day pool, and the card model."""
+
+    NORMAL = [_path_day(0.5), _path_day(0.6), _path_day(0.7)]
+    EXPIRY = [_path_day(0.8, "expiry"), _path_day(0.9, "expiry")]
+    POLL = {"captured_ist": "2026-10-26T14:00:00", "elapsed_minutes": 285, "total_revenue": 43.0,
+            "options_revenue": 40.0, "futures_revenue": 1.0, "cash_revenue": 2.0,
+            "predicted_eod": 70.0, "pred_method": "historical/normal/wd0"}
+    LIVE = {"kind": "live", "isToday": True, "age": 3}
+    CLOSED = {"kind": "closed", "isToday": True, "age": 200}
+
+    def card(self, poll=None, status=None, daily=None, samples=None):
+        hourly = {"date": "2026-10-26", "day_type": "normal",
+                  "samples": samples if samples is not None else [{"elapsed_minutes": 0, "total_revenue": 5.0}, poll or self.POLL]}
+        data = {"h": hourly, "hist": {"days": self.NORMAL + self.EXPIRY}, "daily": daily or [], "st": status or self.LIVE}
+        return js_eval(LIVE_CARD_JS, "liveCardModel(DATA.h, DATA.hist, DATA.daily, DATA.st)", data)
+
+    def test_range_is_revenue_over_share_quantiles(self):
+        got = js_eval(LIVE_CARD_JS, "typicalPathRange(43, 285, DATA)", self.NORMAL + self.EXPIRY)
+        # shares at 14:00: .5 .6 .7 .8 .9 → 90th pct .86, 10th pct .54
+        self.assertAlmostEqual(got["lo"], 43 / 0.86, places=9)
+        self.assertAlmostEqual(got["hi"], 43 / 0.54, places=9)
+        self.assertEqual(got["n"], 5)
+        self.assertIsNone(js_eval(LIVE_CARD_JS, "typicalPathRange(43, 285, [])"))
+
+    def test_day_pool_and_default_type(self):
+        days = self.NORMAL + self.EXPIRY
+        expr = ("[liveDayPool(DATA, 'normal').length, liveDayPool(DATA, 'expiry').length, liveDayPool(DATA, 'all').length,"
+                " liveDayPool(DATA, 'normal', DATA[0]).length, liveDefaultType(DATA, 'normal'), liveDefaultType(DATA, 'expiry')]")
+        # 3 normal days; 2 expiry days fall back to all 5; leaving one normal day out leaves 2, so all 4 others
+        self.assertEqual(js_eval(LIVE_CARD_JS, expr, days), [3, 5, 5, 4, "normal", "all"])
+
+    def test_live_card(self):
+        c = self.card()
+        lo, hi = 43 / (0.6 + 0.8 * 0.1), 43 / (0.5 + 0.2 * 0.1)   # normal days only: shares .5 .6 .7
+        self.assertEqual((c["kind"], c["time"], c["booked"], c["pred"]), ("live", "14:00", 43.0, 70.0))
+        self.assertEqual(c["method"], "Normal days, same weekday")
+        self.assertAlmostEqual(c["range"]["lo"], lo, places=9)
+        self.assertAlmostEqual(c["range"]["hi"], hi, places=9)
+        self.assertEqual(c["range"]["n"], 3)
+        self.assertIsNone(c["outsideRange"])
+        self.assertAlmostEqual(c["pctOfClose"], 43 / 70, places=9)
+        scale = max(43, 70, hi) * 1.06
+        self.assertAlmostEqual(c["bar"]["fill"], 43 / scale * 100, places=9)
+        self.assertAlmostEqual(c["bar"]["mark"], 70 / scale * 100, places=9)
+        self.assertAlmostEqual(c["bar"]["lo"], lo / scale * 100, places=9)
+        self.assertEqual([s[0] for s in c["segs"]], ["Options", "Futures", "Cash"])
+
+    def test_prediction_outside_range(self):
+        self.assertEqual(self.card(dict(self.POLL, predicted_eod=90.0))["outsideRange"], "above")
+        self.assertEqual(self.card(dict(self.POLL, predicted_eod=55.0))["outsideRange"], "below")
+
+    def test_closed_session_before_and_after_the_official_close(self):
+        before = self.card(status=self.CLOSED)
+        self.assertEqual(before["kind"], "closed")
+        self.assertIsNone(before["actual"])
+        self.assertIsNotNone(before["range"])
+        after = self.card(status=self.CLOSED, daily=[{"date": "2026-10-26", "total_rev": 75.0}])
+        self.assertEqual(after["actual"], 75.0)
+        self.assertAlmostEqual(after["predError"], 70 / 75 - 1, places=9)
+        self.assertIsNone(after["range"])
+        self.assertIsNone(after["pctOfClose"])
+        self.assertIsNone(after["bar"]["lo"])
+        self.assertAlmostEqual(after["bar"]["fill"], 75 / (75 * 1.06) * 100, places=9)
+        # While the session is live, a same-day row does not count as its close
+        self.assertIsNone(self.card(daily=[{"date": "2026-10-26", "total_rev": 75.0}])["actual"])
+
+    def test_no_polls_and_no_feed(self):
+        self.assertEqual(self.card(samples=[{"elapsed_minutes": 0, "total_revenue": 5.0}])["kind"], "none")
+        self.assertEqual(js_eval(LIVE_CARD_JS, "liveCardModel(null, null, [])")["kind"], "unavailable")
 
 
 @unittest.skipUnless(NODE, "node not installed")

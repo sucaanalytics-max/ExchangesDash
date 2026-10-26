@@ -109,11 +109,14 @@
     <!-- ===================== TAB 1: REVENUE SUMMARY ===================== -->
     <section class="tab-content active" id="tab-revenue">
       <div id="marketSharePanel" style="display:none"></div>
-      <div class="sub-tabs" id="revSubTabs">
-        <button class="sub-tab active" data-subtab="rev-total">Total</button>
-        <button class="sub-tab" data-subtab="rev-options">Options</button>
-        <button class="sub-tab" data-subtab="rev-futures">Futures</button>
-        <button class="sub-tab" data-subtab="rev-cash">Cash</button>
+      <div class="rev-subtab-row">
+        <div class="sub-tabs" id="revSubTabs">
+          <button class="sub-tab active" data-subtab="rev-total">Total</button>
+          <button class="sub-tab" data-subtab="rev-options">Options</button>
+          <button class="sub-tab" data-subtab="rev-futures">Futures</button>
+          <button class="sub-tab" data-subtab="rev-cash">Cash</button>
+        </div>
+        <div id="liveCards" class="live-cards" aria-live="polite"></div>
       </div>
       <div class="sub-content active" id="subtab-rev-total"></div>
       <div class="sub-content" id="subtab-rev-options"></div>

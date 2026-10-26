@@ -21,8 +21,14 @@ async function init() {
   // Loads NSE and opens its first tab; a failure shows the overlay's Retry
   await switchExchange('nse');
   updateLatestRevBanner();
-  setInterval(() => { if (bannerDue(false)) updateLatestRevBanner(); }, 60 * 1000);
-  document.addEventListener('visibilitychange', () => { if (bannerDue(true)) updateLatestRevBanner(); });
+  setInterval(() => {
+    if (bannerDue(false)) updateLatestRevBanner();
+    if (liveCardsDue(false)) buildLiveCards();
+  }, 60 * 1000);
+  document.addEventListener('visibilitychange', () => {
+    if (bannerDue(true)) updateLatestRevBanner();
+    if (liveCardsDue(true)) buildLiveCards();
+  });
 }
 
 // The banner refreshes every 5 min while the tab is visible in market hours

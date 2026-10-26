@@ -1047,6 +1047,124 @@ function buildRevenueSummary() {
 }
 
 // ========================
+// LIVE CARDS — NSE and BSE today, beside the segment sub-tabs, in every view:
+// revenue booked so far, the predicted close and the typical-path range, the
+// Live Predictor tab's figures (liveCardModel, 15-live-predictor.js). Poll
+// files are read again after 5 min, archives after 30 (they change daily).
+// ========================
+const LIVE_CARD_EXCHANGES = ['nse', 'bse'];
+const LIVE_CARD_CACHE = {};
+let LIVE_CARDS_AT = 0, LIVE_CARDS_SEQ = 0;
+
+// /api/live (current with the poller's commits), else the copy in the deploy
+async function fetchLiveCardJSON(ex, file, local) {
+  const viaApi = await fetchIntradayJSON(ex, file);
+  if (viaApi) return viaApi;
+  try {
+    const res = await fetch(`./data/${ex}_${local}.json`);
+    return res.ok ? await res.json() : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function fetchLiveCardFiles(ex) {
+  const c = LIVE_CARD_CACHE[ex] = LIVE_CARD_CACHE[ex] || {};
+  const now = Date.now();
+  const due = (at, min) => !at || now - at >= min * 60000;
+  const [hourly, history] = await Promise.all([
+    due(c.hourlyAt, 5) ? fetchLiveCardJSON(ex, 'hourly', 'live_hourly') : c.hourly,
+    due(c.historyAt, 30) ? fetchLiveCardJSON(ex, 'history', 'hourly_history') : c.history,
+  ]);
+  // A failed read keeps the last good copy
+  if (hourly && hourly !== c.hourly) { c.hourly = hourly; c.hourlyAt = now; }
+  if (history && history !== c.history) { c.history = history; c.historyAt = now; }
+}
+
+function liveCardFor(ex) {
+  const c = LIVE_CARD_CACHE[ex] || {};
+  return liveCardModel(c.hourly, c.history, rawFor(ex)?.daily_all);
+}
+
+function liveCardHTML(ex, m) {
+  const name = `<span class="lvc-name">${ex.toUpperCase()}</span>`;
+  if (m.kind === 'unavailable' || m.kind === 'none') {
+    const msg = m.kind === 'none'
+      ? `No poll since the 09:15 open${m.sessDate ? ` on ${fmtTradeDate(m.sessDate, true)}` : ''}`
+      : 'Live feed unavailable';
+    return `<div class="lvc lvc--${ex}"><div class="lvc-top">${name}</div><div class="lvc-empty">${msg}</div></div>`;
+  }
+  const open = m.kind === 'live' || m.kind === 'stale';
+  const pill = m.kind === 'live' ? `<span class="lvc-pill lvc-pill--live"><i></i>Live ${m.time}</span>`
+    : m.kind === 'stale' ? `<span class="lvc-pill lvc-pill--stale" title="Last poll ${m.time} IST"><i></i>Delayed${m.age != null ? ` · ${m.age} min` : ''}</span>`
+      : `<span class="lvc-pill"><i></i>Closed · ${fmtTradeDate(m.sessDate, true)}</span>`;
+  const cr = v => `₹${fmtNum(v, 1)}`;
+  const segTitle = m.segs.map(([k, v]) => `${k} ₹${fmtNum(v, 2)}`).join(' · ') + ' Cr';
+  const predTitle = `Predicted close: ${m.method}`;
+
+  let head, side, footL;
+  if (m.actual != null) {
+    head = `<span class="lvc-big">${cr(m.actual)}</span><span class="lvc-lbl">Cr actual close</span>
+      ${m.pred != null ? `<span class="lvc-lbl" title="${predTitle}">· predicted ${cr(m.pred)}</span>` : ''}`;
+    side = m.predError != null ? `prediction ${rxSignedPct(m.predError)} off` : '';
+    footL = `actual close from trading data${flagTags(m.actualFlags)}`;
+  } else {
+    head = `<span class="lvc-big" title="${segTitle}">${cr(m.booked)}</span><span class="lvc-lbl">Cr ${open ? 'booked' : 'at last poll'}</span>
+      <span class="lvc-arrow" aria-hidden="true">→</span>
+      <span class="lvc-big" title="${predTitle}">${m.pred != null ? cr(m.pred) : '—'}</span><span class="lvc-lbl">${open ? 'close' : 'predicted'}</span>`;
+    side = m.pctOfClose != null ? `${Math.round(m.pctOfClose * 100)}% of close` : '';
+    footL = m.range
+      ? `<span title="Revenue so far ÷ the 10th–90th percentile share of the close past sessions had reached by ${m.rangeAt} · n = ${m.range.n}">typical range ₹${fmtNum(m.range.lo, 1)}–${fmtNum(m.range.hi, 1)} · n ${m.range.n}</span>`
+        + (m.outsideRange ? ` <span class="lvc-warn" title="The predicted close (▲) is ${m.outsideRange} the range: the two are built from different past sessions">▲ ${m.outsideRange} range</span>` : '')
+      : 'typical range needs complete past sessions';
+  }
+  const footR = open ? `${fmtElapsed(m.elapsed)} of 6h 45m` : `last poll ${m.time} IST`;
+  const b = m.bar;
+  const barLabel = m.actual != null
+    ? `Actual close ${cr(m.actual)} crore${m.pred != null ? `, predicted ${cr(m.pred)} crore` : ''}`
+    : `${cr(m.booked)} crore booked of a predicted ${m.pred != null ? cr(m.pred) : 'unknown'} crore close${m.range ? `, typical range ${cr(m.range.lo)} to ${cr(m.range.hi)} crore` : ''}`;
+  const bar = `<div class="lvc-bar" role="img" aria-label="${barLabel}">
+      <div class="lvc-fill" style="width:${(b.fill || 0).toFixed(1)}%"></div>
+      ${b.lo != null ? `<div class="lvc-band" style="left:${b.lo.toFixed(1)}%;width:${(b.hi - b.lo).toFixed(1)}%"></div>` : ''}
+      ${b.mark != null ? `<div class="lvc-mark" style="left:${b.mark.toFixed(1)}%"></div>` : ''}
+    </div>`;
+  return `<div class="lvc lvc--${ex}" title="${ex.toUpperCase()} total revenue at today's statutory fees, from the live polls (about every 5 min); predicted close and typical range as on the Live Predictor tab">
+    <div class="lvc-top">${name}${pill}<span class="lvc-side">${side}</span></div>
+    <div class="lvc-nums">${head}</div>
+    ${bar}
+    <div class="lvc-foot"><span>${footL}</span><span>${footR}</span></div>
+  </div>`;
+}
+
+// Renders the last reading straight away, then again once fresh files arrive
+async function buildLiveCards() {
+  const el = document.getElementById('liveCards');
+  if (!el) return;
+  const seq = ++LIVE_CARDS_SEQ;
+  const render = () => { el.innerHTML = LIVE_CARD_EXCHANGES.map(ex => liveCardHTML(ex, liveCardFor(ex))).join(''); };
+  // Async, so runSections cannot catch a failure here: log it and leave the cards as they were
+  try {
+    if (LIVE_CARD_EXCHANGES.some(ex => LIVE_CARD_CACHE[ex]?.hourly)) render();
+    LIVE_CARDS_AT = Date.now();
+    await Promise.all(LIVE_CARD_EXCHANGES.map(fetchLiveCardFiles));
+    if (seq === LIVE_CARDS_SEQ) render();
+  } catch (err) {
+    console.error('Live cards failed:', err);
+  }
+}
+
+// Refresh while Revenue Summary is on screen: every 5 min in the live tab's
+// window (Mon–Fri 09:10–16:15 IST), else every 30 min so the evening's actual
+// close still lands; a tab coming back into view catches up after 5 min.
+function liveCardsDue(returning) {
+  if (document.hidden || glanceActive() || !document.getElementById('tab-revenue')?.classList.contains('active')) return false;
+  const now = new Date(Date.now() + 330 * 60000);   // IST wall clock as UTC fields
+  const day = now.getUTCDay(), mins = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const open = day >= 1 && day <= 5 && mins >= 550 && mins <= 975;
+  return Date.now() - LIVE_CARDS_AT >= (returning || open ? 5 : 30) * 60 * 1000;
+}
+
+// ========================
 // MARKET SHARE PANEL  (generalised — works for any set of exchanges)
 // ========================
 

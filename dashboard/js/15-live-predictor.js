@@ -127,6 +127,74 @@ function liveStatus(hourly, latest) {
   return { kind: 'closed', isToday, age };
 }
 
+// Day type the band starts on: the session's own type once 3 complete archived
+// sessions of it exist, else every day
+function liveDefaultType(complete, dayType) {
+  return complete.filter(d => d.day_type === dayType).length >= 3 ? dayType : 'all';
+}
+
+// Archived sessions a band is built from: complete days of `type` when there
+// are at least 3 of them, else every complete day (`exclude` left out)
+function liveDayPool(complete, type, exclude) {
+  const pool = complete.filter(d => d !== exclude);
+  const same = type === 'all' ? pool : pool.filter(d => d.day_type === type);
+  return same.length >= 3 ? same : pool;
+}
+
+// Typical-path range of the close: revenue so far ÷ the 90th and 10th
+// percentile of the share of the close `pool` had reached `at` minutes in
+function typicalPathRange(revenue, at, pool) {
+  const fr = pool.map(d => dayFractionAt(d, at)).filter(x => x > 0);
+  if (revenue == null || !fr.length) return null;
+  return { lo: revenue / quantile(fr, 0.9), hi: revenue / quantile(fr, 0.1), n: fr.length };
+}
+
+// Everything a Revenue Summary live card shows for one exchange, from its poll
+// file, its archive and the daily rows holding the official close (same
+// figures as this tab's KPIs). `status` defaults to liveStatus().
+function liveCardModel(hourly, history, dailyAll, status) {
+  if (!hourly) return { kind: 'unavailable' };
+  const samples = (hourly.samples || []).filter(s => s.elapsed_minutes > 0 && s.total_revenue != null);
+  const latest = samples.length ? samples[samples.length - 1] : null;
+  const st = status || liveStatus(hourly, latest);
+  const sessDate = hourly.date || null;
+  const base = { sessDate, isToday: st.isToday };
+  if (!latest) return { ...base, kind: 'none' };
+
+  const at = latest.elapsed_minutes;
+  const complete = ((history && history.days) || []).filter(d => dayFractionAt(d, SESSION_MINUTES) != null);
+  const range = typicalPathRange(latest.total_revenue, at, liveDayPool(complete, liveDefaultType(complete, hourly.day_type || 'normal')));
+  const closeRow = sessDate ? (dailyAll || []).find(r => r.date === sessDate) : null;
+  const actual = closeRow && (!st.isToday || st.kind === 'closed') ? closeRow.total_rev : null;
+  const booked = latest.total_revenue, pred = latest.predicted_eod ?? null;
+  const outsideRange = range && pred != null ? (pred > range.hi ? 'above' : pred < range.lo ? 'below' : null) : null;
+
+  // Bar: booked revenue (the actual close once known) on a scale just past the furthest mark
+  const end = actual ?? booked;
+  const scale = Math.max(end, pred || 0, actual == null && range ? range.hi : 0) * 1.06;
+  const pct = v => v == null || !scale ? null : v / scale * 100;
+  return {
+    ...base,
+    kind: st.kind, age: st.age,
+    time: (latest.captured_ist || '').slice(11, 16),
+    elapsed: at,
+    booked, pred, method: intradayMethodLabel(latest.pred_method),
+    segs: [['Options', latest.options_revenue], ['Futures', latest.futures_revenue], ['Cash', latest.cash_revenue]].filter(s => s[1] != null),
+    range: actual == null ? range : null,
+    rangeAt: sessionClock(at),
+    outsideRange: actual == null ? outsideRange : null,
+    actual, actualFlags: closeRow ? periodFlags(closeRow, 'total') : NO_FLAGS,
+    predError: actual && pred != null ? pred / actual - 1 : null,
+    pctOfClose: actual == null && pred ? booked / pred : null,
+    bar: {
+      fill: pct(end),
+      lo: actual == null && range ? pct(range.lo) : null,
+      hi: actual == null && range ? pct(range.hi) : null,
+      mark: pct(pred),
+    },
+  };
+}
+
 async function buildLivePredictor(ex) {
   const el = document.getElementById(`${ex}IntradayContent`);
   if (!el) return;
@@ -143,7 +211,7 @@ async function buildLivePredictor(ex) {
   const sessLong = sessDate ? fmtTradeDate(sessDate, true) : '';
   const dayType = hourly?.day_type || 'normal';
   const countOf = k => k === 'all' ? complete.length : complete.filter(d => d.day_type === k).length;
-  const state = { type: countOf(dayType) >= 3 ? dayType : 'all' };
+  const state = { type: liveDefaultType(complete, dayType) };
   // The session's official close, once the daily pipeline has it
   const closeRow = sessDate ? (DATA.daily_all || []).find(r => r.date === sessDate) : null;
   const actualClose = closeRow && !st.isToday ? closeRow.total_rev : (closeRow && st.kind === 'closed' ? closeRow.total_rev : null);
@@ -194,17 +262,11 @@ async function buildLivePredictor(ex) {
   </div>`;
   const qx = k => el.querySelector(`[data-rx="${k}"]`);
 
-  function typeDays(t, exclude) {
-    const pool = complete.filter(d => d !== exclude);
-    const same = t === 'all' ? pool : pool.filter(d => d.day_type === t);
-    return same.length >= 3 ? same : pool;
-  }
+  const typeDays = (t, exclude) => liveDayPool(complete, t, exclude);
 
   function renderKpis(band) {
     const at = latest.elapsed_minutes;
-    const fr = typeDays(state.type).map(d => dayFractionAt(d, at)).filter(x => x > 0);
-    const lo = fr.length ? latest.total_revenue / quantile(fr, 0.9) : null;
-    const hi = fr.length ? latest.total_revenue / quantile(fr, 0.1) : null;
+    const rng = typicalPathRange(latest.total_revenue, at, typeDays(state.type));
     const when = `${(latest.captured_ist || '').slice(11, 16)} IST · ${fmtElapsed(at)} of 6h 45m`;
     const items = [
       rxKpi(st.isToday && st.kind !== 'closed' ? 'Revenue so far' : 'Revenue at last poll', rxCr(latest.total_revenue, 2), when),
@@ -214,8 +276,8 @@ async function buildLivePredictor(ex) {
     if (actualClose != null) {
       items.push(rxKpi(`Actual close · trading data${flagTags(periodFlags(closeRow, 'total'))}`, rxCr(actualClose, 2), pred ? `Last prediction was ${rxSignedPct(pred / actualClose - 1)} off` : fmtTradeDate(sessDate, true)));
     } else {
-      items.push(rxKpi('Typical-path range', lo != null ? `₹${fmtNum(lo, 1)} – ${fmtNum(hi, 1)} Cr` : '—',
-        lo != null ? `revenue so far ÷ 10th–90th pct. share reached by ${sessionClock(at)} · n = ${fr.length}` : 'needs complete archived sessions'));
+      items.push(rxKpi('Typical-path range', rng ? `₹${fmtNum(rng.lo, 1)} – ${fmtNum(rng.hi, 1)} Cr` : '—',
+        rng ? `revenue so far ÷ 10th–90th pct. share reached by ${sessionClock(at)} · n = ${rng.n}` : 'needs complete archived sessions'));
     }
     const mixBar = `<div style="display:flex;height:10px;gap:2px;margin:9px 0 7px" role="img" aria-label="${segs.map(s => `${s[0]} ${fmtNum(s[1], 2)} crore`).join(', ')}">${segs.map(s => `<div style="flex:${Math.max(s[1], 0)} 1 0;background:${s[2]}" title="${s[0]} ${rxCr(s[1], 2)}"></div>`).join('')}</div>`;
     items.push(rxKpi('Segment mix so far', mixBar, segs.map(s => `${s[0]} ${segTotal ? fmtPct(s[1] / segTotal) : '—'}`).join(' · ')));
