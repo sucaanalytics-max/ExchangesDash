@@ -1049,12 +1049,13 @@ function buildRevenueSummary() {
 // ========================
 // LIVE CARDS — NSE and BSE today, beside the segment sub-tabs, in every view:
 // revenue booked so far, the predicted close and the typical-path range, the
-// Live Predictor tab's figures (liveCardModel, 15-live-predictor.js). Poll
-// files are read again after 5 min, archives after 30 (they change daily).
+// Live Predictor tab's figures (liveCardModel, 15-live-predictor.js). The top
+// banner shows the same reading (bannerReadingFromCard, 02-banner-glance.js),
+// so both draw on one copy of these files, refreshed together: polls are read
+// again after 5 min, archives after 30 (they change daily).
 // ========================
 const LIVE_CARD_EXCHANGES = ['nse', 'bse'];
 const LIVE_CARD_CACHE = {};
-let LIVE_CARDS_AT = 0, LIVE_CARDS_SEQ = 0;
 
 // /api/live (current with the poller's commits), else the copy in the deploy
 async function fetchLiveCardJSON(ex, file, local) {
@@ -1068,17 +1069,24 @@ async function fetchLiveCardJSON(ex, file, local) {
   }
 }
 
-async function fetchLiveCardFiles(ex) {
+// Concurrent callers (start-up, a view switch, the banner tick) share one download
+function fetchLiveCardFiles(ex) {
   const c = LIVE_CARD_CACHE[ex] = LIVE_CARD_CACHE[ex] || {};
-  const now = Date.now();
-  const due = (at, min) => !at || now - at >= min * 60000;
-  const [hourly, history] = await Promise.all([
-    due(c.hourlyAt, 5) ? fetchLiveCardJSON(ex, 'hourly', 'live_hourly') : c.hourly,
-    due(c.historyAt, 30) ? fetchLiveCardJSON(ex, 'history', 'hourly_history') : c.history,
-  ]);
-  // A failed read keeps the last good copy
-  if (hourly && hourly !== c.hourly) { c.hourly = hourly; c.hourlyAt = now; }
-  if (history && history !== c.history) { c.history = history; c.historyAt = now; }
+  if (!c.inflight) {
+    c.inflight = (async () => {
+      const now = Date.now();
+      const due = (at, min) => !at || now - at >= min * 60000;
+      const [hourly, history] = await Promise.all([
+        due(c.hourlyAt, 5) ? fetchLiveCardJSON(ex, 'hourly', 'live_hourly') : c.hourly,
+        due(c.historyAt, 30) ? fetchLiveCardJSON(ex, 'history', 'hourly_history') : c.history,
+      ]);
+      // A failed read keeps the last good copy
+      if (hourly && hourly !== c.hourly) { c.hourly = hourly; c.hourlyAt = now; }
+      if (history && history !== c.history) { c.history = history; c.historyAt = now; }
+      c.tried = true;
+    })().finally(() => { c.inflight = null; });
+  }
+  return c.inflight;
 }
 
 function liveCardFor(ex) {
@@ -1136,32 +1144,18 @@ function liveCardHTML(ex, m) {
   </div>`;
 }
 
-// Renders the last reading straight away, then again once fresh files arrive
-async function buildLiveCards() {
+// Draws the cards from the shared reading (nothing before the first fetch)
+function renderLiveCards() {
   const el = document.getElementById('liveCards');
-  if (!el) return;
-  const seq = ++LIVE_CARDS_SEQ;
-  const render = () => { el.innerHTML = LIVE_CARD_EXCHANGES.map(ex => liveCardHTML(ex, liveCardFor(ex))).join(''); };
-  // Async, so runSections cannot catch a failure here: log it and leave the cards as they were
-  try {
-    if (LIVE_CARD_EXCHANGES.some(ex => LIVE_CARD_CACHE[ex]?.hourly)) render();
-    LIVE_CARDS_AT = Date.now();
-    await Promise.all(LIVE_CARD_EXCHANGES.map(fetchLiveCardFiles));
-    if (seq === LIVE_CARDS_SEQ) render();
-  } catch (err) {
-    console.error('Live cards failed:', err);
-  }
+  if (!el || !LIVE_CARD_EXCHANGES.some(ex => LIVE_CARD_CACHE[ex]?.tried)) return;
+  el.innerHTML = LIVE_CARD_EXCHANGES.map(ex => liveCardHTML(ex, liveCardFor(ex))).join('');
 }
 
-// Refresh while Revenue Summary is on screen: every 5 min in the live tab's
-// window (Mon–Fri 09:10–16:15 IST), else every 30 min so the evening's actual
-// close still lands; a tab coming back into view catches up after 5 min.
-function liveCardsDue(returning) {
-  if (document.hidden || glanceActive() || !document.getElementById('tab-revenue')?.classList.contains('active')) return false;
-  const now = new Date(Date.now() + 330 * 60000);   // IST wall clock as UTC fields
-  const day = now.getUTCDay(), mins = now.getUTCHours() * 60 + now.getUTCMinutes();
-  const open = day >= 1 && day <= 5 && mins >= 550 && mins <= 975;
-  return Date.now() - LIVE_CARDS_AT >= (returning || open ? 5 : 30) * 60 * 1000;
+// Each view shows the last reading straight away, then refreshes the cards
+// and the banner together (updateLatestRevBanner fetches only what is due)
+function buildLiveCards() {
+  renderLiveCards();
+  updateLatestRevBanner();
 }
 
 // ========================

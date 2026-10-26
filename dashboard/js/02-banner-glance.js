@@ -25,40 +25,58 @@ async function bannerDashData(ex) {
 // /api/* responses are cached at Vercel's edge (vercel.json), so their URLs
 // carry no cache-busting parameter: one function call serves every viewer.
 let BANNER_AT = 0;         // ms of the banner's last refresh
+let BANNER_SEQ = 0;
+
+// The banner's figure for an exchange is its Revenue Summary live card's: the
+// latest poll, or the session's actual close once the daily data has it, so
+// the two always match. null while the card has no current poll (delayed,
+// none since the open, or the feed is down): the banner then reads the
+// exchange directly, and takes a delayed poll (`orDelayed`) only if that fails.
+function bannerReadingFromCard(ex, m, orDelayed) {
+  if (m.kind !== 'live' && m.kind !== 'closed' && !(orDelayed && m.kind === 'stale')) return null;
+  if (m.actual != null) return { total_revenue: m.actual, trade_date: m.sessDate, has_data: true, source: 'historical' };
+  const seg = name => (m.segs.find(s => s[0] === name) || [])[1];
+  return {
+    total_revenue: m.booked, trade_date: m.sessDate, has_data: true, source: 'poll',
+    time: m.time, live: m.kind === 'live',
+    // BSE posts options premium later than cash: a cash-only poll is partial
+    options_pending: ex === 'bse' && !seg('Options') && seg('Cash') > 0,
+  };
+}
+
 async function updateLatestRevBanner() {
   const el = document.getElementById('latestRevBanner');
   if (!el) return;
 
   BANNER_AT = Date.now();
+  const seq = ++BANNER_SEQ;
   let nse = null, bse = null;
-
-  // 1. Try /api/revenue — fetches directly from NSE & BSE websites on demand
   try {
-    const res = await fetch('/api/revenue');
-    if (res.ok) {
-      const data = await res.json();
-      nse = data.nse;
-      bse = data.bse;
-    }
-  } catch(e) { /* fall through */ }
-
-  // 2. Fall back to /api/live (GitHub-hosted live JSON, updated every 5 min by Actions)
-  const needNse = !nse || !nse.has_data;
-  const needBse = !bse || !bse.has_data;
-  if (needNse || needBse) {
-    const [nseRes, bseRes] = await Promise.all([
-      needNse ? fetch('/api/live?exchange=nse&file=live').catch(() => null) : null,
-      needBse ? fetch('/api/live?exchange=bse&file=live').catch(() => null) : null,
-    ]);
-    if (needNse && nseRes && nseRes.ok) {
-      const d = await nseRes.json().catch(() => null);
-      if (d && d.revenue) nse = Object.assign({}, d.revenue, { source: d.revenue.source || 'github' });
-    }
-    if (needBse && bseRes && bseRes.ok) {
-      const d = await bseRes.json().catch(() => null);
-      if (d && d.revenue) bse = Object.assign({}, d.revenue, { source: d.revenue.source || 'github' });
-    }
+    // 1. The live cards' reading, fetched once for both
+    await Promise.all(LIVE_CARD_EXCHANGES.map(fetchLiveCardFiles));
+    renderLiveCards();
+    nse = bannerReadingFromCard('nse', liveCardFor('nse'));
+    bse = bannerReadingFromCard('bse', liveCardFor('bse'));
+  } catch (err) {
+    console.error('Banner live reading failed:', err);
   }
+
+  // 2. Poll feed delayed or down: /api/revenue reads NSE & BSE directly
+  if (!nse || !bse) {
+    try {
+      const res = await fetch('/api/revenue');
+      if (res.ok) {
+        const data = await res.json();
+        if (!nse && data.nse && data.nse.has_data) nse = data.nse;
+        if (!bse && data.bse && data.bse.has_data) bse = data.bse;
+      }
+    } catch(e) { /* fall through */ }
+  }
+  // …else the delayed poll the card shows (BSE's site often refuses the direct read)
+  try {
+    if (!nse) nse = bannerReadingFromCard('nse', liveCardFor('nse'), true);
+    if (!bse) bse = bannerReadingFromCard('bse', liveCardFor('bse'), true);
+  } catch (err) { /* fall through */ }
 
   // 3. Final fallback — latest completed day from historical dashboard JSON
   const needNse2 = !nse || !nse.has_data;
@@ -78,35 +96,28 @@ async function updateLatestRevBanner() {
     if (needNse2) nse = lastFromDash(nseDash);
     if (needBse2) bse = lastFromDash(bseDash);
   }
+  if (seq !== BANNER_SEQ) return;   // a newer refresh has started
 
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const days   = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   function formatDate(dateStr) {
-    if (!dateStr) return '';
-    let d;
-    if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) {
-      d = new Date(dateStr.slice(0, 10) + 'T00:00:00');
-    } else if (/^\d{2}\/\d{2}\/\d{2}$/.test(dateStr)) {
-      const parts = dateStr.split('/');
-      d = new Date('20' + parts[2] + '-' + parts[1] + '-' + parts[0] + 'T00:00:00');
-    } else { return dateStr; }
+    const iso = normalizeTradeDateJS(dateStr);
+    if (!iso) return dateStr || '';
+    const d = new Date(iso + 'T00:00:00');
     if (isNaN(d.getTime())) return dateStr;
     return days[d.getDay()] + ' ' + d.getDate() + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
   }
 
-  // LIVE only for a fresh reading of today's IST session: not the historical
-  // fallback, not a value the poller carried forward after a failed fetch, and
-  // not yesterday's totals still showing before the open or on a holiday.
-  function isoTradeDate(dateStr) {
-    if (!dateStr) return null;
-    if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) return dateStr.slice(0, 10);
-    const m = /^(\d{2})\/(\d{2})\/(\d{2})$/.exec(dateStr);
-    return m ? '20' + m[3] + '-' + m[2] + '-' + m[1] : null;
-  }
+  // LIVE only for a current reading of today's IST session: a poll the cards
+  // also show as live, or a direct read of today (not the historical fallback,
+  // not a value the poller carried forward after a failed fetch, and not
+  // yesterday's totals still showing before the open or on a holiday).
   const todayIST = istDateOf();
+  const isToday = info => !!info && normalizeTradeDateJS(info.trade_date) === todayIST;
   function isLiveToday(info) {
-    return !!info && info.source !== 'historical' && !info.stale_since
-      && isoTradeDate(info.trade_date) === todayIST;
+    if (!info) return false;
+    if (info.source === 'poll') return !!info.live;
+    return info.source !== 'historical' && !info.stale_since && isToday(info);
   }
 
   function chip(label, info) {
@@ -116,16 +127,18 @@ async function updateLatestRevBanner() {
     const liveTag = !isLive ? '' : partial
       ? '<span class="rev-banner-live rev-banner-partial" title="Cash revenue only — BSE has not posted options premium turnover for this session yet">PARTIAL</span>'
       : '<span class="rev-banner-live">LIVE</span>';
+    const asOf = info.time ? ' · ' + info.time + ' IST' : '';
     return '<span class="rev-banner-chip">' +
       '<span class="rev-banner-label">' + label + '</span>' +
       liveTag +
       '<span class="rev-banner-value"' + (partial ? ' title="Options premium not yet posted — cash revenue only"' : '') + '>₹ ' + Number(info.total_revenue).toLocaleString('en-IN', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' Cr</span>' +
-      '<span class="rev-banner-date">' + formatDate(info.trade_date) + '</span>' +
+      '<span class="rev-banner-date"' + (info.time ? ' title="Latest live poll, the figure the Revenue Summary live cards show"' : '') + '>' + formatDate(info.trade_date) + asOf + '</span>' +
       '</span>';
   }
 
-  const hasLive = isLiveToday(nse) || isLiveToday(bse);
-  const title = hasLive ? "Today's Revenue" : 'Latest Full Day Revenue';
+  // "Today's" while either chip shows today's session in progress or at its last poll
+  const inToday = info => isToday(info) && info.source !== 'historical';
+  const title = inToday(nse) || inToday(bse) ? "Today's Revenue" : 'Latest Full Day Revenue';
   el.innerHTML = '<span class="rev-banner-title">' + title + '</span>' + chip('NSE', nse) + chip('BSE', bse);
 }
 
@@ -264,7 +277,7 @@ function glanceTodayCard(ex, live, hourly, raw) {
 function normalizeTradeDateJS(s) {
   if (!s) return null;
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
-  let m = /^(\d{2})\/(\d{2})\/(\d{2,4})/.exec(s);
+  let m = /^(\d{2})[\/-](\d{2})[\/-](\d{2,4})(?!\d)/.exec(s);
   if (m) return (m[3].length === 2 ? '20' + m[3] : m[3]) + '-' + m[2] + '-' + m[1];
   m = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})/.exec(s);
   if (m) {
