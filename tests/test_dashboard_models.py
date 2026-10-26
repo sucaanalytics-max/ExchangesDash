@@ -151,6 +151,11 @@ class LiveArchiveScoring(unittest.TestCase):
         self.assertIsNone(js[1])                                      # no prediction recorded at 14:00
         self.assertAlmostEqual(js[2], (25 / 0.5) / 50 - 1, places=9)  # both others at 50 % by 12:00
 
+    def test_session_progress_stops_at_the_close(self):
+        got = js_eval(LIVE_JS + ["fmtElapsed", "fmtSessionProgress"],
+                      "[fmtSessionProgress(305), fmtSessionProgress(405), fmtSessionProgress(435)]")
+        self.assertEqual(got, ["5h 5m of 6h 45m", "full session (6h 45m)", "full session (6h 45m)"])
+
     def test_revenue_between_polls(self):
         polls = [{"elapsed_minutes": 30, "total_revenue": 6}, {"elapsed_minutes": 90, "total_revenue": 18}]
         js = js_eval(LIVE_JS, "[revenueAt(DATA, 15), revenueAt(DATA, 60), revenueAt(DATA, 120)]", polls)
