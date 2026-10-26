@@ -5,17 +5,19 @@
 // LATEST REVENUE BANNER
 // ========================
 
-// The banner's last resort is the latest full day at today's rates, the basis
-// /api/revenue reports in. The preloaded MARKET_RAW copy serves unless it is
-// the _eff variant, whose BSE cash is priced at the calibrated rate instead.
-const BANNER_DASH = {};    // exchange → { json, at } at-today's-rates file
-async function bannerDashData(ex) {
+// An exchange's dashboard file at today's rates, the basis of the live polls and
+// /api/revenue: the banner's last resort, and what live figures are compared
+// with (actual close, QTD average) whatever the Fees toggle. The preloaded
+// MARKET_RAW copy serves unless it is the _eff variant, whose BSE cash is
+// priced at the calibrated rate instead.
+const TODAY_RATES_DATA = {};    // exchange → { json, at } at-today's-rates file
+async function todayRatesData(ex) {
   if (MARKET_RAW[ex] && !MARKET_EFF[ex]) return MARKET_RAW[ex];
-  const c = BANNER_DASH[ex];
+  const c = TODAY_RATES_DATA[ex];
   if (c && Date.now() - c.at < DATA_MAX_AGE_MS) return c.json;
   try {
     const json = (await fetchDataFile(`./data/${ex}_dashboard_data.json`)).json;
-    BANNER_DASH[ex] = { json, at: Date.now() };
+    TODAY_RATES_DATA[ex] = { json, at: Date.now() };
     return json;
   } catch (e) {
     return null;
@@ -83,8 +85,8 @@ async function updateLatestRevBanner() {
   const needBse2 = !bse || !bse.has_data;
   if (needNse2 || needBse2) {
     const [nseDash, bseDash] = await Promise.all([
-      needNse2 ? bannerDashData('nse') : null,
-      needBse2 ? bannerDashData('bse') : null,
+      needNse2 ? todayRatesData('nse') : null,
+      needBse2 ? todayRatesData('bse') : null,
     ]);
     function lastFromDash(data) {
       if (!data) return null;

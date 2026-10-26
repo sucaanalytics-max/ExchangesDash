@@ -1083,6 +1083,11 @@ function fetchLiveCardFiles(ex) {
       // A failed read keeps the last good copy
       if (hourly && hourly !== c.hourly) { c.hourly = hourly; c.hourlyAt = now; }
       if (history && history !== c.history) { c.history = history; c.historyAt = now; }
+      // The session's close at today's rates (the polls' basis), once it is out
+      if (c.hourly && liveCloseKnown(rawFor(ex)?.daily_all, c.hourly.date)) {
+        const today = await todayRatesData(ex);
+        if (today) c.closeRows = today.daily_all;
+      }
       c.tried = true;
     })().finally(() => { c.inflight = null; });
   }
@@ -1091,7 +1096,7 @@ function fetchLiveCardFiles(ex) {
 
 function liveCardFor(ex) {
   const c = LIVE_CARD_CACHE[ex] || {};
-  return liveCardModel(c.hourly, c.history, rawFor(ex)?.daily_all);
+  return liveCardModel(c.hourly, c.history, c.closeRows);
 }
 
 function liveCardHTML(ex, m) {
@@ -1115,7 +1120,7 @@ function liveCardHTML(ex, m) {
     head = `<span class="lvc-big">${cr(m.actual)}</span><span class="lvc-lbl">Cr actual close</span>
       ${m.pred != null ? `<span class="lvc-lbl" title="${predTitle}">· predicted ${cr(m.pred)}</span>` : ''}`;
     side = m.predError != null ? `prediction ${rxSignedPct(m.predError)} off` : '';
-    footL = `actual close from trading data${flagTags(m.actualFlags)}`;
+    footL = `actual close at today's rates${flagTags(m.actualFlags)}`;
   } else {
     head = `<span class="lvc-big" title="${segTitle}">${cr(m.booked)}</span><span class="lvc-lbl">Cr ${open ? 'booked' : 'at last poll'}</span>
       <span class="lvc-arrow" aria-hidden="true">→</span>
@@ -1136,7 +1141,7 @@ function liveCardHTML(ex, m) {
       ${b.lo != null ? `<div class="lvc-band" style="left:${b.lo.toFixed(1)}%;width:${(b.hi - b.lo).toFixed(1)}%"></div>` : ''}
       ${b.mark != null ? `<div class="lvc-mark" style="left:${b.mark.toFixed(1)}%"></div>` : ''}
     </div>`;
-  return `<div class="lvc lvc--${ex}" title="${ex.toUpperCase()} total revenue at today's statutory fees, from the live polls (about every 5 min); predicted close and typical range as on the Live Predictor tab">
+  return `<div class="lvc lvc--${ex}" title="${ex.toUpperCase()} total revenue at today's statutory fees, from the live polls (about every 5 min); predicted close and typical range as on the Live Predictor tab; the actual close is at today's fees too, so it is compared like for like">
     <div class="lvc-top">${name}${pill}<span class="lvc-side">${side}</span></div>
     <div class="lvc-nums">${head}</div>
     ${bar}

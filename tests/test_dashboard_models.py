@@ -236,6 +236,23 @@ class LiveCards(unittest.TestCase):
         self.assertEqual(self.card(samples=[{"elapsed_minutes": 0, "total_revenue": 5.0}])["kind"], "none")
         self.assertEqual(js_eval(LIVE_CARD_JS, "liveCardModel(null, null, [])")["kind"], "unavailable")
 
+    def test_close_known_from_the_views_rows(self):
+        rows = [{"date": "2026-10-22"}, {"date": "2026-10-23"}]
+        got = js_eval(LIVE_CARD_JS + ["liveCloseKnown"],
+                      "[liveCloseKnown(DATA, '2026-10-23'), liveCloseKnown(DATA, '2026-10-26'), liveCloseKnown(DATA, null), liveCloseKnown(undefined, '2026-10-23')]", rows)
+        self.assertEqual(got, [True, False, False, False])
+
+    def test_actual_close_is_at_todays_rates(self):
+        # BSE 23 Oct: ₹10.30 Cr at today's rates (the polls' basis) vs ₹10.81 Cr as charged
+        data = {"h": {"date": "2026-10-23", "day_type": "normal", "samples": [self.POLL]},
+                "hist": {"days": self.NORMAL}, "today": [{"date": "2026-10-23", "total_rev": 10.30}]}
+        expr = ("(LIVE_CARD_CACHE.bse = { hourly: DATA.h, history: DATA.hist, closeRows: DATA.today },"
+                " liveCardFor('bse'))")
+        c = js_eval(LIVE_CARD_JS + ["liveStatus", "LIVE_STALE_MINUTES", "istDateOf", "parseUtcTs",
+                                    "LIVE_CARD_CACHE", "liveCardFor"], expr, data)
+        self.assertEqual(c["actual"], 10.30)
+        self.assertAlmostEqual(c["predError"], 70 / 10.30 - 1, places=9)
+
     def banner(self, ex, card):
         return js_eval(["bannerReadingFromCard"], f"bannerReadingFromCard('{ex}', DATA)", card)
 
