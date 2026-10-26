@@ -1131,7 +1131,7 @@ function liveCardHTML(ex, m) {
         + (m.outsideRange ? ` <span class="lvc-warn" title="The predicted close (▲) is ${m.outsideRange} the range: the two are built from different past sessions">▲ ${m.outsideRange} range</span>` : '')
       : 'typical range needs complete past sessions';
   }
-  const footR = open ? `${fmtElapsed(m.elapsed)} of 6h 45m` : `last poll ${m.time} IST`;
+  const footR = open ? fmtSessionProgress(m.elapsed) : `last poll ${m.time} IST`;
   const b = m.bar;
   const barLabel = m.actual != null
     ? `Actual close ${cr(m.actual)} crore${m.pred != null ? `, predicted ${cr(m.pred)} crore` : ''}`

@@ -33,6 +33,12 @@ function fmtElapsed(mins) {
   return `${mins < 0 ? '-' : ''}${h}h ${m}m`;
 }
 
+// "Xh Ym of 6h 45m" through the session; the pollers run on to 16:30, so a
+// poll at or after the 16:00 close reads as the full session
+function fmtSessionProgress(mins) {
+  return mins != null && mins >= SESSION_MINUTES ? 'full session (6h 45m)' : `${fmtElapsed(mins)} of 6h 45m`;
+}
+
 function intradayMethodLabel(method) {
   if (!method || method === 'none') return '—';
   if (method === 'linear') return 'Linear (not enough history yet)';
@@ -280,7 +286,7 @@ async function buildLivePredictor(ex) {
   function renderKpis(band) {
     const at = latest.elapsed_minutes;
     const rng = typicalPathRange(latest.total_revenue, at, typeDays(state.type));
-    const when = `${(latest.captured_ist || '').slice(11, 16)} IST · ${fmtElapsed(at)} of 6h 45m`;
+    const when = `${(latest.captured_ist || '').slice(11, 16)} IST · ${fmtSessionProgress(at)}`;
     const items = [
       rxKpi(st.isToday && st.kind !== 'closed' ? 'Revenue so far' : 'Revenue at last poll', rxCr(latest.total_revenue, 2), when),
       rxKpi(st.isToday && st.kind !== 'closed' ? 'Predicted close, 16:00' : 'Predicted close at last poll', rxCr(pred, 2),
