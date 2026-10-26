@@ -182,14 +182,15 @@ def in_market_session(now_ist: datetime) -> bool:
 
 def normalize_trade_date(raw):
     """Exchange trade date → 'YYYY-MM-DD', or None if unparseable.
-    Handles NSE '2026-10-16…', BSE '16/10/26', and '16-Oct-2026' forms."""
+    Handles NSE '2026-10-16…', BSE '16/10/26' (now and then '16-10-26'), and
+    '16-Oct-2026' forms."""
     if not raw:
         return None
     s = str(raw).strip()
     if re.match(r"^\d{4}-\d{2}-\d{2}", s):
         return s[:10]
     token = s.split(" ")[0]
-    for fmt in ("%d/%m/%y", "%d/%m/%Y", "%d-%b-%Y", "%d-%b-%y"):
+    for fmt in ("%d/%m/%y", "%d/%m/%Y", "%d-%m-%y", "%d-%m-%Y", "%d-%b-%Y", "%d-%b-%y"):
         try:
             return datetime.strptime(token, fmt).strftime("%Y-%m-%d")
         except ValueError:

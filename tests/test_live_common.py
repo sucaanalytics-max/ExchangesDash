@@ -15,7 +15,7 @@ def day(d, eod):
 
 class SessionGuards(unittest.TestCase):
     def test_trade_date_forms(self):
-        for raw in ("2026-10-16T15:30:00", "16/10/26", "16/10/2026", "16-Oct-2026", "16-Oct-26 15:30"):
+        for raw in ("2026-10-16T15:30:00", "16/10/26", "16/10/2026", "16-10-26", "16-10-2026", "16-Oct-2026", "16-Oct-26 15:30"):
             with self.subTest(raw=raw):
                 self.assertEqual(lc.normalize_trade_date(raw), "2026-10-16")
         self.assertIsNone(lc.normalize_trade_date("garbage"))

@@ -21,17 +21,12 @@ async function init() {
   // Loads NSE and opens its first tab; a failure shows the overlay's Retry
   await switchExchange('nse');
   updateLatestRevBanner();
-  setInterval(() => {
-    if (bannerDue(false)) updateLatestRevBanner();
-    if (liveCardsDue(false)) buildLiveCards();
-  }, 60 * 1000);
-  document.addEventListener('visibilitychange', () => {
-    if (bannerDue(true)) updateLatestRevBanner();
-    if (liveCardsDue(true)) buildLiveCards();
-  });
+  // One refresh for the banner and the Revenue Summary's live cards: they show one reading
+  setInterval(() => { if (bannerDue(false)) updateLatestRevBanner(); }, 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (bannerDue(true)) updateLatestRevBanner(); });
 }
 
-// The banner refreshes every 5 min while the tab is visible in market hours
+// The banner (and with it the live cards) refreshes every 5 min while the tab is visible in market hours
 // (Mon–Fri 08:50–16:40 IST) and every 30 min otherwise, so an open tab still
 // drops its LIVE tag once the day changes. A tab coming back into view
 // catches up if its banner is more than 5 min old; a hidden tab never polls.

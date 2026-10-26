@@ -236,6 +236,36 @@ class LiveCards(unittest.TestCase):
         self.assertEqual(self.card(samples=[{"elapsed_minutes": 0, "total_revenue": 5.0}])["kind"], "none")
         self.assertEqual(js_eval(LIVE_CARD_JS, "liveCardModel(null, null, [])")["kind"], "unavailable")
 
+    def banner(self, ex, card):
+        return js_eval(["bannerReadingFromCard"], f"bannerReadingFromCard('{ex}', DATA)", card)
+
+    def test_banner_shows_the_cards_reading(self):
+        live = self.banner("nse", self.card())
+        self.assertEqual((live["total_revenue"], live["trade_date"], live["time"], live["live"], live["source"]),
+                         (43.0, "2026-10-26", "14:00", True, "poll"))
+        self.assertFalse(live["options_pending"])
+        closed = self.banner("nse", self.card(status=self.CLOSED))
+        self.assertEqual((closed["total_revenue"], closed["live"]), (43.0, False))
+        actual = self.banner("nse", self.card(status=self.CLOSED, daily=[{"date": "2026-10-26", "total_rev": 75.0}]))
+        self.assertEqual((actual["total_revenue"], actual["source"]), (75.0, "historical"))
+        cash_only = self.banner("bse", self.card(dict(self.POLL, options_revenue=0.0, cash_revenue=0.4)))
+        self.assertTrue(cash_only["options_pending"])
+
+    def test_banner_reads_directly_without_a_current_poll(self):
+        for card in (self.card(status={"kind": "stale", "isToday": True, "age": 40}),
+                     self.card(samples=[]), {"kind": "unavailable"}):
+            with self.subTest(kind=card["kind"]):
+                self.assertIsNone(self.banner("nse", card))
+        # …and falls back to the delayed poll when the direct read fails
+        delayed = js_eval(["bannerReadingFromCard"], "bannerReadingFromCard('nse', DATA, true)",
+                          self.card(status={"kind": "stale", "isToday": True, "age": 40}))
+        self.assertEqual((delayed["total_revenue"], delayed["live"], delayed["time"]), (43.0, False, "14:00"))
+
+    def test_trade_date_forms(self):
+        forms = ["2026-10-16T15:30:00", "16/10/26", "16/10/2026", "16-10-26", "16-10-2026", "16-Oct-2026"]
+        got = js_eval(["normalizeTradeDateJS"], "DATA.map(normalizeTradeDateJS)", forms)
+        self.assertEqual(got, ["2026-10-16"] * len(forms))
+
 
 @unittest.skipUnless(NODE, "node not installed")
 class QuarterLabels(unittest.TestCase):
