@@ -181,11 +181,16 @@ function liveCardModel(hourly, history, dailyAll, status) {
   const closeRow = sessDate ? (dailyAll || []).find(r => r.date === sessDate) : null;
   const actual = closeRow && (!st.isToday || st.kind === 'closed') ? closeRow.total_rev : null;
   const booked = latest.total_revenue, pred = latest.predicted_eod ?? null;
-  const outsideRange = range && pred != null ? (pred > range.hi ? 'above' : pred < range.lo ? 'below' : null) : null;
+  // From the 16:00 close every past session has reached its full close, so the
+  // range collapses to the booked figure: shown only before the close, and
+  // until the actual close replaces it
+  const sessionDone = at >= SESSION_MINUTES;
+  const shownRange = actual == null && !sessionDone ? range : null;
+  const outsideRange = shownRange && pred != null ? (pred > shownRange.hi ? 'above' : pred < shownRange.lo ? 'below' : null) : null;
 
   // Bar: booked revenue (the actual close once known) on a scale just past the furthest mark
   const end = actual ?? booked;
-  const scale = Math.max(end, pred || 0, actual == null && range ? range.hi : 0) * 1.06;
+  const scale = Math.max(end, pred || 0, shownRange ? shownRange.hi : 0) * 1.06;
   const pct = v => v == null || !scale ? null : v / scale * 100;
   return {
     ...base,
@@ -194,16 +199,17 @@ function liveCardModel(hourly, history, dailyAll, status) {
     elapsed: at,
     booked, pred, method: intradayMethodLabel(latest.pred_method),
     segs: [['Options', latest.options_revenue], ['Futures', latest.futures_revenue], ['Cash', latest.cash_revenue]].filter(s => s[1] != null),
-    range: actual == null ? range : null,
+    range: shownRange,
     rangeAt: sessionClock(at),
-    outsideRange: actual == null ? outsideRange : null,
+    sessionDone,
+    outsideRange,
     actual, actualFlags: closeRow ? periodFlags(closeRow, 'total') : NO_FLAGS,
     predError: actual && pred != null ? pred / actual - 1 : null,
     pctOfClose: actual == null && pred ? booked / pred : null,
     bar: {
       fill: pct(end),
-      lo: actual == null && range ? pct(range.lo) : null,
-      hi: actual == null && range ? pct(range.hi) : null,
+      lo: shownRange ? pct(shownRange.lo) : null,
+      hi: shownRange ? pct(shownRange.hi) : null,
       mark: pct(pred),
     },
   };
@@ -294,7 +300,8 @@ async function buildLivePredictor(ex) {
     ];
     if (actualClose != null) {
       items.push(rxKpi(`Actual close · today's rates${flagTags(periodFlags(closeRow, 'total'))}`, rxCr(actualClose, 2), pred ? `Last prediction was ${rxSignedPct(pred / actualClose - 1)} off` : fmtTradeDate(sessDate, true)));
-    } else {
+    } else if (at < SESSION_MINUTES) {
+      // From the close the range collapses to the booked figure, so it is left out
       items.push(rxKpi('Typical-path range', rng ? `₹${fmtNum(rng.lo, 1)} – ${fmtNum(rng.hi, 1)} Cr` : '—',
         rng ? `revenue so far ÷ 10th–90th pct. share reached by ${sessionClock(at)} · n = ${rng.n}` : 'needs complete archived sessions'));
     }
