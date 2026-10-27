@@ -237,6 +237,17 @@ class LiveCards(unittest.TestCase):
         # While the session is live, a same-day row does not count as its close
         self.assertIsNone(self.card(daily=[{"date": "2026-10-26", "total_rev": 75.0}])["actual"])
 
+    def test_no_range_once_the_session_is_complete(self):
+        # The pollers run to 16:30: from the 16:00 close every share is 1, so the range would collapse
+        done = self.card(dict(self.POLL, captured_ist="2026-10-26T16:30:00", elapsed_minutes=435), status=self.CLOSED)
+        self.assertTrue(done["sessionDone"])
+        self.assertIsNone(done["range"])
+        self.assertIsNone(done["outsideRange"])
+        self.assertIsNone(done["bar"]["lo"])
+        self.assertEqual((done["booked"], done["pred"]), (43.0, 70.0))
+        self.assertAlmostEqual(done["pctOfClose"], 43 / 70, places=9)
+        self.assertFalse(self.card(status=self.CLOSED)["sessionDone"])   # polls stopped at 14:00: range kept
+
     def test_no_polls_and_no_feed(self):
         self.assertEqual(self.card(samples=[{"elapsed_minutes": 0, "total_revenue": 5.0}])["kind"], "none")
         self.assertEqual(js_eval(LIVE_CARD_JS, "liveCardModel(null, null, [])")["kind"], "unavailable")

@@ -1129,7 +1129,7 @@ function liveCardHTML(ex, m) {
     footL = m.range
       ? `<span title="Revenue so far ÷ the 10th–90th percentile share of the close past sessions had reached by ${m.rangeAt} · n = ${m.range.n}">typical range ₹${fmtNum(m.range.lo, 1)}–${fmtNum(m.range.hi, 1)} · n ${m.range.n}</span>`
         + (m.outsideRange ? ` <span class="lvc-warn" title="The predicted close (▲) is ${m.outsideRange} the range: the two are built from different past sessions">▲ ${m.outsideRange} range</span>` : '')
-      : 'typical range needs complete past sessions';
+      : m.sessionDone ? 'session complete · official close with the evening data' : 'typical range needs complete past sessions';
   }
   const footR = open ? fmtSessionProgress(m.elapsed) : `last poll ${m.time} IST`;
   const b = m.bar;
