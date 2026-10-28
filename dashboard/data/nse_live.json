@@ -1,14 +1,14 @@
 {
-  "updated_at": "2026-10-28T08:35:29Z",
+  "updated_at": "2026-10-28T08:40:24Z",
   "market_status": {
     "marketState": [
       {
         "market": "Capital Market",
         "marketStatus": "Open",
-        "tradeDate": "28-Oct-2026 14:05",
+        "tradeDate": "28-Oct-2026 14:10",
         "index": "NIFTY 50",
-        "last": 22694.55,
-        "variation": -55.20000000000073,
+        "last": 22696.05,
+        "variation": -53.70000000000073,
         "percentChange": -0.24,
         "marketStatusMessage": "Normal Market is Open"
       },
@@ -44,10 +44,10 @@
       },
       {
         "index": "NIFTY50 USD",
-        "last": 8267,
-        "change": -19.8700000000008,
-        "percentChange": -0.23,
-        "timestamp": "28-Oct-2026 14:05"
+        "last": 8268.85,
+        "change": -18.020000000000437,
+        "percentChange": -0.21,
+        "timestamp": "28-Oct-2026 14:10"
       },
       {
         "market": "currencyfuture",
@@ -88,24 +88,24 @@
       "status": "CLOSE"
     },
     "giftnifty": {
-      "CONTRACTSTRADED": 50895,
-      "DAYCHANGE": 61.5,
+      "CONTRACTSTRADED": 51115,
+      "DAYCHANGE": 67,
       "EXPIRYDATE": "23-Nov-2026",
       "INSTRUMENTTYPE": "FUTIDX",
-      "LASTPRICE": 22761.5,
+      "LASTPRICE": 22767,
       "OPTIONTYPE": "-",
-      "PERCHANGE": 0.27,
+      "PERCHANGE": 0.3,
       "STRIKEPRICE": 0,
       "SYMBOL": "NIFTY",
-      "TIMESTMP": "28-Oct-2026 14:03",
+      "TIMESTMP": "28-Oct-2026 14:10",
       "id": "1/NIFTYFUTIDX23-Nov-2026--"
     },
     "niftyusd": {
       "index": "NIFTY50 USD",
-      "last": 8267,
-      "change": -19.8700000000008,
-      "percentChange": -0.23,
-      "timestamp": "28-Oct-2026 14:05"
+      "last": 8268.85,
+      "change": -18.020000000000437,
+      "percentChange": -0.21,
+      "timestamp": "28-Oct-2026 14:10"
     }
   },
   "revenue": {
@@ -475,11 +475,11 @@
     }
   ],
   "stock_price": {
-    "last_price": 1780.5,
+    "last_price": 1780.35,
     "previous_close": 1785.0,
     "open": 1779.0,
     "day_high": 1790.0,
     "day_low": 1766.0,
-    "pct_change": -0.25
+    "pct_change": -0.26
   }
 }
