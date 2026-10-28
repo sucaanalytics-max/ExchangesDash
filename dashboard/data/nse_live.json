@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-10-28T10:30:29Z",
+  "updated_at": "2026-10-28T10:35:27Z",
   "market_status": {
     "marketState": [
       {
@@ -10,7 +10,7 @@
         "last": 22698.85,
         "variation": -50.900000000001455,
         "percentChange": -0.22,
-        "marketStatusMessage": "Market in Post-Close Session"
+        "marketStatusMessage": "Normal Market has Closed"
       },
       {
         "market": "Currency",
@@ -88,17 +88,17 @@
       "status": "CLOSE"
     },
     "giftnifty": {
-      "CONTRACTSTRADED": null,
-      "DAYCHANGE": null,
-      "EXPIRYDATE": null,
-      "INSTRUMENTTYPE": null,
-      "LASTPRICE": null,
-      "OPTIONTYPE": null,
-      "PERCHANGE": null,
-      "STRIKEPRICE": null,
-      "SYMBOL": null,
-      "TIMESTMP": null,
-      "id": null
+      "CONTRACTSTRADED": 61445,
+      "DAYCHANGE": 0,
+      "EXPIRYDATE": "23-Nov-2026",
+      "INSTRUMENTTYPE": "FUTIDX",
+      "LASTPRICE": 22733,
+      "OPTIONTYPE": "-",
+      "PERCHANGE": 0,
+      "STRIKEPRICE": 0,
+      "SYMBOL": "NIFTY",
+      "TIMESTMP": "28-Oct-2026 15:49",
+      "id": "0/NIFTYFUTIDX23-Nov-2026--"
     },
     "niftyusd": {
       "index": "NIFTY50 USD",
