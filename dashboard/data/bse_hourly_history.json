@@ -1909,6 +1909,56 @@
           "fraction": 1.0
         }
       }
+    },
+    {
+      "date": "2026-10-27",
+      "weekday": 1,
+      "weekday_name": "Tuesday",
+      "day_type": "normal",
+      "eod_revenue": 8.56,
+      "n_samples": 87,
+      "checkpoints": {
+        "10:00": {
+          "revenue": 1.81,
+          "fraction": 0.2114,
+          "predicted_eod": 10.95,
+          "predicted_at_min": 45
+        },
+        "11:00": {
+          "revenue": 3.31,
+          "fraction": 0.3867,
+          "predicted_eod": 10.62,
+          "predicted_at_min": 105
+        },
+        "12:00": {
+          "revenue": 4.25,
+          "fraction": 0.4965,
+          "predicted_eod": 9.18,
+          "predicted_at_min": 165
+        },
+        "13:00": {
+          "revenue": 5.23,
+          "fraction": 0.611,
+          "predicted_eod": 8.62,
+          "predicted_at_min": 225
+        },
+        "14:00": {
+          "revenue": 6.38,
+          "fraction": 0.7453,
+          "predicted_eod": 8.89,
+          "predicted_at_min": 285
+        },
+        "15:00": {
+          "revenue": 7.83,
+          "fraction": 0.9147,
+          "predicted_eod": 9.38,
+          "predicted_at_min": 345
+        },
+        "16:00": {
+          "revenue": 8.56,
+          "fraction": 1.0
+        }
+      }
     }
   ]
 }
