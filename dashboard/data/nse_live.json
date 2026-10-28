@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-10-28T10:25:33Z",
+  "updated_at": "2026-10-28T10:30:29Z",
   "market_status": {
     "marketState": [
       {
@@ -88,17 +88,17 @@
       "status": "CLOSE"
     },
     "giftnifty": {
-      "CONTRACTSTRADED": 61445,
-      "DAYCHANGE": 33,
-      "EXPIRYDATE": "23-Nov-2026",
-      "INSTRUMENTTYPE": "FUTIDX",
-      "LASTPRICE": 22733,
-      "OPTIONTYPE": "-",
-      "PERCHANGE": 0.15,
-      "STRIKEPRICE": 0,
-      "SYMBOL": "NIFTY",
-      "TIMESTMP": "28-Oct-2026 15:49",
-      "id": "1/NIFTYFUTIDX23-Nov-2026--"
+      "CONTRACTSTRADED": null,
+      "DAYCHANGE": null,
+      "EXPIRYDATE": null,
+      "INSTRUMENTTYPE": null,
+      "LASTPRICE": null,
+      "OPTIONTYPE": null,
+      "PERCHANGE": null,
+      "STRIKEPRICE": null,
+      "SYMBOL": null,
+      "TIMESTMP": null,
+      "id": null
     },
     "niftyusd": {
       "index": "NIFTY50 USD",
@@ -116,14 +116,14 @@
     "index_options_premium": 46837.27,
     "stock_options_premium": 7479.86,
     "options_premium": 54317.13,
-    "cash_traded_value": 128736.52,
+    "cash_traded_value": 128757.0,
     "take_rate_futures": 3.66e-05,
     "take_rate_options": 0.0007106,
     "take_rate_cash": 6.14e-05,
     "futures_revenue": 2.9681,
     "options_revenue": 38.5978,
-    "cash_revenue": 7.9044,
-    "total_revenue": 49.4703,
+    "cash_revenue": 7.9057,
+    "total_revenue": 49.4715,
     "has_data": true,
     "source": "live"
   },
@@ -366,14 +366,14 @@
         "index_options_premium": 46837.27,
         "stock_options_premium": 7479.86,
         "options_premium": 54317.13,
-        "cash_traded_value": 128736.52,
+        "cash_traded_value": 128757.0,
         "take_rate_futures": 3.66e-05,
         "take_rate_options": 0.0007106,
         "take_rate_cash": 6.14e-05,
         "futures_revenue": 2.9681,
         "options_revenue": 38.5978,
-        "cash_revenue": 7.9044,
-        "total_revenue": 49.4703,
+        "cash_revenue": 7.9057,
+        "total_revenue": 49.4715,
         "has_data": true,
         "source": "live"
       }
