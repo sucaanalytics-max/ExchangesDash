@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-10-28T10:15:27Z",
+  "updated_at": "2026-10-28T10:20:31Z",
   "market_status": {
     "marketState": [
       {
@@ -66,12 +66,12 @@
       }
     ],
     "marketcap": {
-      "timeStamp": "27-Oct-2026",
-      "marketCapinTRDollars": 4.79,
-      "marketCapinLACCRRupees": 455.5816603903625,
-      "marketCapinCRRupees": 45558166.04,
-      "marketCapinCRRupeesFormatted": "45,558,166.04",
-      "marketCapinLACCRRupeesFormatted": "455.58",
+      "timeStamp": "28-Oct-2026",
+      "marketCapinTRDollars": 4.92,
+      "marketCapinLACCRRupees": 468.3994542722386,
+      "marketCapinCRRupees": 46839945.43,
+      "marketCapinCRRupeesFormatted": "46,839,945.43",
+      "marketCapinLACCRRupeesFormatted": "468.40",
       "underlying": "Market Cap"
     },
     "indicativenifty50": {
@@ -475,11 +475,11 @@
     }
   ],
   "stock_price": {
-    "last_price": 1781.0,
+    "last_price": 1777.05,
     "previous_close": 1785.0,
     "open": 1779.0,
     "day_high": 1790.0,
     "day_low": 1766.0,
-    "pct_change": -0.22
+    "pct_change": -0.45
   }
 }
