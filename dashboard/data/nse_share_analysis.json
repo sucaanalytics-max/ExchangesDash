@@ -1,56 +1,56 @@
 {
-  "updated_at": "2026-10-28T05:59:01Z",
+  "updated_at": "2026-10-28T18:27:30Z",
   "ticker": "NSE.BO",
   "ma_window": 45,
   "regression_start": "2026-09-24",
   "n_days": 23,
   "ma_window_comparison": {
     "20": {
-      "r_squared": 0.1064,
-      "pearson_r": -0.3262,
+      "r_squared": 0.1021,
+      "pearson_r": -0.3195,
       "n": 23
     },
     "30": {
-      "r_squared": 0.1079,
-      "pearson_r": -0.3285,
+      "r_squared": 0.1034,
+      "pearson_r": -0.3216,
       "n": 23
     },
     "45": {
-      "r_squared": 0.0577,
-      "pearson_r": -0.2403,
+      "r_squared": 0.0543,
+      "pearson_r": -0.233,
       "n": 23
     },
     "50": {
-      "r_squared": 0.0449,
-      "pearson_r": -0.2119,
+      "r_squared": 0.0417,
+      "pearson_r": -0.2042,
       "n": 23
     },
     "60": {
-      "r_squared": 0.074,
-      "pearson_r": -0.2721,
+      "r_squared": 0.0699,
+      "pearson_r": -0.2644,
       "n": 23
     },
     "90": {
-      "r_squared": 0.0745,
-      "pearson_r": 0.2729,
+      "r_squared": 0.0789,
+      "pearson_r": 0.2809,
       "n": 23
     }
   },
   "regression": {
-    "slope": -2.9643,
-    "intercept": 1885.68,
-    "r_squared": 0.0577,
-    "pearson_r": -0.2403,
-    "equation": "Price = -2.96 \u00d7 Rev_MA45[t-1] + 1885.68",
+    "slope": -2.8817,
+    "intercept": 1881.91,
+    "r_squared": 0.0543,
+    "pearson_r": -0.233,
+    "equation": "Price = -2.88 \u00d7 Rev_MA45[t-1] + 1881.91",
     "fit": "weak"
   },
   "methodology": {
     "revenue_lag_days": 1,
     "ma_basis": "all revenue trading days",
-    "slope_se_newey_west": 3.5979,
-    "t_stat_newey_west": -0.82,
+    "slope_se_newey_west": 3.6297,
+    "t_stat_newey_west": -0.79,
     "newey_west_lags": 6,
-    "durbin_watson": 0.643,
+    "durbin_watson": 0.636,
     "holdout": null,
     "fair_value_supported": false,
     "gate_reasons": [
@@ -66,9 +66,9 @@
   },
   "latest": {
     "date": "2026-10-28",
-    "revenue_cr": null,
+    "revenue_cr": 49.4842,
     "rev_ma": 53.129,
-    "price_actual": 1775.0,
+    "price_actual": 1777.05,
     "price_pred": null,
     "error_pct": null
   },
@@ -229,9 +229,9 @@
     },
     {
       "date": "2026-10-28",
-      "revenue_cr": null,
+      "revenue_cr": 49.4842,
       "rev_ma": 53.129,
-      "price": 1775.0,
+      "price": 1777.05,
       "price_pred": null
     }
   ],
@@ -927,6 +927,10 @@
     {
       "date": "2026-10-27",
       "revenue_cr": 92.1765
+    },
+    {
+      "date": "2026-10-28",
+      "revenue_cr": 49.4842
     }
   ],
   "status": "collecting",
