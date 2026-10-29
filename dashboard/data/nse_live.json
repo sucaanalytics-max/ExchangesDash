@@ -1,11 +1,11 @@
 {
-  "updated_at": "2026-10-29T03:40:29Z",
+  "updated_at": "2026-10-29T03:45:29Z",
   "market_status": {
     "marketState": [
       {
         "market": "Capital Market",
         "marketStatus": "Open",
-        "tradeDate": "29-Oct-2026 09:10",
+        "tradeDate": "29-Oct-2026 09:14",
         "index": "NIFTY 50",
         "last": 22690.65,
         "variation": -8.19999999999709,
@@ -47,21 +47,21 @@
         "last": 8260.05,
         "change": 0.8299999999999272,
         "percentChange": 0.01,
-        "timestamp": "29-Oct-2026 09:10"
+        "timestamp": "29-Oct-2026 09:14"
       },
       {
         "market": "currencyfuture",
         "marketStatus": "Open",
         "tradeDate": "29-Oct-2026",
         "index": "",
-        "last": "95.4700",
+        "last": "95.4900",
         "variation": "",
         "percentChange": "",
         "marketStatusMessage": "Market is Open",
         "expiryDate": "26-Nov-2026",
         "underlying": "USDINR",
-        "updated_time": "29-Oct-2026 09:10",
-        "tradeDateFormatted": "29-Oct-2026 09:10",
+        "updated_time": "29-Oct-2026 09:14",
+        "tradeDateFormatted": "29-Oct-2026 09:14",
         "slickclass": "slick-item"
       }
     ],
@@ -88,16 +88,16 @@
       "status": "CLOSE"
     },
     "giftnifty": {
-      "CONTRACTSTRADED": 3472,
-      "DAYCHANGE": -57,
+      "CONTRACTSTRADED": 3566,
+      "DAYCHANGE": -55,
       "EXPIRYDATE": "23-Nov-2026",
       "INSTRUMENTTYPE": "FUTIDX",
-      "LASTPRICE": 22695,
+      "LASTPRICE": 22697,
       "OPTIONTYPE": "-",
-      "PERCHANGE": -0.25,
+      "PERCHANGE": -0.24,
       "STRIKEPRICE": 0,
       "SYMBOL": "NIFTY",
-      "TIMESTMP": "29-Oct-2026 09:10",
+      "TIMESTMP": "29-Oct-2026 09:14",
       "id": "0/NIFTYFUTIDX23-Nov-2026--"
     },
     "niftyusd": {
@@ -105,7 +105,7 @@
       "last": 8260.05,
       "change": 0.8299999999999272,
       "percentChange": 0.01,
-      "timestamp": "29-Oct-2026 09:10"
+      "timestamp": "29-Oct-2026 09:14"
     }
   },
   "revenue": {
@@ -496,9 +496,9 @@
   "stock_price": {
     "last_price": 1777.05,
     "previous_close": 1785.0,
-    "open": 1779.0,
-    "day_high": 1790.0,
-    "day_low": 1766.0,
+    "open": null,
+    "day_high": null,
+    "day_low": null,
     "pct_change": -0.45
   }
 }
