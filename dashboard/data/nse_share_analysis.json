@@ -1,61 +1,61 @@
 {
-  "updated_at": "2026-10-29T18:37:03Z",
+  "updated_at": "2026-10-30T06:06:43Z",
   "ticker": "NSE.BO",
   "ma_window": 45,
   "regression_start": "2026-09-24",
-  "n_days": 24,
+  "n_days": 25,
   "ma_window_comparison": {
     "20": {
-      "r_squared": 0.0369,
-      "pearson_r": -0.192,
-      "n": 24
+      "r_squared": 0.0149,
+      "pearson_r": -0.1219,
+      "n": 25
     },
     "30": {
-      "r_squared": 0.032,
-      "pearson_r": -0.1788,
-      "n": 24
+      "r_squared": 0.0079,
+      "pearson_r": -0.0889,
+      "n": 25
     },
     "45": {
-      "r_squared": 0.0073,
-      "pearson_r": -0.0853,
-      "n": 24
+      "r_squared": 0.0001,
+      "pearson_r": 0.0098,
+      "n": 25
     },
     "50": {
-      "r_squared": 0.0021,
-      "pearson_r": -0.0459,
-      "n": 24
+      "r_squared": 0.003,
+      "pearson_r": 0.0548,
+      "n": 25
     },
     "60": {
-      "r_squared": 0.0111,
-      "pearson_r": -0.1052,
-      "n": 24
+      "r_squared": 0.0,
+      "pearson_r": -0.0032,
+      "n": 25
     },
     "90": {
-      "r_squared": 0.136,
-      "pearson_r": 0.3688,
-      "n": 24
+      "r_squared": 0.1776,
+      "pearson_r": 0.4214,
+      "n": 25
     }
   },
   "regression": {
-    "slope": -0.9709,
-    "intercept": 1794.59,
-    "r_squared": 0.0073,
-    "pearson_r": -0.0853,
-    "equation": "Price = -0.97 \u00d7 Rev_MA45[t-1] + 1794.59",
+    "slope": 0.1055,
+    "intercept": 1745.45,
+    "r_squared": 0.0001,
+    "pearson_r": 0.0098,
+    "equation": "Price = 0.11 \u00d7 Rev_MA45[t-1] + 1745.45",
     "fit": "weak"
   },
   "methodology": {
     "revenue_lag_days": 1,
     "ma_basis": "all revenue trading days",
-    "slope_se_newey_west": 3.5029,
-    "t_stat_newey_west": -0.28,
+    "slope_se_newey_west": 3.2851,
+    "t_stat_newey_west": 0.03,
     "newey_west_lags": 6,
-    "durbin_watson": 0.556,
+    "durbin_watson": 0.517,
     "holdout": null,
     "fair_value_supported": false,
     "gate_reasons": [
-      "only 24 observations (needs 60)",
-      "slope is not positive"
+      "only 25 observations (needs 60)",
+      "slope not significant (Newey-West t = 0.03, needs 2)"
     ],
     "thresholds": {
       "min_n": 60,
@@ -65,10 +65,10 @@
     }
   },
   "latest": {
-    "date": "2026-10-29",
-    "revenue_cr": 39.8609,
-    "rev_ma": 53.3127,
-    "price_actual": 1788.95,
+    "date": "2026-10-30",
+    "revenue_cr": null,
+    "rev_ma": 53.0876,
+    "price_actual": 1786.5,
     "price_pred": null,
     "error_pct": null
   },
@@ -239,6 +239,13 @@
       "revenue_cr": 39.8609,
       "rev_ma": 53.3127,
       "price": 1788.95,
+      "price_pred": null
+    },
+    {
+      "date": "2026-10-30",
+      "revenue_cr": null,
+      "rev_ma": 53.0876,
+      "price": 1786.5,
       "price_pred": null
     }
   ],
