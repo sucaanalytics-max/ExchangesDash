@@ -1,11 +1,11 @@
 {
-  "updated_at": "2026-10-30T09:49:42Z",
+  "updated_at": "2026-10-30T09:50:28Z",
   "market_status": {
     "marketState": [
       {
         "market": "Capital Market",
         "marketStatus": "Open",
-        "tradeDate": "30-Oct-2026 15:18",
+        "tradeDate": "30-Oct-2026 15:19",
         "index": "NIFTY 50",
         "last": 23010,
         "variation": 73.25,
@@ -47,21 +47,21 @@
         "last": 8390.3,
         "change": 46.92999999999847,
         "percentChange": 0.56,
-        "timestamp": "30-Oct-2026 15:18"
+        "timestamp": "30-Oct-2026 15:19"
       },
       {
         "market": "currencyfuture",
         "marketStatus": "Open",
         "tradeDate": "30-Oct-2026",
         "index": "",
-        "last": "95.3000",
+        "last": "95.2825",
         "variation": "",
         "percentChange": "",
         "marketStatusMessage": "Market is Open",
         "expiryDate": "26-Nov-2026",
         "underlying": "USDINR",
-        "updated_time": "30-Oct-2026 15:18",
-        "tradeDateFormatted": "30-Oct-2026 15:18",
+        "updated_time": "30-Oct-2026 15:19",
+        "tradeDateFormatted": "30-Oct-2026 15:19",
         "slickclass": "slick-item"
       }
     ],
@@ -88,11 +88,11 @@
       "status": "CLOSE"
     },
     "giftnifty": {
-      "CONTRACTSTRADED": 48725,
-      "DAYCHANGE": 18,
+      "CONTRACTSTRADED": 48720,
+      "DAYCHANGE": 19,
       "EXPIRYDATE": "23-Nov-2026",
       "INSTRUMENTTYPE": "FUTIDX",
-      "LASTPRICE": 23077,
+      "LASTPRICE": 23078,
       "OPTIONTYPE": "-",
       "PERCHANGE": 0.08,
       "STRIKEPRICE": 0,
@@ -105,7 +105,7 @@
       "last": 8390.3,
       "change": 46.92999999999847,
       "percentChange": 0.56,
-      "timestamp": "30-Oct-2026 15:18"
+      "timestamp": "30-Oct-2026 15:19"
     }
   },
   "revenue": {
@@ -513,11 +513,11 @@
     }
   ],
   "stock_price": {
-    "last_price": 1784.1,
+    "last_price": 1785.0,
     "previous_close": 1788.95,
     "open": 1782.95,
     "day_high": 1795.7,
     "day_low": 1778.1,
-    "pct_change": -0.27
+    "pct_change": -0.22
   }
 }
