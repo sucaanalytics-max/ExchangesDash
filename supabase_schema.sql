@@ -20,6 +20,11 @@ CREATE TABLE IF NOT EXISTS nse_daily (
     io_pcr             NUMERIC DEFAULT 0,
     total_contracts    BIGINT DEFAULT 0,
     total_turnover     NUMERIC DEFAULT 0,
+    -- Contracts per segment (activity detail, NULL when NSE did not publish it)
+    if_contracts       BIGINT,
+    sf_contracts       BIGINT,
+    io_contracts       BIGINT,
+    so_contracts       BIGINT,
     -- Computed revenue (Cr)
     if_rev             NUMERIC DEFAULT 0,
     sf_rev             NUMERIC DEFAULT 0,
@@ -30,6 +35,9 @@ CREATE TABLE IF NOT EXISTS nse_daily (
     fo_rev             NUMERIC DEFAULT 0,
     -- Cash
     cash_traded_value  NUMERIC DEFAULT 0,
+    cash_securities    INT,       -- securities traded   (CDT_NOS_OF_SECURITY_TRADES)
+    cash_trades        BIGINT,    -- number of trades    (CDT_NOS_OF_TRADES)
+    cash_quantity      BIGINT,    -- shares traded       (CDT_TRADES_QTY, lakh × 100000)
     cash_rev           NUMERIC DEFAULT 0,
     -- Totals
     total_rev          NUMERIC DEFAULT 0,

@@ -458,6 +458,34 @@ def corrections(existing_rows, new_parsed):
     return out
 
 
+CASH_FIELDS = ("cash_traded_value", "cash_securities", "cash_trades", "cash_quantity", "cash_rev")
+
+
+def merge_cash_into_stored(stored_rows, cash_by_date):
+    """Copies of stored F&O days whose cash is missing, completed with the
+    cash figure a re-fetch of their month now has. corrections() cannot do
+    this for a day older than the 45-day F&O window: the fresh fetch has no
+    F&O row for it, so the day stayed at cash 0 (2026-06-15). The stored F&O
+    fields are kept; cash_rev and total_rev use the usual formulas."""
+    out = []
+    for r in stored_rows:
+        cm = cash_by_date.get(r["date"])
+        if missing_parts(r) != "cash" or not cm or not float(cm.get("cash_rev") or 0):
+            continue
+        merged = dict(r)
+        merged.update({k: cm[k] for k in CASH_FIELDS if k in cm})
+        merged["total_rev"] = total_revenue(merged)
+        out.append(merged)
+    return out
+
+
+def fetch_stored_rows(supabase, dates):
+    """Full bse_daily rows for `dates`."""
+    if not dates:
+        return []
+    return supabase.table("bse_daily").select("*").in_("date", sorted(dates)).execute().data
+
+
 def fetch_incomplete_rows(supabase):
     """Stored rows missing their F&O or their cash part."""
     result = (supabase.table("bse_daily")
@@ -912,6 +940,7 @@ def main():
     # Step 3: Supabase operations
     to_insert = new_parsed  # default
     holidays_deleted = 0
+    cash_merged = []
     if not supabase:
         print("WARNING: Supabase credentials not set. Writing local files only.")
     else:
@@ -926,6 +955,12 @@ def main():
         fixed = corrections(incomplete, new_parsed)
         to_insert = [r for r in new_parsed
                      if r["date"] not in existing_dates or r["date"] in fixed]
+        # Older days missing cash: completed from their month's cash re-fetch
+        stale = [d for d in refetch if d not in fixed and d in cash_by_date]
+        cash_merged = merge_cash_into_stored(fetch_stored_rows(supabase, stale), cash_by_date)
+        if cash_merged:
+            print(f"Cash now published for stored F&O days: {[r['date'] for r in cash_merged]}")
+            to_insert += cash_merged
         print(f"Existing dates in DB: {len(existing_dates)}, "
               f"Incomplete dates now corrected: {sorted(fixed)}, "
               f"Records to upsert: {len(to_insert)}")
@@ -956,6 +991,12 @@ def main():
                 all_daily = [d for d in all_daily if d["date"] not in correctable]
             new_local = [r for r in new_parsed if r["date"] not in existing_dates_local or r["date"] in correctable]
             all_daily = sorted(all_daily + new_local, key=lambda x: x["date"])
+            # Older days missing cash: completed from their month's cash re-fetch
+            cash_merged = merge_cash_into_stored(all_daily, cash_by_date)
+            if cash_merged:
+                print(f"Cash now published for stored F&O days: {[r['date'] for r in cash_merged]}")
+                merged_by_date = {r["date"]: r for r in cash_merged}
+                all_daily = [merged_by_date.get(d["date"], d) for d in all_daily]
         else:
             all_daily = sorted(new_parsed, key=lambda x: x["date"])
 
@@ -1007,7 +1048,7 @@ def main():
     write_json(dash_data_dir / "bse_enriched_data_eff.json", eff["enriched"])
 
     # Summary — include holiday deletions so the workflow commits the cleaned JSON
-    new_count_final = (len(to_insert) if supabase else len(new_parsed)) + holidays_deleted
+    new_count_final = (len(to_insert) if supabase else len(new_parsed) + len(cash_merged)) + holidays_deleted
     print("\n" + "=" * 60)
     print(f"Pipeline complete.")
     print(f"  Latest date: {summary_obj.get('last_date', 'N/A')}")
