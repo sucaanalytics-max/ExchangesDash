@@ -1,5 +1,8 @@
 {
   "permissions": {
+    "allow": [
+      "mcp__Supabase__execute_sql"
+    ],
     "deny": [
       "Read(**/data/*_data*.json)",
       "Read(**/data/*_share_analysis.json)",
