@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import math
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from collections import OrderedDict
@@ -75,8 +76,8 @@ def fetch_indiavix_map(start_date, end_date):
 # SECTION 1: NSE DATA FETCHER (curl_cffi with Chrome impersonation)
 # ═══════════════════════════════════════════════════════════════
 
-def fetch_nse_data():
-    """Fetch current month's F&O and Cash data from NSE APIs."""
+def nse_session():
+    """A curl_cffi session with NSE's cookies (homepage warm-up)."""
     try:
         from curl_cffi import requests as cffi_requests
     except ImportError:
@@ -90,6 +91,35 @@ def fetch_nse_data():
     resp = session.get("https://www.nseindia.com/", impersonate="chrome")
     if resp.status_code != 200:
         print(f"WARNING: Homepage returned {resp.status_code}, trying API anyway...")
+    return session
+
+
+def _get_json(session, url, missing_ok=False):
+    print(f"Fetching: {url}")
+    resp = session.get(url, impersonate="chrome", timeout=30)
+    if resp.status_code != 200:
+        if missing_ok:
+            print(f"  HTTP {resp.status_code} — month not published yet, treating as empty")
+            return []
+        raise RuntimeError(f"NSE returned HTTP {resp.status_code} for {url}")
+    return resp.json().get("data", []) or []
+
+
+def fetch_fo_month(session, m, missing_ok=False):
+    """NSE's daily F&O business-growth rows for the month of datetime `m`."""
+    return _get_json(session, "https://www.nseindia.com/api/historicalOR/fo/tbg/daily"
+                     f"?month={m.strftime('%b')}&year={m.year}", missing_ok)
+
+
+def fetch_cm_month(session, m, missing_ok=False):
+    """NSE's daily cash-market business-growth rows for the month of `m`."""
+    return _get_json(session, "https://www.nseindia.com/api/historicalOR/cm/tbg/daily"
+                     f"?month={m.strftime('%b')}&year={m.strftime('%y')}", missing_ok)
+
+
+def fetch_nse_data(session=None):
+    """Fetch current month's F&O and Cash data from NSE APIs."""
+    session = session or nse_session()
 
     now = datetime.now()
     prev = now.replace(day=1) - timedelta(days=1)
@@ -97,30 +127,16 @@ def fetch_nse_data():
     # NSE publishes late would otherwise never be requested again.
     months = [now, prev] if now.day <= 5 else [now]
 
-    def get_json(url, missing_ok=False):
-        print(f"Fetching: {url}")
-        resp = session.get(url, impersonate="chrome", timeout=30)
-        if resp.status_code != 200:
-            if missing_ok:
-                print(f"  HTTP {resp.status_code} — month not published yet, treating as empty")
-                return []
-            raise RuntimeError(f"NSE returned HTTP {resp.status_code} for {url}")
-        return resp.json().get("data", []) or []
-
     fo_data, cm_data = [], []
     for m in months:
         # The current month may not exist yet in its first days
         missing_ok = (m is now and now.day <= 5)
-        fo_data += get_json("https://www.nseindia.com/api/historicalOR/fo/tbg/daily"
-                            f"?month={m.strftime('%b')}&year={m.year}", missing_ok)
-        cm_data += get_json("https://www.nseindia.com/api/historicalOR/cm/tbg/daily"
-                            f"?month={m.strftime('%b')}&year={m.strftime('%y')}", missing_ok)
+        fo_data += fetch_fo_month(session, m, missing_ok)
+        cm_data += fetch_cm_month(session, m, missing_ok)
     if not fo_data and prev not in months:
         # First trading day of the month not published yet
-        fo_data = get_json("https://www.nseindia.com/api/historicalOR/fo/tbg/daily"
-                           f"?month={prev.strftime('%b')}&year={prev.year}")
-        cm_data = get_json("https://www.nseindia.com/api/historicalOR/cm/tbg/daily"
-                           f"?month={prev.strftime('%b')}&year={prev.strftime('%y')}")
+        fo_data = fetch_fo_month(session, prev)
+        cm_data = fetch_cm_month(session, prev)
 
     print(f"F&O records: {len(fo_data)}, Cash records: {len(cm_data)}")
     return {"data": fo_data}, {"data": cm_data}
@@ -194,6 +210,11 @@ def parse_fo_record(rec):
     total_notional = io_notional + so_notional
     pn_ratio = total_premium / total_notional if total_notional > 0 else 0
 
+    segments = {field: _count(d, key) for field, key in SEGMENT_CONTRACT_KEYS.items()}
+    if None not in segments.values() and sum(segments.values()) != total_contracts:
+        print(f"WARNING: {dt.strftime('%Y-%m-%d')} segment contracts {segments} "
+              f"do not add up to F&O_Total_QTY {total_contracts}")
+
     return {
         "date": dt.strftime("%Y-%m-%d"),
         "day": dt.strftime("%A"),
@@ -209,6 +230,7 @@ def parse_fo_record(rec):
         "io_pcr": round(io_pcr, 2),
         "total_contracts": total_contracts,
         "total_turnover": round(total_turnover, 2),
+        **segments,
         **fo_revenue(if_turnover, sf_turnover, io_premium, so_premium),
         "pn_ratio": pn_ratio,
         "vix": 0,
@@ -224,7 +246,121 @@ def parse_cm_record(rec):
         "date": dt.strftime("%Y-%m-%d"),
         "cash_traded_value": round(cash_traded_value, 2),
         "cash_rev": cash_revenue(cash_traded_value),
+        # Activity detail (not used in revenue). NSE reports the quantity in
+        # lakh shares; stored as shares, the unit of BSE's cash_quantity.
+        "cash_trades": _count(d, "CDT_NOS_OF_TRADES"),
+        "cash_securities": _count(d, "CDT_NOS_OF_SECURITY_TRADES"),
+        "cash_quantity": _count(d, "CDT_TRADES_QTY", scale=LAKH),
     }
+
+
+# ── Activity detail: trade counts and per-segment contracts ─────────────────
+# Counts carried on every daily row for downstream users (they feed no revenue
+# figure). Rows stored before these were parsed, and the shadow-mode rows from
+# 2026-10-16 (no per-segment contracts), are filled in by fill_detail_fields
+# from a re-fetch of their months; turnover and revenue are never touched.
+LAKH = 100_000
+CASH_DETAIL_FIELDS = ("cash_trades", "cash_securities", "cash_quantity")
+SEGMENT_CONTRACT_KEYS = {
+    "if_contracts": "Index_Futures_QTY",
+    "sf_contracts": "Stock_Futures_QTY",
+    "io_contracts": "Index_Options_QTY",
+    "so_contracts": "Stock_Options_QTY",
+}
+DETAIL_FIELDS = CASH_DETAIL_FIELDS + tuple(SEGMENT_CONTRACT_KEYS)
+
+
+def _count(d, key, scale=1):
+    """An NSE count field as an int (× scale), or None when absent or blank:
+    a missing figure is never published as 0."""
+    v = d.get(key)
+    if v is None or str(v).strip() in ("", "-"):
+        return None
+    try:
+        return int(round(float(str(v).replace(",", "")) * scale))
+    except (TypeError, ValueError):
+        return None
+
+
+def missing_detail(row):
+    """Which archive a row's missing activity detail comes from: a subset of
+    {"cm", "fo"}. Segment contracts that are all zero on a day with contracts
+    count as missing (nse_daily stored them so from 2026-10-12)."""
+    parts = set()
+    if any(row.get(k) is None for k in CASH_DETAIL_FIELDS):
+        parts.add("cm")
+    seg = [row.get(k) for k in SEGMENT_CONTRACT_KEYS]
+    if any(v is None for v in seg) or (
+            float(row.get("total_contracts") or 0) > 0 and not any(seg)):
+        parts.add("fo")
+    return parts
+
+
+def detail_months(rows, skip=()):
+    """{(year, month): {"cm", "fo"}} for rows missing detail, oldest first;
+    months in `skip` (already fetched this run) are left out."""
+    out = {}
+    for r in rows:
+        parts = missing_detail(r)
+        ym = (int(r["date"][:4]), int(r["date"][5:7]))
+        if parts and ym not in skip:
+            out.setdefault(ym, set()).update(parts)
+    return dict(sorted(out.items()))
+
+
+def fill_detail_fields(rows, fo_by_date, cm_by_date):
+    """Set the activity-detail fields of `rows` (in place) from parsed F&O
+    and cash records keyed by date. Only DETAIL_FIELDS change, and only with
+    published values. Returns the dates that changed."""
+    changed = set()
+    for r in rows:
+        fresh = {}
+        if "cm" in missing_detail(r) and r["date"] in cm_by_date:
+            cm = cm_by_date[r["date"]]
+            fresh.update({k: cm.get(k) for k in CASH_DETAIL_FIELDS})
+            stored, published = _num(r, "cash_traded_value"), _num(cm, "cash_traded_value")
+            if published and abs(stored - published) > 0.01:
+                print(f"NOTE: {r['date']} stored cash_traded_value {stored} differs from "
+                      f"NSE's {published}; revenue left as stored")
+        if "fo" in missing_detail(r) and r["date"] in fo_by_date:
+            fo = fo_by_date[r["date"]]
+            fresh.update({k: fo.get(k) for k in SEGMENT_CONTRACT_KEYS})
+        fresh = {k: v for k, v in fresh.items() if v is not None and r.get(k) != v}
+        if fresh:
+            r.update(fresh)
+            changed.add(r["date"])
+    return changed
+
+
+BACKFILL_MAX_MONTHS = 48          # Apr 2023 → today is 43 months
+BACKFILL_TIME_BUDGET_S = 300      # the job's timeout is 15 min; the rest waits a run
+BACKFILL_PAUSE_S = 1.0
+
+
+def fetch_detail_months(session, months, clock=time.monotonic, pause=time.sleep):
+    """Re-fetch NSE's archives for `months` ({(y, m): {"cm", "fo"}}) and
+    return (fo_by_date, cm_by_date) of parsed records. A month that fails is
+    skipped with a warning (retried next run); stops at the time budget."""
+    fo_by, cm_by = {}, {}
+    start = clock()
+    for i, ((y, mo), parts) in enumerate(months.items()):
+        if i >= BACKFILL_MAX_MONTHS or clock() - start > BACKFILL_TIME_BUDGET_S:
+            print(f"Backfill stopped after {i} month(s); the rest continue next run")
+            break
+        m = datetime(y, mo, 1)
+        try:
+            if "fo" in parts:
+                for rec in fetch_fo_month(session, m):
+                    p = parse_fo_record(rec)
+                    fo_by[p["date"]] = p
+            if "cm" in parts:
+                for rec in fetch_cm_month(session, m):
+                    p = parse_cm_record(rec)
+                    cm_by[p["date"]] = p
+        except Exception as e:
+            print(f"WARNING: backfill of {m:%b %Y} failed ({e}); retried next run")
+        pause(BACKFILL_PAUSE_S)
+    return fo_by, cm_by
 
 
 def _num(row, key):
@@ -987,7 +1123,8 @@ def main():
     print("=" * 60)
 
     # Step 1: Fetch from NSE
-    fo_json, cm_json = fetch_nse_data()
+    session = nse_session()
+    fo_json, cm_json = fetch_nse_data(session)
 
     fo_records = fo_json.get("data", [])
     cm_records = cm_json.get("data", [])
@@ -1003,18 +1140,23 @@ def main():
         cm_by_date[parsed["date"]] = parsed
 
     new_parsed = []
+    fo_by_date = {}
     for rec in fo_records:
         parsed = parse_fo_record(rec)
         date_key = parsed["date"]
+        fo_by_date[date_key] = parsed
         cm = cm_by_date.get(date_key)
         if not cm:
             # Storing the day with cash = 0 would freeze it: existing dates are
             # never re-fetched. Hold it back until NSE publishes the cash figure.
             print(f"WARNING: {date_key} has F&O but no cash data yet — holding back until it is published")
             continue
+        parsed = dict(parsed)
         parsed["cash_traded_value"] = cm.get("cash_traded_value", 0)
         parsed["cash_rev"] = cm.get("cash_rev", 0)
         parsed["total_rev"] = round(parsed["fo_rev"] + parsed["cash_rev"], 4)
+        for k in CASH_DETAIL_FIELDS:
+            parsed[k] = cm.get(k)
         del parsed["_dt"]
         new_parsed.append(parsed)
 
@@ -1062,6 +1204,22 @@ def main():
             pnl, pnl_fy, cost_ratios = [], [], {}
     # Reported quarters from NSE's results filings replace nse_pnl's rows
     pnl = sorted(nse_reported_pnl.apply(pnl), key=lambda r: quarter_sort_key(r.get("quarter")))
+
+    # Activity detail (trade counts, per-segment contracts) for stored rows
+    # that lack it: from this run's fetch, then from a re-fetch of the months
+    # still missing it. Turnover and revenue are not touched.
+    detail_filled = fill_detail_fields(all_daily, fo_by_date, cm_by_date)
+    fetched = {(int(d[:4]), int(d[5:7])) for d in fo_by_date}
+    months = detail_months(all_daily, skip=fetched)
+    if months:
+        print(f"Rows missing activity detail in {len(months)} month(s); re-fetching them")
+        fo_more, cm_more = fetch_detail_months(session, months)
+        detail_filled |= fill_detail_fields(all_daily, fo_more, cm_more)
+    still = [r["date"] for r in all_daily if missing_detail(r)]
+    print(f"Activity detail filled on {len(detail_filled)} row(s); still missing on {len(still)}"
+          + (f" ({still[0]} … {still[-1]})" if still else ""))
+    if supabase and detail_filled:
+        upsert_daily_records(supabase, [r for r in all_daily if r["date"] in detail_filled])
 
     print(f"Total daily records: {len(all_daily)}")
 

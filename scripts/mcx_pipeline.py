@@ -87,6 +87,49 @@ def fetch_mcx_daily():
     return rows
 
 
+def fetch_mcx_contracts():
+    """Per-commodity, per-instrument daily rows of mcx_commodity_daily (from
+    MCX's bhavcopy; same project), only the columns needed for the day's
+    total. Ordered by the table's primary key so offset paging is stable."""
+    return _sb_get(
+        "mcx_commodity_daily"
+        "?select=trading_date,contracts"
+        "&contracts=gt.0"
+        "&order=trading_date.asc,commodity.asc,instrument_type.asc",
+        max_rows=500_000,
+    )
+
+
+def contracts_by_date(rows):
+    """{date: total contracts traded on MCX that day} across all commodities
+    and instruments (FUTCOM, OPTFUT, FUTIDX, OPTIDX). A day with no positive
+    count is left out: a missing figure is never published as 0."""
+    out = {}
+    for r in rows:
+        d, c = r.get("trading_date"), r.get("contracts")
+        if d and c:
+            out[d] = out.get(d, 0) + int(c)
+    return {d: c for d, c in out.items() if c > 0}
+
+
+def previous_contracts(path):
+    """{date: total_contracts} from a previous mcx_dashboard_data.json, used
+    when this run cannot read mcx_commodity_daily."""
+    try:
+        doc = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+    rows = (doc.get("daily_all") or []) + (doc.get("special_sessions") or [])
+    return {r["date"]: r["total_contracts"] for r in rows if r.get("total_contracts")}
+
+
+def attach_contracts(daily, by_date):
+    """Set total_contracts on every row (None where the day has no count)."""
+    for r in daily:
+        r["total_contracts"] = by_date.get(r["date"])
+    return daily
+
+
 # ═══════════════════════════════════════════════════════════════
 # SECTION 2: TRANSFORM
 # ═══════════════════════════════════════════════════════════════
@@ -452,6 +495,21 @@ def main():
     if not daily:
         print("ERROR: No valid MCX daily records after transform")
         sys.exit(1)
+
+    # Total contracts per day (activity detail; no revenue figure uses it)
+    print("Fetching MCX contracts from mcx_commodity_daily…")
+    try:
+        contracts = contracts_by_date(fetch_mcx_contracts())
+        print(f"  Contracts for {len(contracts)} days")
+    except Exception as e:
+        contracts = previous_contracts(existing_json)
+        print(f"WARNING: contracts fetch failed ({e}); keeping the previous file's "
+              f"{len(contracts)} days")
+    attach_contracts(daily, contracts)
+    no_count = [d["date"] for d in daily if d["total_contracts"] is None]
+    if no_count:
+        print(f"  {len(no_count)} day(s) without a contracts count, e.g. {no_count[-5:]}")
+
     # Muhurat sessions stay out of every aggregate (scripts/trading_calendar.py)
     daily, special = trading_calendar.split_special(daily, "mcx")
     if special:

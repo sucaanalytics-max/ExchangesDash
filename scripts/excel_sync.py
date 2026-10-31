@@ -54,6 +54,8 @@ NSE_COLUMNS = [
     "total_contracts", "total_turnover",
     "if_rev", "sf_rev", "fut_rev", "io_rev", "so_rev", "opt_rev", "fo_rev",
     "cash_traded_value", "cash_rev", "total_rev", "pn_ratio", "vix",
+    # Added later: at the end, so existing workbook columns keep their place
+    "cash_securities", "cash_trades", "cash_quantity",
 ]
 
 BSE_COLUMNS = [
@@ -245,9 +247,19 @@ def append_rows(ws, records, columns):
 
 
 def ensure_sheet(wb, name, columns):
-    """Get or create a sheet by name with headers."""
+    """Get or create a sheet by name with headers. On an existing sheet,
+    header cells for columns added since it was created are filled in (only
+    empty cells; existing headers are never rewritten)."""
     if name in wb.sheetnames:
-        return wb[name]
+        ws = wb[name]
+        added = [(i, c) for i, c in enumerate(columns, 1)
+                 if ws.cell(row=1, column=i).value in (None, "")]
+        for i, c in added:
+            cell = ws.cell(row=1, column=i, value=c)
+            cell.font, cell.fill, cell.alignment = HEADER_FONT, HEADER_FILL, HEADER_ALIGN
+        if added:
+            print(f"{name}: added header(s) {[c for _, c in added]}")
+        return ws
     ws = wb.create_sheet(name)
     _format_header_row(ws, columns)
     print(f"Created missing sheet: {name}")

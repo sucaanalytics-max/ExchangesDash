@@ -126,5 +126,20 @@ class ExcelIfMatch(unittest.TestCase):
         self.assertEqual(drive.puts[0]["If-None-Match"], "*")
 
 
+class ExcelAddedColumns(unittest.TestCase):
+    def test_existing_sheet_gets_headers_for_added_columns_only(self):
+        wb = xs.create_new_workbook()
+        ws = wb["NSE Daily"]
+        old = xs.NSE_COLUMNS[:-3]                          # the sheet as created before
+        for i in range(len(old) + 1, len(xs.NSE_COLUMNS) + 1):
+            ws.cell(row=1, column=i, value=None)
+        ws.cell(row=1, column=2, value="Weekday")          # a header someone renamed
+        ws = xs.ensure_sheet(wb, "NSE Daily", xs.NSE_COLUMNS)
+        headers = [ws.cell(row=1, column=i).value for i in range(1, len(xs.NSE_COLUMNS) + 1)]
+        self.assertEqual(headers[-3:], ["cash_securities", "cash_trades", "cash_quantity"])
+        self.assertEqual(headers[1], "Weekday")             # never rewritten
+        self.assertEqual(xs.NSE_COLUMNS[:len(old)], old)    # existing positions unchanged
+
+
 if __name__ == "__main__":
     unittest.main()
