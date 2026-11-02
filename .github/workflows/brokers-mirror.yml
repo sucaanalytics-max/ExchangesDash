@@ -1,0 +1,80 @@
+name: Brokers Mirror
+
+# Clones Tusk's brokers-dashboard tables (sb_*, Supabase project everjfpbnlbcpuarnhob, written by
+# abiyani-tools/brokersdashboard) into this repo's Supabase project (NSE-BSE): scripts/brokers_mirror.py.
+# Their side is read with their publishable key only. Commits nothing, so Vercel never builds for it.
+#
+# Setup, once (docs/BROKERS_INTEGRATION.md):
+#   1. secret BROKERS_SUPABASE_KEY = their publishable key
+#   2. run this workflow with mode "emit-ddl"; review the SQL artifact; apply it to NSE-BSE and commit
+#      it as brokers_mirror_schema.sql
+#   3. repository variable ENABLE_BROKERS_MIRROR = true; then it runs every weekday after their job
+# Optional: repository variable BROKERS_SUPABASE_URL if their project moves.
+
+on:
+  schedule:
+    # 15:02 UTC Mon–Fri: after their daily job (14:17 UTC) has published
+    - cron: '2 15 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'mirror: copy the tables; emit-ddl: their table definitions as SQL (artifact)'
+        required: false
+        default: 'mirror'
+        type: choice
+        options:
+          - mirror
+          - emit-ddl
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    # Scheduled runs only once the mirror is switched on; manual runs always
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.ENABLE_BROKERS_MIRROR == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      BROKERS_SUPABASE_URL: ${{ vars.BROKERS_SUPABASE_URL }}
+      BROKERS_SUPABASE_KEY: ${{ secrets.BROKERS_SUPABASE_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install --quiet requests
+
+      - name: Their table definitions as SQL
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'emit-ddl' }}
+        run: python scripts/brokers_mirror.py --emit-ddl out/brokers_mirror_schema.sql
+
+      - name: Keep the SQL for review
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'emit-ddl' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: brokers-mirror-schema
+          path: out/brokers_mirror_schema.sql
+          retention-days: 30
+
+      - name: Copy the tables
+        if: ${{ (github.event_name == 'schedule' || inputs.mode == 'mirror') && vars.ENABLE_BROKERS_MIRROR == 'true' }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/brokers_mirror.py
+
+      - name: Mirror is off
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'mirror' && vars.ENABLE_BROKERS_MIRROR != 'true' }}
+        run: |
+          echo "::notice title=Brokers mirror off::Set the repository variable ENABLE_BROKERS_MIRROR to true once brokers_mirror_schema.sql is applied."
