@@ -53,14 +53,22 @@
       </div>
     </div>
 
+    <!-- Exchanges | Brokers: hidden until a broker view registers (registerBrokerView, js/00-core.js) -->
+    <div class="mode-pill" id="modeSwitch" role="group" aria-label="Exchanges or brokers" hidden>
+      <button type="button" class="mode-btn active" data-mode="exchanges" aria-pressed="true">Exchanges</button>
+      <button type="button" class="mode-btn" data-mode="brokers" aria-pressed="false">Brokers</button>
+    </div>
+
     <!-- Exchange Switcher Pill -->
-    <div class="exchange-pill">
+    <div class="exchange-pill" id="exchangePill">
       <button class="exchange-btn" data-exchange="all">All</button>
       <button class="exchange-btn active" data-exchange="nse">NSE</button>
       <button class="exchange-btn" data-exchange="bse">BSE</button>
       <button class="exchange-btn" data-exchange="mcx">MCX</button>
       <button class="exchange-btn" data-exchange="nsebse">NSE+BSE</button>
     </div>
+    <!-- Broker Switcher Pill: one button per registered broker view (initModeSwitch) -->
+    <div class="exchange-pill" id="brokerPill"></div>
 
     <nav class="sidebar-nav" id="sidebarNav">
       <!-- Nav items populated dynamically per exchange -->

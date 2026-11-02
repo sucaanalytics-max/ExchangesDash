@@ -484,7 +484,7 @@ function rxAddWeekdays(iso, n) {
 
 function showLoading(exchange) {
   const overlay = document.getElementById('loadingOverlay');
-  document.getElementById('loadingText').textContent = 'Loading ' + exchange.toUpperCase() + ' data...';
+  document.getElementById('loadingText').textContent = 'Loading ' + viewLabel(exchange) + ' data...';
   clearLoadError();
   overlay.classList.add('visible');
 }
@@ -578,12 +578,159 @@ const TAB_TITLES = {
 };
 
 // ========================
+// BROKERS MODE: the Exchanges | Brokers switch
+// ========================
+// Broker views (js/30-*.js onward) register themselves here as they load; the
+// switch above the exchange pill appears once at least one has. A broker is
+// shown through the same path as an exchange (switchExchange), under the key
+// "broker:<id>", so loading, Retry / Back, sidebar tabs and chart clean-up work
+// the same way. Contract, also in docs/BROKERS_INTEGRATION.md:
+//   registerBrokerView({
+//     id: 'angel',                          // [a-z0-9-]+, unique
+//     label: 'Angel One',                   // pill button, header badge, logo
+//     tabs: [{ id: 'summary', label: 'Summary', icon: 'revenue' }],   // icon: a NAV_ICONS key
+//     titles: { summary: 'Angel One: Revenue Summary' },              // optional header titles
+//     load: async owns => {},               // fetch data; once owns() is false, touch nothing
+//     build: () => {},                      // render into brokerSection('angel', 'summary')
+//     onShow: tab => {},                    // optional: tab shown, charts now have their size
+//     meta: () => ({ quarter, updated }),   // optional: header quarter / "Last Updated" text
+//   });
+const BROKER_KEY_PREFIX = 'broker:';
+const BROKER_VIEWS = {};
+let lastExchangeKey = 'nse';   // restored when switching back to Exchanges
+let lastBrokerKey = null;      // restored when switching back to Brokers
+
+function isBrokerKey(key) { return typeof key === 'string' && key.startsWith(BROKER_KEY_PREFIX); }
+
+function brokerViewOf(key) {
+  return isBrokerKey(key) ? BROKER_VIEWS[key.slice(BROKER_KEY_PREFIX.length)] || null : null;
+}
+
+function brokerKeys() { return Object.keys(BROKER_VIEWS).map(id => BROKER_KEY_PREFIX + id); }
+
+// A broker tab's sidebar id and section id suffix: namespaced, so it never
+// collides with an exchange tab or another broker's
+function brokerTabId(id, tab) { return `brk-${id}-${tab}`; }
+
+function brokerSection(id, tab) { return document.getElementById('tab-' + brokerTabId(id, tab)); }
+
+function registerBrokerView(view) {
+  const bad = msg => { throw new Error('registerBrokerView: ' + msg); };
+  if (!view || typeof view !== 'object') bad('expects an object');
+  const id = view.id;
+  if (typeof id !== 'string' || !/^[a-z0-9-]+$/.test(id)) bad(`id must match [a-z0-9-]+, got ${JSON.stringify(id)}`);
+  if (BROKER_VIEWS[id]) bad(`duplicate id "${id}"`);
+  if (!view.label || typeof view.label !== 'string') bad(`"${id}" needs a label`);
+  if (!Array.isArray(view.tabs) || !view.tabs.length) bad(`"${id}" needs at least one tab`);
+  const seen = new Set();
+  view.tabs.forEach(t => {
+    if (!t || typeof t.id !== 'string' || !/^[a-z0-9-]+$/.test(t.id) || !t.label) bad(`"${id}" has a tab without a valid id and label`);
+    if (seen.has(t.id)) bad(`"${id}" repeats tab "${t.id}"`);
+    seen.add(t.id);
+  });
+  if (typeof view.load !== 'function' || typeof view.build !== 'function') bad(`"${id}" needs load() and build()`);
+  BROKER_VIEWS[id] = view;
+  return view;
+}
+
+// Sidebar tabs of an exchange or broker key
+function tabsFor(key) {
+  const view = brokerViewOf(key);
+  if (!view) return EXCHANGE_TABS[key] || [];
+  return view.tabs.map(t => ({ id: brokerTabId(view.id, t.id), label: t.label, icon: NAV_ICONS[t.icon] ? t.icon : 'revenue' }));
+}
+
+// Header titles by sidebar tab id
+function titlesFor(key) {
+  const view = brokerViewOf(key);
+  if (!view) return TAB_TITLES[key] || {};
+  const out = {};
+  view.tabs.forEach(t => {
+    out[brokerTabId(view.id, t.id)] = (view.titles && view.titles[t.id]) || `${view.label}: ${t.label}`;
+  });
+  return out;
+}
+
+// Name of an exchange or broker key for loading and error messages
+function viewLabel(key) {
+  const view = brokerViewOf(key);
+  if (view) return view.label;
+  return key === 'all' ? 'All Exchanges' : key === 'nsebse' ? 'NSE+BSE' : String(key).toUpperCase();
+}
+
+// One <section class="tab-content"> per broker tab, so broker files need no markup
+function ensureBrokerSections(view) {
+  const main = document.getElementById('mainContent');
+  view.tabs.forEach(t => {
+    const id = 'tab-' + brokerTabId(view.id, t.id);
+    if (document.getElementById(id)) return;
+    const section = document.createElement('section');
+    section.className = 'tab-content broker-tab';
+    section.id = id;
+    main.appendChild(section);
+  });
+}
+
+// Builds the broker pill and reveals the switch; without a registered broker
+// view it does nothing and the dashboard stays exchanges-only
+function initModeSwitch() {
+  const sw = document.getElementById('modeSwitch');
+  const pill = document.getElementById('brokerPill');
+  const keys = brokerKeys();
+  if (!sw || !pill || !keys.length) return;
+  pill.innerHTML = keys.map(k =>
+    `<button type="button" class="exchange-btn" data-exchange="${escHtml(k)}">${escHtml(viewLabel(k))}</button>`).join('');
+  pill.querySelectorAll('.exchange-btn').forEach(bindExchangeButton);
+  sw.querySelectorAll('.mode-btn').forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)));
+  sw.hidden = false;
+  syncModeSwitch();
+}
+
+// body.mode-brokers (style.css hides the exchange-only header parts) and the switch's state
+function syncModeSwitch() {
+  const brokers = isBrokerKey(currentExchange);
+  document.body.classList.toggle('mode-brokers', brokers);
+  document.querySelectorAll('#modeSwitch .mode-btn').forEach(b => {
+    const on = (b.dataset.mode === 'brokers') === brokers;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
+// Exchanges → the last exchange shown (NSE at first); Brokers → the last broker, or the first
+async function setMode(mode) {
+  const brokers = mode === 'brokers';
+  if (brokers === isBrokerKey(currentExchange)) return;
+  const target = !brokers ? lastExchangeKey
+    : (brokerViewOf(lastBrokerKey) ? lastBrokerKey : brokerKeys()[0]);
+  if (!target) return;
+  if (glanceActive()) {   // the phone glance view covers exchanges only
+    document.body.classList.remove('glance-mode');
+    document.getElementById('glanceView').hidden = true;
+  }
+  await switchExchange(target);
+}
+
+// Header quarter / "Last Updated" for a broker view, from its meta()
+function updateBrokerHeaderInfo(view) {
+  let m = {};
+  try { m = (view.meta && view.meta()) || {}; } catch (err) { console.error(`${view.label} meta() failed:`, err); }
+  const quarter = document.getElementById('currentQuarterSpan');
+  const span = document.getElementById('lastUpdatedSpan');
+  if (quarter) quarter.textContent = m.quarter || '—';
+  if (span) {
+    span.innerHTML = '<span class="lu-label">Last Updated: </span>' + escHtml(m.updated || '—');
+    span.title = m.updatedTitle || '';
+  }
+}
+
+// ========================
 // SIDEBAR NAV BUILDER
 // ========================
 
 function buildSidebarNav(exchange) {
   const nav = document.getElementById('sidebarNav');
-  const tabs = EXCHANGE_TABS[exchange];
+  const tabs = tabsFor(exchange);
   // Phones only (CSS hides it above 640 px): back to the glance view
   const glance = `<button class="nav-item nav-item--glance" data-glance="1" aria-label="At a glance">
       ${NAV_ICONS.temporal}
@@ -622,7 +769,7 @@ function attachTabListeners() {
       document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
       const tabEl = document.getElementById('tab-' + tab);
       if (tabEl) tabEl.classList.add('active');
-      const titles = TAB_TITLES[currentExchange] || {};
+      const titles = titlesFor(currentExchange);
       document.getElementById('headerTitle').textContent = titles[tab] || tab;
       if (glanceActive()) {
         document.getElementById('headerTitle').textContent = 'At a glance';
@@ -645,6 +792,11 @@ function attachTabListeners() {
         Object.values(charts).forEach(c => { if (c && c.resize) c.resize(); });
         // Redesigned tabs redraw their charts now that the canvas has its real size
         RX_TAB_REFRESH[tab]?.();
+        // A broker view hears which of its tabs is shown (its own tab id)
+        const view = brokerViewOf(currentExchange);
+        if (view && view.onShow) {
+          try { view.onShow(tab.slice(brokerTabId(view.id, '').length)); } catch (err) { console.error(`${view.label} onShow failed:`, err); }
+        }
       }, 50);
     });
   });
@@ -687,27 +839,30 @@ document.getElementById('sidebarOverlay').addEventListener('click', () => {
 // ========================
 
 function initExchangeSwitcher() {
-  document.querySelectorAll('.exchange-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const exchange = btn.dataset.exchange;
-      // In the glance view a single exchange only changes the glance's own switch
-      if (glanceActive() && !COMBINED_VIEWS[exchange]) {
-        document.getElementById('sidebar').classList.remove('open');
-        document.getElementById('sidebarOverlay').classList.remove('open');
-        GLANCE_EX = exchange;
-        updateHeaderExchange(exchange);
-        renderGlance();
-        return;
-      }
-      if (glanceActive()) {
-        document.body.classList.remove('glance-mode');
-        document.getElementById('glanceView').hidden = true;
-      }
-      if (exchange === currentExchange) return;
-      document.querySelectorAll('.exchange-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      await switchExchange(exchange);
-    });
+  document.querySelectorAll('.exchange-btn').forEach(bindExchangeButton);
+}
+
+// An exchange or broker pill button (data-exchange holds its key)
+function bindExchangeButton(btn) {
+  btn.addEventListener('click', async () => {
+    const exchange = btn.dataset.exchange;
+    // In the glance view a single exchange only changes the glance's own switch
+    if (glanceActive() && !COMBINED_VIEWS[exchange] && !isBrokerKey(exchange)) {
+      document.getElementById('sidebar').classList.remove('open');
+      document.getElementById('sidebarOverlay').classList.remove('open');
+      GLANCE_EX = exchange;
+      updateHeaderExchange(exchange);
+      renderGlance();
+      return;
+    }
+    if (glanceActive()) {
+      document.body.classList.remove('glance-mode');
+      document.getElementById('glanceView').hidden = true;
+    }
+    if (exchange === currentExchange) return;
+    document.querySelectorAll('.exchange-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    await switchExchange(exchange);
   });
 }
 
@@ -730,31 +885,49 @@ let shownExchange = null;  // last exchange whose views were built, for "Back to
 async function switchExchange(exchange) {
   const seq = ++switchSeq;
   const owns = () => seq === switchSeq;
+  const broker = brokerViewOf(exchange);   // a broker key (Brokers mode) loads through its view
   showLoading(exchange);
   // Destroy all existing charts
   Object.values(charts).forEach(c => { if (c && c.destroy) c.destroy(); });
   Object.keys(charts).forEach(k => delete charts[k]);
   currentExchange = exchange;
+  if (broker) lastBrokerKey = exchange; else lastExchangeKey = exchange;
+  syncModeSwitch();
   // Update logo
   const logoLabels = { nse: 'NSE Analytics', bse: 'BSE Analytics', mcx: 'MCX Analytics', all: 'All Exchanges', nsebse: 'NSE+BSE' };
-  document.getElementById('logoText').textContent = logoLabels[exchange] || exchange.toUpperCase() + ' Analytics';
+  document.getElementById('logoText').textContent = broker ? broker.label
+    : logoLabels[exchange] || exchange.toUpperCase() + ' Analytics';
   document.querySelectorAll('.exchange-btn').forEach(b => b.classList.toggle('active', b.dataset.exchange === exchange));
   updateHeaderExchange(exchange);
   // Update sidebar nav
   buildSidebarNav(exchange);
   // Show/hide exchange-specific content sections
   toggleExchangeContent(exchange);
-  try {
-    if (!await loadExchangeData(exchange, owns)) return false;
-  } catch (err) {
-    console.error(`Loading ${exchange} failed:`, err);
-    if (owns()) showLoadError(exchange, err);
-    return false;
+  if (broker) {
+    ensureBrokerSections(broker);
+    try {
+      await broker.load(owns);
+      if (!owns()) return false;
+      broker.build();
+    } catch (err) {
+      console.error(`Loading ${broker.label} failed:`, err);
+      if (owns()) showLoadError(exchange, err);
+      return false;
+    }
+    updateBrokerHeaderInfo(broker);
+  } else {
+    try {
+      if (!await loadExchangeData(exchange, owns)) return false;
+    } catch (err) {
+      console.error(`Loading ${exchange} failed:`, err);
+      if (owns()) showLoadError(exchange, err);
+      return false;
+    }
+    // Update header info
+    updateHeaderInfo();
+    // Build all visualizations
+    rebuildAll();
   }
-  // Update header info
-  updateHeaderInfo();
-  // Build all visualizations
-  rebuildAll();
   shownExchange = exchange;
   hideLoading();
   // Activate first tab
@@ -767,7 +940,7 @@ async function switchExchange(exchange) {
 // switch) Back to the exchange shown before.
 function showLoadError(exchange, err) {
   const overlay = document.getElementById('loadingOverlay');
-  const name = exchange === 'all' ? 'All Exchanges' : exchange === 'nsebse' ? 'NSE+BSE' : exchange.toUpperCase();
+  const name = viewLabel(exchange);
   const status = err && err.status ? ` (HTTP ${err.status})` : '';
   const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
   document.getElementById('loadingText').textContent = offline
@@ -776,7 +949,7 @@ function showLoadError(exchange, err) {
   const actions = document.getElementById('loadingActions');
   const back = shownExchange && shownExchange !== exchange ? shownExchange : null;
   actions.innerHTML = `<button type="button" class="loading-btn loading-btn--primary" data-act="retry">Retry</button>`
-    + (back ? `<button type="button" class="loading-btn" data-act="back">Back to ${back === 'all' ? 'All Exchanges' : back === 'nsebse' ? 'NSE+BSE' : back.toUpperCase()}</button>` : '');
+    + (back ? `<button type="button" class="loading-btn" data-act="back">Back to ${escHtml(viewLabel(back))}</button>` : '');
   actions.hidden = false;
   actions.querySelector('[data-act="retry"]').onclick = () => switchExchange(exchange);
   if (back) actions.querySelector('[data-act="back"]').onclick = () => switchExchange(back);

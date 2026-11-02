@@ -285,6 +285,7 @@ let freshnessRun = null;
 // Runs when a view is shown: refetches whatever the current view uses that is
 // older than DATA_MAX_AGE_MS, and rebuilds the view if any of it changed.
 function checkDataFreshness() {
+  if (isBrokerKey(currentExchange)) return Promise.resolve();   // broker views load their own data
   if (freshnessRun) return freshnessRun;
   freshnessRun = (async () => {
     const ex = currentExchange;
@@ -344,6 +345,7 @@ function lastTradeDate(rows) {
 function updateSnapshotNotice() {
   const el = document.getElementById('snapshotNotice');
   if (!el) return;
+  if (isBrokerKey(currentExchange)) { el.hidden = true; el.textContent = ''; return; }
   const tab = document.querySelector('.nav-item.active')?.dataset.tab;
   const src = (VIEW_SOURCES[tab] || []).filter(s => s.date);
   const dates = [...new Set(src.map(s => s.date))].sort();
@@ -409,6 +411,7 @@ function viewFeeSources() {
 function updateFeeNotice() {
   const el = document.getElementById('feeNotice');
   if (!el) return;
+  if (isBrokerKey(currentExchange)) { el.hidden = true; el.textContent = ''; return; }
   const sources = viewFeeSources();
   const missing = FEE_MODE === 'charged' ? sources.filter(s => !s.eff) : [];
   if (!missing.length) {
