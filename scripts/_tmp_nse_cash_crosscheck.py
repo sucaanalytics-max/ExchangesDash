@@ -146,5 +146,34 @@ def main():
         print("SUMMARY " + json.dumps({"date": ds, **out}, separators=(",", ":")))
 
 
+def pr_probe(session, d):
+    """Second source for a day without an MA report: NSE's daily PR zip and
+    the lowercase MA file name. Lists every member and its summary lines."""
+    get(session, f"{ARCH}/archives/equities/mkt/ma{d:%d%m%y}.csv")
+    for name in (f"PR{d:%d%m%y}.zip", f"pr{d:%d%m%y}.zip"):
+        blob = get(session, f"{ARCH}/archives/equities/bhavcopy/pr/{name}")
+        if not blob:
+            continue
+        with zipfile.ZipFile(io.BytesIO(blob)) as z:
+            for member in z.namelist():
+                text = z.read(member).decode("utf-8", "replace")
+                lines = text.splitlines()
+                print(f"  member {member}: {len(lines)} lines")
+                for ln in lines[:12]:
+                    print(f"    | {ln.rstrip()}")
+                hits = [ln for ln in lines[12:] if any(k in ln.lower() for k in
+                        ("traded value", "number of trades", "traded quantity", "total"))]
+                for ln in hits[:15]:
+                    print(f"    > {ln.rstrip()}")
+        break
+
+
+def main_probe():
+    session = nse.nse_session()
+    for ds in ("2023-08-11", "2023-08-04", "2023-08-10"):
+        print(f"\n=== PR probe {ds} ===")
+        pr_probe(session, datetime.strptime(ds, "%Y-%m-%d"))
+
+
 if __name__ == "__main__":
-    main()
+    main_probe()
