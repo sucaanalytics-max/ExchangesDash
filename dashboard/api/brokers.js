@@ -11,7 +11,7 @@
  *   broker = ANGELONE | GROWW | MOSL …    an active sb_brokers.broker_id (404 otherwise)
  *   mode   = live | parity         latest successful run of that mode (default live)
  *   run    = <uuid>                a specific run instead
- *   view   = summary | daily | calibration | calendar | brokers
+ *   view   = summary | daily | calibration | calendar | brokers | prices
  *
  * brokers     → active brokers (sb_brokers) with a short label and their latest
  *               successful live and parity runs (null when none is published)
@@ -25,6 +25,9 @@
  * daily       → sb_daily_revenue for the run (trade_date, segment, orders, ₹ Cr, regime)
  * calibration → sb_calibration for the run
  * calendar    → equity trading days per FY counted from sb_calendar (and the last date it covers)
+ * prices      → the broker's daily share closes (sb_share_prices: close, split- and
+ *               bonus-adjusted; adj_close, also dividend-adjusted), independent of runs;
+ *               an empty list until the table exists
  *
  * Example: GET /api/brokers?broker=ANGELONE&view=summary
  */
@@ -73,7 +76,7 @@ async function sbFetch(path, { all = false } = {}) {
       headers: { apikey: key, Accept: 'application/json', Range: `${from}-${from + PAGE - 1}` },
       signal: AbortSignal.timeout(15000),
     });
-    if (!res.ok) throw Object.assign(new Error(`Supabase returned ${res.status} for ${path.split('?')[0]}`), { status: 502 });
+    if (!res.ok) throw Object.assign(new Error(`Supabase returned ${res.status} for ${path.split('?')[0]}`), { status: 502, supabaseStatus: res.status });
     const rows = await res.json();
     out.push(...rows);
     if (!all || rows.length < PAGE) return out;
@@ -209,7 +212,7 @@ module.exports = async function handler(req, res) {
   const view = String(req.query.view || 'summary').toLowerCase();
   const runId = req.query.run ? String(req.query.run).toLowerCase() : null;
   if (!/^[A-Z0-9_]{2,32}$/.test(broker) || !['live', 'parity'].includes(mode)
-    || !['summary', 'daily', 'calibration', 'calendar', 'brokers'].includes(view) || (runId && !UUID.test(runId))) {
+    || !['summary', 'daily', 'calibration', 'calendar', 'brokers', 'prices'].includes(view) || (runId && !UUID.test(runId))) {
     return res.status(400).json({ error: 'Invalid broker, mode, view or run param' });
   }
   try {
@@ -221,6 +224,17 @@ module.exports = async function handler(req, res) {
     }
     const known = list.find(b => b.broker_id === broker);
     if (!known) return res.status(404).json({ error: `Unknown or inactive broker ${broker}`, code: 'unknown_broker' });
+    if (view === 'prices') {
+      let rows = [];
+      try {
+        rows = await sb(`sb_share_prices?select=trade_date,ticker,close,adj_close&broker_id=eq.${broker}&order=trade_date`, { all: true });
+      } catch (err) {
+        if (err.supabaseStatus !== 404) throw err;   // the table does not exist yet
+      }
+      const num = v => (v == null ? null : Number(v));
+      res.setHeader('Cache-Control', CACHE_CONTROL);
+      return res.status(200).json({ broker: known, prices: rows.map(r => ({ ...r, close: num(r.close), adj_close: num(r.adj_close) })) });
+    }
     const run = await findRun(broker, mode, runId);
     // A broker can be listed before its first run is published (facts awaiting
     // review): say so in a 200, so the page can show it rather than fail
