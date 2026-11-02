@@ -332,6 +332,80 @@ def fill_detail_fields(rows, fo_by_date, cm_by_date):
     return changed
 
 
+# ── Confirmed cash-turnover corrections ─────────────────────────────────────
+# Stored rows whose cash traded value is wrong, each with the figure confirmed
+# from NSE files independent of the business-growth archive this pipeline
+# reads. Shadow mode never rewrites a stored row, so these are applied
+# explicitly on every run. "stored" is the wrong value being replaced: a row
+# already at the confirmed figure (e.g. nse_daily fixed at cutover) is a no-op,
+# and a row holding any other value is left alone with a warning. Only add a
+# date once its figure is confirmed, and name the source.
+#
+# Confirmed 2026-11-02 from NSE's Market Activity report (archives/equities/
+# mkt/MA<DDMMYY>.csv: header lines "Traded Value (Rs. In Crores)", "Traded
+# Quantity (in Lakhs)", "Number of Trades") and the CM bhavcopy summed over all
+# series (legacy cm<DD><MON><YYYY>bhav.csv.zip for 2023, UDiFF BhavCopy_NSE_CM_
+# 0_0_0_<YYYYMMDD>_F_0000.csv.zip for 2025; securities = its row count). For
+# 2023-08-11, which has no MA report, the second source is the market-total row
+# of Pd110823.csv in archives/equities/bhavcopy/pr/PR110823.zip. On seven
+# control days (2023-08-04/10/16, 2025-06-12/16, 2025-12-11/12) these files
+# reproduce the business-growth archive's value, trades, quantity and
+# securities exactly. Quantities are stored the archive's way: lakh shares to
+# two decimals, times LAKH.
+NSE_CASH_CORRECTIONS = {
+    # Missing from NSE's Aug-2023 business-growth archive; stored with cash 0.
+    "2023-08-07": {"stored": 0, "cash_traded_value": 72004.11, "cash_trades": 26047803,
+                   "cash_securities": 2518, "cash_quantity": 3899524000,
+                   "source": "MA070823.csv and cm07AUG2023bhav.csv.zip"},
+    "2023-08-08": {"stored": 0, "cash_traded_value": 75684.62, "cash_trades": 26511968,
+                   "cash_securities": 2486, "cash_quantity": 3874596000,
+                   "source": "MA080823.csv and cm08AUG2023bhav.csv.zip"},
+    "2023-08-09": {"stored": 0, "cash_traded_value": 73035.56, "cash_trades": 24929653,
+                   "cash_securities": 2479, "cash_quantity": 4127955000,
+                   "source": "MA090823.csv and cm09AUG2023bhav.csv.zip"},
+    "2023-08-11": {"stored": 0, "cash_traded_value": 75826.21, "cash_trades": 25955635,
+                   "cash_securities": 2491, "cash_quantity": 3799221000,
+                   "source": "cm11AUG2023bhav.csv.zip and Pd110823.csv (PR110823.zip); no MA report"},
+    "2023-08-14": {"stored": 0, "cash_traded_value": 67601.46, "cash_trades": 26422116,
+                   "cash_securities": 2493, "cash_quantity": 3404087000,
+                   "source": "MA140823.csv and cm14AUG2023bhav.csv.zip"},
+    # nse_daily held 119,525.75, which none of NSE's files for the day show;
+    # the archive, MA report and bhavcopy all give 104,981.80.
+    "2025-06-13": {"stored": 119525.75, "cash_traded_value": 104981.80,
+                   "source": "MA130625.csv and BhavCopy_NSE_CM_0_0_0_20250613_F_0000.csv.zip"},
+    # nse_daily held 2025-12-11's figure (79,300.78) for this day too.
+    "2025-12-15": {"stored": 79300.78, "cash_traded_value": 79972.97,
+                   "source": "MA151225.csv and BhavCopy_NSE_CM_0_0_0_20251215_F_0000.csv.zip"},
+}
+CASH_CORRECTION_FIELDS = ("cash_traded_value",) + CASH_DETAIL_FIELDS
+
+
+def apply_cash_corrections(rows, corrections=None):
+    """Copies of `rows` whose cash_traded_value is an entry's known-wrong
+    `stored` value, set to the confirmed figure (plus any cash counts the
+    entry carries); cash_rev and total_rev via cash_revenue / total_revenue.
+    F&O fields are kept and the input is not modified."""
+    corrections = NSE_CASH_CORRECTIONS if corrections is None else corrections
+    out = []
+    for r in rows:
+        c = corrections.get(r["date"])
+        if not c:
+            continue
+        stored = _num(r, "cash_traded_value")
+        if abs(stored - c["cash_traded_value"]) < 0.005:
+            continue
+        if abs(stored - c["stored"]) >= 0.005:
+            print(f"WARNING: {r['date']} cash_traded_value {stored} is neither the known-wrong "
+                  f"{c['stored']} nor the confirmed {c['cash_traded_value']}; left as stored")
+            continue
+        fixed = dict(r)
+        fixed.update({k: c[k] for k in CASH_CORRECTION_FIELDS if c.get(k) is not None})
+        fixed["cash_rev"] = cash_revenue(fixed["cash_traded_value"])
+        fixed["total_rev"] = total_revenue(fixed)
+        out.append(fixed)
+    return out
+
+
 BACKFILL_MAX_MONTHS = 48          # Apr 2023 → today is 43 months
 BACKFILL_TIME_BUDGET_S = 300      # the job's timeout is 15 min; the rest waits a run
 BACKFILL_PAUSE_S = 1.0
@@ -1205,6 +1279,15 @@ def main():
     # Reported quarters from NSE's results filings replace nse_pnl's rows
     pnl = sorted(nse_reported_pnl.apply(pnl), key=lambda r: quarter_sort_key(r.get("quarter")))
 
+    # Stored cash turnover confirmed wrong (NSE_CASH_CORRECTIONS)
+    corrected = {r["date"]: r for r in apply_cash_corrections(all_daily)}
+    for r in all_daily:
+        if r["date"] in corrected:
+            c = corrected[r["date"]]
+            print(f"Corrected {r['date']} cash_traded_value {r.get('cash_traded_value')} → "
+                  f"{c['cash_traded_value']}, total_rev {r.get('total_rev')} → {c['total_rev']}")
+    all_daily = [corrected.get(r["date"], r) for r in all_daily]
+
     # Activity detail (trade counts, per-segment contracts) for stored rows
     # that lack it: from this run's fetch, then from a re-fetch of the months
     # still missing it. Turnover and revenue are not touched.
@@ -1218,8 +1301,9 @@ def main():
     still = [r["date"] for r in all_daily if missing_detail(r)]
     print(f"Activity detail filled on {len(detail_filled)} row(s); still missing on {len(still)}"
           + (f" ({still[0]} … {still[-1]})" if still else ""))
-    if supabase and detail_filled:
-        upsert_daily_records(supabase, [r for r in all_daily if r["date"] in detail_filled])
+    to_rewrite = detail_filled | set(corrected)
+    if supabase and to_rewrite:
+        upsert_daily_records(supabase, [r for r in all_daily if r["date"] in to_rewrite])
 
     print(f"Total daily records: {len(all_daily)}")
 
