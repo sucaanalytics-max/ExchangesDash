@@ -6,8 +6,8 @@ name: Brokers Mirror
 #
 # Setup, once (docs/BROKERS_INTEGRATION.md):
 #   1. secret BROKERS_SUPABASE_KEY = their publishable key
-#   2. run this workflow with mode "emit-ddl"; review the SQL artifact; apply it to NSE-BSE and commit
-#      it as brokers_mirror_schema.sql
+#   2. brokers_mirror_schema.sql (committed; applied to NSE-BSE on 3 Nov 2026). Mode "emit-ddl" only
+#      works with a key that can read their schema endpoint, which the publishable key cannot.
 #   3. repository variable ENABLE_BROKERS_MIRROR = true; then it runs every weekday after their job
 # Optional: repository variable BROKERS_SUPABASE_URL if their project moves.
 

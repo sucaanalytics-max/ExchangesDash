@@ -82,11 +82,15 @@ The shell lives in `dashboard/js/00-core.js` ("BROKERS MODE"). It handles the re
 
 The dashboard reads the broker results from the brokers-dashboard project through
 `/api/brokers`. Separately, `scripts/brokers_mirror.py` (workflow `brokers-mirror.yml`, weekdays
-at 15:02 UTC, after the 14:17 UTC engine run) copies every `sb_*` table, read with the
-publishable key, into the ExchangesDash Supabase project (NSE-BSE), with the same names and
-columns. The copy's definitions come from `--emit-ddl` and are committed as
-`brokers_mirror_schema.sql`.
+at 15:02 UTC, after the 14:17 UTC engine run) copies the `sb_*` tables that the publishable key
+can read into the ExchangesDash Supabase project (NSE-BSE), with the same names and columns.
+`brokers_mirror_schema.sql` defines the copies. Their schema endpoint refuses the publishable key,
+so `--emit-ddl` cannot generate that file; it comes from the brokers team's catalog (#36, 3 Nov
+2026: 8 tables). The copies keep their columns, types and primary keys, but not their foreign keys
+or CHECK constraints, because the mirror loads tables in name order.
 
 - A column change on the brokers side makes that table's copy stop with an error until the copy's
   definition is updated.
-- A new table is reported in the run summary.
+- While their schema endpoint is closed, a new table on their side is not detected. The brokers
+  team announces new tables on the PR, and the copy's definition is added to
+  `brokers_mirror_schema.sql`.
