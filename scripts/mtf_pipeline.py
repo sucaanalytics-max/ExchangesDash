@@ -71,6 +71,8 @@ ARITH_TOL_LAKH = 1.0        # opening + fresh − liquidated vs closing (roundin
 ROUNDING_LAKH = 0.005       # each published figure is rounded to 0.01 lakh, so the sum of n security
                             # rows may differ from the rounded total by up to 0.005 × (n + 1) lakh
 STOP_STATUSES = (401, 403, 429)   # the exchange refuses us: ask it nothing more this run
+PARTIAL_SHARE = 0.5         # a file listing under half the exchange's usual number of securities is a
+                            # partial file (BSE served 11 and 326 rows against ~1,770 in early 2026)
 
 NOTES = [
     "Reporting date = the trading day the book is for; each exchange publishes it the next trading day.",
@@ -84,6 +86,8 @@ NOTES = [
     "Security counts overlap between NSE and BSE (never add them), and include ETFs and funds, not only equities.",
     "Amount financed is the exchanges' disclosed MTF book, not any broker's loan book or interest income.",
     "flags are advisory: the day is still stored as published.",
+    "A file listing under half an exchange's usual number of securities is a partial file: the day goes "
+    "under unavailable, not into the series.",
 ]
 
 MONTHS = {m: i for i, m in enumerate(
@@ -436,6 +440,33 @@ def write_if_changed(path, doc, stamp_key="updated_at"):
     return True
 
 
+def typical_count(records):
+    """Median number of securities over an exchange's stored days (None when there are none)."""
+    counts = sorted(r["securities"] for r in records.values() if r.get("securities"))
+    return counts[len(counts) // 2] if counts else None
+
+
+def partial_reason(n, typical):
+    if typical and n < PARTIAL_SHARE * typical:
+        return f"partial file ({n} securities; usually about {typical})"
+    return None
+
+
+def drop_partial_days(store):
+    """Move stored days whose file listed too few securities to `unavailable`, so a
+    partial file never stands for the exchange's book (or enters `combined`)."""
+    dropped = []
+    for ex in EXCHANGES:
+        typical = typical_count(store[ex])
+        for key, rec in sorted(store[ex].items()):
+            why = partial_reason(rec.get("securities") or 0, typical)
+            if why:
+                store["unavailable"][ex][key] = why
+                del store[ex][key]
+                dropped.append((ex, key, why))
+    return dropped
+
+
 def apply_day(store, ex, d, rec, reason, in_window):
     """Fold one fetch into the store. Returns True if the stored record is new or changed."""
     key = d.isoformat()
@@ -576,6 +607,10 @@ def run_exchange(ex, session, fetch, store, dates, backfill, now_iso, db=None, p
                     rec, reason = bse_record(d, parsed, sha, now_iso)
             except (ValueError, zipfile.BadZipFile) as e:
                 rec, reason = None, f"unreadable file: {e}"
+        if rec is not None:
+            why = partial_reason(rec["securities"], typical_count(store[ex]))
+            if why:
+                rec, reason = None, why
         ok += 1
         if rec is None:
             print(f"  {d}: {reason}")
@@ -626,6 +661,10 @@ def main():
         if last and (not store[ex] or last[0] == max(store[ex])):
             latest[ex] = last
 
+    for ex, key, why in drop_partial_days(store):
+        changed_total += 1
+        print(f"{ex.upper()} {key}: {why} — moved to unavailable")
+    latest = {ex: v for ex, v in latest.items() if v[0] in store[ex]}
     wrote = write_if_changed(OUT_PATH, build_doc(store, now_iso))
     if latest:
         old = load_json(STOCKS_PATH)

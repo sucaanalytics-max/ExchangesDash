@@ -220,6 +220,25 @@ class Runs(unittest.TestCase):
                                           pause=lambda s: None)
         self.assertEqual((errors, ok, len(session.urls)), (1, 0, 1))
 
+    def test_partial_file_is_not_stored(self):
+        store = empty_store()
+        for day in ("2026-09-21", "2026-09-22", "2026-09-23"):
+            store["bse"][day] = {"date": day, "securities": 10, "amount_financed_cr": 7.0, "sha256": day}
+        session = FakeSession({"24%2F09%2F2026": Reply(200, BSE_CSV.encode())})   # 4 rows vs usual 10
+        changed, *_ = m.run_exchange("bse", session, m.fetch_bse, store, [date(2026, 9, 24)], 5, "t",
+                                     pause=lambda s: None)
+        self.assertEqual(changed, [])
+        self.assertNotIn("2026-09-24", store["bse"])
+
+    def test_stored_partial_days_move_to_unavailable(self):
+        store = empty_store()
+        for day, n in (("2026-01-13", 1688), ("2026-01-14", 326), ("2026-01-16", 1690), ("2026-03-02", 11)):
+            store["bse"][day] = {"date": day, "securities": n, "amount_financed_cr": 1.0, "sha256": day}
+        dropped = m.drop_partial_days(store)
+        self.assertEqual([k for _, k, _ in dropped], ["2026-01-14", "2026-03-02"])
+        self.assertEqual(sorted(store["bse"]), ["2026-01-13", "2026-01-16"])
+        self.assertIn("partial file (326 securities", store["unavailable"]["bse"]["2026-01-14"])
+
     def test_bse_html_error_page_is_an_error(self):
         session = FakeSession({"24%2F09%2F2026": Reply(200, b"<html>" + b"x" * 500 + b"</html>")})
         _, errors, ok, _ = m.run_exchange("bse", session, m.fetch_bse, empty_store(), [date(2026, 9, 24)], 5, "t",
