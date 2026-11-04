@@ -148,7 +148,8 @@ class DailyUpdateSlotRuns(unittest.TestCase):
         manual = "(github.event_name == 'workflow_dispatch' && inputs.cron == '')"
         bare = self.text.replace(manual, "")
         self.assertNotIn("event_name == 'workflow_dispatch'", bare)
-        self.assertEqual(self.text.count(manual), 8)
+        # MCX commit, Excel sync, three share analyses, deploy (NSE/BSE commit whatever changed)
+        self.assertEqual(self.text.count(manual), 6)
 
     def test_the_1530_slot_deploys_whichever_way_it_ran(self):
         cond = re.search(r"^    if: (.*)$", job_block(self.text, "deploy"), re.M).group(1)

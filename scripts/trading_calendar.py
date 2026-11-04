@@ -15,6 +15,8 @@ trading days and stay in.
 When an exchange announces a new Muhurat or DR session, add it here.
 """
 
+import json
+
 SPECIAL_SESSIONS = [
     {"date": "2023-11-12", "type": "muhurat", "exchanges": ("nse", "bse", "mcx"),
      "note": "Diwali Muhurat trading (Samvat 2080)"},
@@ -62,3 +64,18 @@ def merge_special(daily, special):
     back = [{k: v for k, v in r.items() if k not in ("session", "session_note")}
             for r in special or [] if r.get("date") not in seen]
     return sorted(list(daily) + back, key=lambda r: r["date"])
+
+
+def changed_days(before, after):
+    """Sorted dates whose published row (in `daily_all` or `special_sessions`)
+    was added, changed or removed between two dashboard documents: the last
+    committed one and the one a run is about to write. The NSE and BSE
+    pipelines report this as their run's count of new days, which decides
+    whether the share analyses and the Excel sync run. Rows are compared as
+    JSON, exactly as they are written."""
+    def rows(doc):
+        doc = doc or {}
+        listed = list(doc.get("daily_all") or []) + list(doc.get("special_sessions") or [])
+        return {r["date"]: r for r in json.loads(json.dumps(listed))}
+    old, new = rows(before), rows(after)
+    return sorted(d for d in old.keys() | new.keys() if old.get(d) != new.get(d))
