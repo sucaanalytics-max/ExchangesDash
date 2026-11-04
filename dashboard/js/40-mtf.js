@@ -33,8 +33,9 @@ const MTF_NOTES = [
     text: 'BSE’s own series steps up 56 % between 7 Mar 2024 (₹1,712 Cr) and 12 Mar 2024 (₹2,675 Cr) and stays there; '
       + 'BSE’s 11 Mar 2024 file is partial (458 securities, ₹22 Cr) and left out.' },
   { ex: 'bse', date: '2025-10-01', kind: 'break',
-    text: 'BSE moved to a new margin trading file on 1 Oct 2025. Its book is 33 % below the old archive’s 30 Sep figure '
-      + '(₹4,588 → ₹3,094 Cr), it has no fresh / liquidated flows, and it runs 0.05–0.7 % below an independent copy of BSE’s data.' },
+    text: 'BSE’s book falls 33 % on 1 Oct 2025 (₹4,588 Cr on 30 Sep, ₹3,094 Cr on 1 Oct). The drop is BSE’s own: its old '
+      + 'archive, whose last day is 1 Oct, falls the same way (to ₹3,126 Cr). From that day BSE publishes a new file, which has no fresh / '
+      + 'liquidated flows and runs 0.05–0.7 % below an independent copy of BSE’s data (1 % below the archive on 1 Oct, the one day both exist).' },
   { ex: 'bse', date: '2025-10-20', kind: 'excluded',
     text: 'BSE’s 20 Oct 2025 file doubles the book (₹6,379 Cr against ₹3,199 and ₹3,194 Cr either side); the day is left out.' },
 ];

@@ -77,7 +77,8 @@ BSE_URL = ("https://api.bseindia.com/BseIndiaAPI/api/GetMkt_Margin_TradingCSVDwn
            "?tradedate={dd}%2F{mm}%2F{yyyy}&iScripCd=&dtFromDate=&flag=0")
 BSE_ARCHIVE_URL = ("https://api.bseindia.com/BseIndiaAPI/api/DownloadMarginArch_ng/w"
                    "?date={dd}%2F{mm}%2F{yyyy}&flag=1")
-BSE_CSV_FROM = date(2025, 10, 1)    # first day BSE's margin trading CSV serves; earlier days: archive
+BSE_CSV_FROM = date(2025, 10, 1)    # first day BSE's margin trading CSV serves; earlier days: archive, whose
+                                    # files for later days have no rows (--compare-bse, 4 Nov 2026)
 SOURCE_NAMES = {"nse": "NSE CM - Margin Trading Disclosure", "bse": "BSE Margin Trading CSV"}
 EXCHANGES = ("nse", "bse")
 
@@ -117,7 +118,9 @@ NOTES = [
     "A file listing under half an exchange's usual number of securities is a partial file: the day goes "
     "under unavailable, not into the series.",
     "BSE days before 2025-10-01 come from BSE's margin trading archive (bse.file = 'archive'), later days "
-    "from its margin trading CSV (bse.file = 'csv'), which serves nothing earlier.",
+    "from its margin trading CSV (bse.file = 'csv'), which serves nothing earlier; the archive serves nothing "
+    "later. On 2025-10-01, the one day both serve, the archive lists 3 more securities and Rs 31.7 Cr (1 %) more, "
+    "and it already shows the drop from 2025-09-30 (Rs 4,588 to 3,126 Cr).",
     "flag 'total_mismatch' = BSE's published totals row differs from the sum of its security rows beyond "
     "rounding; flag 'spike' = a one-day move of 25 % or more that reverts the next day (left out of combined).",
     "flag 'arithmetic' = opening + fresh − liquidated misses the closing book: NSE by more than 1 lakh, BSE by "
