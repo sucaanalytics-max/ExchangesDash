@@ -68,6 +68,7 @@ class VercelIgnoreBuild(unittest.TestCase):
         for msg in ["📊 NSE update: 2026-10-19 — 1 new day(s)",
                     "📊 BSE update: 2026-10-19 — 1 new day(s)",
                     "📊 MCX update: 2026-10-19 — 0 new day(s)",
+                    "📊 MTF update: 2026-10-19 — 2 new day(s)",
                     "📈 NSE share analysis: 2026-10-19",
                     "📈 BSE share analysis: 2026-10-19",
                     "📈 MCX share analysis: 2026-10-19",

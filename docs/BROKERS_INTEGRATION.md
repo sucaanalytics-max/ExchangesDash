@@ -78,6 +78,15 @@ The shell lives in `dashboard/js/00-core.js` ("BROKERS MODE"). It handles the re
 - **Schema changes:** tell the owner before changing an `sb_*` table's columns or adding a table.
   The copy in our lake (below) needs the same change.
 
+## Data: MTF
+
+Exchange-wide margin trading (MTF) books are published daily, without a key, at
+`https://raw.githubusercontent.com/sucaanalytics-max/ExchangesDash/main/dashboard/data/mtf_daily.json`:
+`nse` (opening, fresh, liquidated, closing book per reporting date), `bse` (amount financed) and
+`combined` (their sum, on dates both published), in ₹ Cr. `mtf_stocks_latest.json` has the latest day
+per security. Rows are keyed on the reporting date; each exchange publishes a day the next trading
+day, so the latest date trails the exchange data by one session.
+
 ## Data: one lake
 
 The dashboard reads the broker results from the brokers-dashboard project through

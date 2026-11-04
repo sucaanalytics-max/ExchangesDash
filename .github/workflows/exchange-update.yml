@@ -24,6 +24,7 @@ on:
           - nse
           - bse
           - mcx
+          - mtf
       cron:
         description: 'Set by Vercel Cron: the schedule slot this run stands in for. Leave empty for a manual run.'
         required: false
@@ -407,13 +408,95 @@ jobs:
           echo "::error::Push still rejected after 5 attempts — data was NOT published"
           exit 1
 
+  mtf-update:
+    # NSE and BSE margin trading (MTF) disclosures → dashboard/data/mtf_daily.json
+    # (every reporting date) and mtf_stocks_latest.json (per security, latest day).
+    # Runs after the NSE and BSE jobs, whose dashboard JSON lists the trading days.
+    # An exchange publishes a day's file the next trading day; every run re-reads
+    # the last 10 trading days (NSE revises late submissions) and backfills older
+    # days (40 a run, 200 on a manual run). A failed exchange still lets the other
+    # one's data be committed; the job then fails at its last step.
+    needs: [nse-update, bse-update]
+    if: ${{ always() && (github.event_name == 'schedule' || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'mtf') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      new_days: ${{ steps.check_new.outputs.new_days }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Supabase writes (mtf.exchange_daily, daily totals) are off until the repository
+      # variable ENABLE_MTF_WRITES is 'true'; MTF_WRITE_STOCKS = 'true' adds the
+      # per-security rows (mtf.stock_daily, ~4,000 a day).
+      - name: Run MTF pipeline
+        id: run
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ vars.ENABLE_MTF_WRITES == 'true' && secrets.SUPABASE_URL || '' }}
+          SUPABASE_KEY: ${{ vars.ENABLE_MTF_WRITES == 'true' && secrets.SUPABASE_SERVICE_KEY || '' }}
+          MTF_WRITE_STOCKS: ${{ vars.MTF_WRITE_STOCKS }}
+          EVENT: ${{ github.event_name }}
+          SLOT: ${{ github.event.schedule || inputs.cron }}
+        run: python scripts/mtf_pipeline.py
+
+      - name: Check if new data was added
+        id: check_new
+        run: |
+          NEW_DAYS=$(cat .new_mtf_days_count 2>/dev/null || echo "0")
+          echo "new_days=$NEW_DAYS" >> $GITHUB_OUTPUT
+          echo "MTF new or revised days: $NEW_DAYS"
+
+      - name: Commit MTF data
+        run: |
+          git config user.name "Research-Tusk"
+          git config user.email "research@tuskinvest.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          for f in dashboard/data/mtf_daily.json dashboard/data/mtf_stocks_latest.json; do
+            if [ -f "$f" ]; then git add "$f"; fi
+          done
+          git diff --cached --quiet || git commit -m "📊 MTF update: $(date +%Y-%m-%d) — ${{ steps.check_new.outputs.new_days }} new day(s)"
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            echo "Push rejected (concurrent job likely pushed first) — retrying with rebase, attempt $i…"
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; echo "::error::Rebase conflict with origin/main"; exit 1; }
+            sleep $((RANDOM % 5 + 1))
+          done
+          echo "::error::Push still rejected after 5 attempts — data was NOT published"
+          exit 1
+
+      - name: Fail if an exchange could not be read
+        if: steps.run.outcome == 'failure'
+        run: |
+          echo "::error::The MTF pipeline failed (see 'Run MTF pipeline'); whatever it fetched was committed above."
+          exit 1
+
   deploy:
     # Vercel skips the bot data commits above (dashboard/vercel-ignore-build.sh),
     # so the day's data is deployed once, by an empty "[deploy]" commit after
     # the 15:30 UTC slot (run by Vercel Cron, or by GitHub's late fallback
     # schedule), and after every manual run. Nothing is pushed when main's head
     # is not a bot data commit (already deployed).
-    needs: [nse-update, bse-update, mcx-update, nse-share-analysis, bse-share-analysis, mcx-share-analysis]
+    needs: [nse-update, bse-update, mcx-update, mtf-update, nse-share-analysis, bse-share-analysis, mcx-share-analysis]
     if: ${{ always() && ((github.event_name == 'workflow_dispatch' && inputs.cron == '') || github.event.schedule == '30 15 * * 1-5' || inputs.cron == '30 15 * * 1-5') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -447,7 +530,7 @@ jobs:
           exit 1
 
   summary:
-    needs: [nse-update, bse-update, mcx-update, nse-share-analysis, bse-share-analysis, mcx-share-analysis, deploy]
+    needs: [nse-update, bse-update, mcx-update, mtf-update, nse-share-analysis, bse-share-analysis, mcx-share-analysis, deploy]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -468,5 +551,6 @@ jobs:
           echo "- **NSE:** ${{ needs.nse-update.result }}, new days ${{ needs.nse-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **BSE:** ${{ needs.bse-update.result }}, new days ${{ needs.bse-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **MCX:** ${{ needs.mcx-update.result }}, new days ${{ needs.mcx-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **MTF:** ${{ needs.mtf-update.result }}, new or revised days ${{ needs.mtf-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Share analysis:** NSE ${{ needs.nse-share-analysis.result }}, BSE ${{ needs.bse-share-analysis.result }}, MCX ${{ needs.mcx-share-analysis.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Vercel deploy marker:** ${{ needs.deploy.result }}" >> $GITHUB_STEP_SUMMARY
