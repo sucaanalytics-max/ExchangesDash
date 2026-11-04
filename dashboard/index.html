@@ -54,10 +54,12 @@
       </div>
     </div>
 
-    <!-- Exchanges | Brokers: hidden until a broker view registers (registerBrokerView, js/00-core.js) -->
-    <div class="mode-pill" id="modeSwitch" role="group" aria-label="Exchanges or brokers" hidden>
+    <!-- Exchanges | Brokers | MTF: hidden until a view registers (registerModeView, js/00-core.js);
+         a mode's button shows only once that mode has a view -->
+    <div class="mode-pill" id="modeSwitch" role="group" aria-label="Exchanges, brokers or margin trading" hidden>
       <button type="button" class="mode-btn active" data-mode="exchanges" aria-pressed="true">Exchanges</button>
       <button type="button" class="mode-btn" data-mode="brokers" aria-pressed="false">Brokers</button>
+      <button type="button" class="mode-btn" data-mode="mtf" aria-pressed="false">MTF</button>
     </div>
 
     <!-- Exchange Switcher Pill -->
@@ -70,6 +72,8 @@
     </div>
     <!-- Broker Switcher Pill: one button per registered broker view (initModeSwitch) -->
     <div class="exchange-pill" id="brokerPill"></div>
+    <!-- MTF Switcher Pill: NSE+BSE / NSE / BSE margin trading views (js/40-mtf.js) -->
+    <div class="exchange-pill" id="mtfPill"></div>
 
     <nav class="sidebar-nav" id="sidebarNav">
       <!-- Nav items populated dynamically per exchange -->
@@ -233,6 +237,7 @@
 <script src="./js/20-reports.js"></script>
 <script src="./js/30-brokers.js"></script>
 <script src="./js/31-brokers-price.js"></script>
+<script src="./js/40-mtf.js"></script>
 <script src="./js/99-init.js"></script>
 </body>
 </html>

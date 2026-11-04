@@ -20,11 +20,12 @@ The engine, its Supabase project (`everjfpbnlbcpuarnhob`) and its daily job stay
 
 ## The Exchanges | Brokers switch
 
-The sidebar has an **Exchanges | Brokers** switch. In Brokers mode, a pill of brokers replaces the
+The sidebar has an **Exchanges | Brokers | MTF** switch (MTF is the exchanges' margin trading books,
+`js/40-mtf.js`, registered the same way with `registerModeView('mtf', …)`; it does not affect broker
+views). In Brokers mode, a pill of brokers replaces the
 NSE/BSE/MCX pill, and the exchange-only header parts are hidden: the revenue banner, the Fees
-toggle, the Report/Mobile buttons and the phone "At a glance" view. The switch stays hidden until
-at least one broker view registers, so the dashboard looks exactly as before until the first
-Brokers PR is merged.
+toggle, the Report/Mobile buttons and the phone "At a glance" view. The Brokers button stays hidden
+until at least one broker view registers.
 
 A broker view is a classic script that registers itself when it loads:
 

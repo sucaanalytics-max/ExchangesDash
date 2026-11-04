@@ -171,7 +171,7 @@ function setGlancePref(v) {
 function glanceActive() { return document.body.classList.contains('glance-mode'); }
 
 function enterGlance(remember) {
-  if (isBrokerKey(currentExchange)) return;   // the glance covers exchanges only
+  if (isViewKey(currentExchange)) return;   // the glance covers exchanges only
   if (remember) setGlancePref('glance');
   if (COMBINED_VIEWS[currentExchange] == null) GLANCE_EX = currentExchange;
   document.body.classList.add('glance-mode');
