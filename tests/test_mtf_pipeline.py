@@ -9,6 +9,7 @@ import io
 import json
 import tempfile
 import unittest
+import unittest.mock
 import zipfile
 from datetime import date
 from pathlib import Path
@@ -146,8 +147,8 @@ class BseParsing(unittest.TestCase):
 
 
 class BseTotalsRows(unittest.TestCase):
-    """BSE files can end with a totals row. Counted as a security it doubles the day
-    (BSE's 2025-10-20 file: ₹6,379 Cr against ₹3,190 Cr)."""
+    """BSE files can end with a totals row (the archive's do). Counted as a security
+    it would double the day."""
 
     def test_csv_totals_row_is_kept_as_the_published_total(self):
         text = BSE_CSV + "-,-,-,1311.27\r\n"
@@ -175,6 +176,43 @@ class BseTotalsRows(unittest.TestCase):
     def test_old_days_go_to_the_archive(self):
         self.assertIn("DownloadMarginArch_ng/w?date=30%2F09%2F2025&flag=1", m.bse_url(date(2025, 9, 30)))
         self.assertIn("GetMkt_Margin_TradingCSVDwnld_ng/w?tradedate=01%2F10%2F2025", m.bse_url(date(2025, 10, 1)))
+        # either source on any date, for the comparison
+        self.assertIn("DownloadMarginArch_ng/w?date=01%2F10%2F2025", m.bse_url(date(2025, 10, 1), "archive"))
+        self.assertIn("GetMkt_Margin_TradingCSVDwnld_ng", m.bse_url(date(2025, 9, 30), "csv"))
+
+
+class BseTotalFlags(unittest.TestCase):
+    """BSE's archive: opening + fresh − liquidated misses the closing book by up to
+    0.4 % on ordinary days, so the check is relative; amount financed vs closing."""
+
+    def test_relative_arithmetic_tolerance(self):
+        # Rs. lakh: a 0.3 % miss on a ₹3,000 Cr book is ordinary, 0.6 % is flagged
+        self.assertEqual(m.bse_total_flags(300000.0, 20000.0, 19100.0, 300000.0, 300000.0), [])
+        self.assertEqual(m.bse_total_flags(300000.0, 20000.0, 18200.0, 300000.0, 300000.0), ["arithmetic"])
+        # a small book keeps the 1-lakh floor
+        self.assertEqual(m.bse_total_flags(10.0, 0.0, 0.0, 9.5, 9.5), [])
+        self.assertEqual(m.bse_total_flags(10.0, 0.0, 0.0, 8.5, 8.5), ["arithmetic"])
+
+    def test_amount_vs_closing(self):
+        # 2024-07-01: amount financed ₹2,756.40 Cr, closing ₹2,937.07 Cr
+        self.assertEqual(m.bse_total_flags(295690.0, 19840.0, 22070.0, 293707.0, 275640.0), ["amount_vs_closing"])
+        self.assertEqual(m.bse_total_flags(None, None, None, None, 309442.0), [])        # the CSV: no flows
+
+    def test_record_and_stored_days_use_the_same_check(self):
+        rec, _ = m.bse_record(date(2024, 7, 1), m.parse_bse_csv(BSE_ARCHIVE), "sha", "t", "archive")
+        self.assertEqual(rec["flags"], [])
+        store = empty_store()
+        store["bse"]["2024-07-01"] = {"date": "2024-07-01", "opening_cr": 2956.9, "fresh_cr": 198.4,
+                                      "liquidated_cr": 220.7, "closing_cr": 2937.07, "amount_financed_cr": 2756.4,
+                                      "flags": ["arithmetic", "duplicate_ids"]}
+        store["bse"]["2024-07-02"] = {"date": "2024-07-02", "opening_cr": 2790.5, "fresh_cr": 206.5,
+                                      "liquidated_cr": 200.7, "closing_cr": 2799.2, "amount_financed_cr": 2799.1,
+                                      "flags": ["arithmetic"]}                       # 0.11 % off: ordinary
+        store["bse"]["2025-10-01"] = {"date": "2025-10-01", "amount_financed_cr": 3094.4, "flags": []}
+        self.assertEqual(m.recheck_bse_flags(store), ["2024-07-01", "2024-07-02"])
+        self.assertEqual(store["bse"]["2024-07-01"]["flags"], ["duplicate_ids", "amount_vs_closing"])
+        self.assertEqual(store["bse"]["2024-07-02"]["flags"], [])
+        self.assertEqual(m.recheck_bse_flags(store), [])                               # settled
 
 
 class Planning(unittest.TestCase):
@@ -288,6 +326,22 @@ class Runs(unittest.TestCase):
         self.assertEqual(sorted(store["bse"]), ["2026-01-13", "2026-01-16"])
         self.assertIn("partial file (326 securities", store["unavailable"]["bse"]["2026-01-14"])
 
+    def test_a_file_served_for_two_dates_moves_both_to_unavailable(self):
+        store = empty_store()
+        for day, sha in (("2026-01-13", "a"), ("2026-01-14", "same"), ("2026-01-16", "same"), ("2026-01-19", "b")):
+            store["bse"][day] = {"date": day, "securities": 1690, "amount_financed_cr": 3617.8, "sha256": sha}
+        store["nse"]["2026-01-14"] = {"date": "2026-01-14", "closing_cr": 1.0, "sha256": "same"}   # other exchange
+        dropped = m.drop_duplicate_files(store)
+        self.assertEqual([(ex, k) for ex, k, _ in dropped], [("bse", "2026-01-14"), ("bse", "2026-01-16")])
+        self.assertEqual(sorted(store["bse"]), ["2026-01-13", "2026-01-19"])
+        self.assertIn("same file as 2026-01-16", store["unavailable"]["bse"]["2026-01-14"])
+        self.assertIn("same file as 2026-01-14", store["unavailable"]["bse"]["2026-01-16"])
+        self.assertIn("2026-01-14", store["nse"])
+        # a later read with its own file brings the day back
+        self.assertTrue(m.apply_day(store, "bse", date(2026, 1, 16), {"date": "2026-01-16", "sha256": "own"}, None, True))
+        self.assertNotIn("2026-01-16", store["unavailable"]["bse"])
+        self.assertEqual(m.drop_duplicate_files(store), [])
+
     def test_bse_html_error_page_is_an_error(self):
         session = FakeSession({"24%2F09%2F2026": Reply(200, b"<html>" + b"x" * 500 + b"</html>")})
         _, errors, ok, _ = m.run_exchange("bse", session, m.fetch_bse, empty_store(), [date(2026, 9, 24)], 5, "t",
@@ -382,6 +436,38 @@ class Supabase(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
 
 
+class CompareSources(unittest.TestCase):
+    """--compare-bse: both of BSE's sources for the same dates, read-only."""
+
+    def run_compare(self, args, replies):
+        session = FakeSession(replies)
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.object(m, "OUT_PATH", Path(tmp) / "none.json"), \
+                unittest.mock.patch("sys.stdout", out), unittest.mock.patch.dict("os.environ", {"GITHUB_STEP_SUMMARY": ""}):
+            code = m.compare_bse_main(args, lambda: session, pause=lambda s: None)
+        return code, out.getvalue(), session
+
+    def test_both_sources_side_by_side(self):
+        archive = BSE_ARCHIVE + "-,-,-,4920.38,4920.61,0.03,0.27,4920.37\r\n"
+        code, out, session = self.run_compare(["2025-10-01"], {"tradedate=01%2F10%2F2025": Reply(200, BSE_CSV.encode()),
+                                                               "MarginArch_ng/w?date=01%2F10%2F2025": Reply(200, archive.encode())})
+        self.assertEqual(code, 0)
+        self.assertEqual(len(session.urls), 2)
+        row = [line for line in out.splitlines() if line.startswith("| 2025-10-01")][0]
+        self.assertIn("| 4 | 13.11 | 2 | 49.20 | 49.20 | +36.09 (+275.24%) | no |", row)
+
+    def test_unpublished_source_and_bad_dates(self):
+        code, out, _ = self.run_compare(["2025-09-30", "30/09/2025"], {"MarginArch_ng/w?date=30%2F09%2F2025": Reply(200, BSE_ARCHIVE.encode())})
+        self.assertEqual(code, 0)
+        self.assertIn("skipping '30/09/2025'", out)
+        self.assertIn("not published (HTTP 404)", out)
+
+    def test_nothing_reached_fails(self):
+        code, _, session = self.run_compare(["2025-10-01", "2025-10-03"], {"BseIndiaAPI": Reply(403, b"denied")})
+        self.assertEqual(code, 1)
+        self.assertEqual(len(session.urls), 2)          # refused: asks nothing more after the first date
+
+
 class WorkflowWiring(unittest.TestCase):
     """The daily workflow runs the pipeline after NSE and BSE, waits for it before
     deploying, and its commit message is one Vercel skips (data only)."""
@@ -399,6 +485,14 @@ class WorkflowWiring(unittest.TestCase):
     def test_commit_message_is_a_skipped_bot_commit(self):
         self.assertIn('git commit -m "📊 MTF update: ', self.wf)
         self.assertIn('"📊 MTF update: "*', (ROOT / "dashboard" / "vercel-ignore-build.sh").read_text())
+
+    def test_source_check_is_read_only(self):
+        wf = (ROOT / ".github" / "workflows" / "mtf-sources.yml").read_text()
+        self.assertIn("permissions:\n  contents: read", wf)
+        self.assertIn("python scripts/mtf_pipeline.py --compare-bse $DATES", wf)
+        self.assertIn("DATES: ${{ inputs.dates }}", wf)              # the input reaches the shell as data
+        for word in ("git push", "git commit", "secrets."):
+            self.assertNotIn(word, wf)
 
 
 if __name__ == "__main__":

@@ -31,6 +31,14 @@ recorded under `unavailable` and asked for again only on a manual run. A stored 
 read by an older parser (its `parser` below PARSER_VERSION) is re-read like a
 missing one, so a parser fix reaches history.
 
+A file an exchange served for more than one date goes under `unavailable` for each
+of them: BSE's files carry no date, so which date it belongs to cannot be told.
+
+  python scripts/mtf_pipeline.py --compare-bse [YYYY-MM-DD …]
+      fetches BSE's margin trading CSV and its margin archive for the same dates
+      and prints their totals side by side (nothing is written); workflow
+      mtf-sources.yml runs it.
+
 Env:
   MTF_BACKFILL   older days to fetch per exchange per run (default 40; 600 on a
                  manual run, when EVENT=workflow_dispatch and SLOT is empty)
@@ -78,9 +86,12 @@ BACKFILL_PER_RUN = 40
 MANUAL_BACKFILL = 600
 HISTORY_YEARS = 3           # how far back the backfill goes
 PARSER_VERSION = {"nse": 1, "bse": 2}   # bump when a parser fix changes stored figures; bse 2 skips
-                                        # totals rows (BSE's 2025-10-20 file had one, doubling the day)
+                                        # totals rows (BSE's archive files end with one)
 PAUSE_S = 0.4               # between requests to the same exchange
 ARITH_TOL_LAKH = 1.0        # opening + fresh − liquidated vs closing (rounding)
+BSE_ARITH_SHARE = 0.005     # BSE's archive misses that by up to 0.4 % of the book on ordinary days
+                            # (median 0.05 %, 473 days to Sep 2025): flag beyond 0.5 %
+BSE_AMOUNT_GAP_SHARE = 0.01 # BSE's amount financed vs its closing book in the same file (6 % on 2024-07-01)
 ROUNDING_LAKH = 0.005       # each published figure is rounded to 0.01 lakh, so the sum of n security
                             # rows may differ from the rounded total by up to 0.005 × (n + 1) lakh
 STOP_STATUSES = (401, 403, 429)   # the exchange refuses us: ask it nothing more this run
@@ -109,6 +120,11 @@ NOTES = [
     "from its margin trading CSV (bse.file = 'csv'), which serves nothing earlier.",
     "flag 'total_mismatch' = BSE's published totals row differs from the sum of its security rows beyond "
     "rounding; flag 'spike' = a one-day move of 25 % or more that reverts the next day (left out of combined).",
+    "flag 'arithmetic' = opening + fresh − liquidated misses the closing book: NSE by more than 1 lakh, BSE by "
+    "more than 0.5 % of it (BSE's archive is off by up to 0.4 % on ordinary days); flag 'amount_vs_closing' = "
+    "BSE's amount financed and its closing book differ by more than 1 %.",
+    "A file an exchange served for more than one date goes under unavailable for each of them (BSE's files "
+    "carry no date, so which date it belongs to cannot be told); they are asked for again.",
 ]
 
 MONTHS = {m: i for i, m in enumerate(
@@ -322,15 +338,29 @@ def nse_record(d, parsed, sha, filename, fetched_at):
     return rec, None
 
 
+BSE_TOTAL_FLAGS = ("arithmetic", "amount_vs_closing")
+
+
+def bse_total_flags(o, f, l, c, amount):
+    """Advisory flags from a BSE day's totals (Rs. lakh): 'arithmetic' when opening +
+    fresh − liquidated misses the closing book by more than BSE_ARITH_SHARE of it (at
+    least ARITH_TOL_LAKH), 'amount_vs_closing' when the amount financed and the closing
+    book differ by more than BSE_AMOUNT_GAP_SHARE. The CSV has neither, so no flags."""
+    flags = []
+    if None not in (o, f, l, c) and abs(o + f - l - c) > max(ARITH_TOL_LAKH, BSE_ARITH_SHARE * abs(c)):
+        flags.append("arithmetic")
+    if c and amount is not None and abs(amount / c - 1) > BSE_AMOUNT_GAP_SHARE:
+        flags.append("amount_vs_closing")
+    return flags
+
+
 def bse_record(d, parsed, sha, fetched_at, file="csv"):
     secs = parsed["securities"]
     if not secs:
         return None, "file has no securities"
     amount = round(sum(s["amount_lakh"] for s in secs), 2)
-    flags = []
     o, f, l, c = (parsed[k] for k in ("opening", "fresh", "liquidated", "closing"))
-    if None not in (o, f, l, c) and abs(o + f - l - c) > ARITH_TOL_LAKH:
-        flags.append("arithmetic")
+    flags = bse_total_flags(o, f, l, c, amount)
     total = parsed.get("published_total")
     if total is not None and abs(amount - total) > ROUNDING_LAKH * (len(secs) + 1) + 1e-9:
         flags.append("total_mismatch")
@@ -363,14 +393,16 @@ def fetch_nse(session, d):
     return url, body, None
 
 
-def bse_url(d):
-    """BSE's margin trading CSV from BSE_CSV_FROM, its margin archive before that."""
-    tmpl = BSE_URL if d >= BSE_CSV_FROM else BSE_ARCHIVE_URL
+def bse_url(d, source=None):
+    """BSE's margin trading CSV from BSE_CSV_FROM, its margin archive before that;
+    `source` ('csv' or 'archive') picks one regardless of the date."""
+    source = source or ("csv" if d >= BSE_CSV_FROM else "archive")
+    tmpl = BSE_URL if source == "csv" else BSE_ARCHIVE_URL
     return tmpl.format(dd=d.strftime("%d"), mm=d.strftime("%m"), yyyy=d.strftime("%Y"))
 
 
-def fetch_bse(session, d):
-    url = bse_url(d)
+def fetch_bse(session, d, source=None):
+    url = bse_url(d, source)
     try:
         r = session.get(url, impersonate="chrome", timeout=30,
                         headers={"Referer": "https://www.bseindia.com/", "Origin": "https://www.bseindia.com",
@@ -524,6 +556,47 @@ def drop_partial_days(store):
                 del store[ex][key]
                 dropped.append((ex, key, why))
     return dropped
+
+
+def drop_duplicate_files(store):
+    """Move stored days whose file (sha256) is also stored under another date of the
+    same exchange to `unavailable`: one file cannot be the book of two days, and BSE's
+    files carry no date to tell which of them it belongs to (BSE served one file for
+    2026-01-14 and 2026-01-16). They are asked for again: recent days every run, older
+    ones on a manual run."""
+    dropped = []
+    for ex in EXCHANGES:
+        by_sha = {}
+        for key, rec in store[ex].items():
+            if rec.get("sha256"):
+                by_sha.setdefault(rec["sha256"], []).append(key)
+        for keys in by_sha.values():
+            if len(keys) < 2:
+                continue
+            for key in sorted(keys):
+                others = ", ".join(k for k in sorted(keys) if k != key)
+                why = f"same file as {others} (one file cannot be the book of two days)"
+                store["unavailable"][ex][key] = why
+                del store[ex][key]
+                dropped.append((ex, key, why))
+    return dropped
+
+
+def recheck_bse_flags(store):
+    """Recompute BSE_TOTAL_FLAGS on every stored BSE day from its stored totals, so a
+    change to the tolerances reaches history without re-reading files. Returns the
+    days whose flags changed."""
+    lakh = lambda v: None if v is None else v * 100.0  # noqa: E731
+    changed = []
+    for key, rec in sorted(store["bse"].items()):
+        old = rec.get("flags", [])
+        new = bse_total_flags(*(lakh(rec.get(k)) for k in ("opening_cr", "fresh_cr", "liquidated_cr", "closing_cr")),
+                              lakh(rec.get("amount_financed_cr")))
+        flags = [f for f in old if f not in BSE_TOTAL_FLAGS] + new
+        if sorted(flags) != sorted(old):
+            rec["flags"] = flags
+            changed.append(key)
+    return changed
 
 
 BOOK_KEY = {"nse": "closing_cr", "bse": "amount_financed_cr"}
@@ -719,6 +792,9 @@ def main():
     from nse_pipeline import nse_session
     from bse_pipeline import _make_bse_session
 
+    if sys.argv[1:2] == ["--compare-bse"]:
+        return compare_bse_main(sys.argv[2:], _make_bse_session)
+
     manual = os.environ.get("EVENT") == "workflow_dispatch" and not os.environ.get("SLOT")
     backfill = int(os.environ.get("MTF_BACKFILL") or (MANUAL_BACKFILL if manual else BACKFILL_PER_RUN))
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -745,9 +821,12 @@ def main():
         if last and (not store[ex] or last[0] == max(store[ex])):
             latest[ex] = last
 
-    for ex, key, why in drop_partial_days(store):
+    for ex, key, why in drop_partial_days(store) + drop_duplicate_files(store):
         changed_total += 1
         print(f"{ex.upper()} {key}: {why} — moved to unavailable")
+    reflagged = recheck_bse_flags(store)
+    if reflagged:
+        print(f"BSE: flags recomputed on {len(reflagged)} stored day(s)")
     latest = {ex: v for ex, v in latest.items() if v[0] in store[ex]}
     for ex, key, cur, prev, nxt in flag_spikes(store):
         print(f"{ex.upper()} {key}: spike (₹{cur:,.0f} Cr against ₹{prev:,.0f} / ₹{nxt:,.0f} Cr either side)"
@@ -765,6 +844,99 @@ def main():
     for ex in failed:
         print(f"::error::MTF {ex.upper()}: every request failed this run — no {ex.upper()} data fetched")
     return 1 if failed else 0
+
+
+# ═══════════════════════════════════════════════════════════════
+# BSE SOURCE COMPARISON (--compare-bse)
+# ═══════════════════════════════════════════════════════════════
+
+# Default dates: the archive's last CSV-less day, the CSV's first days, the doubled
+# day, the file BSE served for two dates, and days either side of later level steps
+COMPARE_DATES = ("2025-09-30", "2025-10-01", "2025-10-06", "2025-10-17", "2025-10-20", "2026-01-14", "2026-01-16",
+                 "2026-04-21", "2026-05-15", "2026-09-23", "2026-09-24")
+
+
+def compare_bse_day(session, d, fetch=fetch_bse):
+    """One date from both of BSE's sources: per source, its URL kind, reply and totals."""
+    out = {}
+    for source in ("csv", "archive"):
+        row = {"source": source}
+        try:
+            _, body, reason = fetch(session, d, source)
+        except FetchError as e:
+            row["error"] = str(e)
+            out[source] = row
+            if e.refused:
+                row["refused"] = True
+            continue
+        if body is None:
+            row["error"] = reason
+        else:
+            parsed = parse_bse_csv(body)
+            secs = parsed["securities"]
+            row.update(sha=hashlib.sha256(body).hexdigest()[:10], securities=len(secs),
+                       amount_cr=_cr(round(sum(s["amount_lakh"] for s in secs), 2)) if secs else None,
+                       closing_cr=_cr(parsed["closing"]), published_total_cr=_cr(parsed["published_total"]),
+                       flows=parsed["fresh"] is not None)
+        out[source] = row
+    return out
+
+
+def compare_table(results, stored):
+    """Markdown table of compare_bse_day results, with the stored day for reference."""
+    def cell(row, k, fmt="{:,.2f}"):
+        v = row.get(k)
+        return "—" if v is None else fmt.format(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else str(v)
+    lines = ["| Date | Stored (file) | CSV securities | CSV ₹ Cr | Archive securities | Archive amount ₹ Cr "
+             "| Archive closing ₹ Cr | Archive − CSV | Same file |",
+             "|---|---|---|---|---|---|---|---|---|"]
+    for key, res in results:
+        c, a = res["csv"], res["archive"]
+        rec = stored.get(key)
+        st = f"{rec['amount_financed_cr']:,.2f} ({rec.get('file', '?')})" if rec else "—"
+        diff = (f"{a['amount_cr'] - c['amount_cr']:+,.2f} ({a['amount_cr'] / c['amount_cr'] - 1:+.2%})"
+                if c.get("amount_cr") and a.get("amount_cr") else "—")
+        lines.append(f"| {key} | {st} | {c.get('error') or cell(c, 'securities', '{:,}')} | {cell(c, 'amount_cr')} "
+                     f"| {a.get('error') or cell(a, 'securities', '{:,}')} | {cell(a, 'amount_cr')} "
+                     f"| {cell(a, 'closing_cr')} | {diff} | {'yes' if c.get('sha') and c.get('sha') == a.get('sha') else 'no'} |")
+    return "\n".join(lines)
+
+
+def compare_bse_main(args, make_session, fetch=fetch_bse, pause=time.sleep):
+    """--compare-bse [dates]: both sources for each date, printed (and added to the job
+    summary on GitHub Actions). Read-only; exits 0 unless BSE could not be reached."""
+    keys = []
+    for a in args:
+        try:
+            keys.append(date.fromisoformat(a.strip()).isoformat())
+        except ValueError:
+            print(f"::warning::skipping {a!r}: not a YYYY-MM-DD date")
+    keys = keys or list(COMPARE_DATES)
+    stored = load_store()["bse"]
+    if keys == list(COMPARE_DATES) and stored:
+        keys.append(max(stored))
+    try:
+        session = make_session()
+    except Exception as e:
+        print(f"::error::BSE session failed ({type(e).__name__}: {e})")
+        return 1
+    results = []
+    for i, key in enumerate(dict.fromkeys(keys)):
+        if i:
+            pause(PAUSE_S)
+        res = compare_bse_day(session, date.fromisoformat(key), fetch)
+        results.append((key, res))
+        if any(r.get("refused") for r in res.values()):
+            print("BSE refused the request: asking it nothing more")
+            break
+    table = compare_table(results, stored)
+    print(table)
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a") as fh:
+            fh.write("## BSE margin trading: CSV vs archive\n\n" + table + "\n")
+    reached = any("sha" in r for _, res in results for r in res.values())
+    return 0 if reached else 1
 
 
 def load_json(path):

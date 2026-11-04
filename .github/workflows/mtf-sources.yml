@@ -1,0 +1,51 @@
+name: MTF source check
+
+# Read-only: fetches BSE's margin trading CSV and its margin archive for the same
+# reporting dates and prints their totals side by side, with the stored day, in
+# the job summary (scripts/mtf_pipeline.py --compare-bse). Nothing is written or
+# committed. Runs on demand, and on a pull request that changes this file or the
+# MTF pipeline. Fails only when BSE could not be reached at all.
+on:
+  workflow_dispatch:
+    inputs:
+      dates:
+        description: 'Reporting dates, YYYY-MM-DD, space-separated (empty = the default spread and the latest stored day)'
+        required: false
+        default: ''
+        type: string
+  pull_request:
+    paths:
+      - '.github/workflows/mtf-sources.yml'
+      - 'scripts/mtf_pipeline.py'
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compare BSE's CSV and archive
+        env:
+          DATES: ${{ inputs.dates }}
+        # DATES is split on spaces on purpose: each date is its own argument
+        run: python scripts/mtf_pipeline.py --compare-bse $DATES
