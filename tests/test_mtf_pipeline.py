@@ -145,6 +145,38 @@ class BseParsing(unittest.TestCase):
         self.assertEqual(len(p["securities"]), 4)
 
 
+class BseTotalsRows(unittest.TestCase):
+    """BSE files can end with a totals row. Counted as a security it doubles the day
+    (BSE's 2025-10-20 file: ₹6,379 Cr against ₹3,190 Cr)."""
+
+    def test_csv_totals_row_is_kept_as_the_published_total(self):
+        text = BSE_CSV + "-,-,-,1311.27\r\n"
+        p = m.parse_bse_csv(text)
+        self.assertEqual(len(p["securities"]), 4)
+        self.assertEqual((p["published_total"], p["skipped_rows"]), (1311.27, 1))
+        rec, _ = m.bse_record(date(2025, 10, 20), p, "sha", "t")
+        self.assertEqual(rec["amount_financed_cr"], 13.1127)        # not doubled
+        self.assertEqual(rec["published_total_cr"], 13.1127)
+        self.assertEqual(rec["flags"], [])
+
+    def test_totals_row_that_disagrees_is_flagged(self):
+        rec, _ = m.bse_record(date(2025, 10, 20), m.parse_bse_csv(BSE_CSV + "Total,,,1400.00\r\n"), "sha", "t")
+        self.assertEqual(rec["flags"], ["total_mismatch"])
+
+    def test_archive_footer_and_negative_rows(self):
+        text = (BSE_ARCHIVE + "506480,GOCLCORP,-7,-0.02,-0.01,0.00,0.00,-0.01\r\n"
+                "-,-,-,4920.36,4920.60,0.03,0.27,4920.36\r\n")
+        p = m.parse_bse_csv(text)
+        self.assertEqual([s["id"] for s in p["securities"]], ["533655", "534976", "506480"])
+        rec, _ = m.bse_record(date(2022, 12, 30), p, "sha", "t", "archive")
+        self.assertEqual((rec["amount_financed_cr"], rec["file"]), (49.2036, "archive"))
+        self.assertEqual(rec["flags"], ["negative_values"])
+
+    def test_old_days_go_to_the_archive(self):
+        self.assertIn("DownloadMarginArch_ng/w?date=30%2F09%2F2025&flag=1", m.bse_url(date(2025, 9, 30)))
+        self.assertIn("GetMkt_Margin_TradingCSVDwnld_ng/w?tradedate=01%2F10%2F2025", m.bse_url(date(2025, 10, 1)))
+
+
 class Planning(unittest.TestCase):
     DATES = [date(2026, 10, d) for d in (20, 21, 22, 23, 26, 27, 28, 29, 30)]
 
@@ -152,6 +184,23 @@ class Planning(unittest.TestCase):
         window, older = m.plan_dates(self.DATES, {"2026-10-21": {}}, {"2026-10-20": "404"}, recent=3, backfill=10)
         self.assertEqual(window, self.DATES[-3:])
         self.assertEqual(older, [date(2026, 10, d) for d in (27, 26, 23, 22)])
+
+    def test_history_starts_three_years_back(self):
+        self.assertEqual(m.history_start(date(2026, 11, 4)), date(2023, 11, 4))
+        self.assertEqual(m.history_start(date(2028, 2, 29)), date(2025, 2, 28))
+        _, older = m.plan_dates(self.DATES, {}, {}, recent=3, backfill=10, start=date(2026, 10, 23))
+        self.assertEqual(older, [date(2026, 10, 27), date(2026, 10, 26), date(2026, 10, 23)])
+
+    def test_days_read_by_an_older_parser_are_read_again(self):
+        records = {"2026-10-26": {"parser": 2}, "2026-10-27": {}}      # no parser key = version 1
+        self.assertEqual(m.current_days(records, "bse"), {"2026-10-26"})
+        self.assertEqual(m.current_days(records, "nse"), {"2026-10-26", "2026-10-27"})
+        store = empty_store()
+        store["bse"]["2026-10-27"] = {"date": "2026-10-27", "sha256": "same", "amount_financed_cr": 2.0}
+        self.assertTrue(m.apply_day(store, "bse", date(2026, 10, 27),
+                                    {"date": "2026-10-27", "sha256": "same", "parser": 2, "amount_financed_cr": 1.0},
+                                    None, False))
+        self.assertEqual(store["bse"]["2026-10-27"]["amount_financed_cr"], 1.0)
 
     def test_backfill_cap_and_retry(self):
         _, older = m.plan_dates(self.DATES, {}, {"2026-10-27": "404"}, recent=3, backfill=2)
@@ -275,6 +324,21 @@ class Output(unittest.TestCase):
         self.assertFalse(m.apply_day(s, "nse", date(2026, 10, 30), {"sha256": "b"}, None, True))
         self.assertTrue(m.apply_day(s, "nse", date(2026, 10, 30), {"sha256": "b2", "revised": True}, None, True))
         self.assertTrue(s["nse"]["2026-10-30"]["revised"])
+
+    def test_one_day_spike_is_flagged_and_left_out_of_combined(self):
+        s = empty_store()
+        for day, nse, bse in (("2025-10-17", 100.0, 3199.0), ("2025-10-20", 101.0, 6379.4),
+                              ("2025-10-21", 102.0, 3193.9), ("2025-10-23", 140.0, 3203.9),
+                              ("2025-10-24", 141.0, 3210.0)):
+            s["nse"][day] = {"date": day, "closing_cr": nse, "flags": [], "sha256": day}
+            s["bse"][day] = {"date": day, "amount_financed_cr": bse, "flags": [], "sha256": day}
+        flagged = m.flag_spikes(s)
+        self.assertEqual([(ex, k) for ex, k, *_ in flagged], [("bse", "2025-10-20")])   # NSE's step persists
+        self.assertEqual(s["bse"]["2025-10-20"]["flags"], ["spike"])
+        self.assertNotIn("2025-10-20", [c["date"] for c in m.build_doc(s, "t")["combined"]])
+        s["bse"]["2025-10-20"]["amount_financed_cr"] = 3190.0                            # re-read correctly
+        self.assertEqual(m.flag_spikes(s), [])
+        self.assertEqual(s["bse"]["2025-10-20"]["flags"], [])
 
     def test_stocks_snapshot_largest_first(self):
         doc = m.stocks_doc({"nse": ("2025-12-29", m.parse_nse_csv(NSE_STANDARD))}, "t")

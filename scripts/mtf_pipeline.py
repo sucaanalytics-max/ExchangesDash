@@ -16,16 +16,23 @@ Sources (one file per reporting date, published the next trading day):
        blocks side by side ("As on Reporting Date" and "As on Current Date …"), and
        the right-hand, revised block is used.
   BSE  api.bseindia.com …GetMkt_Margin_TradingCSVDwnld_ng — one row per security
-       (ISIN, quantity and amount financed, Rs. lakh); its sum is BSE's book.
+       (ISIN, quantity and amount financed, Rs. lakh); its sum is BSE's book. It serves
+       days from 2025-10-01; earlier days come from BSE's margin archive
+       (…DownloadMarginArch_ng: security code, amount financed, opening / fresh /
+       liquidated / closing per security, and a totals row). A row whose identifier is
+       not an ISIN (CSV) or a BSE security code (archive) is a totals row: it is kept as
+       BSE's published total and checked against the sum, never counted as a security.
 
 Each run re-reads the last RECENT_DAYS trading days (to pick up revisions; a file
 whose sha256 is unchanged is skipped) and backfills up to MTF_BACKFILL older
-missing days, newest first, so history fills over a few runs. Trading days come
+missing days, newest first, back to HISTORY_YEARS before today. Trading days come
 from the NSE / BSE dashboard JSON. An older day the exchange does not serve is
-recorded under `unavailable` and not asked for again.
+recorded under `unavailable` and asked for again only on a manual run. A stored day
+read by an older parser (its `parser` below PARSER_VERSION) is re-read like a
+missing one, so a parser fix reaches history.
 
 Env:
-  MTF_BACKFILL   older days to fetch per exchange per run (default 40; 200 on a
+  MTF_BACKFILL   older days to fetch per exchange per run (default 40; 600 on a
                  manual run, when EVENT=workflow_dispatch and SLOT is empty)
   SUPABASE_URL, SUPABASE_KEY   when set (repository variable ENABLE_MTF_WRITES),
                  each new or revised day's totals also go to mtf.exchange_daily
@@ -60,17 +67,27 @@ NEW_DAYS_FILE = ROOT / ".new_mtf_days_count"
 NSE_URL = "https://nsearchives.nseindia.com/content/equities/mrg_trading_{ddmmyy}.zip"
 BSE_URL = ("https://api.bseindia.com/BseIndiaAPI/api/GetMkt_Margin_TradingCSVDwnld_ng/w"
            "?tradedate={dd}%2F{mm}%2F{yyyy}&iScripCd=&dtFromDate=&flag=0")
+BSE_ARCHIVE_URL = ("https://api.bseindia.com/BseIndiaAPI/api/DownloadMarginArch_ng/w"
+                   "?date={dd}%2F{mm}%2F{yyyy}&flag=1")
+BSE_CSV_FROM = date(2025, 10, 1)    # first day BSE's margin trading CSV serves; earlier days: archive
 SOURCE_NAMES = {"nse": "NSE CM - Margin Trading Disclosure", "bse": "BSE Margin Trading CSV"}
 EXCHANGES = ("nse", "bse")
 
 RECENT_DAYS = 10            # trading days re-read every run (NSE revises within a few days)
 BACKFILL_PER_RUN = 40
-MANUAL_BACKFILL = 200
+MANUAL_BACKFILL = 600
+HISTORY_YEARS = 3           # how far back the backfill goes
+PARSER_VERSION = {"nse": 1, "bse": 2}   # bump when a parser fix changes stored figures; bse 2 skips
+                                        # totals rows (BSE's 2025-10-20 file had one, doubling the day)
 PAUSE_S = 0.4               # between requests to the same exchange
 ARITH_TOL_LAKH = 1.0        # opening + fresh − liquidated vs closing (rounding)
 ROUNDING_LAKH = 0.005       # each published figure is rounded to 0.01 lakh, so the sum of n security
                             # rows may differ from the rounded total by up to 0.005 × (n + 1) lakh
 STOP_STATUSES = (401, 403, 429)   # the exchange refuses us: ask it nothing more this run
+SPIKE_SHARE = 0.25          # a one-day move this large that reverts the next day is a spike ...
+SPIKE_NEIGHBOURS = 0.02     # ... when the days either side agree within this share
+ISIN_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
+BSE_CODE_RE = re.compile(r"^[0-9]{3,7}$")
 PARTIAL_SHARE = 0.5         # a file listing under half the exchange's usual number of securities is a
                             # partial file (BSE served 11 and 326 rows against ~1,770 in early 2026)
 
@@ -88,6 +105,10 @@ NOTES = [
     "flags are advisory: the day is still stored as published.",
     "A file listing under half an exchange's usual number of securities is a partial file: the day goes "
     "under unavailable, not into the series.",
+    "BSE days before 2025-10-01 come from BSE's margin trading archive (bse.file = 'archive'), later days "
+    "from its margin trading CSV (bse.file = 'csv'), which serves nothing earlier.",
+    "flag 'total_mismatch' = BSE's published totals row differs from the sum of its security rows beyond "
+    "rounding; flag 'spike' = a one-day move of 25 % or more that reverts the next day (left out of combined).",
 ]
 
 MONTHS = {m: i for i, m in enumerate(
@@ -205,7 +226,8 @@ def parse_bse_csv(text):
     per-security opening / fresh / liquidated / closing, summed when present."""
     rows = list(csv.reader(io.StringIO(_decode(text))))
     hdr = next((i for i, r in enumerate(rows) if any("amount financed" in c.lower() for c in r)), None)
-    out = {"securities": [], "opening": None, "fresh": None, "liquidated": None, "closing": None}
+    out = {"securities": [], "opening": None, "fresh": None, "liquidated": None, "closing": None,
+           "published_total": None, "skipped_rows": 0}
     if hdr is None:
         return out
     low = [c.strip().lower() for c in rows[hdr]]
@@ -225,8 +247,19 @@ def parse_bse_csv(text):
         sec_id = (cells[c_isin] if c_isin is not None else cells[c_code] if c_code is not None else "").strip()
         name = cells[c_name].strip() if c_name is not None else ""
         amt = _num(cells[c_amt])
-        if amt is None or not (sec_id or name) or (not sec_id and name.lower().startswith("total")):
-            continue                            # blank, or a total row (no ISIN / code)
+        if amt is None or not (sec_id or name):
+            continue                            # blank or footnote row
+        if c_isin is not None:
+            is_security = bool(ISIN_RE.match(sec_id))
+        elif c_code is not None:
+            is_security = bool(BSE_CODE_RE.match(sec_id))
+        else:
+            is_security = not name.lower().startswith("total")
+        if not is_security:                     # a totals row ("-,-,-,…" or "Total"): BSE's own sum
+            out["skipped_rows"] += 1
+            if out["published_total"] is None:
+                out["published_total"] = amt
+            continue
         sec = {"id": sec_id, "name": name, "qty": _num(cells[c_qty]) if c_qty is not None else None,
                "amount_lakh": amt, "row": n}
         if c_isin is not None:
@@ -289,18 +322,23 @@ def nse_record(d, parsed, sha, filename, fetched_at):
     return rec, None
 
 
-def bse_record(d, parsed, sha, fetched_at):
-    if not parsed["securities"]:
+def bse_record(d, parsed, sha, fetched_at, file="csv"):
+    secs = parsed["securities"]
+    if not secs:
         return None, "file has no securities"
-    amount = round(sum(s["amount_lakh"] for s in parsed["securities"]), 2)
+    amount = round(sum(s["amount_lakh"] for s in secs), 2)
     flags = []
     o, f, l, c = (parsed[k] for k in ("opening", "fresh", "liquidated", "closing"))
     if None not in (o, f, l, c) and abs(o + f - l - c) > ARITH_TOL_LAKH:
         flags.append("arithmetic")
-    flags += row_flags(parsed["securities"], "id")
-    rec = {"date": d.isoformat(), "amount_financed_cr": _cr(amount), "securities": len(parsed["securities"]),
+    total = parsed.get("published_total")
+    if total is not None and abs(amount - total) > ROUNDING_LAKH * (len(secs) + 1) + 1e-9:
+        flags.append("total_mismatch")
+    flags += row_flags(secs, "id")
+    rec = {"date": d.isoformat(), "amount_financed_cr": _cr(amount), "securities": len(secs),
            "opening_cr": _cr(o), "fresh_cr": _cr(f), "liquidated_cr": _cr(l), "closing_cr": _cr(c),
-           "flags": flags, "sha256": sha, "fetched_at": fetched_at}
+           "published_total_cr": _cr(total), "flags": flags, "file": file, "parser": PARSER_VERSION["bse"],
+           "sha256": sha, "fetched_at": fetched_at}
     return rec, None
 
 
@@ -325,8 +363,14 @@ def fetch_nse(session, d):
     return url, body, None
 
 
+def bse_url(d):
+    """BSE's margin trading CSV from BSE_CSV_FROM, its margin archive before that."""
+    tmpl = BSE_URL if d >= BSE_CSV_FROM else BSE_ARCHIVE_URL
+    return tmpl.format(dd=d.strftime("%d"), mm=d.strftime("%m"), yyyy=d.strftime("%Y"))
+
+
 def fetch_bse(session, d):
-    url = BSE_URL.format(dd=d.strftime("%d"), mm=d.strftime("%m"), yyyy=d.strftime("%Y"))
+    url = bse_url(d)
     try:
         r = session.get(url, impersonate="chrome", timeout=30,
                         headers={"Referer": "https://www.bseindia.com/", "Origin": "https://www.bseindia.com",
@@ -372,10 +416,23 @@ def trading_dates(exchange, data_dir=DATA_DIR):
     return sorted(date.fromisoformat(x) for x in days)
 
 
-def plan_dates(dates, have, unavailable, recent=RECENT_DAYS, backfill=BACKFILL_PER_RUN, retry=False):
-    """The recent window (always re-read), then up to `backfill` older days not yet
-    stored (nor marked unavailable, unless `retry`), newest first."""
-    dates = sorted(dates)
+def history_start(today=None, years=HISTORY_YEARS):
+    today = today or date.today()
+    try:
+        return today.replace(year=today.year - years)
+    except ValueError:                          # 29 February
+        return today.replace(year=today.year - years, day=28)
+
+
+def current_days(records, ex):
+    """Stored days read by the current parser (older ones are re-read)."""
+    return {k for k, r in records.items() if r.get("parser", 1) >= PARSER_VERSION[ex]}
+
+
+def plan_dates(dates, have, unavailable, recent=RECENT_DAYS, backfill=BACKFILL_PER_RUN, retry=False, start=None):
+    """The recent window (always re-read), then up to `backfill` older days from
+    `start` on not yet in `have` (nor marked unavailable, unless `retry`), newest first."""
+    dates = sorted(d for d in dates if start is None or d >= start)
     window = dates[-recent:] if recent else []
     older = [d for d in reversed(dates[:len(dates) - len(window)])
              if d.isoformat() not in have and (retry or d.isoformat() not in unavailable)][:backfill]
@@ -386,7 +443,7 @@ def combined_rows(nse, bse):
     out = []
     for d in sorted(set(nse) & set(bse)):
         n, b = nse[d].get("closing_cr"), bse[d].get("amount_financed_cr")
-        if n is None or b is None:
+        if n is None or b is None or "spike" in nse[d].get("flags", []) + bse[d].get("flags", []):
             continue
         out.append({"date": d, "nse_cr": n, "bse_cr": b, "total_cr": round(n + b, 4)})
     return out
@@ -400,7 +457,9 @@ def build_doc(store, updated_at):
         "unit": "INR crore",
         "notes": NOTES,
         "sources": {"nse": NSE_URL.replace("{ddmmyy}", "DDMMYY"),
-                    "bse": BSE_URL.replace("{dd}", "DD").replace("{mm}", "MM").replace("{yyyy}", "YYYY")},
+                    "bse": BSE_URL.replace("{dd}", "DD").replace("{mm}", "MM").replace("{yyyy}", "YYYY"),
+                    "bse_archive": BSE_ARCHIVE_URL.replace("{dd}", "DD").replace("{mm}", "MM")
+                    .replace("{yyyy}", "YYYY")},
         "latest": {"nse": max(nse) if nse else None, "bse": max(bse) if bse else None,
                    "combined": comb[-1]["date"] if comb else None},
         "nse": [nse[d] for d in sorted(nse)],
@@ -467,6 +526,28 @@ def drop_partial_days(store):
     return dropped
 
 
+BOOK_KEY = {"nse": "closing_cr", "bse": "amount_financed_cr"}
+
+
+def flag_spikes(store):
+    """Flag a stored day whose book moves SPIKE_SHARE or more against the days either
+    side while those two agree within SPIKE_NEIGHBOURS: a one-day jump that reverts is a
+    file error, not a market move. Recomputed from scratch every run."""
+    flagged = []
+    for ex in EXCHANGES:
+        days = sorted(store[ex])
+        for key in days:
+            store[ex][key]["flags"] = [f for f in store[ex][key].get("flags", []) if f != "spike"]
+        for i in range(1, len(days) - 1):
+            prev, cur, nxt = (store[ex][days[j]].get(BOOK_KEY[ex]) for j in (i - 1, i, i + 1))
+            if not (prev and cur and nxt) or abs(prev / nxt - 1) > SPIKE_NEIGHBOURS:
+                continue
+            if abs(cur / ((prev + nxt) / 2) - 1) >= SPIKE_SHARE:
+                store[ex][days[i]]["flags"].append("spike")
+                flagged.append((ex, days[i], cur, prev, nxt))
+    return flagged
+
+
 def apply_day(store, ex, d, rec, reason, in_window):
     """Fold one fetch into the store. Returns True if the stored record is new or changed."""
     key = d.isoformat()
@@ -476,7 +557,7 @@ def apply_day(store, ex, d, rec, reason, in_window):
         return False
     store["unavailable"][ex].pop(key, None)
     old = store[ex].get(key)
-    if old and old.get("sha256") == rec["sha256"]:
+    if old and old.get("sha256") == rec["sha256"] and old.get("parser", 1) >= rec.get("parser", 1):
         return False
     store[ex][key] = rec
     return True
@@ -575,10 +656,12 @@ def stocks_doc(latest, updated_at):
     return out
 
 
-def run_exchange(ex, session, fetch, store, dates, backfill, now_iso, db=None, pause=time.sleep, retry=False):
+def run_exchange(ex, session, fetch, store, dates, backfill, now_iso, db=None, pause=time.sleep, retry=False,
+                 start=None):
     """Fetch the planned days of one exchange into `store`. Returns (changed dates,
     error count, ok count, latest (date, parsed) seen)."""
-    window, older = plan_dates(dates, store[ex], store["unavailable"][ex], backfill=backfill, retry=retry)
+    window, older = plan_dates(dates, current_days(store[ex], ex), store["unavailable"][ex],
+                               backfill=backfill, retry=retry, start=start)
     in_window = {d.isoformat() for d in window}
     changed, errors, ok, latest = [], 0, 0, None
     print(f"{ex.upper()}: re-reading {len(window)} recent day(s), backfilling {len(older)}")
@@ -604,7 +687,8 @@ def run_exchange(ex, session, fetch, store, dates, backfill, now_iso, db=None, p
                 else:
                     sha = hashlib.sha256(body).hexdigest()
                     parsed = parse_bse_csv(body)
-                    rec, reason = bse_record(d, parsed, sha, now_iso)
+                    rec, reason = bse_record(d, parsed, sha, now_iso,
+                                             "archive" if "DownloadMarginArch" in url else "csv")
             except (ValueError, zipfile.BadZipFile) as e:
                 rec, reason = None, f"unreadable file: {e}"
         if rec is not None:
@@ -654,7 +738,7 @@ def main():
             failed.append(ex)
             continue
         changed, errors, ok, last = run_exchange(ex, session, fetchers[ex], store, trading_dates(ex),
-                                                 backfill, now_iso, db, retry=manual)
+                                                 backfill, now_iso, db, retry=manual, start=history_start())
         changed_total += len(changed)
         if errors and not ok:
             failed.append(ex)
@@ -665,6 +749,9 @@ def main():
         changed_total += 1
         print(f"{ex.upper()} {key}: {why} — moved to unavailable")
     latest = {ex: v for ex, v in latest.items() if v[0] in store[ex]}
+    for ex, key, cur, prev, nxt in flag_spikes(store):
+        print(f"{ex.upper()} {key}: spike (₹{cur:,.0f} Cr against ₹{prev:,.0f} / ₹{nxt:,.0f} Cr either side)"
+              " — flagged, left out of combined")
     wrote = write_if_changed(OUT_PATH, build_doc(store, now_iso))
     if latest:
         old = load_json(STOCKS_PATH)
