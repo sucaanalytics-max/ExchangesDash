@@ -103,3 +103,4 @@ module.exports = async function handler(req, res) {
 };
 
 module.exports.inMarketSession = inMarketSession;
+module.exports.secretMatches = secretMatches;   // also used by trigger-scheduled.js

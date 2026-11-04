@@ -1,6 +1,10 @@
 name: Exchange Daily Update
 
 on:
+  # Vercel Cron starts each slot on time (dashboard/api/trigger-scheduled.js
+  # dispatches with the slot as the `cron` input). GitHub runs this schedule
+  # hours late, so it is only the fallback: a repeat run of a slot finds no new
+  # days and commits nothing. Keep these crons equal to that file's SLOTS.
   schedule:
     # 6:00 AM IST = 00:30 UTC — picks up yesterday's confirmed data
     - cron: '30 0 * * 1-5'
@@ -20,6 +24,11 @@ on:
           - nse
           - bse
           - mcx
+      cron:
+        description: 'Set by Vercel Cron: the schedule slot this run stands in for. Leave empty for a manual run.'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -76,7 +85,7 @@ jobs:
 
       - name: Commit NSE data
         # Manual runs always publish, so a code fix can regenerate the JSON without a new trading day
-        if: steps.check_new.outputs.new_days != '0' || github.event_name == 'workflow_dispatch'
+        if: steps.check_new.outputs.new_days != '0' || (github.event_name == 'workflow_dispatch' && inputs.cron == '')
         run: |
           git config user.name "Research-Tusk"
           git config user.email "research@tuskinvest.com"
@@ -141,7 +150,7 @@ jobs:
 
       - name: Commit BSE data
         # Manual runs always publish, so a code fix can regenerate the JSON without a new trading day
-        if: steps.check_new.outputs.new_days != '0' || github.event_name == 'workflow_dispatch'
+        if: steps.check_new.outputs.new_days != '0' || (github.event_name == 'workflow_dispatch' && inputs.cron == '')
         run: |
           git config user.name "Research-Tusk"
           git config user.email "research@tuskinvest.com"
@@ -202,7 +211,7 @@ jobs:
 
       - name: Commit MCX data
         # Manual runs always publish, so a code fix can regenerate the JSON without a new trading day
-        if: steps.check_new.outputs.new_days != '0' || github.event_name == 'workflow_dispatch'
+        if: steps.check_new.outputs.new_days != '0' || (github.event_name == 'workflow_dispatch' && inputs.cron == '')
         run: |
           git config user.name "Research-Tusk"
           git config user.email "research@tuskinvest.com"
@@ -223,7 +232,7 @@ jobs:
     needs: [nse-update, bse-update]
     # Off until the repository variable ENABLE_EXCEL_SYNC is 'true' — set it only
     # after the old repo's sync is disabled, or rows are appended to OneDrive twice.
-    if: ${{ always() && vars.ENABLE_EXCEL_SYNC == 'true' && (github.event_name == 'workflow_dispatch' || needs.nse-update.outputs.new_days != '0' || needs.bse-update.outputs.new_days != '0') }}
+    if: ${{ always() && vars.ENABLE_EXCEL_SYNC == 'true' && ((github.event_name == 'workflow_dispatch' && inputs.cron == '') || needs.nse-update.outputs.new_days != '0' || needs.bse-update.outputs.new_days != '0') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -259,7 +268,7 @@ jobs:
 
   bse-share-analysis:
     needs: [bse-update]
-    if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.bse-update.outputs.new_days != '0') }}
+    if: ${{ always() && ((github.event_name == 'workflow_dispatch' && inputs.cron == '') || needs.bse-update.outputs.new_days != '0') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -306,7 +315,7 @@ jobs:
 
   nse-share-analysis:
     needs: [nse-update]
-    if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.nse-update.outputs.new_days != '0') }}
+    if: ${{ always() && ((github.event_name == 'workflow_dispatch' && inputs.cron == '') || needs.nse-update.outputs.new_days != '0') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -353,7 +362,7 @@ jobs:
 
   mcx-share-analysis:
     needs: [mcx-update]
-    if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.mcx-update.outputs.new_days != '0') }}
+    if: ${{ always() && ((github.event_name == 'workflow_dispatch' && inputs.cron == '') || needs.mcx-update.outputs.new_days != '0') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -401,10 +410,11 @@ jobs:
   deploy:
     # Vercel skips the bot data commits above (dashboard/vercel-ignore-build.sh),
     # so the day's data is deployed once, by an empty "[deploy]" commit after
-    # the last scheduled run (15:30 UTC), and after every manual run. Nothing is
-    # pushed when main's head is not a bot data commit (already deployed).
+    # the 15:30 UTC slot (run by Vercel Cron, or by GitHub's late fallback
+    # schedule), and after every manual run. Nothing is pushed when main's head
+    # is not a bot data commit (already deployed).
     needs: [nse-update, bse-update, mcx-update, nse-share-analysis, bse-share-analysis, mcx-share-analysis]
-    if: ${{ always() && (github.event_name == 'workflow_dispatch' || github.event.schedule == '30 15 * * 1-5') }}
+    if: ${{ always() && ((github.event_name == 'workflow_dispatch' && inputs.cron == '') || github.event.schedule == '30 15 * * 1-5' || inputs.cron == '30 15 * * 1-5') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -444,10 +454,17 @@ jobs:
 
     steps:
       - name: Summary
+        env:
+          EVENT: ${{ github.event_name }}
+          SLOT: ${{ github.event.schedule || inputs.cron }}
         run: |
           echo "### Exchange Pipeline Run Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Date:** $(date +%Y-%m-%d)" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$SLOT" ] && [ "$EVENT" = "schedule" ]; then TRIGGER="GitHub schedule (fallback), slot '$SLOT'"
+          elif [ -n "$SLOT" ]; then TRIGGER="Vercel Cron, slot '$SLOT'"
+          else TRIGGER="manual"; fi
+          echo "- **Trigger:** $TRIGGER" >> $GITHUB_STEP_SUMMARY
           echo "- **NSE:** ${{ needs.nse-update.result }}, new days ${{ needs.nse-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **BSE:** ${{ needs.bse-update.result }}, new days ${{ needs.bse-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **MCX:** ${{ needs.mcx-update.result }}, new days ${{ needs.mcx-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY

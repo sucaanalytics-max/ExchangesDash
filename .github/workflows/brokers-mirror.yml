@@ -10,11 +10,17 @@ name: Brokers Mirror
 #      works with a key that can read their schema endpoint, which the publishable key cannot.
 #   3. repository variable ENABLE_BROKERS_MIRROR = true; then it runs every weekday after their job
 # Optional: repository variable BROKERS_SUPABASE_URL if their project moves.
+#
+# Vercel Cron starts both slots on time (dashboard/api/trigger-scheduled.js, workflow_dispatch with
+# mode: mirror). GitHub runs the schedule below hours late, so it is only the fallback; a repeat copy
+# is a harmless upsert. Keep these crons equal to the brokers-mirror slots in that file.
 
 on:
   schedule:
-    # 15:02 UTC Mon–Fri: after their daily job (14:17 UTC) has published
+    # 15:02 UTC Mon–Fri: after their daily job is due (14:17 UTC)
     - cron: '2 15 * * 1-5'
+    # 23:32 UTC Mon–Fri: their job runs on GitHub's schedule too, and has published as late as 22:49 UTC
+    - cron: '32 23 * * 1-5'
   workflow_dispatch:
     inputs:
       mode:

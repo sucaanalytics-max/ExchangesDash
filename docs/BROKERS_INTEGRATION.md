@@ -82,7 +82,8 @@ The shell lives in `dashboard/js/00-core.js` ("BROKERS MODE"). It handles the re
 
 The dashboard reads the broker results from the brokers-dashboard project through
 `/api/brokers`. Separately, `scripts/brokers_mirror.py` (workflow `brokers-mirror.yml`, weekdays
-at 15:02 UTC, after the 14:17 UTC engine run) copies the `sb_*` tables that the publishable key
+at 15:02 and 23:32 UTC, started by Vercel Cron; the engine's job is due at 14:17 UTC but runs on
+GitHub's schedule, which is often hours late) copies the `sb_*` tables that the publishable key
 can read into the ExchangesDash Supabase project (NSE-BSE), with the same names and columns.
 `brokers_mirror_schema.sql` defines the copies. Their schema endpoint refuses the publishable key,
 so `--emit-ddl` cannot generate that file; it comes from the brokers team's catalog (#36, 3 Nov

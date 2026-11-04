@@ -4,6 +4,26 @@
     {
       "path": "/api/trigger-live-polls",
       "schedule": "*/5 3-11 * * 1-5"
+    },
+    {
+      "path": "/api/trigger-scheduled",
+      "schedule": "30 0 * * 1-5"
+    },
+    {
+      "path": "/api/trigger-scheduled",
+      "schedule": "30 12 * * 1-5"
+    },
+    {
+      "path": "/api/trigger-scheduled",
+      "schedule": "30 15 * * 1-5"
+    },
+    {
+      "path": "/api/trigger-scheduled",
+      "schedule": "2 15 * * 1-5"
+    },
+    {
+      "path": "/api/trigger-scheduled",
+      "schedule": "32 23 * * 1-5"
     }
   ],
   "rewrites": [
@@ -42,6 +62,15 @@
     },
     {
       "source": "/api/trigger-live-polls",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
+      ]
+    },
+    {
+      "source": "/api/trigger-scheduled",
       "headers": [
         {
           "key": "Cache-Control",
