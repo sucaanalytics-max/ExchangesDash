@@ -285,7 +285,11 @@ function mtfMeta() {
 // ═══════════════════════════════════════════════════════════════
 
 const MTF_COLORS = { nse: RX.model, bse: RX.rev, combined: RX.ink };
-const MTF_RANGES = [['6m', '6M', 6], ['1y', '1Y', 12], ['3y', '3Y', 36]];
+// Book chart ranges: [key, label, n, unit]. Unit 'd' is the last n reporting
+// days in the series (sessions, not calendar days); 'm' is n calendar months
+// back from the latest reporting day.
+const MTF_RANGES = [['10d', '10D', 10, 'd'], ['20d', '20D', 20, 'd'], ['45d', '45D', 45, 'd'],
+  ['3m', '3M', 3, 'm'], ['6m', '6M', 6, 'm'], ['1y', '1Y', 12, 'm'], ['3y', '3Y', 36, 'm']];
 
 function mtfEmpty(title, why) {
   return `<div class="rx">${rxPanel({ title, body: `<div class="rx-empty"><b>No data yet</b>${why}</div>` })}</div>`;
@@ -322,18 +326,28 @@ function mtfKpis(view, pts) {
   ], 'Latest MTF book');
 }
 
-// Points in the selected range, ending at the latest
+// Points in the selected range (a MTF_RANGES key; unknown keys read as 1Y),
+// ending at the latest
 function mtfInRange(pts, range) {
   if (!pts.length) return pts;
-  const months = (MTF_RANGES.find(r => r[0] === range) || MTF_RANGES[1])[2];
-  const from = mtfMonthsBack(pts[pts.length - 1].date, months);
+  const [, , n, unit] = MTF_RANGES.find(r => r[0] === range) || MTF_RANGES.find(r => r[0] === '1y');
+  if (unit === 'd') return pts.slice(-n);
+  const from = mtfMonthsBack(pts[pts.length - 1].date, n);
   return pts.filter(p => p.date > from);
 }
 
-function mtfDateTick(labels) {
+// Whether a range is short enough to tick by day ("30 Oct") rather than by month
+function mtfRangeIsShort(range) {
+  const r = MTF_RANGES.find(x => x[0] === range);
+  return !!r && (r[3] === 'd' || r[2] <= 3);
+}
+
+// x-axis tick: "Oct 26", or "30 Oct" with byDay
+function mtfDateTick(labels, byDay) {
   return function (val) {
     const iso = labels[val];
-    return iso ? `${MTF_MONTHS[+iso.slice(5, 7) - 1]} ${iso.slice(2, 4)}` : '';
+    if (!iso) return '';
+    return byDay ? `${+iso.slice(8, 10)} ${MTF_MONTHS[+iso.slice(5, 7) - 1]}` : `${MTF_MONTHS[+iso.slice(5, 7) - 1]} ${iso.slice(2, 4)}`;
   };
 }
 
@@ -377,6 +391,8 @@ function mtfBuildBook(el) {
   const draw = () => {
     const shown = mtfInRange(pts, MTF.range);
     const labels = shown.map(p => p.date);
+    const byDay = mtfRangeIsShort(MTF.range);
+    const pointRadius = shown.length <= 45 ? 2 : 0;   // mark each session on the short ranges
     const notes = mtfNotesBetween(view, shown.length ? shown[0].date : null, null);
     el.querySelector('[data-mtf="bookNotes"]').innerHTML = notes.length
       ? `<div class="rx-chart-note mtf-notes">${notes.map(n => rxAlert(`<strong>${rxDate(n.date)}.</strong> ${n.text}`, 'info')).join('')}</div>` : '';
@@ -389,7 +405,7 @@ function mtfBuildBook(el) {
       ? [{ label: 'NSE', data: shown.map(p => p.nse), borderColor: MTF_COLORS.nse, backgroundColor: 'rgba(43,92,200,0.18)', fill: 'origin', stack: 'b' },
          { label: 'BSE', data: shown.map(p => p.bse), borderColor: MTF_COLORS.bse, backgroundColor: 'rgba(196,98,26,0.35)', fill: '-1', stack: 'b' }]
       : [{ label: `${def.name} book`, data: shown.map(p => p.value), borderColor: MTF_COLORS[view], backgroundColor: 'transparent', fill: false }];
-    datasets.forEach(d => Object.assign(d, { borderWidth: 1.6, pointRadius: 0, pointHoverRadius: 3, tension: 0 }));
+    datasets.forEach(d => Object.assign(d, { borderWidth: 1.6, pointRadius, pointHoverRadius: 3, tension: 0 }));
     rxChart('mtfBook', `mtfBookChart-${view}`, 260, {
       type: 'line',
       data: { labels, datasets },
@@ -397,7 +413,7 @@ function mtfBuildBook(el) {
         interaction: { mode: 'index', intersect: false },
         plugins: { tooltip },
         scales: {
-          x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10, callback: mtfDateTick(labels) } },
+          x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10, callback: mtfDateTick(labels, byDay) } },
           y: { stacked: view === 'combined', beginAtZero: view === 'combined', ticks: { callback: v => fmtNum(v, 0) } },
         },
       },
@@ -406,12 +422,12 @@ function mtfBuildBook(el) {
       rxChart('mtfShare', `mtfShareChart-${view}`, 160, {
         type: 'line',
         data: { labels, datasets: [{ label: 'BSE share', data: shown.map(p => (p.value ? p.bse / p.value * 100 : null)),
-          borderColor: MTF_COLORS.bse, borderWidth: 1.6, pointRadius: 0, pointHoverRadius: 3, tension: 0 }] },
+          borderColor: MTF_COLORS.bse, borderWidth: 1.6, pointRadius, pointHoverRadius: 3, tension: 0 }] },
         options: {
           interaction: { mode: 'index', intersect: false },
           plugins: { tooltip: { callbacks: { title: tooltip.callbacks.title, label: c => ` BSE share: ${c.raw.toFixed(2)} %` } } },
           scales: {
-            x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10, callback: mtfDateTick(labels) } },
+            x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10, callback: mtfDateTick(labels, byDay) } },
             y: { ticks: { callback: v => v.toFixed(1) + ' %' } },
           },
         },

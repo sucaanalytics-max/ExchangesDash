@@ -5,11 +5,13 @@ table. The page itself is checked in a browser."""
 
 import json
 import unittest
+from datetime import date, timedelta
 
 from helpers import DASHBOARD, NODE, js_eval
 
-HELPERS = ["MTF_MONTHS", "MTF_NOTES", "mtfQuarterOf", "mtfPeriodOf", "mtfDaysAfter", "mtfMonthsBack", "mtfSeries",
-           "mtfPointOnOrBefore", "mtfChanges", "mtfPeriodRows", "mtfFlowRows", "mtfNotesBetween", "mtfTopRows"]
+HELPERS = ["MTF_MONTHS", "MTF_NOTES", "MTF_RANGES", "mtfQuarterOf", "mtfPeriodOf", "mtfDaysAfter", "mtfMonthsBack",
+           "mtfSeries", "mtfPointOnOrBefore", "mtfChanges", "mtfInRange", "mtfRangeIsShort", "mtfDateTick",
+           "mtfPeriodRows", "mtfFlowRows", "mtfNotesBetween", "mtfTopRows"]
 
 
 def js(expr, data=None):
@@ -122,6 +124,26 @@ class Series(unittest.TestCase):
         short = js("mtfChanges(DATA)", pts(("2026-11-03", 10.0)))
         self.assertEqual((short["d1"], short["m1"], short["y1"]), (None, None, None))
         self.assertIsNone(js("mtfChanges([])"))
+
+    def test_chart_ranges(self):
+        self.assertEqual(js("MTF_RANGES.map(r => r[1])"), ["10D", "20D", "45D", "3M", "6M", "1Y", "3Y"])
+        # a day from the year before, then 120 weekday sessions from 1 Jun to 13 Nov 2026
+        sessions = [d.isoformat() for d in (date(2026, 6, 1) + timedelta(n) for n in range(170)) if d.weekday() < 5][:120]
+        days = ["2025-10-01"] + sessions
+        self.assertEqual(days[-1], "2026-11-13")
+        points = pts(*[(d, float(i)) for i, d in enumerate(days)])
+        sizes = js("['10d', '20d', '45d', '3m', '6m', '1y', '3y', 'nope'].map(k => mtfInRange(DATA, k).length)", points)
+        # day ranges count sessions; month ranges run from the same date n months back (exclusive) to the latest;
+        # an unknown key reads as 1Y
+        self.assertEqual(sizes, [10, 20, 45, 66, 120, 120, 121, 120])
+        self.assertEqual(js("mtfInRange(DATA, '10d').map(p => p.date)", points), days[-10:])
+        self.assertEqual(js("mtfInRange(DATA, '3m')[0].date", points), "2026-08-14")
+        self.assertEqual(js("mtfInRange(DATA, '45d').length", points[:5]), 5)   # fewer sessions than the range
+        self.assertEqual(js("mtfInRange([], '10d')"), [])
+        self.assertEqual(js("['10d', '20d', '45d', '3m', '6m', '1y', '3y'].map(mtfRangeIsShort)"),
+                         [True, True, True, True, False, False, False])
+        self.assertEqual(js("[mtfDateTick(['2026-10-05'], true)(0), mtfDateTick(['2026-10-05'], false)(0),"
+                            " mtfDateTick([], true)(0)]"), ["5 Oct", "Oct 26", ""])
 
     def test_flows(self):
         nse = js("mtfFlowRows(mtfSeries(DATA, 'nse'))", DOC)
