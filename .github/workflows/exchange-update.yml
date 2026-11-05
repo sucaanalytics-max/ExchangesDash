@@ -410,7 +410,8 @@ jobs:
 
   mtf-update:
     # NSE and BSE margin trading (MTF) disclosures → dashboard/data/mtf_daily.json
-    # (every reporting date) and mtf_stocks_latest.json (per security, latest day).
+    # (every reporting date) and mtf_stocks_latest.json (per security, latest day);
+    # nse_mtf_daily.json (NSE's book, {date, book_cr}) is the brokers engine's feed.
     # Runs after the NSE and BSE jobs, whose dashboard JSON lists the trading days.
     # An exchange publishes a day's file the next trading day; every run re-reads
     # the last 10 trading days (NSE revises late submissions) and backfills older
@@ -471,7 +472,7 @@ jobs:
           git config user.name "Research-Tusk"
           git config user.email "research@tuskinvest.com"
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-          for f in dashboard/data/mtf_daily.json dashboard/data/mtf_stocks_latest.json; do
+          for f in dashboard/data/mtf_daily.json dashboard/data/mtf_stocks_latest.json dashboard/data/nse_mtf_daily.json; do
             if [ -f "$f" ]; then git add "$f"; fi
           done
           git diff --cached --quiet || git commit -m "📊 MTF update: $(date +%Y-%m-%d) — ${{ steps.check_new.outputs.new_days }} new day(s)"

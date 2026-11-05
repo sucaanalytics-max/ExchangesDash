@@ -11,8 +11,9 @@ const MTF_MAX_AGE_MS = 15 * 60 * 1000;   // re-fetch the files when a view loads
 
 // Sidebar tabs: label and NAV_ICONS key
 const MTF_TABS = {
+  summary: { label: 'Summary', icon: 'revenue' },
   book:    { label: 'MTF Book', icon: 'share' },
-  periods: { label: 'By Quarter', icon: 'revenue' },
+  periods: { label: 'By Quarter', icon: 'temporal' },
   flows:   { label: 'Flows', icon: 'prediction' },
   stocks:  { label: 'Top Securities', icon: 'advanced' },
 };
@@ -20,9 +21,9 @@ const MTF_TABS = {
 // The views: pill order, exchange series, and their tabs (BSE's flows stop at
 // Sep 2025; there are none to combine)
 const MTF_VIEW_DEFS = [
-  { id: 'combined', name: 'NSE + BSE', pill: 'NSE+BSE', tabs: ['book', 'periods', 'stocks'] },
-  { id: 'nse', name: 'NSE', pill: 'NSE', tabs: ['book', 'periods', 'flows', 'stocks'] },
-  { id: 'bse', name: 'BSE', pill: 'BSE', tabs: ['book', 'periods', 'flows', 'stocks'] },
+  { id: 'combined', name: 'NSE + BSE', pill: 'NSE+BSE', tabs: ['summary', 'book', 'periods', 'stocks'] },
+  { id: 'nse', name: 'NSE', pill: 'NSE', tabs: ['summary', 'book', 'periods', 'flows', 'stocks'] },
+  { id: 'bse', name: 'BSE', pill: 'BSE', tabs: ['summary', 'book', 'periods', 'flows', 'stocks'] },
 ];
 
 // Dated notes on the exchanges' own series. kind 'break': the series changes
@@ -41,10 +42,14 @@ const MTF_NOTES = [
 ];
 
 const MTF_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const MTF_WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+// Summary: the "average of the last 6 months" is this many reporting days ending at the month's last day (the
+// exchanges' Revenue Summary uses the same 125-day window, so a part-month weighs by its days, not as a whole month)
+const MTF_AVG6M_DAYS = 125;
 
 // The files (loaded once, re-fetched after MTF_MAX_AGE_MS), the view on show,
-// and the toggles, which persist across views
-let MTF = { doc: null, stocks: null, at: 0, view: 'combined', range: '1y', gran: 'quarter', built: {} };
+// and the toggles, which persist across views (sel: the Summary's quarter and month)
+let MTF = { doc: null, stocks: null, at: 0, view: 'combined', range: '1y', gran: 'quarter', sel: {}, built: {} };
 
 // ═══════════════════════════════════════════════════════════════
 // PURE HELPERS (tests/test_mtf_dashboard.py runs these in Node)
@@ -57,11 +62,15 @@ function mtfQuarterOf(iso) {
 }
 
 // A period's label, running index (consecutive periods differ by 1) and calendar
-// bounds; gran 'quarter' (Indian FY) or 'month'
+// bounds; gran 'fy' (Indian FY, Apr–Mar), 'quarter' (Indian FY) or 'month'
 function mtfPeriodOf(iso, gran) {
   const y = +iso.slice(0, 4), m = +iso.slice(5, 7);
   const pad = n => String(n).padStart(2, '0');
   const lastDay = (yy, mm) => new Date(Date.UTC(yy, mm, 0)).getUTCDate();
+  if (gran === 'fy') {
+    const fy = m >= 4 ? y + 1 : y;
+    return { label: `FY ${fy}`, idx: fy, start: `${fy - 1}-04-01`, end: `${fy}-03-31` };
+  }
   if (gran === 'month') {
     return { label: `${MTF_MONTHS[m - 1]} ${y}`, idx: y * 12 + m - 1,
       start: `${y}-${pad(m)}-01`, end: `${y}-${pad(m)}-${pad(lastDay(y, m))}` };
@@ -152,7 +161,7 @@ function mtfPeriodRows(points, gran) {
     r.endValue = p.value;
   });
   const rows = [...byIdx.values()].sort((a, b) => a.idx - b.idx);
-  const yearBack = gran === 'month' ? 12 : 4;
+  const yearBack = gran === 'month' ? 12 : gran === 'fy' ? 1 : 4;
   const lastDate = points.length ? points[points.length - 1].date : null;
   const firstDate = points.length ? points[0].date : null;
   return rows.map(r => {
@@ -172,6 +181,65 @@ function mtfPeriodRows(points, gran) {
     }
     return out;
   });
+}
+
+// The Summary tab's tables for a view's points (oldest first, as mtfSeries gives
+// them), laid out like the exchanges' Revenue Summary and the brokers' Summary.
+// Every figure is the average book over the reporting days it covers (the book
+// is a balance: averaged, never summed). A window is { value, first, last, days }.
+//   fy  every FY, newest first; yoy = vs the FY before
+//   q   the selected quarter (sel.q, else the latest), the one before it and the
+//       same quarter a year earlier; qoq / yoy compare the selected one with them
+//   m   the selected month (sel.m, else the latest) and up to 5 before it, each with
+//       mom = vs the month before; avg6 = the last MTF_AVG6M_DAYS reporting days to
+//       the selected month's last day, mo6m = the month vs avg6
+//   w   as of the latest day: last 5, previous 5, last 45 and last 20 reporting days;
+//       wow = last 5 vs previous 5, vs45 = last 5 vs last 45
+//   d   per weekday: its latest day and the average of its last 3 / last 10 days
+//       (the latest included); do3 / do10 = the latest vs those averages
+// Period rows also carry prevFirst / lyFirst (first day of the period compared
+// with) and startsLate (the series begins more than a week into the period).
+// quarters / months: every label, newest first, for the selects.
+function mtfSummary(points, sel = {}) {
+  if (!points.length) return null;
+  const win = ps => (ps.length ? { value: ps.reduce((a, p) => a + p.value, 0) / ps.length,
+    first: ps[0].date, last: ps[ps.length - 1].date, days: ps.length } : null);
+  const chg = (a, b) => (a && b && b.value ? a.value / b.value - 1 : null);
+  const row = r => (r ? { label: r.label, value: r.avg, first: r.first, last: r.last, days: r.days,
+    prevFirst: r.prevFirst, lyFirst: r.lyFirst, startsLate: r.startsLate } : null);
+  const index = rows => ({ byLabel: new Map(rows.map(r => [r.label, r])), byIdx: new Map(rows.map(r => [r.idx, r])) });
+
+  const fy = mtfPeriodRows(points, 'fy').reverse().map(r => ({ ...row(r), yoy: r.chg }));
+
+  const qRows = mtfPeriodRows(points, 'quarter'), qi = index(qRows);
+  const qSel = qi.byLabel.get(sel.q) || qRows[qRows.length - 1];
+  const qPrev = row(qi.byIdx.get(qSel.idx - 1)), qLy = row(qi.byIdx.get(qSel.idx - 4));
+  const q = { key: qSel.label, sel: row(qSel), prev: qPrev, ly: qLy, qoq: chg(row(qSel), qPrev), yoy: chg(row(qSel), qLy) };
+
+  const mRows = mtfPeriodRows(points, 'month'), mi = index(mRows);
+  const mSel = mi.byLabel.get(sel.m) || mRows[mRows.length - 1];
+  const months = [];
+  for (let i = 0; i < 6 && mi.byIdx.get(mSel.idx - i); i++) {
+    const r = mi.byIdx.get(mSel.idx - i);
+    months.push({ ...row(r), mom: r.chg });
+  }
+  const end = points.findIndex(p => p.date === mSel.last);
+  const avg6 = win(points.slice(Math.max(0, end - MTF_AVG6M_DAYS + 1), end + 1));
+  const m = { key: mSel.label, rows: months, avg6, mo6m: chg(row(mSel), avg6) };
+
+  const last5 = win(points.slice(-5)), prev5 = win(points.slice(-10, -5));
+  const last45 = win(points.slice(-45)), last20 = win(points.slice(-20));
+  const w = { last5, prev5, last45, last20, wow: chg(last5, prev5), vs45: chg(last5, last45) };
+
+  const weekday = iso => new Date(iso + 'T00:00:00Z').getUTCDay();   // 1 = Monday
+  const d = MTF_WEEKDAYS.map((day, i) => {
+    const ps = points.filter(p => weekday(p.date) === i + 1);
+    const latest = win(ps.slice(-1)), avg3 = win(ps.slice(-3)), avg10 = win(ps.slice(-10));
+    return { day, latest, avg3, avg10, do3: chg(latest, avg3), do10: chg(latest, avg10) };
+  });
+
+  return { asOf: points[points.length - 1].date, fy, q, m, w, d,
+    quarters: qRows.map(r => r.label).reverse(), months: mRows.map(r => r.label).reverse() };
 }
 
 // Monthly fresh exposure, liquidated exposure and net (fresh − liquidated), in
@@ -260,7 +328,7 @@ function mtfShow(tab) {
   if (MTF.built[tab]) return;
   const el = mtfSection(tab);
   if (!el) return;
-  const builders = { book: mtfBuildBook, periods: mtfBuildPeriods, flows: mtfBuildFlows, stocks: mtfBuildStocks };
+  const builders = { summary: mtfBuildSummary, book: mtfBuildBook, periods: mtfBuildPeriods, flows: mtfBuildFlows, stocks: mtfBuildStocks };
   try {
     builders[tab]?.(el);
     MTF.built[tab] = true;
@@ -348,6 +416,112 @@ function mtfDateTick(labels, byDay) {
     const iso = labels[val];
     if (!iso) return '';
     return byDay ? `${+iso.slice(8, 10)} ${MTF_MONTHS[+iso.slice(5, 7) - 1]}` : `${MTF_MONTHS[+iso.slice(5, 7) - 1]} ${iso.slice(2, 4)}`;
+  };
+}
+
+// ── Summary tab: the workbook-style tables (Revenue Summary / brokers' Summary layout)
+// ₹ Cr cell (#,##0.00, as the workbooks show it); its title says which days it averages
+function mtfXlVal(w) {
+  if (!w) return '<span class="xl-num">—</span>';
+  const span = w.days > 1 ? `${rxDate(w.first)} to ${rxDate(w.last)}` : rxDate(w.first);
+  return `<span class="xl-num" title="${escHtml(`${w.days} reporting day${w.days === 1 ? '' : 's'}: ${span}`)}">${
+    w.value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>`;
+}
+
+// Change cells (0.0 %, green / red as in the workbooks), with a † when measured across a BSE series change
+function mtfXlChg(v, mark = '') {
+  if (v == null || !isFinite(v)) return '<td><span class="xl-chg xl-neu">—</span></td>';
+  return `<td><span class="xl-chg ${v > 0 ? 'xl-pos' : v < 0 ? 'xl-neg' : 'xl-neu'}">${(v * 100).toFixed(1)}%${mark || ''}</span></td>`;
+}
+
+function mtfWireChg(v, mark = '') {
+  if (v == null || !isFinite(v)) return '<td class="wire-delta neutral">—</td>';
+  return `<td class="wire-delta ${v > 0 ? 'positive' : v < 0 ? 'negative' : 'neutral'}">${(v * 100).toFixed(1)}%${mark || ''}</td>`;
+}
+
+function mtfSummaryHTML(view, s) {
+  const mark = (from, to) => mtfBreakMark(view, from, to);
+  const hdr = (cols) => `<tr class="xl-col-hdr">${cols.map(([t, tip]) => `<td${tip ? ` title="${escHtml(tip)}"` : ''}>${t}</td>`).join('')}</tr>`;
+  const label = r => `${escHtml(r.label)}${r.startsLate
+    ? ` <span class="mtf-sum-from" title="${escHtml(`The series starts on ${rxDate(r.first)}, so this period is only partly covered`)}">from ${rxDate(r.first)}</span>` : ''}`;
+  const select = (key, opts, cur, aria) => `<select class="xl-row-sel mtf-sum-sel" data-sel="${key}" aria-label="${aria}">${
+    opts.map(o => `<option${o === cur ? ' selected' : ''}>${escHtml(o)}</option>`).join('')}</select>`;
+  const tr = (cur, cells) => `<tr${cur ? ' class="xl-r-cur"' : ''}>${cells}</tr>`;
+  const plain = (lbl, w) => tr(false, `<td>${lbl}</td><td>${mtfXlVal(w)}</td><td></td><td></td>`);
+
+  const fy = s.fy.map((r, i) => tr(i === 0, `<td>${label(r)}</td><td>${mtfXlVal(r)}</td>${
+    i < s.fy.length - 1 ? mtfXlChg(r.yoy, mark(r.prevFirst, r.last)) : '<td></td>'}<td></td>`)).join('');
+
+  const { q } = s;
+  const qRows = tr(true, `<td>${select('q', s.quarters, q.key, 'Quarter')}</td><td>${mtfXlVal(q.sel)}</td>${
+    mtfXlChg(q.qoq, q.prev && mark(q.prev.first, q.sel.last))}${mtfXlChg(q.yoy, q.ly && mark(q.ly.first, q.sel.last))}`)
+    + (q.prev ? plain(label(q.prev), q.prev) : '') + (q.ly ? plain(label(q.ly), q.ly) : '');
+
+  const { m } = s;
+  const avg6Label = `Avg of last 6 months${m.avg6 && m.avg6.days < MTF_AVG6M_DAYS ? ` (${m.avg6.days} days)` : ''}`;
+  const mRows = m.rows.map((r, i) => tr(i === 0, `<td>${i === 0 ? select('m', s.months, m.key, 'Month') : label(r)}${
+    i === 0 && r.startsLate ? label({ ...r, label: '' }) : ''}</td><td>${mtfXlVal(r)}</td>${
+    mtfXlChg(r.mom, r.prevFirst && mark(r.prevFirst, r.last))}${
+    i === 0 ? mtfXlChg(m.mo6m, m.avg6 && mark(m.avg6.first, r.last)) : '<td></td>'}`)).join('')
+    + tr(false, `<td class="mtf-sum-muted" title="${escHtml(`The last ${MTF_AVG6M_DAYS} reporting days to the month's last day`)}">${avg6Label}</td><td>${mtfXlVal(m.avg6)}</td><td></td><td></td>`);
+
+  const { w } = s;
+  const wRows = tr(true, `<td>Last 5 trading days</td><td>${mtfXlVal(w.last5)}</td>${
+    mtfXlChg(w.wow, w.prev5 && mark(w.prev5.first, w.last5.last))}${mtfXlChg(w.vs45, w.last45 && mark(w.last45.first, w.last5.last))}`)
+    + plain('Previous 5 trading days', w.prev5) + plain('Last 45 trading days', w.last45) + plain('Last 20 trading days', w.last20);
+
+  const period = `<table class="xl-period-table">
+      <colgroup><col class="xl-col-period"><col class="xl-col-val"><col class="xl-col-chg1"><col class="xl-col-chg2"></colgroup>
+      <tbody class="xl-sec">${hdr([['Financial Year'], ['Total', 'Average book over the FY’s reporting days'], ['YoY', 'vs the previous financial year'], ['']])}${fy}</tbody>
+      <tbody class="xl-sec">${hdr([['Quarter&gt;&gt;'], ['Val (In Cr)'], ['QoQ', 'vs the previous quarter'], ['YoY', 'vs the same quarter last year']])}${qRows}</tbody>
+      <tbody class="xl-sec">${hdr([['Month&gt;&gt;'], ['Val (In Cr)'], ['MoM', 'vs the previous month'], ['vs 6M', `vs the average of the last 6 months (${MTF_AVG6M_DAYS} reporting days)`]])}${mRows}</tbody>
+      <tbody class="xl-sec">${hdr([['Week&gt;&gt;'], ['Val (In Cr)'], ['WoW', 'Last 5 trading days vs the 5 before'], ['vs 45D', 'Last 5 trading days vs the last 45']])}${wRows}</tbody>
+    </table>`;
+
+  const days = s.d.filter(x => x.latest).map(x => {
+    const detail = (n, a) => `<tr class="wire-detail"><td>Average of last ${n} ${x.day}s</td><td class="wire-value">${mtfXlVal(a)}</td><td></td><td></td></tr>`;
+    return `<tr class="wire-day-main"><td>${x.day} <span class="mtf-sum-date">${escHtml(rxDate(x.latest.last).slice(0, -5))}</span></td><td class="wire-value">${mtfXlVal(x.latest)}</td>${
+      mtfWireChg(x.do3, mark(x.avg3.first, x.latest.last))}${mtfWireChg(x.do10, mark(x.avg10.first, x.latest.last))}</tr>${detail(3, x.avg3)}${detail(10, x.avg10)}`;
+  }).join('<tr class="wire-day-spacer"><td colspan="4"></td></tr>');
+  const weekday = `<div class="wire-table-scroll"><table class="wire-table weekday-wire-table">
+      <colgroup><col><col><col><col></colgroup>
+      <thead><tr><th>Week&gt;&gt;</th><th>Val (In Cr)</th><th title="The latest such weekday vs the average of the last 3 (itself included)">Do 3D</th><th title="The latest such weekday vs the average of the last 10 (itself included)">Do 10D</th></tr></thead>
+      <tbody>${days}</tbody></table></div>`;
+  return `${period}${weekday}`;
+}
+
+function mtfBuildSummary(el) {
+  const view = MTF.view;
+  const def = mtfDef(view);
+  const pts = mtfSeries(MTF.doc, view);
+  if (!pts.length) { el.innerHTML = mtfEmpty('Summary', 'mtf_daily.json has no days for this view.'); return; }
+  const draw = () => {
+    const s = mtfSummary(pts, MTF.sel);
+    const first = pts[0].date;
+    const breaks = MTF_NOTES.filter(n => n.kind === 'break' && (n.ex === view || (view === 'combined' && n.ex === 'bse')));
+    const excluded = MTF_NOTES.filter(n => n.kind === 'excluded' && (n.ex === view || (view === 'combined' && n.ex === 'bse')));
+    el.innerHTML = `<div class="mtf-sum">
+      <div class="mtf-sum-bar"><span><b>${def.name}</b> · as of <b>${rxDate(s.asOf)}</b> (reporting date)</span>
+        <span>${s.fy.length} financial years · series from ${rxDate(first)}</span></div>
+      <div class="xl-segment mtf-sum-panel">
+        <div class="xl-seg-header">${def.name} MTF book <span class="xl-seg-unit">₹ Cr · average over reporting days</span></div>
+        <div class="xl-main-row">${mtfSummaryHTML(view, s)}</div>
+      </div>
+      <ul class="mtf-sum-notes">
+        <li>Each figure is the average of the daily book over the reporting days it covers; changes compare those averages. Hover a figure for its days.</li>
+        <li>Pick the quarter or the month in its first row; the week and weekday tables run to the latest reporting date.</li>
+        ${view === 'combined' ? '<li>NSE + BSE counts only the dates both exchanges published.</li>' : ''}
+        ${breaks.length ? `<li><span class="mtf-dagger">†</span> measured across a change in BSE’s own series (${breaks.map(n => rxDate(n.date)).join(', ')}); see the notes on the MTF Book tab.</li>` : ''}
+        ${excluded.length ? `<li>Left out: ${excluded.map(n => rxDate(n.date)).join(', ')} (a one-day jump in BSE’s file that reverts).</li>` : ''}
+      </ul>
+    </div>`;
+  };
+  draw();
+  el.onchange = e => {
+    const sel = e.target.closest('.mtf-sum-sel');
+    if (!sel) return;
+    MTF.sel[sel.dataset.sel] = sel.value;
+    draw();
   };
 }
 
@@ -638,6 +812,7 @@ MTF_VIEW_DEFS.forEach(def => registerModeView('mtf', {
   pill: def.pill,
   tabs: def.tabs.map(t => ({ id: t, label: MTF_TABS[t].label, icon: MTF_TABS[t].icon })),
   titles: {
+    summary: `${def.name} MTF book: summary`,
     book: `${def.name} margin trading (MTF) book`,
     periods: `${def.name} MTF book by quarter / month`,
     flows: `${def.name} MTF flows`,

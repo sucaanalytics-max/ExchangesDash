@@ -394,6 +394,20 @@ class Output(unittest.TestCase):
         self.assertEqual(m.flag_spikes(s), [])
         self.assertEqual(s["bse"]["2025-10-20"]["flags"], [])
 
+    def test_nse_feed_for_the_brokers_engine(self):
+        s = self.store()
+        s["nse"]["2026-10-31"] = {"date": "2026-10-31", "closing_cr": 300.0, "flags": ["spike"], "sha256": "d"}
+        s["nse"]["2026-11-02"] = {"date": "2026-11-02", "closing_cr": None, "sha256": "e"}
+        doc = m.nse_feed_doc(s, "t")
+        # the shape src/live/refresh_market.py reads (_rows: a dict's "daily", each row's date and book_cr)
+        self.assertEqual(doc["daily"], [{"date": "2026-10-29", "book_cr": 100.0}, {"date": "2026-10-30", "book_cr": 110.0}])
+        self.assertEqual((doc["unit"], doc["updated_at"]), ("INR crore", "t"))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "nse_mtf_daily.json"
+            self.assertTrue(m.write_if_changed(path, doc))
+            self.assertFalse(m.write_if_changed(path, m.nse_feed_doc(s, "t2")))
+            self.assertIn('\n  {"date": "2026-10-30", "book_cr": 110.0}', path.read_text())
+
     def test_stocks_snapshot_largest_first(self):
         doc = m.stocks_doc({"nse": ("2025-12-29", m.parse_nse_csv(NSE_STANDARD))}, "t")
         self.assertEqual(doc["nse"]["date"], "2025-12-29")
@@ -481,6 +495,10 @@ class WorkflowWiring(unittest.TestCase):
         self.assertIn("python scripts/mtf_pipeline.py", job)
         deploy = self.wf[self.wf.index("\n  deploy:"):self.wf.index("\n  summary:")]
         self.assertIn("mtf-update", deploy)
+
+    def test_brokers_feed_is_committed(self):
+        job = self.wf[self.wf.index("\n  mtf-update:"):self.wf.index("\n  deploy:")]
+        self.assertIn("dashboard/data/nse_mtf_daily.json", job[job.index("Commit MTF data"):])
 
     def test_commit_message_is_a_skipped_bot_commit(self):
         self.assertIn('git commit -m "📊 MTF update: ', self.wf)

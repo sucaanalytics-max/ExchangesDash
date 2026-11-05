@@ -9,9 +9,9 @@ from datetime import date, timedelta
 
 from helpers import DASHBOARD, NODE, js_eval
 
-HELPERS = ["MTF_MONTHS", "MTF_NOTES", "MTF_RANGES", "mtfQuarterOf", "mtfPeriodOf", "mtfDaysAfter", "mtfMonthsBack",
-           "mtfSeries", "mtfPointOnOrBefore", "mtfChanges", "mtfInRange", "mtfRangeIsShort", "mtfDateTick",
-           "mtfPeriodRows", "mtfFlowRows", "mtfNotesBetween", "mtfTopRows"]
+HELPERS = ["MTF_MONTHS", "MTF_WEEKDAYS", "MTF_AVG6M_DAYS", "MTF_NOTES", "MTF_RANGES", "mtfQuarterOf", "mtfPeriodOf",
+           "mtfDaysAfter", "mtfMonthsBack", "mtfSeries", "mtfPointOnOrBefore", "mtfChanges", "mtfInRange",
+           "mtfRangeIsShort", "mtfDateTick", "mtfPeriodRows", "mtfSummary", "mtfFlowRows", "mtfNotesBetween", "mtfTopRows"]
 
 
 def js(expr, data=None):
@@ -62,6 +62,16 @@ class Periods(unittest.TestCase):
         self.assertEqual([(p["label"], p["end"]) for p in month],
                          [("Feb 2024", "2024-02-29"), ("Dec 2024", "2024-12-31"), ("Jan 2025", "2025-01-31")])
         self.assertEqual(month[2]["idx"] - month[1]["idx"], 1)
+
+    def test_financial_years(self):
+        out = js("['2026-03-31', '2026-04-01', '2027-03-31'].map(d => mtfPeriodOf(d, 'fy'))")
+        self.assertEqual([(p["label"], p["idx"], p["start"], p["end"]) for p in out],
+                         [("FY 2026", 2026, "2025-04-01", "2026-03-31"), ("FY 2027", 2027, "2026-04-01", "2027-03-31"),
+                          ("FY 2027", 2027, "2026-04-01", "2027-03-31")])
+        rows = js("mtfPeriodRows(DATA, 'fy')", pts(("2025-06-02", 50.0), ("2026-01-05", 70.0), ("2026-05-04", 90.0)))
+        self.assertEqual([(r["label"], r["avg"], r["days"]) for r in rows], [("FY 2026", 60.0, 2), ("FY 2027", 90.0, 1)])
+        self.assertAlmostEqual(rows[1]["chg"], 0.5)          # vs the FY before
+        self.assertAlmostEqual(rows[1]["yoy"], 0.5)
 
     def test_months_back_clamps_the_day(self):
         out = js("[['2026-03-31', 1], ['2024-03-31', 1], ['2026-01-15', 1], ['2026-11-03', 12], ['2026-11-03', 36]]"
@@ -157,6 +167,82 @@ class Series(unittest.TestCase):
                          [("Sep 2026", False, False), ("Oct 2026", True, False)])
         bse = js("mtfFlowRows(mtfSeries(DATA, 'bse'))", DOC)
         self.assertEqual([(r["label"], r["fresh"]) for r in bse], [("Sep 2025", 2.0)])   # CSV days carry no flows
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class Summary(unittest.TestCase):
+    """The Summary tab's tables, checked against the same averages worked out here."""
+
+    # every weekday from Mon 3 Mar 2025 to Tue 3 Nov 2026, the book rising by 1 a day
+    SESSIONS = [d for d in (date(2025, 3, 3) + timedelta(n) for n in range(611)) if d.weekday() < 5]
+    POINTS = [(d.isoformat(), 100.0 + i) for i, d in enumerate(SESSIONS)]
+
+    @staticmethod
+    def avg(xs):
+        return sum(xs) / len(xs)
+
+    def vals(self, a, b):
+        return [v for d, v in self.POINTS if a <= d <= b]
+
+    def test_period_tables(self):
+        self.assertEqual(self.POINTS[-1][0], "2026-11-03")
+        out = js("mtfSummary(DATA, {q: 'Q2 FY 2027', m: 'Sep 2026'})", pts(*self.POINTS))
+        self.assertEqual(out["asOf"], "2026-11-03")
+        fy = out["fy"]
+        self.assertEqual([r["label"] for r in fy], ["FY 2027", "FY 2026", "FY 2025"])        # newest first
+        self.assertAlmostEqual(fy[0]["value"], self.avg(self.vals("2026-04-01", "2026-11-03")))
+        self.assertAlmostEqual(fy[1]["value"], self.avg(self.vals("2025-04-01", "2026-03-31")))
+        self.assertAlmostEqual(fy[0]["yoy"], fy[0]["value"] / fy[1]["value"] - 1)
+        self.assertEqual((fy[2]["startsLate"], fy[2]["first"], fy[2]["yoy"]), (True, "2025-03-03", None))
+        self.assertEqual(fy[0]["prevFirst"], "2025-04-01")
+
+        q = out["q"]
+        self.assertEqual((q["key"], q["prev"]["label"], q["ly"]["label"]), ("Q2 FY 2027", "Q1 FY 2027", "Q2 FY 2026"))
+        self.assertAlmostEqual(q["sel"]["value"], self.avg(self.vals("2026-07-01", "2026-09-30")))
+        self.assertAlmostEqual(q["qoq"], q["sel"]["value"] / q["prev"]["value"] - 1)
+        self.assertAlmostEqual(q["yoy"], q["sel"]["value"] / self.avg(self.vals("2025-07-01", "2025-09-30")) - 1)
+
+        m = out["m"]
+        self.assertEqual([r["label"] for r in m["rows"]], ["Sep 2026", "Aug 2026", "Jul 2026", "Jun 2026", "May 2026", "Apr 2026"])
+        sep, aug = self.avg(self.vals("2026-09-01", "2026-09-30")), self.avg(self.vals("2026-08-01", "2026-08-31"))
+        self.assertAlmostEqual(m["rows"][0]["value"], sep)
+        self.assertAlmostEqual(m["rows"][0]["mom"], sep / aug - 1)
+        end = [d for d, _ in self.POINTS].index("2026-09-30")
+        window = [v for _, v in self.POINTS[end - 124:end + 1]]                          # 125 days to the month's last
+        self.assertEqual((m["avg6"]["days"], m["avg6"]["last"]), (125, "2026-09-30"))
+        self.assertAlmostEqual(m["avg6"]["value"], self.avg(window))
+        self.assertAlmostEqual(m["mo6m"], sep / self.avg(window) - 1)
+
+        self.assertEqual((out["quarters"][0], out["quarters"][-1]), ("Q3 FY 2027", "Q4 FY 2025"))
+        self.assertEqual((out["months"][0], out["months"][-1]), ("Nov 2026", "Mar 2025"))
+
+    def test_week_and_weekday_tables(self):
+        out = js("mtfSummary(DATA)", pts(*self.POINTS))
+        v = [x for _, x in self.POINTS]
+        w = out["w"]
+        for key, xs in (("last5", v[-5:]), ("prev5", v[-10:-5]), ("last45", v[-45:]), ("last20", v[-20:])):
+            self.assertAlmostEqual(w[key]["value"], self.avg(xs))
+            self.assertEqual(w[key]["days"], len(xs))
+        self.assertAlmostEqual(w["wow"], self.avg(v[-5:]) / self.avg(v[-10:-5]) - 1)
+        self.assertAlmostEqual(w["vs45"], self.avg(v[-5:]) / self.avg(v[-45:]) - 1)
+        self.assertEqual([x["day"] for x in out["d"]], ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"])
+        mondays = [(d, x) for d, x in self.POINTS if date.fromisoformat(d).weekday() == 0]
+        mon = out["d"][0]
+        self.assertEqual(mon["latest"]["last"], "2026-11-02")
+        self.assertAlmostEqual(mon["avg3"]["value"], self.avg([x for _, x in mondays[-3:]]))     # the latest included
+        self.assertAlmostEqual(mon["avg10"]["value"], self.avg([x for _, x in mondays[-10:]]))
+        self.assertAlmostEqual(mon["do3"], mondays[-1][1] / mon["avg3"]["value"] - 1)
+        self.assertEqual(out["d"][2]["latest"]["last"], "2026-10-28")                         # Wednesday
+
+    def test_defaults_and_short_history(self):
+        out = js("mtfSummary(DATA, {q: 'Q9 FY 1999', m: 'nope'})", pts(*self.POINTS))
+        self.assertEqual((out["q"]["key"], out["m"]["key"]), ("Q3 FY 2027", "Nov 2026"))   # unknown → latest
+        early = js("mtfSummary(DATA, {q: 'Q4 FY 2025', m: 'May 2025'})", pts(*self.POINTS))
+        self.assertEqual((early["q"]["prev"], early["q"]["ly"], early["q"]["qoq"]), (None, None, None))
+        self.assertEqual([r["label"] for r in early["m"]["rows"]], ["May 2025", "Apr 2025", "Mar 2025"])
+        self.assertIsNone(early["m"]["rows"][-1]["mom"])
+        self.assertEqual(early["m"]["avg6"]["days"], len(self.vals("2025-03-03", "2025-05-30")))   # fewer than 125
+        self.assertIsNone(js("mtfSummary([])"))
 
 
 @unittest.skipUnless(NODE, "node not installed")

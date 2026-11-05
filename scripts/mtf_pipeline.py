@@ -8,6 +8,11 @@ Writes, after each daily update:
                                          financed, and their sum (₹ Cr)
   dashboard/data/mtf_stocks_latest.json  per-security book on the latest date of each
                                          exchange (₹ lakh, as published)
+  dashboard/data/nse_mtf_daily.json      NSE's closing book per reporting date ({date,
+                                         book_cr}, ₹ Cr): the industry MTF book that the
+                                         brokers engine (abiyani-tools/brokersdashboard,
+                                         src/live/refresh_market.py) reads from this repo
+                                         for Angel One's and Motilal Oswal's MTF revenue
 
 Sources (one file per reporting date, published the next trading day):
   NSE  nsearchives.nseindia.com/content/equities/mrg_trading_DDMMYY.zip — a CSV with
@@ -70,6 +75,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "dashboard" / "data"
 OUT_PATH = DATA_DIR / "mtf_daily.json"
 STOCKS_PATH = DATA_DIR / "mtf_stocks_latest.json"
+NSE_FEED_PATH = DATA_DIR / "nse_mtf_daily.json"
 NEW_DAYS_FILE = ROOT / ".new_mtf_days_count"
 
 NSE_URL = "https://nsearchives.nseindia.com/content/equities/mrg_trading_{ddmmyy}.zip"
@@ -504,6 +510,23 @@ def build_doc(store, updated_at):
     }
 
 
+def nse_feed_doc(store, updated_at):
+    """nse_mtf_daily.json: NSE's closing book per reporting date, oldest first, in the
+    shape the brokers engine reads ({daily: [{date, book_cr}]}; its refresh_market maps
+    book_cr to sb_market_daily mtf_industry/book_cr). The same days as the dashboard's
+    NSE series: a spike day is left out, an unavailable day never stored."""
+    rows = [{"date": d, "book_cr": rec["closing_cr"]} for d, rec in sorted(store["nse"].items())
+            if rec.get("closing_cr") is not None and "spike" not in (rec.get("flags") or [])]
+    return {
+        "updated_at": updated_at,
+        "unit": "INR crore",
+        "source": NSE_URL.replace("{ddmmyy}", "DDMMYY"),
+        "note": "NSE 'Net scripwise outstanding at the end of the day' (closing_cr in mtf_daily.json; NSE's revised "
+                "figures once it republishes a date), keyed on the reporting date. Written by scripts/mtf_pipeline.py.",
+        "daily": rows,
+    }
+
+
 def dumps(obj, level=0):
     """JSON with every element of a list of objects / lists on its own line, so a
     new day is a one-line diff."""
@@ -835,6 +858,7 @@ def main():
         print(f"{ex.upper()} {key}: spike (₹{cur:,.0f} Cr against ₹{prev:,.0f} / ₹{nxt:,.0f} Cr either side)"
               " — flagged, left out of combined")
     wrote = write_if_changed(OUT_PATH, build_doc(store, now_iso))
+    write_if_changed(NSE_FEED_PATH, nse_feed_doc(store, now_iso))
     if latest:
         old = load_json(STOCKS_PATH)
         doc = stocks_doc(latest, now_iso)
