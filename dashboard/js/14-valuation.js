@@ -211,6 +211,89 @@ function valuationFromAdr(adr, v, pe, cmp) {
   return { adr, txn, oi, total, pat, eps, pe, fwd, now, upFwd: fwd && cmp ? fwd / cmp - 1 : null, upNow: now && cmp ? now / cmp - 1 : null };
 }
 
+// ========================
+// TRIANGULATED TARGET — the Excel "BSE" sheet's Summary table
+// ========================
+// Three methods, each Bear / Base / Bull in today's ₹, then a weighted average:
+//   Regression: intercept + slope × ADR (the current quarter's, by default) of
+//     the published 45-session fit; Bear / Bull scale that ADR by ∓ band %.
+//   Ratio: price ÷ 45-session revenue MA, mean ∓ 1σ, × next-FY ADR → next-FY-end
+//     price, discounted to this FY end (d1) and then to today (d2).
+//   ADR model: next-FY ADR × sessions + other income → × PAT margin ÷ shares →
+//     EPS × P/E (Bear / Base / Bull), discounted the same way.
+// Next-FY ADR: the current quarter's ADR grown qoq % each quarter through the
+// next FY's Q4, averaged over that FY's four quarters.
+// The inputs are separate from the FY model above (the Excel keeps them apart:
+// BSE's 51 % margin and other income × 1.15 here, 52 % and a fixed ₹2,055 Cr there).
+const TRIANGULATION_DEFAULTS = {
+  // Excel "BSE" sheet: ADR Estimate (D28:D34), section 3 (D69:F82), Summary (D87:G90)
+  bse: { adr0: null, qoq: 2, regAdr: null, band: 10, days: 247, oiMode: 'fixed', oi: 2055.39, oiG: 15, margin: 51, pe0: 40, pe1: 45, pe2: 50, d1: 18, d2: 9, w0: 20, w1: 40, w2: 40 },
+  // NSE / MCX: the FY model's own assumptions, no growth, the Excel's discounts and weights
+  nse: { adr0: null, qoq: 0, regAdr: null, band: 10, days: 247, oiMode: 'pct', oi: 30, oiG: 0, margin: 55, pe0: 25, pe1: 35, pe2: 45, d1: 18, d2: 9, w0: 20, w1: 40, w2: 40 },
+  mcx: { adr0: null, qoq: 0, regAdr: null, band: 10, days: 257, oiMode: 'fixed', oi: 0, oiG: 0, margin: 50, pe0: 25, pe1: 30, pe2: 35, d1: 18, d2: 9, w0: 20, w1: 40, w2: 40 },
+};
+const triangulationStorageKey = ex => `triangulation_${ex}_v1`;
+
+function loadTriangulationInputs(ex) {
+  const d = { ...TRIANGULATION_DEFAULTS[ex] };
+  try {
+    const saved = JSON.parse(localStorage.getItem(triangulationStorageKey(ex)) || 'null');
+    if (saved) Object.assign(d, saved, { oiMode: d.oiMode });
+  } catch (e) { /* storage blocked or unreadable: defaults */ }
+  return d;
+}
+
+function saveTriangulationInputs(ex, t) {
+  try { localStorage.setItem(triangulationStorageKey(ex), JSON.stringify(t)); } catch (e) { /* storage blocked: not remembered */ }
+}
+
+// "Q3 FY 2027" → { q: 3, fy: 2027 }
+function parseFYQuarter(label) {
+  const m = /^Q([1-4]) FY (\d{4})$/.exec(label || '');
+  return m ? { q: +m[1], fy: +m[2] } : null;
+}
+
+// Quarter-by-quarter ADR from the start quarter to the next FY's Q4, and that FY's average
+function triangulationAdrPath(start, startAdr, qoqPct) {
+  const path = [];
+  let { q, fy } = start, adr = startAdr;
+  while (fy <= start.fy + 1) {
+    path.push({ q, fy, label: `Q${q} FY${String(fy).slice(-2)}`, adr });
+    adr *= 1 + qoqPct / 100;
+    if (++q > 4) { q = 1; fy++; }
+  }
+  const next = path.filter(p => p.fy === start.fy + 1);
+  return { path, fy: start.fy + 1, adr: next.reduce((s, p) => s + p.adr, 0) / next.length };
+}
+
+// t: inputs; adrFY: next-FY ADR; regAdr: ADR fed to the fit; reg: { slope, intercept } or
+// null (fit withheld); ratio: { mean, sd } or null; shares in Cr. Weights are normalised
+// over the methods that have a value, so a missing method drops out of the average.
+function triangulationModel(t, { adrFY, regAdr, reg, ratio, shares }) {
+  const toFYEnd = x => x / (1 + t.d1 / 100);
+  const toToday = x => toFYEnd(x) / (1 + t.d2 / 100);
+  const txn = adrFY * t.days;
+  const pct = Math.min(t.oi, 99.9);
+  const oi = t.oiMode === 'pct' ? txn * pct / (100 - pct) : t.oi * (1 + t.oiG / 100);
+  const total = txn + oi;
+  const pat = total * t.margin / 100;
+  const eps = shares ? pat / shares : null;
+  const fwd = [0, 1, 2].map(i => eps != null ? eps * t['pe' + i] : null);
+  const adr = { adrFY, txn, oi, total, pat, eps, fwd, mid: fwd.map(f => f != null ? toFYEnd(f) : null), now: fwd.map(f => f != null ? toToday(f) : null) };
+  const regVals = reg ? [1 - t.band / 100, 1, 1 + t.band / 100].map(k => reg.intercept + reg.slope * regAdr * k) : null;
+  let ratioM = null;
+  if (ratio) {
+    const k = [ratio.mean - ratio.sd, ratio.mean, ratio.mean + ratio.sd];
+    const f = k.map(x => x * adrFY);
+    ratioM = { k, fwd: f, mid: f.map(toFYEnd), now: f.map(toToday) };
+  }
+  const methods = [['reg', t.w0, regVals], ['ratio', t.w1, ratioM && ratioM.now], ['adr', t.w2, eps != null ? adr.now : null]];
+  const used = methods.filter(([, w, vals]) => vals && w > 0);
+  const wSum = used.reduce((s, [, w]) => s + w, 0);
+  const avg = wSum > 0 ? [0, 1, 2].map(i => used.reduce((s, [, w, vals]) => s + vals[i] * w, 0) / wSum) : null;
+  return { adr, reg: regVals, ratio: ratioM, avg, used: used.map(([k]) => k), wSum, wTotal: t.w0 + t.w1 + t.w2 };
+}
+
 // Rounded axis bounds and tick step for a ₹ range
 function niceRange(lo, hi, ticks = 6) {
   const span = Math.max(hi - lo, 1);
@@ -265,6 +348,29 @@ async function buildValuation(ex) {
   const newest = analysts.reduce((mx, t) => (t.date && (!mx || t.date > mx) ? t.date : mx), null);
   const oldestAge = daysSinceIso(oldest);
 
+  // Triangulated target: the latest quarter in the data starts the ADR path
+  const tDefaults = { ...TRIANGULATION_DEFAULTS[ex] };
+  const t = loadTriangulationInputs(ex);
+  const lastRow = series[series.length - 1];
+  const startQ = parseFYQuarter(lastRow.fy_quarter);
+  // Typed-over ADRs belong to the quarter they were typed in; a new quarter starts from the data
+  if (t.adrQ !== lastRow.fy_quarter) { t.adr0 = null; t.regAdr = null; }
+  t.adrQ = lastRow.fy_quarter;
+  tDefaults.adrQ = lastRow.fy_quarter;
+  const qRows = series.filter(r => r.fy_quarter === lastRow.fy_quarter);
+  const qAdr = qRows.length ? qRows.reduce((s, r) => s + (r.total_rev || 0), 0) / qRows.length : 0;
+  const qFlags = rowsFlags(qRows, 'total');
+  const yy = fy => `FY${String(fy).slice(-2)}`;
+  const qLabel = startQ ? `Q${startQ.q} ${yy(startQ.fy)}` : '';
+  const fy0S = startQ ? yy(startQ.fy) : ctx.fyShort, fy1S = startQ ? yy(startQ.fy + 1) : '';
+  const regWithheld = shareModel ? (shareModel.meth ? !shareModel.meth.fair_value_supported : fv == null) : true;
+  const regFit = shareModel && !regWithheld ? shareModel.reg : null;
+  const regWhy = !shareModel
+    ? (SHARE_DATA?.status === 'collecting' ? `${SHARE_DATA.n_days} of ${SHARE_DATA.min_days_required} sessions collected` : 'no share-price fit')
+    : regWithheld ? `fit withheld: ${(shareModel.meth?.gate_reasons || ['not significant']).join('; ')}` : '';
+  const tEff = key => key === 'adr0' ? (t.adr0 ?? qAdr) : key === 'regAdr' ? (t.regAdr ?? t.adr0 ?? qAdr) : t[key];
+  const tShow = key => key === 'adr0' || key === 'regAdr' ? Math.round(tEff(key) * 100) / 100 : t[key];
+
   const cmpWhen = cmp == null ? 'no price yet' : lat.is_live ? 'live quote' : `close ${fmtTradeDate(lat.date)}`;
   const fyE = `${ctx.fyShort}E`;
   const chip = (kind, label) => rxChip(label, kind);
@@ -288,15 +394,85 @@ async function buildValuation(ex) {
       <tr><td>BSE share</td><td>${fmtPct(mkt.shareFY)}</td><td>${fmtPct(mkt.share45)}</td><td>${fmtPct(mkt.share20)}</td></tr>
       <tr><td>BSE ADR, ₹ Cr</td><td>${fmtNum(mkt.adrFY, 2)}</td><td>${fmtNum(mkt.adr45, 2)}</td><td>${fmtNum(mkt.adr20, 2)}</td></tr></tbody></table></div>` : '';
 
+  const tin = (key, step, aria, w = "") => `<input class="rx-in rx-num-in" type="number" step="${step}" inputmode="decimal" data-tkey="${key}" aria-label="${escHtml(aria)}" value="${tShow(key)}"${w ? ` style="width:${w}"` : ""}>`;
+  const tout = (k, n = 3) => [0, 1, 2].slice(0, n).map(i => `<td data-tout="${k}-${i}"></td>`).join('');
+  const tone = k => `<td colspan="3" class="rx-c" data-tout="${k}"></td>`;
+  const tsrc = k => `<td class="rx-src" data-tsrc="${k}"></td>`;
+  const tcol = html => `<td colspan="3" class="rx-c">${html}</td>`;
+  const triPath = startQ ? triangulationAdrPath(startQ, 0, 0).path : [];
+  const triHTML = startQ ? `
+    ${rxPanel({ title: 'Triangulated target', meta: `today, ₹ per share · three methods, weighted · ${fy1S} ADR from ${qLabel}`,
+      right: '<button type="button" class="rx-link" data-rx="triReset">Reset to defaults</button>',
+      body: `<div class="rx-scroll"><table class="rx-table">
+        <thead><tr><th scope="col">Method</th><th scope="col">Bear</th><th scope="col">Base</th><th scope="col">Bull</th><th scope="col">Weight, %</th><th scope="col" class="rx-l">Basis</th></tr></thead>
+        <tbody>
+          <tr><td>Regression · 45-session fit</td>${tout('reg')}<td>${tin('w0', 5, 'Regression weight')}</td><td class="rx-wrap" data-tsrc="reg"></td></tr>
+          <tr><td>Ratio · price ÷ 45-session MA</td>${tout('ratio')}<td>${tin('w1', 5, 'Ratio weight')}</td><td class="rx-wrap" data-tsrc="ratio"></td></tr>
+          <tr><td>ADR model · P/E × EPS ${fy1S}E</td>${tout('adr')}<td>${tin('w2', 5, 'ADR model weight')}</td><td class="rx-wrap" data-tsrc="adr"></td></tr>
+          <tr class="rx-out"><td>Weighted average</td>${tout('avg')}<td data-tout="wsum"></td><td class="rx-src" data-tsrc="avg"></td></tr>
+          <tr><td>Upside vs CMP</td>${tout('up')}<td></td><td class="rx-src">CMP ${cmp != null ? rxRupee(cmp) : '—'}, ${cmpWhen}</td></tr>
+        </tbody></table></div>`,
+      foot: '<span data-rx="triNote"></span>' })}
+    <div class="rx-row">
+      <section class="rx-panel rx-col-wide" aria-label="ADR model ${fy1S}E">
+        <div class="rx-ph"><h2>ADR model · ${fy1S}E</h2><span class="rx-meta">Feeds the ratio and ADR rows · saved in this browser</span></div>
+        <div class="rx-scroll"><table class="rx-table">
+          <thead><tr><th scope="col">Line</th><th scope="col">Bear</th><th scope="col">Base</th><th scope="col">Bull</th><th scope="col" class="rx-l">Source</th></tr></thead>
+          <tbody>
+            <tr><td>ADR ${fy1S}E, ₹ Cr / session${flagTags(qFlags)}</td>${tone('adrFY')}<td class="rx-src">from the ADR path</td></tr>
+            <tr><td>Trading sessions in ${fy1S}</td>${tcol(tin('days', 1, `Trading sessions in ${fy1S}`))}${tsrc('days')}</tr>
+            <tr><td>Transaction revenue, ₹ Cr</td>${tone('txn')}<td class="rx-src">ADR × sessions</td></tr>
+            ${t.oiMode === 'pct'
+              ? `<tr><td>Other income, % of total income</td>${tcol(tin('oi', 1, 'Other income, % of total income'))}${tsrc('oi')}</tr>
+                 <tr><td>Other income, ₹ Cr</td>${tone('oi')}<td class="rx-src">solved from the %</td></tr>`
+              : `<tr><td>Other income ${fy0S}, ₹ Cr</td>${tcol(tin("oi", 10, `Other income ${fy0S}`, "96px"))}${tsrc('oi')}</tr>
+                 <tr><td>Other income growth to ${fy1S}, %</td>${tcol(tin('oiG', 1, 'Other income growth'))}${tsrc('oiG')}</tr>
+                 <tr><td>Other income ${fy1S}, ₹ Cr</td>${tone('oi')}<td class="rx-src"></td></tr>`}
+            <tr class="rx-sub"><td>Total income, ₹ Cr</td>${tone('total')}<td class="rx-src"></td></tr>
+            <tr><td>PAT margin, %</td>${tcol(tin('margin', 0.5, `PAT margin ${fy1S}`))}${tsrc('margin')}</tr>
+            <tr class="rx-sub"><td>PAT, ₹ Cr</td>${tone('pat')}<td class="rx-src"></td></tr>
+            <tr><td>Shares, Cr</td>${tone('shares')}<td class="rx-src">${sharesChip(ex)} set in the ${ctx.fyShort} model below</td></tr>
+            <tr class="rx-sub"><td>EPS ${fy1S}E, ₹</td>${tone('eps')}<td class="rx-src"></td></tr>
+            <tr><td>P/E, ×</td><td>${tin('pe0', 1, `Bear P/E ${fy1S}`)}</td><td>${tin('pe1', 1, `Base P/E ${fy1S}`)}</td><td>${tin('pe2', 1, `Bull P/E ${fy1S}`)}</td>${tsrc('pe')}</tr>
+            <tr class="rx-sub"><td>Target at ${fy1S} end, ₹</td>${tout('fwd')}<td class="rx-src">EPS × P/E</td></tr>
+            <tr><td>Discount to ${fy0S} end, %</td>${tcol(tin('d1', 0.5, `Discount from ${fy1S} end to ${fy0S} end`))}${tsrc('d1')}</tr>
+            <tr><td>Target at ${fy0S} end, ₹</td>${tout('mid')}<td class="rx-src">÷ (1 + discount)</td></tr>
+            <tr><td>Discount to today, %</td>${tcol(tin('d2', 0.5, `Discount from ${fy0S} end to today`))}${tsrc('d2')}</tr>
+            <tr class="rx-out"><td>Target today, ₹</td>${tout('now')}<td class="rx-src">÷ (1 + discount)</td></tr>
+          </tbody></table></div>
+      </section>
+      ${rxPanel({ cls: 'rx-col-narrow', title: `ADR path to ${fy1S}`, meta: '₹ Cr / session · compounding QoQ',
+        body: `<div class="rx-scroll"><table class="rx-table">
+          <thead><tr><th scope="col">Quarter</th><th scope="col">ADR</th><th scope="col" class="rx-l">Source</th></tr></thead>
+          <tbody>
+            ${triPath.map((p, i) => i === 0
+              ? `<tr><td>${p.label} · to date${flagTags(qFlags)}</td><td>${tin('adr0', 0.1, `${p.label} ADR`)}</td>${tsrc('adr0')}</tr>`
+              : `<tr><td>${p.label}</td><td data-tout="path-${i}"></td><td class="rx-src"></td></tr>`).join('')}
+            <tr class="rx-sub"><td>${fy1S} average</td><td data-tout="pathAvg"></td><td class="rx-src">mean of its four quarters</td></tr>
+            <tr><td>QoQ growth, %</td><td>${tin('qoq', 0.5, 'QoQ ADR growth')}</td>${tsrc('qoq')}</tr>
+          </tbody></table>
+          <table class="rx-table" style="margin-top:10px">
+          <thead><tr><th scope="col">Regression and ratio</th><th scope="col">Value</th><th scope="col" class="rx-l">Source</th></tr></thead>
+          <tbody>
+            <tr><td>Intercept, ₹</td><td data-tout="regA"></td><td class="rx-src" rowspan="2" data-tsrc="fit"></td></tr>
+            <tr><td>Slope, ₹ per ₹ Cr</td><td data-tout="regB"></td></tr>
+            <tr><td>ADR into the fit, ₹ Cr</td><td>${tin('regAdr', 0.1, 'ADR into the regression')}</td>${tsrc('regAdr')}</tr>
+            <tr><td>Bear / Bull ADR band, ± %</td><td>${tin('band', 1, 'Regression ADR band')}</td>${tsrc('band')}</tr>
+            <tr><td>Price ÷ MA, mean ×</td><td data-tout="ratioMean"></td><td class="rx-src" rowspan="2" data-tsrc="ratioFit"></td></tr>
+            <tr><td>Price ÷ MA, σ ×</td><td data-tout="ratioSd"></td></tr>
+          </tbody></table></div>` })}
+    </div>` : '';
+
   el.innerHTML = `<div class="rx">
     ${ex === 'mcx' ? rxAlert('<strong>Placeholder inputs.</strong> There is no MCX valuation baseline in this repo: PAT margin, other income and P/E multiples are round-number placeholders, so these targets are illustrative until you set them.') : ''}
     <section class="rx-kpis" aria-label="Valuation summary" data-rx="kpis"></section>
+    ${triHTML}
     ${rxPanel({ title: 'Valuation range by method', meta: '₹ per share · bars span the range, tick = base or centre',
       right: rxLegend([{ label: 'This model', color: RX.model }, { label: 'Market-based', color: RX.grey }, { label: cmp != null ? `CMP ${rxRupee(cmp)}` : 'CMP', color: RX.neg, kind: 'tick' }]),
       body: '<div class="rx-pb"><div class="rx-ff" data-rx="ff"></div></div>', foot: '<span data-rx="ffNote"></span>' })}
     <div class="rx-row">
-      <section class="rx-panel rx-col-wide" aria-label="Assumptions">
-        <div class="rx-ph"><h2>Assumptions</h2><span class="rx-meta">One model, three scenarios · saved in this browser</span>
+      <section class="rx-panel rx-col-wide" aria-label="${ctx.fyShort} model assumptions">
+        <div class="rx-ph"><h2>${ctx.fyShort} model · assumptions</h2><span class="rx-meta">One model, three scenarios · saved in this browser</span>
           <div class="rx-ph-right"><span class="rx-lbl">Targets as</span>${rxSeg('basis', [['fwd', `${ctx.fyShort} end`], ['now', 'Today (discounted)']], state.basis, 'Target basis')}<button type="button" class="rx-link" data-rx="reset">Reset to defaults</button></div></div>
         <div class="rx-pb" style="padding-bottom:6px">
           <div style="display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center"><span class="rx-lbl">Base ADR from</span>${rxSeg('src', adrSrcOptions, v.src, 'Base ADR method')}</div>
@@ -353,7 +529,75 @@ async function buildValuation(ex) {
     return VALUATION_SCENARIOS.map((s, i) => valuationScenario(ctx, v, v['g' + i], v['pe' + i], cmp));
   }
 
+  function renderTri() {
+    if (!startQ) return null;
+    const a0 = tEff('adr0');
+    const path = triangulationAdrPath(startQ, a0, t.qoq);
+    const regAdr = tEff('regAdr');
+    const tri = triangulationModel(t, { adrFY: path.adr, regAdr, reg: regFit, ratio, shares: v.shares });
+    const set = (k, html) => { const n = el.querySelector(`[data-tout="${k}"]`); if (n) n.innerHTML = html; };
+    const src = (k, html) => { const n = el.querySelector(`[data-tsrc="${k}"]`); if (n) n.innerHTML = html; };
+    const rup = x => x == null || !isFinite(x) ? '—' : fmtNum(x, 0);
+    const upC = x => x == null || !cmp ? '—' : `<span class="${x / cmp - 1 >= 0 ? 'rx-up' : 'rx-dn'}">${rxSignedPct(x / cmp - 1)}</span>`;
+    const disc = `÷ ${fmtNum(1 + t.d1 / 100, 2)} ÷ ${fmtNum(1 + t.d2 / 100, 2)}`;
+    [0, 1, 2].forEach(i => {
+      set(`reg-${i}`, tri.reg ? rup(tri.reg[i]) : '—');
+      set(`ratio-${i}`, tri.ratio ? rup(tri.ratio.now[i]) : '—');
+      set(`adr-${i}`, rup(tri.adr.now[i]));
+      set(`avg-${i}`, tri.avg ? rup(tri.avg[i]) : '—');
+      set(`up-${i}`, tri.avg ? upC(tri.avg[i]) : '—');
+      set(`fwd-${i}`, rup(tri.adr.fwd[i])); set(`mid-${i}`, rup(tri.adr.mid[i])); set(`now-${i}`, rup(tri.adr.now[i]));
+    });
+    set('wsum', `${fmtNum(tri.wTotal, 0)} %`);
+    src('reg', regFit
+      ? `₹${fmtNum(regFit.intercept, 0)} + ${fmtNum(regFit.slope, 1)} × ADR ${fmtNum(regAdr, 2)}, ∓ ${fmtNum(t.band, 0)} % for Bear / Bull`
+      : `<span class="rx-foot">${escHtml(regWhy)}</span>`);
+    src('ratio', tri.ratio
+      ? `${fmtNum(tri.ratio.k[0], 0)} / ${fmtNum(tri.ratio.k[1], 0)} / ${fmtNum(tri.ratio.k[2], 0)} × ${fy1S} ADR ${fmtNum(path.adr, 2)}, ${disc}`
+      : '<span class="rx-foot">no price ÷ MA history</span>');
+    src('adr', tri.adr.eps != null ? `EPS ₹${fmtNum(tri.adr.eps, 2)} × ${fmtNum(t.pe0, 0)} / ${fmtNum(t.pe1, 0)} / ${fmtNum(t.pe2, 0)}, ${disc}` : 'needs a share count');
+    src('avg', tri.wSum && tri.wSum !== tri.wTotal ? `over ${tri.used.length} method${tri.used.length === 1 ? '' : 's'} with a value` : 'Σ weight × target ÷ Σ weight');
+
+    // ADR model and path
+    set('adrFY', fmtNum(path.adr, 2)); set('txn', fmtNum(tri.adr.txn, 0)); set('oi', fmtNum(tri.adr.oi, 0));
+    set('total', fmtNum(tri.adr.total, 0)); set('pat', fmtNum(tri.adr.pat, 0)); set('shares', fmtNum(v.shares, 2));
+    set('eps', tri.adr.eps != null ? fmtNum(tri.adr.eps, 2) : '—');
+    path.path.forEach((p, i) => { if (i) set(`path-${i}`, fmtNum(p.adr, 2)); });
+    set('pathAvg', fmtNum(path.adr, 2));
+    set('regA', regFit ? fmtNum(regFit.intercept, 0) : '—'); set('regB', regFit ? fmtNum(regFit.slope, 2) : '—');
+    set('ratioMean', ratio ? fmtNum(ratio.mean, 1) : '—'); set('ratioSd', ratio ? fmtNum(ratio.sd, 1) : '—');
+    src('fit', regFit ? chip('data', `${SHARE_DATA.ticker} · R² ${fmtNum(regFit.r_squared, 2)}`) : `<span class="rx-foot">${escHtml(regWhy)}</span>`);
+    src('ratioFit', ratio ? chip('data', `fit sessions since ${rxDate(SHARE_DATA.regression_start)}`) : '');
+    const ed = keys => keys.some(k => t[k] !== tDefaults[k] && !(t[k] != null && tDefaults[k] != null && Math.abs(t[k] - tDefaults[k]) < 1e-9));
+    const eChip = keys => ed(keys) ? ' ' + rxChip('Edited', 'edit') : '';
+    const excel = ex === 'bse' ? chip('', 'Excel model') : chip('', 'Excel BSE sheet');
+    const provC = ex === 'bse' ? chip('', 'Excel model') : srcChip();
+    const qoqA = (Math.pow(1 + t.qoq / 100, 4) - 1);
+    src('adr0', (ed(['adr0']) ? rxChip('Edited', 'edit') : chip('data', `${qRows.length} sessions`)));
+    src('regAdr', ed(['regAdr']) ? rxChip('Edited', 'edit') : chip('', `= ${qLabel} ADR`));
+    src('qoq', (ex === 'bse' ? chip('', 'Excel model') : chip('', 'No growth assumed')) + ` ${fmtPct(qoqA)} a year` + eChip(['qoq']));
+    src('days', chip(ctx.prevFYDays && t.days === ctx.prevFYDays ? 'data' : '', ctx.prevFYDays ? `${ctx.prevFY.replace(' ', '')} had ${ctx.prevFYDays}` : 'Assumption') + eChip(['days']));
+    ['oi', 'margin'].forEach(k => src(k, provC + eChip([k])));
+    src('oiG', provC + eChip(['oiG']));
+    src('pe', provC + eChip(['pe0', 'pe1', 'pe2']));
+    ['d1', 'd2', 'band'].forEach(k => src(k, excel + eChip([k])));
+    el.querySelectorAll('input[data-tkey]').forEach(i => {
+      i.classList.toggle('is-edited', ed([i.dataset.tkey]));
+      if (i.dataset.tkey === 'regAdr' && t.regAdr == null && document.activeElement !== i) i.value = tShow('regAdr');
+    });
+
+    const notes = [];
+    if (!regFit) notes.push(`Regression unavailable (${regWhy}); its weight is shared by the other methods.`);
+    if (!ratio) notes.push('No price ÷ MA history for the ratio method.');
+    if (tri.wTotal !== 100) notes.push(`Weights add to ${fmtNum(tri.wTotal, 0)} %; the average divides by the weights used.`);
+    notes.push(`${qLabel} ADR is ${qRows.length} sessions to date and follows the Fees toggle${ex === 'bse' ? ' (the Excel workbook prices at today’s rates, so “At today’s rates” matches it)' : ''}.`);
+    if (ex !== 'bse') notes.push('P/E, margin and other income start from this tab’s FY model; discounts and weights from the Excel BSE sheet.');
+    q('triNote').innerHTML = notes.join(' ');
+    return tri;
+  }
+
   function render() {
+    const tri = renderTri();
     const sc = compute();
     const base = sc[1];
     const pick = s => state.basis === 'now' ? s.now : s.fwd;
@@ -376,21 +620,23 @@ async function buildValuation(ex) {
     el.querySelectorAll('input[data-key]').forEach(i => i.classList.toggle('is-edited', Math.abs(Number(v[i.dataset.key]) - Number(defaults[i.dataset.key])) > 1e-9));
 
     // KPIs
-    const blendParts = [base.now, fv, brokerAvg != null ? brokerAvg / (1 + v.disc / 100) : null].filter(x => x != null && isFinite(x));
-    const blend = blendParts.length ? blendParts.reduce((a, b) => a + b, 0) / blendParts.length : null;
+    const triBase = tri && tri.avg ? tri.avg[1] : null;
+    const triW = tri ? [['regression', t.w0, 'reg'], ['ratio', t.w1, 'ratio'], ['ADR', t.w2, 'adr']].filter(([, , k]) => tri.used.includes(k)).map(([n, w]) => `${n} ${fmtNum(w, 0)}`).join(' · ') : '';
     const range = yr.length ? `${sinceListing ? 'since listing' : '52-week'} ${rxRupee(Math.min(...yr))} – ${fmtNum(Math.max(...yr), 0)}` : cmpWhen;
     q('kpis').innerHTML = [
       rxKpi('CMP', cmp != null ? rxRupee(cmp) : '—', `${cmpWhen}${yr.length ? ' · ' + range : ''}`),
       rxKpi(`EPS ${fyE} · base`, rxRupee(base.eps, 2), `PAT ${rxCr(base.pat, 0)} on ${fmtNum(v.shares, 2)} Cr shares`),
       rxKpi('P/E at CMP', cmp && base.eps ? `${fmtNum(cmp / base.eps, 1)}×` : '—', `vs base multiple ${fmtNum(v.pe1, 0)}×`),
       rxKpi(`Base target · ${basisName}`, rxRupee(pick(base)), up(base) == null ? 'no CMP yet' : `${rxChangeHTML(up(base))} vs CMP`, { accent: true }),
-      blendParts.length > 1
-        ? rxKpi('Blended target · today', rxRupee(blend), cmp ? `${rxChangeHTML(blend / cmp - 1)} · avg of ${['model (today)', fv != null ? 'regression' : null, brokerAvg != null ? 'analysts (discounted)' : null].filter(Boolean).join(', ')}` : 'needs a CMP')
-        : rxKpi('Blended target · today', '—', 'needs a regression fair value or analyst targets beside the model'),
+      triBase != null
+        ? rxKpi('Triangulated target · today', rxRupee(triBase), `${cmp ? rxChangeHTML(triBase / cmp - 1) + ' vs CMP · ' : ''}weights ${triW}`)
+        : rxKpi('Triangulated target · today', '—', 'no method has a value'),
     ].join('');
 
     // Football field
-    const rows = [{ label: 'P/E × EPS', note: `this model · ${basisName}`, lo: pick(sc[0]), mid: pick(base), hi: pick(sc[2]), color: RX.model, midLabel: 'base' }];
+    const rows = [];
+    if (triBase != null) rows.push({ label: 'Triangulated', note: `today · weighted ${fy1S} methods`, lo: tri.avg[0], mid: triBase, hi: tri.avg[2], color: RX.model, midLabel: 'base' });
+    rows.push({ label: 'P/E × EPS', note: `${ctx.fyShort} model · ${basisName}`, lo: pick(sc[0]), mid: pick(base), hi: pick(sc[2]), color: RX.model, midLabel: 'base' });
     if (fv != null) rows.push({ label: 'Regression fair value', note: mape != null ? `${rxRupee(fv)} ± ${mape.toFixed(1)} % holdout error${meth?.holdout && !meth.holdout.beats_naive ? ' · loses to “price unchanged”' : ''}` : 'published fair value', lo: mape != null ? fv * (1 - mape / 100) : fv, mid: fv, hi: mape != null ? fv * (1 + mape / 100) : fv, color: RX.grey, midLabel: 'fair value' });
     else rows.push({ label: 'Regression fair value', note: SHARE_DATA?.status === 'collecting' ? `${SHARE_DATA.n_days} of ${SHARE_DATA.min_days_required} sessions collected` : 'withheld: fit not significant', na: true });
     if (ratio && lastMa) rows.push({ label: 'Price ÷ revenue MA band', note: `mean ± 1σ × MA ₹${fmtNum(lastMa, 2)} Cr`, lo: (ratio.mean - ratio.sd) * lastMa, mid: ratio.mean * lastMa, hi: (ratio.mean + ratio.sd) * lastMa, color: RX.grey, midLabel: 'mean' });
@@ -448,5 +694,25 @@ async function buildValuation(ex) {
   });
   rxOnSeg(el, 'basis', b => { state.basis = b; render(); });
   rxOnSeg(el, 'src', s => { v.src = s; render(); save(); });
+
+  // Triangulated target inputs (data-tkey, saved apart from the FY model's)
+  const tsave = debounce(() => saveTriangulationInputs(ex, t), 400);
+  el.addEventListener('input', e => {
+    const key = e.target.dataset && e.target.dataset.tkey;
+    if (!key) return;
+    const num = parseFloat(e.target.value);
+    if (!isFinite(num)) return;
+    t[key] = num;
+    render();
+    tsave();
+  });
+  el.addEventListener('change', e => { const key = e.target.dataset && e.target.dataset.tkey; if (key) e.target.value = tShow(key); });
+  const triReset = q('triReset');
+  if (triReset) triReset.addEventListener('click', () => {
+    Object.assign(t, tDefaults);
+    el.querySelectorAll('input[data-tkey]').forEach(i => { i.value = tShow(i.dataset.tkey); });
+    try { localStorage.removeItem(triangulationStorageKey(ex)); } catch (e) { /* storage blocked */ }
+    render();
+  });
   render();
 }
