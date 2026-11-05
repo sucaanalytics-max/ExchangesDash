@@ -412,12 +412,13 @@ jobs:
     # NSE and BSE margin trading (MTF) disclosures → dashboard/data/mtf_daily.json
     # (every reporting date) and mtf_stocks_latest.json (per security, latest day);
     # nse_mtf_daily.json (NSE's book, {date, book_cr}) is the brokers engine's feed.
-    # Runs after the NSE and BSE jobs, whose dashboard JSON lists the trading days.
-    # An exchange publishes a day's file the next trading day; every run re-reads
-    # the last 10 trading days (NSE revises late submissions) and backfills older
-    # days, three years back (40 a run, 600 on a manual run, about 20 minutes). A
-    # failed exchange still lets the other one's data be committed; the job then
-    # fails at its last step.
+    # Runs after the NSE and BSE jobs, whose dashboard JSON lists the trading days
+    # (before it starts, 2023-04-03, scripts/trading_calendar.py does). An exchange
+    # publishes a day's file the next trading day; every run re-reads the last 10
+    # trading days (NSE revises late submissions) and backfills older days back to
+    # 1 Apr 2021 (40 a run, 600 on a manual run, about 20 minutes). A failed
+    # exchange still lets the other one's data be committed; the job then fails at
+    # its last step.
     needs: [nse-update, bse-update]
     if: ${{ always() && (github.event_name == 'schedule' || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'mtf') }}
     runs-on: ubuntu-latest
