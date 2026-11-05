@@ -48,8 +48,9 @@ const MTF_WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 const MTF_AVG6M_DAYS = 125;
 
 // The files (loaded once, re-fetched after MTF_MAX_AGE_MS), the view on show,
-// and the toggles, which persist across views (sel: the Summary's quarter and month)
-let MTF = { doc: null, stocks: null, at: 0, view: 'combined', range: '1y', gran: 'quarter', sel: {}, built: {} };
+// and the toggles, which persist across views (sel: the Summary's quarter and month;
+// sumRange: its share chart's range)
+let MTF = { doc: null, stocks: null, at: 0, view: 'combined', range: '1y', sumRange: '1y', gran: 'quarter', sel: {}, built: {} };
 
 // ═══════════════════════════════════════════════════════════════
 // PURE HELPERS (tests/test_mtf_dashboard.py runs these in Node)
@@ -507,6 +508,9 @@ function mtfBuildSummary(el) {
         <div class="xl-seg-header">${def.name} MTF book <span class="xl-seg-unit">₹ Cr · average over reporting days</span></div>
         <div class="xl-main-row">${mtfSummaryHTML(view, s)}</div>
       </div>
+      ${view === 'combined' ? `<div class="rx mtf-sum-share">${rxPanel({ title: 'BSE share of the combined book', meta: '% of NSE + BSE, by reporting date',
+        right: rxSeg('mtfSumRange', MTF_RANGES.map(r => [r[0], r[1]]), MTF.sumRange, 'Chart range'),
+        body: `<div class="rx-pb" style="padding-bottom:6px">${rxCanvas('mtfSumShareChart-combined')}</div><div data-mtf="sumShareNotes"></div>` })}</div>` : ''}
       <ul class="mtf-sum-notes">
         <li>Each figure is the average of the daily book over the reporting days it covers; changes compare those averages. Hover a figure for its days.</li>
         <li>Pick the quarter or the month in its first row; the week and weekday tables run to the latest reporting date.</li>
@@ -515,6 +519,16 @@ function mtfBuildSummary(el) {
         ${excluded.length ? `<li>Left out: ${excluded.map(n => rxDate(n.date)).join(', ')} (a one-day jump in BSE’s file that reverts).</li>` : ''}
       </ul>
     </div>`;
+    if (view !== 'combined') return;
+    const drawShare = () => {
+      const shown = mtfInRange(pts, MTF.sumRange);
+      const notes = mtfNotesBetween(view, shown.length ? shown[0].date : null, null);
+      el.querySelector('[data-mtf="sumShareNotes"]').innerHTML = notes.length
+        ? `<div class="rx-chart-note mtf-notes">${notes.map(n => rxAlert(`<strong>${rxDate(n.date)}.</strong> ${n.text}`, 'info')).join('')}</div>` : '';
+      mtfDrawShare('mtfSumShare', 'mtfSumShareChart-combined', shown, MTF.sumRange);
+    };
+    drawShare();
+    rxOnSeg(el, 'mtfSumRange', v => { MTF.sumRange = v; drawShare(); });
   };
   draw();
   el.onchange = e => {
@@ -592,25 +606,33 @@ function mtfBuildBook(el) {
         },
       },
     });
-    if (view === 'combined') {
-      rxChart('mtfShare', `mtfShareChart-${view}`, 160, {
-        type: 'line',
-        data: { labels, datasets: [{ label: 'BSE share', data: shown.map(p => (p.value ? p.bse / p.value * 100 : null)),
-          borderColor: MTF_COLORS.bse, borderWidth: 1.6, pointRadius, pointHoverRadius: 3, tension: 0 }] },
-        options: {
-          interaction: { mode: 'index', intersect: false },
-          plugins: { tooltip: { callbacks: { title: tooltip.callbacks.title, label: c => ` BSE share: ${c.raw.toFixed(2)} %` } } },
-          scales: {
-            x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10, callback: mtfDateTick(labels, byDay) } },
-            y: { ticks: { callback: v => v.toFixed(1) + ' %' } },
-          },
-        },
-      });
-      rxFixHeight(charts.mtfShare);
-    }
+    if (view === 'combined') mtfDrawShare('mtfShare', `mtfShareChart-${view}`, shown, MTF.range);
   };
   draw();
   rxOnSeg(el, 'mtfRange', v => { MTF.range = v; draw(); });
+}
+
+// BSE's share of the combined book (%), one point per reporting date, for the NSE + BSE
+// view's MTF Book and Summary tabs; `range` (a MTF_RANGES key) sets the ticks and markers
+function mtfDrawShare(key, canvasId, shown, range) {
+  const labels = shown.map(p => p.date);
+  rxChart(key, canvasId, 160, {
+    type: 'line',
+    data: { labels, datasets: [{ label: 'BSE share', data: shown.map(p => (p.value ? p.bse / p.value * 100 : null)),
+      borderColor: MTF_COLORS.bse, borderWidth: 1.6, pointRadius: shown.length <= 45 ? 2 : 0, pointHoverRadius: 3, tension: 0 }] },
+    options: {
+      interaction: { mode: 'index', intersect: false },
+      plugins: { tooltip: { callbacks: {
+        title: items => fmtTradeDate(labels[items[0].dataIndex], true) + ' ' + labels[items[0].dataIndex].slice(0, 4),
+        label: c => ` BSE share: ${c.raw.toFixed(2)} %`,
+      } } },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10, callback: mtfDateTick(labels, mtfRangeIsShort(range)) } },
+        y: { ticks: { callback: v => v.toFixed(1) + ' %' } },
+      },
+    },
+  });
+  rxFixHeight(charts[key]);
 }
 
 // The "About these figures" text: sources, conventions, the days left out and
