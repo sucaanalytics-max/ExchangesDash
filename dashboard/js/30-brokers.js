@@ -19,6 +19,9 @@ let BRK_BROKER = { id: 'ANGELONE', name: 'Angel One', view: 'angel' };
 // engine's extra MTF (net) panel
 const BRK_PANEL_ORDER = ['Consolidated', 'Broking', 'MTF', 'F&O', 'Cash', 'Commodities', 'MTF (net)'];
 const BRK_PANEL_TITLES = { 'Consolidated': 'Consolidated ADR', 'MTF': 'MTF (gross)' };
+// Panels that add several segments (their data ends with the earliest-ending one)
+const BRK_COMBINED_PANELS = new Set(['Consolidated', 'Broking']);
+const BRK_SEGMENT_LABELS = { fo: 'F&O', cash: 'Cash', comm: 'Commodities', mtf_gross: 'MTF', mtf_nii: 'MTF', mtf_net: 'MTF (net)' };
 
 // Brokers whose figures measure something other than Angel One's and Groww's gross
 // brokerage: a note on every tab, panel titles that say so, and per-panel notes
@@ -105,8 +108,9 @@ function brkShow(tab) {
 // A view's meta(): header quarter and "Last Updated"
 function brkMeta() {
   const run = BRK.summary?.run;
+  const mtf = BRK.summary.through?.MTF;
   return run ? { quarter: BRK.summary.periods.Q[0] || '—', updated: fmtLongDate(run.as_of_date),
-    updatedTitle: `As of the published ${run.mode} run ${run.run_id.slice(0, 8)}, ${run.started_at}` }
+    updatedTitle: `As of the published ${run.mode} run ${run.run_id.slice(0, 8)}, ${run.started_at}${mtf ? `; MTF through ${fmtLongDate(mtf.through)}` : ''}` }
     : { quarter: '—', updated: `no ${BRK.mode} run yet`, updatedTitle: BRK.summary?.reason || '' };
 }
 
@@ -262,22 +266,58 @@ function brkPanelHTML(panel) {
   const noteList = notes.length ? `<ol class="brk-notes">${notes.map(n => `<li>${escHtml(n)}</li>`).join('')}</ol>` : '';
   const basis = BRK_BROKER_BASIS[BRK_BROKER.id];
   const title = basis?.titles[panel] || BRK_PANEL_TITLES[panel] || panel;
+  const lag = brkLag(panel);
+  const lagWhen = lag && `${fmtLongDate(lag.through)}, ${brkBehind(lag)} before the run's as-of date, ${fmtLongDate(BRK.summary.run.as_of_date)}`;
+  const combined = lag && BRK_COMBINED_PANELS.has(panel);
+  const lagSeg = combined ? BRK_SEGMENT_LABELS[lag.segment] || lag.segment || 'Data' : 'Data';
+  const lagTip = lag && (combined
+    ? `Its ${lagSeg} data ends on ${lagWhen}. Its figures add those days to later days of its other segments.`
+    : `This panel's data ends on ${lagWhen}.`);
   return `<div class="xl-segment brk-panel" data-panel="${escHtml(panel)}">
-    <div class="xl-seg-header">${escHtml(title)} <span class="xl-seg-unit">₹ Cr · daily avg · ${BRK_BROKER.name}</span></div>
+    <div class="xl-seg-header">${escHtml(title)} <span class="xl-seg-unit">₹ Cr · daily avg · ${BRK_BROKER.name}</span>${lag
+      ? `<span class="brk-lag-badge" title="${escHtml(lagTip)}">${escHtml(lagSeg)} through ${escHtml(fmtLongDate(lag.through))}</span>` : ''}</div>
     ${basis?.panels[panel] ? `<p class="brk-basis brk-basis--panel">${escHtml(basis.panels[panel])}</p>` : ''}
     <div class="xl-main-row">${period}${weekday}</div>
     ${noteList}
   </div>`;
 }
 
+// ── Data through ─────────────────────────────────────────────────────────────
+// A panel's last data day in the run (summary `through` from /api/brokers) when
+// it trails the run's as-of date by a trading day or more; null when current.
+// The engine published runs whose MTF stopped days before the other segments.
+function brkLag(panel) {
+  const t = BRK.summary?.through?.[panel], asOf = BRK.summary?.run?.as_of_date;
+  return t && asOf && t.through < asOf && t.days_behind !== 0 ? t : null;
+}
+
+function brkBehind(t) {
+  return t.days_behind == null ? 'over 120 days' : `${t.days_behind} trading day${t.days_behind === 1 ? '' : 's'}`;
+}
+
+// "MTF through …" for the run bar, and a note when MTF trails the as-of date
+function brkMtfThrough() {
+  const t = BRK.summary?.through?.MTF, run = BRK.summary?.run;
+  if (!t || !run) return { item: '', note: '' };
+  const day = escHtml(fmtLongDate(t.through)), lag = brkLag('MTF');
+  if (!lag) return { item: ` · MTF through <b>${day}</b>`, note: '' };
+  const asOf = escHtml(fmtLongDate(run.as_of_date));
+  return {
+    item: ` · <span class="brk-lag">MTF through <b>${day}</b> (${brkBehind(lag)} behind)</span>`,
+    note: `<p class="brk-lag-note" role="note">This run's MTF data ends on ${day}, ${brkBehind(lag)} before its as-of date, ${asOf}. MTF figures, including the last 5 trading days, end on ${day}; Consolidated adds them to Broking figures that run to ${asOf}.</p>`,
+  };
+}
+
 function brkRunBar() {
   const run = BRK.summary.run;
   const published = run?.started_at ? fmtLongDate(run.started_at.slice(0, 10)) + ' ' + run.started_at.slice(11, 16) + ' UTC' : '—';
+  const mtf = brkMtfThrough();
   return `<div class="brk-runbar">
-    ${run ? `<span><b>${escHtml(BRK_BROKER.name)}</b> · as of <b>${escHtml(fmtLongDate(run.as_of_date))}</b></span>
+    ${run ? `<span><b>${escHtml(BRK_BROKER.name)}</b> · as of <b>${escHtml(fmtLongDate(run.as_of_date))}</b>${mtf.item}</span>
     <span>run <code title="${escHtml(run.run_id)}">${escHtml(run.run_id.slice(0, 8))}</code> · published ${escHtml(published)}</span>
     <span class="brk-legend"><span class="brk-tag brk-tag--act">A</span> Actual: every day in a period ${escHtml(BRK_BROKER.name)} has reported · <span class="brk-tag brk-tag--est">E</span> Estimate: includes projected days after the last reported period · numbered notes say why a figure is missing · all figures are the engine's published values</span>`
     : `<span><b>${escHtml(BRK_BROKER.name)}</b> · no ${BRK.mode} run published yet</span>`}
+    ${mtf.note}
     ${BRK_BROKER_BASIS[BRK_BROKER.id] ? `<p class="brk-basis" role="note">${escHtml(BRK_BROKER_BASIS[BRK_BROKER.id].note)}</p>` : ''}
   </div>`;
 }

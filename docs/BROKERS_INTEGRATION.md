@@ -69,7 +69,9 @@ The shell lives in `dashboard/js/00-core.js` ("BROKERS MODE"). It handles the re
   the browser code. Set `Cache-Control` (`s-maxage`) **identically** in the function and in
   `dashboard/vercel.json`, and never add cache-busting query parameters to `/api/*` URLs.
 - **Numbers:** the front end shows what the engine published (`sb_summary_cells`,
-  `sb_daily_revenue`, `sb_calibration`). It never re-computes ADR. Use the Indian FY (Apr–Mar),
+  `sb_daily_revenue`, `sb_calibration`). It never re-computes ADR. The summary view also returns each
+  panel's last data day (`through`); the run bar shows MTF's, and a panel whose data ends before the
+  run's as-of date is flagged (the engine has published runs whose MTF stopped days early). Use the Indian FY (Apr–Mar),
   ₹ Cr, and `quarterSortKey` to sort quarters.
 - **Checks before opening the PR:**
   - `python3 -m unittest discover -s tests`

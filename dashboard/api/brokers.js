@@ -22,7 +22,12 @@
  *               (sb_summary_cells) with `regime`: 'actual' when every day behind
  *               the figure is a reported-month day in sb_daily_revenue, 'estimate'
  *               when any is projected, null when the figure has no days.
- * daily       → sb_daily_revenue for the run (trade_date, segment, orders, ₹ Cr, regime)
+ *               Also `through`: for each panel, the last trade date of its data in the
+ *               run, the segment that ends there and how many trading days that trails
+ *               the as-of date ({ MTF: { through: '2026-10-19', segment: 'mtf_gross',
+ *               days_behind: 9 }, … }). A panel is as current as its earliest-ending
+ *               segment, so Consolidated ends with MTF.
+ * daily     → sb_daily_revenue for the run (trade_date, segment, orders, ₹ Cr, regime)
  * calibration → sb_calibration for the run
  * calendar    → equity trading days per FY counted from sb_calendar (and the last date it covers)
  * prices      → the broker's daily share closes (sb_share_prices: close, split- and
@@ -156,6 +161,37 @@ function regimeFinder(dailyRecent, projected) {
   };
 }
 
+// Each panel's last data day, from each segment's last day (`last`: segment →
+// 'YYYY-MM-DD', none past the as-of date). A panel is as current as its
+// earliest-ending segment; segments the broker doesn't publish are skipped.
+// days_behind counts the run's trading days (days with F&O or cash rows in
+// `recent`, the window up to the as-of date) after that day; null when the
+// day falls before the window, so the count would be short.
+function panelsThrough(last, recent) {
+  const sessions = [...new Set(recent.filter(r => r.segment === 'fo' || r.segment === 'cash').map(r => r.trade_date))].sort();
+  const out = {};
+  PANEL_ORDER.forEach(panel => {
+    const segs = PANEL_SEGMENTS[panel].filter(s => last[s]).sort((a, b) => last[a].localeCompare(last[b]));
+    if (!segs.length) return;
+    const through = last[segs[0]];
+    out[panel] = { through, segment: segs[0],
+      days_behind: sessions.length && through >= sessions[0] ? sessions.filter(d => d > through).length : null };
+  });
+  return out;
+}
+
+// Each segment's last day up to the as-of date: from the recent window, or, for a
+// segment with no day in it, its own latest row (none: the broker doesn't publish it)
+async function segmentLastDays(run, recent) {
+  const last = {};
+  recent.forEach(r => { if (!(last[r.segment] >= r.trade_date)) last[r.segment] = r.trade_date; });
+  const missing = [...new Set(Object.values(PANEL_SEGMENTS).flat())].filter(s => !last[s]);
+  const found = await Promise.all(missing.map(s =>
+    sb(`sb_daily_revenue?select=trade_date&run_id=eq.${run.run_id}&segment=eq.${s}&trade_date=lte.${run.as_of_date}&order=trade_date.desc&limit=1`)));
+  found.forEach((rows, i) => { if (rows[0]) last[missing[i]] = rows[0].trade_date; });
+  return last;
+}
+
 async function findRun(broker, mode, runId) {
   const filter = runId ? `run_id=eq.${runId}` : `mode=eq.${mode}&status=eq.success&order=started_at.desc&limit=1`;
   const rows = await sb(`sb_runs?select=run_id,broker_id,mode,as_of_date,started_at,finished_at,status,parity_pass,code_version,notes&broker_id=eq.${encodeURIComponent(broker)}&${filter}`);
@@ -182,7 +218,8 @@ async function summary(run) {
   out.forEach(c => keys[c.period_type]?.add(c.period_key));
   const sorted = s => [...s].sort((a, b) => periodKey(b) - periodKey(a));
   const panels = PANEL_ORDER.filter(p => out.some(c => c.panel === p));
-  return { run, panels, periods: { FY: sorted(keys.FY), Q: sorted(keys.Q), M: sorted(keys.M) }, cells: out };
+  const through = panelsThrough(await segmentLastDays(run, recent), recent);
+  return { run, panels, periods: { FY: sorted(keys.FY), Q: sorted(keys.Q), M: sorted(keys.M) }, cells: out, through };
 }
 
 // "Billionbrains Garage Ventures Ltd (Groww)" → "Groww"; "Angel One Ltd" → "Angel One"
@@ -265,3 +302,5 @@ module.exports = async function handler(req, res) {
     return res.status(err.status || 502).json({ error: err.message });
   }
 };
+
+module.exports.panelsThrough = panelsThrough;   // tests/test_brokers_api.py
