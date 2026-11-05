@@ -223,11 +223,22 @@ class Planning(unittest.TestCase):
         self.assertEqual(window, self.DATES[-3:])
         self.assertEqual(older, [date(2026, 10, d) for d in (27, 26, 23, 22)])
 
-    def test_history_starts_three_years_back(self):
-        self.assertEqual(m.history_start(date(2026, 11, 4)), date(2023, 11, 4))
-        self.assertEqual(m.history_start(date(2028, 2, 29)), date(2025, 2, 28))
+    def test_history_starts_in_april_2021(self):
+        self.assertEqual(m.history_start(), date(2021, 4, 1))
         _, older = m.plan_dates(self.DATES, {}, {}, recent=3, backfill=10, start=date(2026, 10, 23))
         self.assertEqual(older, [date(2026, 10, 27), date(2026, 10, 26), date(2026, 10, 23)])
+
+    def test_trading_dates_reach_back_before_the_revenue_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = {"daily_all": [{"date": "2023-04-03"}, {"date": "2023-04-05"}],
+                   "special_sessions": [{"date": "2023-11-12"}]}
+            (Path(tmp) / "nse_dashboard_data.json").write_text(json.dumps(doc))
+            days = [d.isoformat() for d in m.trading_dates("nse", tmp)]
+            self.assertEqual(days[:2], ["2021-04-01", "2021-04-05"])           # Good Friday and the weekend out
+            self.assertEqual(days[-3:], ["2023-04-03", "2023-04-05", "2023-11-12"])
+            self.assertIn("2021-11-04", days)                                  # Muhurat
+            self.assertEqual(len(days), 497 + 3)
+            self.assertEqual(m.trading_dates("bse", tmp), [])                  # no file: no dates
 
     def test_days_read_by_an_older_parser_are_read_again(self):
         records = {"2026-10-26": {"parser": 2}, "2026-10-27": {}}      # no parser key = version 1

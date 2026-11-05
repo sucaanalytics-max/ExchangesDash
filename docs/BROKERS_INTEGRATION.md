@@ -91,7 +91,7 @@ day, so the latest date trails the exchange data by one session.
 `nse_mtf_daily.json`, beside it, is NSE's closing book alone in the shape the engine's
 `src/live/refresh_market.py` already reads for `mtf_industry/book_cr`: `{"daily": [{"date", "book_cr"}]}`.
 It is the same figure as `codex_public_nse_mtf_daily.closing_outstanding_cr` (it matches the engine's four
-check values), needs no key, and has every NSE reporting date the pipeline holds, from 6 Nov 2023. Until
+check values), needs no key, and has every NSE reporting date the pipeline holds (back to April 2021 once the backfill has run). Until
 it existed the engine's industry book stopped at 19 Oct 2026 (the view answered 401 to its key), so
 Angel One's and Motilal Oswal's MTF, and with them Consolidated ADR and the Price tab's latest close,
 stopped there too. If the engine reads the view again: new-style keys (`sb_publishable_…`) go in the

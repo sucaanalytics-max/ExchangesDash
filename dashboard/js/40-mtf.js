@@ -625,8 +625,16 @@ function mtfAboutHTML(view) {
   };
   const left = [];
   exs.forEach(ex => {
-    (doc[ex] || []).filter(r => (r.flags || []).includes('spike')).forEach(r => left.push(`${ex.toUpperCase()} ${rxDate(r.date)}: a one-day jump that reverts`));
-    Object.entries((doc.unavailable || {})[ex] || {}).forEach(([d, why]) => left.push(`${ex.toUpperCase()} ${rxDate(d)}: ${escHtml(why)}`));
+    const rows = doc[ex] || [];
+    const first = rows.reduce((m, r) => (!m || r.date < m ? r.date : m), null);
+    rows.filter(r => (r.flags || []).includes('spike')).forEach(r => left.push(`${ex.toUpperCase()} ${rxDate(r.date)}: a one-day jump that reverts`));
+    // days before the exchange's first file are where its series starts, not gaps in it: one line for them
+    const missing = Object.entries((doc.unavailable || {})[ex] || {});
+    const before = missing.filter(([d]) => first && d < first);
+    missing.filter(([d]) => !first || d >= first).forEach(([d, why]) => left.push(`${ex.toUpperCase()} ${rxDate(d)}: ${escHtml(why)}`));
+    if (before.length) {
+      left.push(`${ex.toUpperCase()} before ${rxDate(first)}: no file for ${before.length} trading day${before.length === 1 ? '' : 's'} back to ${rxDate(before.map(([d]) => d).sort()[0])}, so the series starts on ${rxDate(first)}`);
+    }
   });
   const notes = MTF_NOTES.filter(n => exs.includes(n.ex) && n.kind === 'break');
   return `<div class="rx-pb mtf-about">

@@ -32,6 +32,36 @@ SPECIAL_SESSIONS = [
 
 SESSION_LABELS = {"muhurat": "Muhurat trading", "dr_test": "DR test session"}
 
+# Equity trading days before the NSE / BSE revenue history (which starts 2023-04-03),
+# for the MTF backfill only (scripts/mtf_pipeline.py goes back to 1 Apr 2021): the
+# weekdays from PRE_FY24_FIRST to PRE_FY24_LAST less these NSE / BSE equity holidays,
+# plus the Diwali Muhurat sessions in that span (the exchanges publish an MTF file for
+# a Muhurat day, as for 2023-11-12 and later). Checked against NSE's MTF reporting
+# dates in codex_nse_mtf_daily (23 Nov 2021 – 31 Mar 2023): all 324 are trading days here.
+PRE_FY24_FIRST, PRE_FY24_LAST = "2021-04-01", "2023-04-02"
+PRE_FY24_HOLIDAYS = (
+    "2021-04-02", "2021-04-14", "2021-04-21", "2021-05-13", "2021-07-21", "2021-08-19", "2021-09-10",
+    "2021-10-15", "2021-11-04", "2021-11-05", "2021-11-19",
+    "2022-01-26", "2022-03-01", "2022-03-18", "2022-04-14", "2022-04-15", "2022-05-03", "2022-08-09",
+    "2022-08-15", "2022-08-31", "2022-10-05", "2022-10-24", "2022-10-26", "2022-11-08",
+    "2023-01-26", "2023-03-07", "2023-03-30",
+)
+PRE_FY24_MUHURAT = ("2021-11-04", "2022-10-24")    # Samvat 2078, 2079 (held on a holiday)
+
+
+def equity_days_pre_fy24():
+    """ISO dates of the equity trading days from 1 Apr 2021 to 2 Apr 2023, oldest first."""
+    from datetime import date, timedelta
+    day, last = date.fromisoformat(PRE_FY24_FIRST), date.fromisoformat(PRE_FY24_LAST)
+    holidays, extra = set(PRE_FY24_HOLIDAYS), set(PRE_FY24_MUHURAT)
+    out = []
+    while day <= last:
+        iso = day.isoformat()
+        if (day.weekday() < 5 and iso not in holidays) or iso in extra:
+            out.append(iso)
+        day += timedelta(days=1)
+    return out
+
 
 def special_session(exchange, date_str):
     """The SPECIAL_SESSIONS entry for `exchange` on `date_str`, or None."""

@@ -30,8 +30,9 @@ Sources (one file per reporting date, published the next trading day):
 
 Each run re-reads the last RECENT_DAYS trading days (to pick up revisions; a file
 whose sha256 is unchanged is skipped) and backfills up to MTF_BACKFILL older
-missing days, newest first, back to HISTORY_YEARS before today. Trading days come
-from the NSE / BSE dashboard JSON. An older day the exchange does not serve is
+missing days, newest first, back to HISTORY_START (1 Apr 2021, FY 2022's first day).
+Trading days come from the NSE / BSE dashboard JSON, and before it starts (2023-04-03)
+from trading_calendar.equity_days_pre_fy24(). An older day the exchange does not serve is
 recorded under `unavailable` and asked for again only on a manual run. A stored day
 read by an older parser (its `parser` below PARSER_VERSION) is re-read like a
 missing one, so a parser fix reaches history.
@@ -71,6 +72,8 @@ import zipfile
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from trading_calendar import equity_days_pre_fy24
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "dashboard" / "data"
 OUT_PATH = DATA_DIR / "mtf_daily.json"
@@ -91,7 +94,10 @@ EXCHANGES = ("nse", "bse")
 RECENT_DAYS = 10            # trading days re-read every run (NSE revises within a few days)
 BACKFILL_PER_RUN = 40
 MANUAL_BACKFILL = 600
-HISTORY_YEARS = 3           # how far back the backfill goes
+HISTORY_START = date(2021, 4, 1)   # how far back the backfill goes (FY 2022). BSE's archive serves days
+                                   # from at least 5 Apr 2021 (--compare-bse, 5 Nov 2026); NSE's MTF days
+                                   # in codex_nse_mtf_daily start 23 Nov 2021, and an earlier day NSE
+                                   # does not serve goes under `unavailable`
 PARSER_VERSION = {"nse": 1, "bse": 2}   # bump when a parser fix changes stored figures; bse 2 skips
                                         # totals rows (BSE's archive files end with one)
 PAUSE_S = 0.4               # between requests to the same exchange
@@ -447,22 +453,22 @@ def load_store(path=None):
 
 
 def trading_dates(exchange, data_dir=DATA_DIR):
-    """Every trading date in the exchange's dashboard JSON, special sessions included."""
+    """Every trading date in the exchange's dashboard JSON, special sessions included,
+    and before its first date the equity trading days of trading_calendar (from 1 Apr 2021)."""
     try:
         doc = json.loads((Path(data_dir) / f"{exchange}_dashboard_data.json").read_text())
     except (OSError, ValueError) as e:
         print(f"WARNING: no {exchange} trading dates ({e})")
         return []
     days = {r["date"] for r in doc.get("daily_all", [])} | {r["date"] for r in doc.get("special_sessions", [])}
+    if days:
+        first = min(days)
+        days |= {d for d in equity_days_pre_fy24() if d < first}
     return sorted(date.fromisoformat(x) for x in days)
 
 
-def history_start(today=None, years=HISTORY_YEARS):
-    today = today or date.today()
-    try:
-        return today.replace(year=today.year - years)
-    except ValueError:                          # 29 February
-        return today.replace(year=today.year - years, day=28)
+def history_start():
+    return HISTORY_START
 
 
 def current_days(records, ex):
