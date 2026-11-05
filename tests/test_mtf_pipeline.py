@@ -337,6 +337,48 @@ class Runs(unittest.TestCase):
         self.assertEqual(sorted(store["bse"]), ["2026-01-13", "2026-01-16"])
         self.assertIn("partial file (326 securities", store["unavailable"]["bse"]["2026-01-14"])
 
+    def bse_store(self, securities=5, parser=None, sha="first"):
+        store = empty_store()
+        store["bse"]["2026-09-24"] = {"date": "2026-09-24", "securities": securities, "amount_financed_cr": 13.12,
+                                      "sha256": sha, "fetched_at": "t0", "flags": [],
+                                      "parser": m.PARSER_VERSION["bse"] if parser is None else parser}
+        return store
+
+    def reread(self, store, body):
+        session = FakeSession({"24%2F09%2F2026": Reply(200, body)})
+        return m.run_exchange("bse", session, m.fetch_bse, store, [date(2026, 9, 24)], 5, "t1", pause=lambda s: None)
+
+    def test_a_smaller_bse_reread_keeps_the_stored_copy(self):
+        store = self.bse_store(securities=5)                 # BSE_CSV lists 4: fewer, but not a partial file
+        out = io.StringIO()
+        with unittest.mock.patch("sys.stdout", out):
+            changed, errors, ok, latest = self.reread(store, BSE_CSV.encode())
+        self.assertEqual((changed, errors, ok, latest), ([], 0, 1, None))
+        self.assertEqual((store["bse"]["2026-09-24"]["sha256"], store["bse"]["2026-09-24"]["fetched_at"]), ("first", "t0"))
+        self.assertIn("BSE served a smaller file (4 securities vs 5 stored) — kept the stored copy", out.getvalue())
+        self.assertEqual(store["unavailable"]["bse"], {})
+
+    def test_an_equal_or_larger_bse_reread_replaces(self):
+        store = self.bse_store(securities=4)
+        changed, *_ = self.reread(store, BSE_CSV.encode())
+        self.assertEqual(changed, ["2026-09-24"])
+        self.assertEqual(store["bse"]["2026-09-24"]["fetched_at"], "t1")
+
+    def test_a_parser_upgrade_replaces_even_a_smaller_file(self):
+        store = self.bse_store(securities=5, parser=m.PARSER_VERSION["bse"] - 1)
+        changed, *_ = self.reread(store, BSE_CSV.encode())
+        self.assertEqual(changed, ["2026-09-24"])
+        self.assertEqual(store["bse"]["2026-09-24"]["securities"], 4)
+
+    def test_smaller_reread_rule(self):
+        cur = m.PARSER_VERSION["bse"]
+        old = {"sha256": "a", "securities": 1860, "parser": cur}
+        self.assertTrue(m.smaller_bse_reread(old, {"sha256": "b", "securities": 1857}))
+        self.assertFalse(m.smaller_bse_reread(old, {"sha256": "a", "securities": 1857}))      # same file
+        self.assertFalse(m.smaller_bse_reread(old, {"sha256": "b", "securities": 1860}))      # a revision
+        self.assertFalse(m.smaller_bse_reread(None, {"sha256": "b", "securities": 10}))       # a new day
+        self.assertFalse(m.smaller_bse_reread({**old, "parser": cur - 1}, {"sha256": "b", "securities": 1}))
+
     def test_a_file_served_for_two_dates_moves_both_to_unavailable(self):
         store = empty_store()
         for day, sha in (("2026-01-13", "a"), ("2026-01-14", "same"), ("2026-01-16", "same"), ("2026-01-19", "b")):

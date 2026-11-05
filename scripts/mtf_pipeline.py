@@ -140,6 +140,9 @@ NOTES = [
     "BSE's amount financed and its closing book differ by more than 1 %.",
     "A file an exchange served for more than one date goes under unavailable for each of them (BSE's files "
     "carry no date, so which date it belongs to cannot be told); they are asked for again.",
+    "A BSE day re-read from a file listing fewer securities than the stored one keeps the stored copy: BSE "
+    "serves smaller files for older days (its 23 and 24 Sep 2026 files listed 1,860 and 1,868 securities when "
+    "published, 1,857 and 1,865 when asked again on 4 Nov). A parser upgrade still replaces the stored day.",
 ]
 
 MONTHS = {m: i for i, m in enumerate(
@@ -653,6 +656,16 @@ def flag_spikes(store):
     return flagged
 
 
+def smaller_bse_reread(old, rec):
+    """True when a re-read BSE file lists fewer securities than the stored day read by
+    the current parser: BSE serves smaller files for older days (securities drop out
+    when a day is asked for again later), so the fuller copy stored first is kept. A
+    parser upgrade (stored `parser` older) or an equal or larger file replaces it."""
+    return bool(old and rec and old.get("sha256") != rec.get("sha256")
+                and old.get("parser", 1) >= PARSER_VERSION["bse"]
+                and (rec.get("securities") or 0) < (old.get("securities") or 0))
+
+
 def apply_day(store, ex, d, rec, reason, in_window):
     """Fold one fetch into the store. Returns True if the stored record is new or changed."""
     key = d.isoformat()
@@ -801,6 +814,11 @@ def run_exchange(ex, session, fetch, store, dates, backfill, now_iso, db=None, p
             if why:
                 rec, reason = None, why
         ok += 1
+        if ex == "bse" and rec is not None and smaller_bse_reread(store[ex].get(d.isoformat()), rec):
+            old = store[ex][d.isoformat()]
+            print(f"  {d}: BSE served a smaller file ({rec['securities']} securities vs {old['securities']} stored)"
+                  " — kept the stored copy")
+            continue
         if rec is None:
             print(f"  {d}: {reason}")
         if rec is not None and (latest is None or d.isoformat() > latest[0]):
