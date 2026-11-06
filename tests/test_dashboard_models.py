@@ -119,6 +119,58 @@ class ValuationModel(unittest.TestCase):
         self.assertEqual((js["saved"]["pe1"], js["saved"]["margin"], js["saved"]["disc"]), (47, 52, 18))
 
 
+TRIANGULATION_JS = ["TRIANGULATION_DEFAULTS", "triangulationAdrPath", "triangulationModel"]
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class TriangulatedTarget(unittest.TestCase):
+    """The Excel "BSE" sheet's Summary table (D87:F90), from its own inputs (workbook of 27 Oct 2026)."""
+
+    FIT = {"intercept": 956.0770419049786, "slope": 133.43199031771962}   # D15, E15
+    RATIO = {"mean": 211.41937623512064, "sd": 33.72028359630432}        # 'BSE Reg'!K7, P7
+    Q3_ADR = 22.484593545454544                                          # D28
+
+    def model(self, t_over=None, **kw):
+        args = {"regAdr": 22, "reg": self.FIT, "ratio": self.RATIO, "shares": 40.78841, **kw}
+        expr = """(() => {
+          const path = triangulationAdrPath({ q: 3, fy: 2027 }, DATA.q3, 2);
+          const t = { ...TRIANGULATION_DEFAULTS.bse, oi: 2055.3897222222213, ...DATA.t };   // Q26 unrounded
+          return { path, m: triangulationModel(t, { adrFY: path.adr, ...DATA.args }) };
+        })()"""
+        return js_eval(TRIANGULATION_JS, expr, {"q3": self.Q3_ADR, "t": t_over or {}, "args": args})
+
+    def test_adr_path_to_fy28(self):
+        p = self.model()["path"]
+        self.assertEqual([q["label"] for q in p["path"]], ["Q3 FY27", "Q4 FY27", "Q1 FY28", "Q2 FY28", "Q3 FY28", "Q4 FY28"])
+        self.assertAlmostEqual(p["adr"], 24.104164232823766, places=9)   # D34
+
+    def test_matches_excel_summary(self):
+        js = self.model()["m"]
+        expected = {
+            "reg": (3598.030450195827, 3891.58082889481, 4185.131207593793),    # D87:F87
+            "ratio": (3330.1882389906646, 3962.1267040681896, 4594.065169145715),  # D24:F24
+            "adr": (3234.25211375682, 3638.533627976423, 4042.815142196026),    # D82:F82
+            "avg": (3345.3822311381596, 3818.5802985968076, 4291.778366055455),  # D90:F90
+        }
+        got = {"reg": js["reg"], "ratio": js["ratio"]["now"], "adr": js["adr"]["now"], "avg": js["avg"]}
+        for k, vals in expected.items():
+            for i, x in enumerate(vals):
+                with self.subTest(method=k, scenario=i):
+                    self.assertAlmostEqual(got[k][i], x, places=6)
+        self.assertAlmostEqual(js["adr"]["oi"], 2363.6981805555542, places=6)   # D70
+        self.assertAlmostEqual(js["adr"]["fwd"][1], 4679.881952303275, places=6)   # E75
+
+    def test_withheld_fit_drops_out_of_the_average(self):
+        js = self.model(reg=None)["m"]
+        self.assertIsNone(js["reg"])
+        self.assertEqual(js["used"], ["ratio", "adr"])
+        self.assertAlmostEqual(js["avg"][1], (3962.1267040681896 + 3638.533627976423) / 2, places=6)
+
+    def test_other_income_as_share_of_total(self):
+        js = self.model({"oiMode": "pct", "oi": 30})["m"]
+        self.assertAlmostEqual(js["adr"]["oi"] / js["adr"]["total"], 0.30, places=9)
+
+
 def _day(eod, revs, preds=None):
     cps = {}
     for i, label in enumerate(["10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"]):
