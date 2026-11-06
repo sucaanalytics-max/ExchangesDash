@@ -148,15 +148,26 @@ async function buildBrokersPrice() {
   const ratioNow = last.price / last.rev_ma;
   const z = rs && rs.sd ? (ratioNow - rs.mean) / rs.sd : null;
   const fv = d.meth.fair_value_supported ? d.reg.slope * last.rev_ma + d.reg.intercept : null;
+  // The ratio chart's tooltip shows a second, proportional value (mean ratio × ADR-DMA). The two
+  // agree near the period's average ADR-DMA and part as ADR moves from it, so say so with the figures.
+  const fitMa = rows.filter(r => r.in_fit && r.rev_ma > 0 && r.price > 0).map(r => r.rev_ma);
+  const maMean = fitMa.length ? fitMa.reduce((a, v) => a + v, 0) / fitMa.length : null;
+  const twoValues = fv != null && rs && maMean ? `<p class="rx-foot brk-price-foot">Two fair values, two models. <b>Regression</b> (the tile):
+    ${fmtNum(d.reg.slope, 2)} × ADR-DMA${dma} ${d.reg.intercept >= 0 ? '+' : '−'} ₹${fmtNum(Math.abs(d.reg.intercept), 1)} = ${rxRupee(fv, 0)}.
+    <b>Proportional</b> (the ratio chart): mean ratio ${fmtNum(rs.mean, 2)} × ADR-DMA${dma} = ${rxRupee(rs.mean * last.rev_ma, 0)}.
+    At the period's average ADR-DMA${dma} (${rxCr(maMean, 2)}) they give ${rxRupee(d.reg.slope * maMean + d.reg.intercept, 0)} and ${rxRupee(rs.mean * maMean, 0)};
+    they part as ADR moves away from it, because the regression adds ₹${fmtNum(d.reg.slope, 2)} of price per ₹1 Cr of ADR-DMA and the proportional value ₹${fmtNum(rs.mean, 2)}.
+    Today's ADR-DMA${dma} is ${rxCr(last.rev_ma, 2)}${last.in_fit ? '' : ' and includes projected ADR'}.</p>` : '';
   const partialNote = res.partial ? rxAlert(`<strong>${periodName} is partly covered.</strong> ${escHtml(basisLabel)} ADR starts on ${escHtml(fmtLongDate(adr.start))}, so prices paired with its ${dma}-day average start on ${escHtml(fmtLongDate(res.partial.from))}: ${fmtNum(res.partial.months, 1)} of ${BRK_PRICE_PERIODS.find(p => p[0] === st.period)[2]} months. Every figure below is over that span.`, 'info') : '';
   el.innerHTML = `<div class="brk-wrap">${brkRunBar({ legend: false })}<div class="rx">${controls}${partialNote}
     <section class="rx-kpis" aria-label="Price vs ADR">
       ${rxKpi('Close', rxRupee(last.price, 2), escHtml(fmtLongDate(last.date)))}
       ${rxKpi(`ADR-DMA${dma}`, rxCr(last.rev_ma, 2), `${escHtml(basisLabel)} · to the session before`)}
       ${rxKpi('Price ÷ ADR-DMA', fmtNum(ratioNow, 1), rs ? `mean ${fmtNum(rs.mean, 1)} · ${z == null ? '' : `${z >= 0 ? '+' : '−'}${Math.abs(z).toFixed(1)}σ`} over ${periodLabel}` : 'no in-fit days')}
-      ${rxKpi(`Fair value · ${periodLabel}`, fv == null ? '—' : rxRupee(fv, 0), fv == null ? `not supported: ${escHtml(d.meth.gate_reasons[0] || 'gate failed')}` : `${rxChangeHTML(fv / last.price - 1)} vs close`, { accent: true })}
+      ${rxKpi(`Fair value (regression) · ${periodLabel}`, fv == null ? '—' : rxRupee(fv, 0), fv == null ? `not supported: ${escHtml(d.meth.gate_reasons[0] || 'gate failed')}` : `${rxChangeHTML(fv / last.price - 1)} vs close`, { accent: true })}
       ${rxKpi('R²', fmtNum(d.reg.r_squared, 2), `${fmtNum(d.n, 0)} sessions in the fit`)}
     </section>
+    ${twoValues}
     ${rxPanel({ title: 'Price ÷ ADR-DMA', meta: `${periodLabel} · mean and ±1σ / ±2σ of the in-fit days`, body: `<div class="rx-pb">${rxCanvas(id('ratio'))}<div data-brk-leg="ratio"></div></div>` })}
     <div class="rx-row">
       ${rxPanel({ cls: 'rx-col-wide', title: 'Price vs ADR-DMA', meta: escHtml(d.reg.equation.replace('Rev_MA', 'ADR_DMA')), body: `<div class="rx-pb">${rxCanvas(id('scatter'))}<div data-brk-leg="scatter"></div></div>` })}
@@ -190,7 +201,7 @@ async function buildBrokersPrice() {
           callbacks: {
             title: dateTitle,
             label: ctx => { const zz = (ctx.raw - rs.mean) / rs.sd; return ` Ratio ${fmtNum(ctx.raw, 1)} (${zz >= 0 ? '+' : '−'}${Math.abs(zz).toFixed(1)}σ)${rows[ctx.dataIndex].in_fit ? '' : ' · includes projected ADR'}`; },
-            footer: items => `At the mean ratio: ₹${fmtNum(rs.mean * rows[items[0].dataIndex].rev_ma, 0)}`,
+            footer: items => `Proportional value (mean ratio × ADR-DMA): ₹${fmtNum(rs.mean * rows[items[0].dataIndex].rev_ma, 0)}`,
           },
         } },
         scales: { x: { grid: { display: false }, afterBuildTicks: brkMonthTicks(rows.map(r => r.date), 6), ticks: { maxTicksLimit: 6, maxRotation: 0, autoSkip: true } }, y: { ticks: { callback: v => fmtNum(v, 0) } } },
