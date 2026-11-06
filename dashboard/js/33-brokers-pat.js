@@ -67,7 +67,7 @@ async function buildBrokersPat() {
   }
   const pat = BRK.pat, name = escHtml(BRK_BROKER.name);
   if (!pat.run || !pat.rows.length) {
-    el.innerHTML = `<div class="brk-wrap">${summary.run ? brkRunBar() : ''}<div class="chart-panel brk-norun" role="status">
+    el.innerHTML = `<div class="brk-wrap">${summary.run ? brkRunBar({ legend: false }) : ''}<div class="chart-panel brk-norun" role="status">
       <b>No PAT model published for ${name} yet.</b>
       <p>${escHtml(pat.reason || '')}. The brokers-dashboard engine publishes it to <code>sb_pat_lines</code> after each ${escHtml(BRK.mode)} ADR run; nothing is estimated on this page in the meantime.</p></div></div>`;
     return;
@@ -151,7 +151,7 @@ async function buildBrokersPat() {
     <tbody>${lines.filter(l => projCols.some(c => pl[l][c]?.rule)).map(l => `<tr><td class="rx-l">${escHtml(Object.values(pl[l])[0].label)}</td>${projCols.map(c => `<td class="rx-l rx-wrap">${escHtml(pl[l][c]?.rule || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
     <p class="rx-foot">Shares: ${escHtml(pl.shares?.[fy2]?.rule || '—')}. Share price: ${escHtml(closeRow?.rule || '—')}. The assumptions (growth rates, cost rules, P/E bands, discount rates) are rows of <code>sb_assumptions</code> in the brokers-dashboard project, each naming its workbook cell.</p>`);
 
-  el.innerHTML = `<div class="brk-wrap">${summary.run ? brkRunBar() : ''}<div class="rx">
+  el.innerHTML = `<div class="brk-wrap">${summary.run ? brkRunBar({ legend: false }) : ''}<div class="rx">
     ${rxAlert(`<strong>PAT model, as the engine published it.</strong> ${filed.length ? `${escHtml(filed.join(' and '))} are ${name}'s filed consolidated results; ` : ''}the rest of ${escHtml(fy1)} and ${escHtml(fy2)} are projected from the engine's ADR (run <code title="${escHtml(pat.run.run_id)}">${escHtml(pat.run.run_id.slice(0, 8))}</code>, as of ${escHtml(fmtLongDate(pat.run.as_of_date))})${sameRun ? '' : ', an earlier run than the ADR tabs show: the PAT step has not published for the latest run yet'}. This page computes nothing.`, 'info')}
     <section class="rx-kpis" aria-label="PAT summary">${kpis}</section>
     ${valuation}

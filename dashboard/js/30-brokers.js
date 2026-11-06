@@ -310,14 +310,28 @@ function brkMtfThrough() {
   };
 }
 
-function brkRunBar() {
+// afterBuildTicks for a daily category axis labelled by month (fmtChartDate): ticks only on
+// each month's first trading day in `dates` (ISO, ascending), every n-th month so at most
+// `max` remain. Chart.js labels ticks before it skips them, so with plain autoSkip two
+// surviving ticks can fall in one month and show the same "Jun-26". The first date only
+// starts a month here if it is not the tail of an earlier one, so it never crowds the next.
+function brkMonthTicks(dates, max) {
+  const starts = dates.reduce((a, d, i) => (i > 0 && d.slice(0, 7) !== dates[i - 1].slice(0, 7) ? a.concat(i) : a), []);
+  const step = Math.max(1, Math.ceil(starts.length / max));
+  const keep = new Set(starts.filter((_, k) => k % step === 0));
+  return scale => { scale.ticks = scale.ticks.filter(t => keep.has(t.value)); };
+}
+
+// The A / E legend describes the tags on the Summary, Daily ADR and Calibration
+// tabs; tabs without those tags (Price vs ADR, F&O vs Exchanges, PAT) pass legend: false
+function brkRunBar({ legend = true } = {}) {
   const run = BRK.summary.run;
   const published = run?.started_at ? fmtLongDate(run.started_at.slice(0, 10)) + ' ' + run.started_at.slice(11, 16) + ' UTC' : '—';
   const mtf = brkMtfThrough();
   return `<div class="brk-runbar">
     ${run ? `<span><b>${escHtml(BRK_BROKER.name)}</b> · as of <b>${escHtml(fmtLongDate(run.as_of_date))}</b>${mtf.item}</span>
     <span>run <code title="${escHtml(run.run_id)}">${escHtml(run.run_id.slice(0, 8))}</code> · published ${escHtml(published)}</span>
-    <span class="brk-legend"><span class="brk-tag brk-tag--act">A</span> Actual: every day in a period ${escHtml(BRK_BROKER.name)} has reported · <span class="brk-tag brk-tag--est">E</span> Estimate: includes projected days after the last reported period · numbered notes say why a figure is missing · all figures are the engine's published values</span>`
+    ${legend ? `<span class="brk-legend"><span class="brk-tag brk-tag--act">A</span> Actual: every day in a period ${escHtml(BRK_BROKER.name)} has reported · <span class="brk-tag brk-tag--est">E</span> Estimate: includes projected days after the last reported period · numbered notes say why a figure is missing · all figures are the engine's published values</span>` : ''}`
     : `<span><b>${escHtml(BRK_BROKER.name)}</b> · no ${BRK.mode} run published yet</span>`}
     ${mtf.note}
     ${BRK_BROKER_BASIS[BRK_BROKER.id] ? `<p class="brk-basis" role="note">${escHtml(BRK_BROKER_BASIS[BRK_BROKER.id].note)}</p>` : ''}

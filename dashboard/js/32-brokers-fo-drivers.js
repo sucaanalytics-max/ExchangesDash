@@ -92,7 +92,7 @@ function brkFoBridge(rows, wd, n) {
 async function buildBrokersFo() {
   const el = brkSection('fo'), summary = BRK.summary, st = BRK.foView;
   if (!el) return;
-  if (!summary.run) { el.innerHTML = `<div class="brk-wrap">${brkRunBar()}${brkNoRunHTML()}</div>`; return; }
+  if (!summary.run) { el.innerHTML = `<div class="brk-wrap">${brkRunBar({ legend: false })}${brkNoRunHTML()}</div>`; return; }
   if (!BRK.daily || !BRK_FO_EXCH) {
     el.innerHTML = '<div class="brk-wrap"><div class="brk-empty">Loading daily F&O revenue and exchange data…</div></div>';
     try {
@@ -104,7 +104,7 @@ async function buildBrokersFo() {
   const name = escHtml(BRK_BROKER.name), view = BRK_BROKER.view;
   const all = brkFoRows(BRK.daily.rows, BRK_FO_EXCH);
   if (all.length < 20) {
-    el.innerHTML = `<div class="brk-wrap">${brkRunBar()}<div class="brk-empty">Too few days with both ${name}'s F&O revenue and NSE + BSE data to compare.</div></div>`;
+    el.innerHTML = `<div class="brk-wrap">${brkRunBar({ legend: false })}<div class="brk-empty">Too few days with both ${name}'s F&O revenue and NSE + BSE data to compare.</div></div>`;
     return;
   }
   const months = BRK_FO_PERIODS.find(p => p[0] === st.period)[2];
@@ -122,7 +122,7 @@ async function buildBrokersFo() {
     <div><div class="rx-lbl">Single days</div>${rxSeg('brkFoDots', [['off', 'Hide'], ['on', 'Show']], st.dots ? 'on' : 'off', 'Single days')}</div>
   </div>`;
   if (rows.length < 5) {   // keep the controls, so the viewer can pick a longer period or all days
-    el.innerHTML = `<div class="brk-wrap">${brkRunBar()}<div class="rx">${controls}<div class="brk-empty">Too few ${escHtml(BRK_FO_DAYS.find(d => d[0] === st.days)[1].toLowerCase())} in this period. Pick a longer period or all days.</div></div></div>`;
+    el.innerHTML = `<div class="brk-wrap">${brkRunBar({ legend: false })}<div class="rx">${controls}<div class="brk-empty">Too few ${escHtml(BRK_FO_DAYS.find(d => d[0] === st.days)[1].toLowerCase())} in this period. Pick a longer period or all days.</div></div></div>`;
     brkFoListeners(el.firstElementChild);
     return;
   }
@@ -169,7 +169,7 @@ async function buildBrokersFo() {
       <table class="rx-table"><caption class="rx-l rx-foot">vs average of last 10</caption>${bridgeHead}<tbody>${bridgeRows(10)}</tbody></table></div>`,
     foot: 'Columns: NSE + BSE F&O revenue; contracts per ₹ of that revenue; NSE + BSE contracts; the engine\'s rate per contract (k); the broker\'s F&O revenue. Each row multiplies out exactly: (1 + exchange) × (1 + contracts per ₹ of exchange revenue) = 1 + contracts, and × (1 + rate per contract) = 1 + broker. The rate per contract moves only when the window spans a month or quarter end (a new k). Hover a weekday for the dates used.' });
 
-  el.innerHTML = `<div class="brk-wrap">${brkRunBar()}<div class="rx">${controls}
+  el.innerHTML = `<div class="brk-wrap">${brkRunBar({ legend: false })}<div class="rx">${controls}
     <p class="rx-foot brk-price-foot">${name} F&amp;O: the engine's published daily revenue. Exchanges: NSE + BSE F&amp;O revenue (${fees}), F&amp;O contracts and options premium from the exchange data. Days on which either side has no figure are left out.</p>
     ${rxPanel({ title: 'Why the two revenues differ', meta: 'the identity behind this tab', body: identity })}
     ${kpis}
@@ -193,7 +193,7 @@ async function buildBrokersFo() {
 
   const labels = rows.map(r => fmtChartDate(r.date));
   const dateTitle = items => `${rxDate(rows[items[0].dataIndex].date)} · ${BRK_FO_WEEKDAYS[rows[items[0].dataIndex].wd] || ''}`;
-  const xAxis = { grid: { display: false }, ticks: { maxTicksLimit: 7, maxRotation: 0, autoSkip: true } };
+  const xAxis = { grid: { display: false }, afterBuildTicks: brkMonthTicks(rows.map(r => r.date), 7), ticks: { maxTicksLimit: 7, maxRotation: 0, autoSkip: true } };
 
   // A and B share the x axis and fixed axis widths, so a date sits at the same x in both
   const fixW = { afterFit: sc => { sc.width = 64; } };

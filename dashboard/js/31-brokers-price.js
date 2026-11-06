@@ -83,7 +83,7 @@ function brkPriceModel(adr, prices, dma, months) {
 
 async function buildBrokersPrice() {
   const el = brkSection('price'), summary = BRK.summary, st = BRK.priceView;
-  if (!summary.run) { el.innerHTML = `<div class="brk-wrap">${brkRunBar()}${brkNoRunHTML()}</div>`; return; }
+  if (!summary.run) { el.innerHTML = `<div class="brk-wrap">${brkRunBar({ legend: false })}${brkNoRunHTML()}</div>`; return; }
   if (!BRK.daily || !BRK.prices) {
     el.innerHTML = '<div class="brk-wrap"><div class="brk-empty">Loading daily ADR and share prices…</div></div>';
     let daily, prices;
@@ -96,7 +96,7 @@ async function buildBrokersPrice() {
   const view = BRK_BROKER.view, name = escHtml(BRK_BROKER.name);
   const prices = BRK.prices.prices.filter(p => p.close > 0).map(p => ({ date: p.trade_date, price: p.close }));
   if (!prices.length) {
-    el.innerHTML = `<div class="brk-wrap">${brkRunBar()}<div class="chart-panel brk-norun" role="status">
+    el.innerHTML = `<div class="brk-wrap">${brkRunBar({ legend: false })}<div class="chart-panel brk-norun" role="status">
       <b>No share prices published for ${name} yet.</b>
       <p>The brokers-dashboard engine stores daily closes in <code>sb_share_prices</code>; this tab fills in once it has ${name}'s (ticker ${escHtml(BRK_BROKER.id)}).</p></div></div>`;
     return;
@@ -135,7 +135,7 @@ async function buildBrokersPrice() {
     foot: 'A fair value is published only when ExchangesDash\'s gate passes: ≥ 60 sessions, a positive slope with Newey-West t ≥ 2, and an ADR-DMA that moved ≥ 10 % over the period.' });
 
   if (res.status !== 'ok') {
-    el.innerHTML = `<div class="brk-wrap">${brkRunBar()}<div class="rx">${controls}
+    el.innerHTML = `<div class="brk-wrap">${brkRunBar({ legend: false })}<div class="rx">${controls}
       ${rxAlert(`<strong>Insufficient history for ${periodName}.</strong> ${res.from ? `Prices paired with the ${dma}-day ADR average start on ${escHtml(fmtLongDate(res.from))}` : 'There are no prices paired with this ADR'}, so this period is not covered. Pick a shorter period.`)}
       ${horizonPanel}</div></div>`;
     brkPriceListeners(el.firstElementChild);
@@ -149,7 +149,7 @@ async function buildBrokersPrice() {
   const z = rs && rs.sd ? (ratioNow - rs.mean) / rs.sd : null;
   const fv = d.meth.fair_value_supported ? d.reg.slope * last.rev_ma + d.reg.intercept : null;
   const partialNote = res.partial ? rxAlert(`<strong>${periodName} is partly covered.</strong> ${escHtml(basisLabel)} ADR starts on ${escHtml(fmtLongDate(adr.start))}, so prices paired with its ${dma}-day average start on ${escHtml(fmtLongDate(res.partial.from))}: ${fmtNum(res.partial.months, 1)} of ${BRK_PRICE_PERIODS.find(p => p[0] === st.period)[2]} months. Every figure below is over that span.`, 'info') : '';
-  el.innerHTML = `<div class="brk-wrap">${brkRunBar()}<div class="rx">${controls}${partialNote}
+  el.innerHTML = `<div class="brk-wrap">${brkRunBar({ legend: false })}<div class="rx">${controls}${partialNote}
     <section class="rx-kpis" aria-label="Price vs ADR">
       ${rxKpi('Close', rxRupee(last.price, 2), escHtml(fmtLongDate(last.date)))}
       ${rxKpi(`ADR-DMA${dma}`, rxCr(last.rev_ma, 2), `${escHtml(basisLabel)} · to the session before`)}
@@ -193,7 +193,7 @@ async function buildBrokersPrice() {
             footer: items => `At the mean ratio: ₹${fmtNum(rs.mean * rows[items[0].dataIndex].rev_ma, 0)}`,
           },
         } },
-        scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 6, maxRotation: 0, autoSkip: true } }, y: { ticks: { callback: v => fmtNum(v, 0) } } },
+        scales: { x: { grid: { display: false }, afterBuildTicks: brkMonthTicks(rows.map(r => r.date), 6), ticks: { maxTicksLimit: 6, maxRotation: 0, autoSkip: true } }, y: { ticks: { callback: v => fmtNum(v, 0) } } },
       },
     });
     root.querySelector('[data-brk-leg="ratio"]').innerHTML = rxLegend([
