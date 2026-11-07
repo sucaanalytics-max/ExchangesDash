@@ -1,19 +1,23 @@
-"""Brokers mode (dashboard/js/00-core.js): the registry broker views plug into,
-and the tab / title / label lookups shared with the exchanges. The page itself
-is checked in a browser; these cover the pure parts."""
+"""View modes (dashboard/js/00-core.js): the registry broker and MTF views plug
+into, and the tab / title / label lookups shared with the exchanges. The page
+itself is checked in a browser; these cover the pure parts."""
 
 import re
 import unittest
 
 from helpers import DASHBOARD, NODE, js_eval
 
-SHELL = ["BROKER_KEY_PREFIX", "BROKER_VIEWS", "NAV_ICONS", "EXCHANGE_TABS", "TAB_TITLES",
-         "isBrokerKey", "brokerViewOf", "brokerKeys", "brokerTabId", "registerBrokerView",
+SHELL = ["VIEW_MODES", "NAV_ICONS", "EXCHANGE_TABS", "TAB_TITLES",
+         "modeOf", "isViewKey", "viewOf", "modeKeys", "viewTabId", "registerModeView",
+         "registerBrokerView", "isBrokerKey", "brokerViewOf", "brokerKeys", "brokerTabId",
          "tabsFor", "titlesFor", "viewLabel"]
 
 ANGEL = """{ id: 'angel', label: 'Angel One',
   tabs: [{ id: 'summary', label: 'Summary', icon: 'revenue' }, { id: 'pat', label: 'PAT Predictor', icon: 'nope' }],
   titles: { summary: 'Angel One: Revenue Summary' }, load: async () => {}, build: () => {} }"""
+
+MTF_NSE = """{ id: 'nse', label: 'NSE MTF', pill: 'NSE',
+  tabs: [{ id: 'book', label: 'MTF Book', icon: 'share' }], load: async () => {}, build: () => {} }"""
 
 
 def run(expr):
@@ -70,14 +74,56 @@ class Lookups(unittest.TestCase):
         self.assertEqual(out, ["NSE", "All Exchanges", "NSE+BSE", "Angel One"])
 
 
+@unittest.skipUnless(NODE, "node not installed")
+class MtfMode(unittest.TestCase):
+    def test_modes_of_keys(self):
+        out = run("return ['nse', 'nsebse', 'all', 'broker:angel', 'mtf:nse', 'mtfx', null].map(modeOf);")
+        self.assertEqual(out, ["exchanges", "exchanges", "exchanges", "brokers", "mtf", "exchanges", "exchanges"])
+        self.assertEqual(run("return ['nse', 'broker:angel', 'mtf:bse'].map(isViewKey);"), [False, True, True])
+
+    def test_register_mtf_view(self):
+        out = run(f"registerModeView('mtf', {MTF_NSE}); return [modeKeys('mtf'), brokerKeys(), viewOf('mtf:nse').label,"
+                  " isBrokerKey('mtf:nse'), brokerViewOf('mtf:nse'), viewOf('broker:nse')];")
+        self.assertEqual(out, [["mtf:nse"], [], "NSE MTF", False, None, None])
+
+    def test_mtf_tabs_are_namespaced(self):
+        out = run(f"registerModeView('mtf', {MTF_NSE}); registerBrokerView({ANGEL}); return [tabsFor('mtf:nse'),"
+                  " titlesFor('mtf:nse'), viewLabel('mtf:nse'), tabsFor('broker:angel').map(t => t.id)];")
+        tabs, titles, label, brokers = out
+        self.assertEqual(tabs, [{"id": "mtf-nse-book", "label": "MTF Book", "icon": "share"}])
+        self.assertEqual(titles, {"mtf-nse-book": "NSE MTF: MTF Book"})
+        self.assertEqual(label, "NSE MTF")
+        self.assertEqual(brokers, ["brk-angel-summary", "brk-angel-pat"])
+
+    def test_same_id_in_two_modes(self):
+        # ids are unique within a mode, not across modes
+        out = run(f"registerModeView('mtf', {{...{ANGEL}}}); registerBrokerView({ANGEL}); return [modeKeys('mtf'), brokerKeys()];")
+        self.assertEqual(out, [["mtf:angel"], ["broker:angel"]])
+
+    def test_rejects_unknown_mode(self):
+        self.assertIn("unknown mode", run(f"try {{ registerModeView('funds', {MTF_NSE}); }} catch (e) {{ return e.message; }}"))
+        self.assertIn("registerModeView(\"mtf\"): duplicate", run(
+            f"registerModeView('mtf', {MTF_NSE}); try {{ registerModeView('mtf', {MTF_NSE}); }} catch (e) {{ return e.message; }}"))
+
+
 class Markup(unittest.TestCase):
-    def test_switch_hidden_until_a_broker_registers(self):
+    def test_switch_hidden_until_a_view_registers(self):
         html = (DASHBOARD / "index.html").read_text()
         switch = re.search(r'<div[^>]*id="modeSwitch"[^>]*>', html).group(0)
         self.assertIn(" hidden", switch)
         self.assertRegex(html, r'id="exchangePill"')
         self.assertRegex(html, r'id="brokerPill"')
-        self.assertEqual(re.findall(r'data-mode="(\w+)"', html), ["exchanges", "brokers"])
+        self.assertRegex(html, r'id="mtfPill"')
+        self.assertEqual(re.findall(r'data-mode="(\w+)"', html), ["exchanges", "brokers", "mtf"])
+
+    def test_every_mode_has_its_pill_and_button(self):
+        # VIEW_MODES' pills and the switch's buttons must name the same modes
+        html = (DASHBOARD / "index.html").read_text()
+        core = (DASHBOARD / "js" / "00-core.js").read_text()
+        modes = re.search(r"const VIEW_MODES = \{(.*?)\n\};", core, re.S).group(1)
+        for mode, pill in re.findall(r"(\w+):\s*\{[^}]*pill: '(\w+)'", modes):
+            self.assertIn(f'data-mode="{mode}"', html)
+            self.assertIn(f'id="{pill}"', html)
 
 
 if __name__ == "__main__":

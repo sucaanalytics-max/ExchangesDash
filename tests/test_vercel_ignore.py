@@ -67,6 +67,7 @@ class VercelIgnoreBuild(unittest.TestCase):
     def test_bot_data_commits_skip(self):
         for msg in ["📊 NSE update: 2026-10-19 — 1 new day(s)",
                     "📊 BSE update: 2026-10-19 — 1 new day(s)",
+                    "📊 NSE update: 2026-11-04 — 2 new or changed day(s)",
                     "📊 MCX update: 2026-10-19 — 0 new day(s)",
                     "📊 MTF update: 2026-10-19 — 2 new day(s)",
                     "📈 NSE share analysis: 2026-10-19",

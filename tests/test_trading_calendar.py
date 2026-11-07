@@ -45,3 +45,26 @@ class SpecialSessions(unittest.TestCase):
         self.assertEqual((q["days"], q["total_rev"]), (2, 104))
         self.assertEqual([r["date"] for r in out["dashboard"]["daily_all"]], ["2025-10-20", "2025-10-23"])
         self.assertEqual([r["date"] for r in out["dashboard"]["special_sessions"]], ["2025-10-21"])
+
+
+class PreFy24Days(unittest.TestCase):
+    """The equity days the MTF backfill uses before the revenue history begins."""
+
+    def test_weekdays_less_holidays_plus_muhurat(self):
+        from datetime import date
+        days = tc.equity_days_pre_fy24()
+        self.assertEqual((len(days), days[0], days[-1]), (497, "2021-04-01", "2023-03-31"))
+        self.assertEqual(days, sorted(set(days)))
+        for h in tc.PRE_FY24_HOLIDAYS:
+            self.assertLess(date.fromisoformat(h).weekday(), 5, h)               # a holiday is a weekday
+            self.assertEqual(h in days, h in tc.PRE_FY24_MUHURAT, h)              # out, unless a Muhurat day
+        self.assertNotIn("2021-04-02", days)                                      # Good Friday
+        self.assertNotIn("2021-04-03", days)                                      # Saturday
+        self.assertIn("2022-10-24", days)                                         # Muhurat on a holiday
+        # a sample of NSE's MTF reporting dates from codex_nse_mtf_daily
+        for d in ("2021-11-23", "2021-12-31", "2022-03-30", "2022-11-07", "2023-03-31"):
+            self.assertIn(d, days)
+
+    def test_ends_where_the_revenue_history_begins(self):
+        self.assertLess(tc.PRE_FY24_LAST, "2023-04-03")
+

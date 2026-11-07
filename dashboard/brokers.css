@@ -115,8 +115,36 @@
 .brk-basis { flex-basis: 100%; max-width: none; margin: 0; padding: 6px 10px; border-left: 3px solid #b45309; background: #fdf6ec; color: var(--color-text); font-size: 12px; }
 .brk-basis--panel { margin: 6px 8px 0; font-size: 11.5px; }
 
+/* A segment whose data ends before the run's as-of date (brkLag): run bar text,
+   its note, and a badge on each panel it holds back */
+.brk-runbar .brk-lag, .brk-runbar .brk-lag b { color: #b45309; }
+.brk-lag-note { flex-basis: 100%; margin: 0; padding: 6px 10px; border-left: 3px solid #b45309; background: #fdf6ec; color: var(--color-text); font-size: 12px; }
+.brk-lag-badge { margin-left: auto; padding: 1px 6px; border-radius: 4px; background: #fdf6ec; color: #b45309; font-weight: 700; letter-spacing: 0.02em; text-transform: none; white-space: nowrap; cursor: help; }
+
 /* Price vs ADR (js/31-brokers-price.js): the basis / DMA / period controls */
 .brk-price-controls { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: flex-end; margin-bottom: 6px; }
 .brk-price-controls .rx-lbl { margin-bottom: 4px; }
 .brk-dma-in { margin-left: 6px; width: 64px; vertical-align: middle; }
 .brk-price-foot { margin: 0 0 var(--space-3); }
+
+/* F&O vs Exchanges (js/32-brokers-fo-drivers.js) */
+.brk-fo-identity { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 4px 0 2px; }
+.brk-fo-identity > div { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-left: 3px solid var(--color-border, #CFCFC8); }
+.brk-fo-identity > div:last-child { border-left-color: #2B5CC8; }
+.brk-fo-identity b { font-size: 13px; }
+.brk-fo-read p { margin: 0 0 8px; }
+.brk-fo-ab-lbl { font-size: 12px; color: var(--color-text-muted, #62656D); margin: 10px 0 2px; }
+.brk-fo-ab-lbl b { display: inline-block; min-width: 18px; padding: 0 5px; margin-right: 6px; color: #FFFFFF; background: #16181D; text-align: center; }
+.rx-table caption { caption-side: top; padding: 6px 0 2px; }
+@media (max-width: 760px) { .brk-fo-identity { grid-template-columns: 1fr; } }
+
+/* PAT Predictor (js/33-brokers-pat.js) */
+.brk-pat-pl td.brk-pat-fy, .brk-pat-pl th.brk-pat-fy,
+.brk-pat-val td.brk-pat-fy, .brk-pat-val th.brk-pat-fy { border-left: 1px solid var(--rx-rule, #e5e5e0); }
+.brk-pat-pl td.brk-pat-proj { color: #6b4a12; }
+.brk-pat-pl tr.rx-sub td.brk-pat-proj { color: #4a3208; }
+.brk-pat-pl tr.brk-pat-sec td { padding-top: 10px; font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--color-text-muted); background: transparent; }
+.brk-pat-pl tr.brk-pat-memo td { font-style: italic; color: var(--color-text-muted); }
+.brk-pat-pl th .brk-tag { margin-left: 3px; }
+.brk-pat-rules td.rx-wrap { white-space: normal; min-width: 220px; font-size: 11.5px; line-height: 1.35; }
+.rx-kpi-v small { font-size: 11px; font-weight: 500; color: var(--color-text-muted); }

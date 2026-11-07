@@ -1022,6 +1022,12 @@ def main():
     # Step 8: Write local JSON files (for git commit → Vercel deploy)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     dashboard_json = out["dashboard"]
+    # The run's count: days whose published row is new, corrected or gone (a
+    # deleted holiday row counts), against the file as last committed, not
+    # the days BSE's fetch returned
+    previous_path = DATA_DIR / "bse_dashboard_data.json"
+    previous = json.loads(previous_path.read_text()) if previous_path.exists() else {}
+    changed = trading_calendar.changed_days(previous, dashboard_json)
 
     with open(DATA_DIR / "bse_dashboard_data.json", "w") as f:
         json.dump(dashboard_json, f, separators=(',', ':'))
@@ -1047,17 +1053,19 @@ def main():
     write_json(dash_data_dir / "bse_dashboard_data_eff.json", eff["dashboard"])
     write_json(dash_data_dir / "bse_enriched_data_eff.json", eff["enriched"])
 
-    # Summary — include holiday deletions so the workflow commits the cleaned JSON
-    new_count_final = (len(to_insert) if supabase else len(new_parsed) + len(cash_merged)) + holidays_deleted
     print("\n" + "=" * 60)
     print(f"Pipeline complete.")
     print(f"  Latest date: {summary_obj.get('last_date', 'N/A')}")
     print(f"  Total daily records: {len(all_daily)}")
     print(f"  Current quarter: {summary_obj.get('current_quarter', 'N/A')}")
-    print(f"  New days this run: {new_count_final}")
+    if holidays_deleted:
+        print(f"  Holiday rows deleted from Supabase: {holidays_deleted}")
+    print(f"  New or changed days this run: {len(changed)}"
+          + (f" ({changed[0]} … {changed[-1]})" if changed else ""))
     print("=" * 60)
 
-    return new_count_final
+    # The workflow runs the share analysis and the Excel sync only when this is non-zero
+    return len(changed)
 
 
 if __name__ == "__main__":

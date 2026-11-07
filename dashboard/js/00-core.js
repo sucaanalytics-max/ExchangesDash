@@ -578,16 +578,20 @@ const TAB_TITLES = {
 };
 
 // ========================
-// BROKERS MODE: the Exchanges | Brokers switch
+// VIEW MODES: the Exchanges | Brokers | MTF switch
 // ========================
-// Broker views (js/30-*.js onward) register themselves here as they load; the
-// switch above the exchange pill appears once at least one has. A broker is
-// shown through the same path as an exchange (switchExchange), under the key
-// "broker:<id>", so loading, Retry / Back, sidebar tabs and chart clean-up work
-// the same way. Contract, also in docs/BROKERS_INTEGRATION.md:
-//   registerBrokerView({
-//     id: 'angel',                          // [a-z0-9-]+, unique
-//     label: 'Angel One',                   // pill button, header badge, logo
+// Besides the exchanges, the dashboard has modes whose views register
+// themselves here as their files load: Brokers (js/30-*.js, registerBrokerView)
+// and MTF (js/40-mtf.js, registerModeView('mtf', …)). The switch above the
+// exchange pill appears once any view has registered, with a button for each
+// mode that has views. A view is shown through the same path as an exchange
+// (switchExchange), under the key "<prefix><id>" ("broker:angel", "mtf:nse"), so
+// loading, Retry / Back, sidebar tabs and chart clean-up work the same way.
+// Contract, also in docs/BROKERS_INTEGRATION.md:
+//   registerBrokerView({                    // = registerModeView('brokers', {...})
+//     id: 'angel',                          // [a-z0-9-]+, unique within its mode
+//     label: 'Angel One',                   // header badge, logo, loading text
+//     pill: 'Angel',                        // optional: shorter pill button text
 //     tabs: [{ id: 'summary', label: 'Summary', icon: 'revenue' }],   // icon: a NAV_ICONS key
 //     titles: { summary: 'Angel One: Revenue Summary' },              // optional header titles
 //     load: async owns => {},               // fetch data; once owns() is false, touch nothing
@@ -595,31 +599,55 @@ const TAB_TITLES = {
 //     onShow: tab => {},                    // optional: tab shown, charts now have their size
 //     meta: () => ({ quarter, updated }),   // optional: header quarter / "Last Updated" text
 //   });
-const BROKER_KEY_PREFIX = 'broker:';
-const BROKER_VIEWS = {};
-let lastExchangeKey = 'nse';   // restored when switching back to Exchanges
-let lastBrokerKey = null;      // restored when switching back to Brokers
+// prefix: key prefix; tab: sidebar / section id prefix; pill: the mode's pill element
+const VIEW_MODES = {
+  brokers: { prefix: 'broker:', tab: 'brk', pill: 'brokerPill', views: {} },
+  mtf:     { prefix: 'mtf:',    tab: 'mtf', pill: 'mtfPill',    views: {} },
+};
+// The key last shown in each mode, restored when switching back to it
+const LAST_KEY = { exchanges: 'nse', brokers: null, mtf: null };
 
-function isBrokerKey(key) { return typeof key === 'string' && key.startsWith(BROKER_KEY_PREFIX); }
-
-function brokerViewOf(key) {
-  return isBrokerKey(key) ? BROKER_VIEWS[key.slice(BROKER_KEY_PREFIX.length)] || null : null;
+// 'exchanges' for an exchange key ('nse', 'nsebse', …), else the view's mode
+function modeOf(key) {
+  if (typeof key === 'string') {
+    for (const mode of Object.keys(VIEW_MODES)) {
+      if (key.startsWith(VIEW_MODES[mode].prefix)) return mode;
+    }
+  }
+  return 'exchanges';
 }
 
-function brokerKeys() { return Object.keys(BROKER_VIEWS).map(id => BROKER_KEY_PREFIX + id); }
+function isViewKey(key) { return modeOf(key) !== 'exchanges'; }
 
-// A broker tab's sidebar id and section id suffix: namespaced, so it never
-// collides with an exchange tab or another broker's
-function brokerTabId(id, tab) { return `brk-${id}-${tab}`; }
+function viewOf(key) {
+  const mode = modeOf(key);
+  if (mode === 'exchanges') return null;
+  return VIEW_MODES[mode].views[key.slice(VIEW_MODES[mode].prefix.length)] || null;
+}
 
-function brokerSection(id, tab) { return document.getElementById('tab-' + brokerTabId(id, tab)); }
+function modeKeys(mode) {
+  const m = VIEW_MODES[mode];
+  return m ? Object.keys(m.views).map(id => m.prefix + id) : [];
+}
 
-function registerBrokerView(view) {
-  const bad = msg => { throw new Error('registerBrokerView: ' + msg); };
+// A view tab's sidebar id and section id suffix: namespaced by mode and view,
+// so it never collides with an exchange tab or another view's
+function viewTabId(key, tab) {
+  const m = VIEW_MODES[modeOf(key)];
+  return `${m.tab}-${key.slice(m.prefix.length)}-${tab}`;
+}
+
+function viewSection(key, tab) { return document.getElementById('tab-' + viewTabId(key, tab)); }
+
+function registerModeView(mode, view) {
+  const who = mode === 'brokers' ? 'registerBrokerView' : `registerModeView(${JSON.stringify(mode)})`;
+  const bad = msg => { throw new Error(`${who}: ${msg}`); };
+  const m = VIEW_MODES[mode];
+  if (!m) bad('unknown mode');
   if (!view || typeof view !== 'object') bad('expects an object');
   const id = view.id;
   if (typeof id !== 'string' || !/^[a-z0-9-]+$/.test(id)) bad(`id must match [a-z0-9-]+, got ${JSON.stringify(id)}`);
-  if (BROKER_VIEWS[id]) bad(`duplicate id "${id}"`);
+  if (m.views[id]) bad(`duplicate id "${id}"`);
   if (!view.label || typeof view.label !== 'string') bad(`"${id}" needs a label`);
   if (!Array.isArray(view.tabs) || !view.tabs.length) bad(`"${id}" needs at least one tab`);
   const seen = new Set();
@@ -629,80 +657,103 @@ function registerBrokerView(view) {
     seen.add(t.id);
   });
   if (typeof view.load !== 'function' || typeof view.build !== 'function') bad(`"${id}" needs load() and build()`);
-  BROKER_VIEWS[id] = view;
+  m.views[id] = view;
   return view;
 }
 
-// Sidebar tabs of an exchange or broker key
+// The Brokers mode's names, as broker views (js/30-*.js) and docs/BROKERS_INTEGRATION.md use them
+function registerBrokerView(view) { return registerModeView('brokers', view); }
+function isBrokerKey(key) { return modeOf(key) === 'brokers'; }
+function brokerViewOf(key) { return isBrokerKey(key) ? viewOf(key) : null; }
+function brokerKeys() { return modeKeys('brokers'); }
+function brokerTabId(id, tab) { return viewTabId(VIEW_MODES.brokers.prefix + id, tab); }
+function brokerSection(id, tab) { return viewSection(VIEW_MODES.brokers.prefix + id, tab); }
+
+// Sidebar tabs of an exchange or view key
 function tabsFor(key) {
-  const view = brokerViewOf(key);
+  const view = viewOf(key);
   if (!view) return EXCHANGE_TABS[key] || [];
-  return view.tabs.map(t => ({ id: brokerTabId(view.id, t.id), label: t.label, icon: NAV_ICONS[t.icon] ? t.icon : 'revenue' }));
+  return view.tabs.map(t => ({ id: viewTabId(key, t.id), label: t.label, icon: NAV_ICONS[t.icon] ? t.icon : 'revenue' }));
 }
 
 // Header titles by sidebar tab id
 function titlesFor(key) {
-  const view = brokerViewOf(key);
+  const view = viewOf(key);
   if (!view) return TAB_TITLES[key] || {};
   const out = {};
   view.tabs.forEach(t => {
-    out[brokerTabId(view.id, t.id)] = (view.titles && view.titles[t.id]) || `${view.label}: ${t.label}`;
+    out[viewTabId(key, t.id)] = (view.titles && view.titles[t.id]) || `${view.label}: ${t.label}`;
   });
   return out;
 }
 
-// Name of an exchange or broker key for loading and error messages
+// Name of an exchange or view key for loading and error messages
 function viewLabel(key) {
-  const view = brokerViewOf(key);
+  const view = viewOf(key);
   if (view) return view.label;
   return key === 'all' ? 'All Exchanges' : key === 'nsebse' ? 'NSE+BSE' : String(key).toUpperCase();
 }
 
-// One <section class="tab-content"> per broker tab, so broker files need no markup
-function ensureBrokerSections(view) {
+// One <section class="tab-content"> per view tab, so view files need no markup
+function ensureViewSections(key) {
+  const view = viewOf(key);
   const main = document.getElementById('mainContent');
+  if (!view || !main) return;
+  const cls = { brokers: 'broker-tab', mtf: 'mtf-tab' }[modeOf(key)] || '';
   view.tabs.forEach(t => {
-    const id = 'tab-' + brokerTabId(view.id, t.id);
+    const id = 'tab-' + viewTabId(key, t.id);
     if (document.getElementById(id)) return;
     const section = document.createElement('section');
-    section.className = 'tab-content broker-tab';
+    section.className = 'tab-content ' + cls;
     section.id = id;
     main.appendChild(section);
   });
 }
 
-// Builds the broker pill and reveals the switch; without a registered broker
-// view it does nothing and the dashboard stays exchanges-only
+// Builds each mode's pill and reveals the switch, with a button for each mode
+// that has views; without any registered view it does nothing and the
+// dashboard stays exchanges-only
 function initModeSwitch() {
   const sw = document.getElementById('modeSwitch');
-  const pill = document.getElementById('brokerPill');
-  const keys = brokerKeys();
-  if (!sw || !pill || !keys.length) return;
-  pill.innerHTML = keys.map(k =>
-    `<button type="button" class="exchange-btn" data-exchange="${escHtml(k)}">${escHtml(viewLabel(k))}</button>`).join('');
-  pill.querySelectorAll('.exchange-btn').forEach(bindExchangeButton);
+  if (!sw) return;
+  let any = false;
+  Object.keys(VIEW_MODES).forEach(mode => {
+    const keys = modeKeys(mode);
+    const btn = sw.querySelector(`.mode-btn[data-mode="${mode}"]`);
+    const pill = document.getElementById(VIEW_MODES[mode].pill);
+    if (btn) btn.hidden = !keys.length;
+    if (!keys.length || !pill) return;
+    any = true;
+    pill.innerHTML = keys.map(k => {
+      const view = viewOf(k);
+      return `<button type="button" class="exchange-btn" data-exchange="${escHtml(k)}">${escHtml(view.pill || view.label)}</button>`;
+    }).join('');
+    pill.querySelectorAll('.exchange-btn').forEach(bindExchangeButton);
+  });
+  if (!any) return;
   sw.querySelectorAll('.mode-btn').forEach(b => b.addEventListener('click', () => setMode(b.dataset.mode)));
   sw.hidden = false;
   syncModeSwitch();
 }
 
-// body.mode-brokers (style.css hides the exchange-only header parts) and the switch's state
+// body.mode-<mode> (style.css shows that mode's pill and hides the exchange-only
+// header parts) and the switch's state
 function syncModeSwitch() {
-  const brokers = isBrokerKey(currentExchange);
-  document.body.classList.toggle('mode-brokers', brokers);
+  const mode = modeOf(currentExchange);
+  Object.keys(VIEW_MODES).forEach(m => document.body.classList.toggle('mode-' + m, m === mode));
   document.querySelectorAll('#modeSwitch .mode-btn').forEach(b => {
-    const on = (b.dataset.mode === 'brokers') === brokers;
+    const on = b.dataset.mode === mode;
     b.classList.toggle('active', on);
     b.setAttribute('aria-pressed', on ? 'true' : 'false');
   });
 }
 
-// Exchanges → the last exchange shown (NSE at first); Brokers → the last broker, or the first
+// Exchanges → the last exchange shown (NSE at first); another mode → the last
+// view shown in it, or its first
 async function setMode(mode) {
-  const brokers = mode === 'brokers';
-  if (brokers === isBrokerKey(currentExchange)) return;
-  const target = !brokers ? lastExchangeKey
-    : (brokerViewOf(lastBrokerKey) ? lastBrokerKey : brokerKeys()[0]);
+  if (mode === modeOf(currentExchange)) return;
+  const target = mode === 'exchanges' ? LAST_KEY.exchanges
+    : VIEW_MODES[mode] ? (viewOf(LAST_KEY[mode]) ? LAST_KEY[mode] : modeKeys(mode)[0]) : null;
   if (!target) return;
   if (glanceActive()) {   // the phone glance view covers exchanges only
     document.body.classList.remove('glance-mode');
@@ -711,8 +762,8 @@ async function setMode(mode) {
   await switchExchange(target);
 }
 
-// Header quarter / "Last Updated" for a broker view, from its meta()
-function updateBrokerHeaderInfo(view) {
+// Header quarter / "Last Updated" for a broker or MTF view, from its meta()
+function updateViewHeaderInfo(view) {
   let m = {};
   try { m = (view.meta && view.meta()) || {}; } catch (err) { console.error(`${view.label} meta() failed:`, err); }
   const quarter = document.getElementById('currentQuarterSpan');
@@ -792,10 +843,10 @@ function attachTabListeners() {
         Object.values(charts).forEach(c => { if (c && c.resize) c.resize(); });
         // Redesigned tabs redraw their charts now that the canvas has its real size
         RX_TAB_REFRESH[tab]?.();
-        // A broker view hears which of its tabs is shown (its own tab id)
-        const view = brokerViewOf(currentExchange);
+        // A broker or MTF view hears which of its tabs is shown (its own tab id)
+        const view = viewOf(currentExchange);
         if (view && view.onShow) {
-          try { view.onShow(tab.slice(brokerTabId(view.id, '').length)); } catch (err) { console.error(`${view.label} onShow failed:`, err); }
+          try { view.onShow(tab.slice(viewTabId(currentExchange, '').length)); } catch (err) { console.error(`${view.label} onShow failed:`, err); }
         }
       }, 50);
     });
@@ -847,7 +898,7 @@ function bindExchangeButton(btn) {
   btn.addEventListener('click', async () => {
     const exchange = btn.dataset.exchange;
     // In the glance view a single exchange only changes the glance's own switch
-    if (glanceActive() && !COMBINED_VIEWS[exchange] && !isBrokerKey(exchange)) {
+    if (glanceActive() && !COMBINED_VIEWS[exchange] && !isViewKey(exchange)) {
       document.getElementById('sidebar').classList.remove('open');
       document.getElementById('sidebarOverlay').classList.remove('open');
       GLANCE_EX = exchange;
@@ -885,17 +936,17 @@ let shownExchange = null;  // last exchange whose views were built, for "Back to
 async function switchExchange(exchange) {
   const seq = ++switchSeq;
   const owns = () => seq === switchSeq;
-  const broker = brokerViewOf(exchange);   // a broker key (Brokers mode) loads through its view
+  const view = viewOf(exchange);   // a broker or MTF key loads through its view
   showLoading(exchange);
   // Destroy all existing charts
   Object.values(charts).forEach(c => { if (c && c.destroy) c.destroy(); });
   Object.keys(charts).forEach(k => delete charts[k]);
   currentExchange = exchange;
-  if (broker) lastBrokerKey = exchange; else lastExchangeKey = exchange;
+  LAST_KEY[modeOf(exchange)] = exchange;
   syncModeSwitch();
   // Update logo
   const logoLabels = { nse: 'NSE Analytics', bse: 'BSE Analytics', mcx: 'MCX Analytics', all: 'All Exchanges', nsebse: 'NSE+BSE' };
-  document.getElementById('logoText').textContent = broker ? broker.label
+  document.getElementById('logoText').textContent = view ? view.label
     : logoLabels[exchange] || exchange.toUpperCase() + ' Analytics';
   document.querySelectorAll('.exchange-btn').forEach(b => b.classList.toggle('active', b.dataset.exchange === exchange));
   updateHeaderExchange(exchange);
@@ -903,18 +954,18 @@ async function switchExchange(exchange) {
   buildSidebarNav(exchange);
   // Show/hide exchange-specific content sections
   toggleExchangeContent(exchange);
-  if (broker) {
-    ensureBrokerSections(broker);
+  if (view) {
+    ensureViewSections(exchange);
     try {
-      await broker.load(owns);
+      await view.load(owns);
       if (!owns()) return false;
-      broker.build();
+      view.build();
     } catch (err) {
-      console.error(`Loading ${broker.label} failed:`, err);
+      console.error(`Loading ${view.label} failed:`, err);
       if (owns()) showLoadError(exchange, err);
       return false;
     }
-    updateBrokerHeaderInfo(broker);
+    updateViewHeaderInfo(view);
   } else {
     try {
       if (!await loadExchangeData(exchange, owns)) return false;

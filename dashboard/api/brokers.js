@@ -11,7 +11,7 @@
  *   broker = ANGELONE | GROWW | MOSL …    an active sb_brokers.broker_id (404 otherwise)
  *   mode   = live | parity         latest successful run of that mode (default live)
  *   run    = <uuid>                a specific run instead
- *   view   = summary | daily | calibration | calendar | brokers | prices
+ *   view   = summary | daily | calibration | calendar | brokers | prices | pat
  *
  * brokers     → active brokers (sb_brokers) with a short label and their latest
  *               successful live and parity runs (null when none is published)
@@ -22,12 +22,24 @@
  *               (sb_summary_cells) with `regime`: 'actual' when every day behind
  *               the figure is a reported-month day in sb_daily_revenue, 'estimate'
  *               when any is projected, null when the figure has no days.
+ *               Also `through`: for each panel, the last trade date of its data in the
+ *               run, the segment that ends there and how many trading days that trails
+ *               the as-of date ({ MTF: { through: '2026-10-19', segment: 'mtf_gross',
+ *               days_behind: 9 }, … }). A panel is as current as its earliest-ending
+ *               segment, so Consolidated ends with MTF.
+ *               And `open`: the FY, quarter and month holding the as-of date, with the
+ *               F&O trading days published in each so far ({ key, days, through }).
  * daily       → sb_daily_revenue for the run (trade_date, segment, orders, ₹ Cr, regime)
  * calibration → sb_calibration for the run
  * calendar    → equity trading days per FY counted from sb_calendar (and the last date it covers)
  * prices      → the broker's daily share closes (sb_share_prices: close, split- and
  *               bonus-adjusted; adj_close, also dividend-adjusted), independent of runs;
  *               an empty list until the table exists
+ * pat         → the PAT model's published lines (sb_pat_lines: FY27 quarters, FY 2027,
+ *               FY 2028; P&L lines, then EPS → target price per bear / base / bull
+ *               scenario, each with its rule) for the latest successful run of the
+ *               mode that has them (the PAT step writes after its ADR run), or for
+ *               `run`; run: null with a reason when none has, or the table is missing
  *
  * Example: GET /api/brokers?broker=ANGELONE&view=summary
  */
@@ -156,6 +168,49 @@ function regimeFinder(dailyRecent, projected) {
   };
 }
 
+// Each panel's last data day, from each segment's last day (`last`: segment →
+// 'YYYY-MM-DD', none past the as-of date). A panel is as current as its
+// earliest-ending segment; segments the broker doesn't publish are skipped.
+// days_behind counts the run's trading days (days with F&O or cash rows in
+// `recent`, the window up to the as-of date) after that day; null when the
+// day falls before the window, so the count would be short.
+function panelsThrough(last, recent) {
+  const sessions = [...new Set(recent.filter(r => r.segment === 'fo' || r.segment === 'cash').map(r => r.trade_date))].sort();
+  const out = {};
+  PANEL_ORDER.forEach(panel => {
+    const segs = PANEL_SEGMENTS[panel].filter(s => last[s]).sort((a, b) => last[a].localeCompare(last[b]));
+    if (!segs.length) return;
+    const through = last[segs[0]];
+    out[panel] = { through, segment: segs[0],
+      days_behind: sessions.length && through >= sessions[0] ? sessions.filter(d => d > through).length : null };
+  });
+  return out;
+}
+
+// The FY, quarter and month that hold the run's as-of date are still open: their figures
+// cover only the trading days to that date. { FY|Q|M: { key, days, through } }, where days
+// counts the equity trading days published for F&O (every broker has it) in that period.
+function openPeriods(asOf, foDates) {
+  const now = periodsOf(asOf), out = {};
+  ['FY', 'Q', 'M'].forEach(t => {
+    const d = foDates.filter(x => x <= asOf && periodsOf(x)[t] === now[t]).sort();
+    out[t] = { key: now[t], days: d.length, through: d.length ? d[d.length - 1] : null };
+  });
+  return out;
+}
+
+// Each segment's last day up to the as-of date: from the recent window, or, for a
+// segment with no day in it, its own latest row (none: the broker doesn't publish it)
+async function segmentLastDays(run, recent) {
+  const last = {};
+  recent.forEach(r => { if (!(last[r.segment] >= r.trade_date)) last[r.segment] = r.trade_date; });
+  const missing = [...new Set(Object.values(PANEL_SEGMENTS).flat())].filter(s => !last[s]);
+  const found = await Promise.all(missing.map(s =>
+    sb(`sb_daily_revenue?select=trade_date&run_id=eq.${run.run_id}&segment=eq.${s}&trade_date=lte.${run.as_of_date}&order=trade_date.desc&limit=1`)));
+  found.forEach((rows, i) => { if (rows[0]) last[missing[i]] = rows[0].trade_date; });
+  return last;
+}
+
 async function findRun(broker, mode, runId) {
   const filter = runId ? `run_id=eq.${runId}` : `mode=eq.${mode}&status=eq.success&order=started_at.desc&limit=1`;
   const rows = await sb(`sb_runs?select=run_id,broker_id,mode,as_of_date,started_at,finished_at,status,parity_pass,code_version,notes&broker_id=eq.${encodeURIComponent(broker)}&${filter}`);
@@ -166,10 +221,12 @@ async function summary(run) {
   const r = run.run_id;
   const asOf = run.as_of_date;
   const since = new Date(Date.parse(asOf + 'T00:00:00Z') - 120 * 86400000).toISOString().slice(0, 10);
-  const [cells, projected, recent] = await Promise.all([
+  const fyStart = `${periodsOf(asOf).fy - 1}-04-01`;
+  const [cells, projected, recent, foDays] = await Promise.all([
     sb(`sb_summary_cells?select=panel,period_type,period_key,table_name,row_label,value,comparison,comp_value,note&run_id=eq.${r}`, { all: true }),
     sb(`sb_daily_revenue?select=trade_date,segment&run_id=eq.${r}&regime=neq.actual`, { all: true }),
     sb(`sb_daily_revenue?select=trade_date,segment&run_id=eq.${r}&trade_date=gte.${since}&trade_date=lte.${asOf}`, { all: true }),
+    sb(`sb_daily_revenue?select=trade_date&run_id=eq.${r}&segment=eq.fo&trade_date=gte.${fyStart}&trade_date=lte.${asOf}&order=trade_date`, { all: true }),
   ]);
   const regime = regimeFinder(recent, projected);
   const num = v => (v == null ? null : Number(v));
@@ -182,7 +239,28 @@ async function summary(run) {
   out.forEach(c => keys[c.period_type]?.add(c.period_key));
   const sorted = s => [...s].sort((a, b) => periodKey(b) - periodKey(a));
   const panels = PANEL_ORDER.filter(p => out.some(c => c.panel === p));
-  return { run, panels, periods: { FY: sorted(keys.FY), Q: sorted(keys.Q), M: sorted(keys.M) }, cells: out };
+  const through = panelsThrough(await segmentLastDays(run, recent), recent);
+  return { run, panels, periods: { FY: sorted(keys.FY), Q: sorted(keys.Q), M: sorted(keys.M) },
+    open: openPeriods(asOf, foDays.map(x => x.trade_date)), cells: out, through };
+}
+
+// PAT lines (sb_pat_lines) of the latest successful run of the mode that has them:
+// the PAT step publishes after its ADR run, so the newest run can have none yet
+const PAT_COLS = 'period_key,line,scenario,label,value,unit,regime,rule,sort_order';
+async function patLines(broker, mode, runId) {
+  const runs = await sb(`sb_runs?select=run_id,broker_id,mode,as_of_date,started_at,finished_at,status&broker_id=eq.${encodeURIComponent(broker)}&`
+    + (runId ? `run_id=eq.${runId}` : `mode=eq.${mode}&status=eq.success&order=started_at.desc&limit=10`));
+  for (const run of runs) {
+    let rows;
+    try {
+      rows = await sb(`sb_pat_lines?select=${PAT_COLS}&run_id=eq.${run.run_id}&broker_id=eq.${encodeURIComponent(broker)}&order=sort_order`, { all: true });
+    } catch (err) {
+      if (err.supabaseStatus !== 404) throw err;   // the table does not exist yet
+      return { run: null, rows: [], reason: 'The PAT model has not been published yet (table sb_pat_lines not created)' };
+    }
+    if (rows.length) return { run, rows: rows.map(r => ({ ...r, value: r.value == null ? null : Number(r.value) })) };
+  }
+  return { run: null, rows: [], reason: `No PAT lines published for ${runId ? 'run ' + runId : 'the latest ' + mode + ' runs'} yet` };
 }
 
 // "Billionbrains Garage Ventures Ltd (Groww)" → "Groww"; "Angel One Ltd" → "Angel One"
@@ -212,7 +290,7 @@ module.exports = async function handler(req, res) {
   const view = String(req.query.view || 'summary').toLowerCase();
   const runId = req.query.run ? String(req.query.run).toLowerCase() : null;
   if (!/^[A-Z0-9_]{2,32}$/.test(broker) || !['live', 'parity'].includes(mode)
-    || !['summary', 'daily', 'calibration', 'calendar', 'brokers', 'prices'].includes(view) || (runId && !UUID.test(runId))) {
+    || !['summary', 'daily', 'calibration', 'calendar', 'brokers', 'prices', 'pat'].includes(view) || (runId && !UUID.test(runId))) {
     return res.status(400).json({ error: 'Invalid broker, mode, view or run param' });
   }
   try {
@@ -234,6 +312,10 @@ module.exports = async function handler(req, res) {
       const num = v => (v == null ? null : Number(v));
       res.setHeader('Cache-Control', CACHE_CONTROL);
       return res.status(200).json({ broker: known, prices: rows.map(r => ({ ...r, close: num(r.close), adj_close: num(r.adj_close) })) });
+    }
+    if (view === 'pat') {
+      res.setHeader('Cache-Control', CACHE_CONTROL);
+      return res.status(200).json({ broker: known, ...await patLines(broker, mode, runId) });
     }
     const run = await findRun(broker, mode, runId);
     // A broker can be listed before its first run is published (facts awaiting
@@ -265,3 +347,7 @@ module.exports = async function handler(req, res) {
     return res.status(err.status || 502).json({ error: err.message });
   }
 };
+
+module.exports.panelsThrough = panelsThrough;   // tests/test_brokers_api.py
+module.exports.patLines = patLines;           // tests/test_brokers_api.py
+module.exports.openPeriods = openPeriods;       // tests/test_brokers_open_periods.py

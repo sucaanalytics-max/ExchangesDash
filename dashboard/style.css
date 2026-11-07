@@ -1842,9 +1842,10 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
   box-shadow: inset 0 -3px 0 #ffffff;
 }
 
-/* Exchanges | Brokers switch (js/00-core.js initModeSwitch); hidden until a
-   broker view registers. In Brokers mode the broker pill replaces the exchange
-   pill, and the exchange-only header parts are hidden. */
+/* Exchanges | Brokers | MTF switch (js/00-core.js initModeSwitch); hidden
+   until a view registers, and a mode's button until that mode has a view. In
+   Brokers or MTF mode that mode's pill replaces the exchange pill, and the
+   exchange-only header parts are hidden. */
 .mode-pill {
   display: flex;
   border: 1px solid var(--color-ink);
@@ -1854,9 +1855,10 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
 .mode-pill[hidden] { display: none; }
 
 .mode-btn {
-  flex: 1 1 0;
+  flex: 1 1 auto;
   min-width: 0;
-  padding: 6px var(--space-2);
+  padding: 6px 4px;
+  white-space: nowrap;
   border: none;
   border-right: 1px solid var(--color-ink);
   border-radius: 0;
@@ -1865,28 +1867,38 @@ tr.xl-r-cur td:first-child { font-weight: 700; color: #151515; }
   font-family: var(--font-display);
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
   text-transform: uppercase;
   cursor: pointer;
   transition: all var(--transition-interactive);
 }
 
+.mode-btn[hidden] { display: none; }
 .mode-btn:last-child { border-right: none; }
 .mode-btn:hover { background: var(--color-surface-3); }
 .mode-btn.active { background: var(--color-ink); color: #FFFFFF; }
 
-#brokerPill { display: none; }
-body.mode-brokers #brokerPill { display: flex; }
+#brokerPill,
+#mtfPill { display: none; }
+body.mode-brokers #brokerPill,
+body.mode-mtf #mtfPill { display: flex; }
 
 body.mode-brokers #exchangePill,
 body.mode-brokers #feeToggle,
 body.mode-brokers #latestRevBanner,
 body.mode-brokers #btnDownloadReport,
 body.mode-brokers #btnMobileReport,
-body.mode-brokers .nav-item--glance { display: none !important; }
+body.mode-brokers .nav-item--glance,
+body.mode-mtf #exchangePill,
+body.mode-mtf #feeToggle,
+body.mode-mtf #latestRevBanner,
+body.mode-mtf #btnDownloadReport,
+body.mode-mtf #btnMobileReport,
+body.mode-mtf .nav-item--glance { display: none !important; }
 
 /* The banner's grid row (34px) collapses with the banner */
-body.mode-brokers .dashboard { grid-template-rows: 0 56px 1fr; }
+body.mode-brokers .dashboard,
+body.mode-mtf .dashboard { grid-template-rows: 0 56px 1fr; }
 
 @media (pointer: coarse) {
   .mode-btn { min-height: 40px; }
@@ -3327,4 +3339,57 @@ a.rx-link { display: inline; }
 
 @media print {
   .rx-bar { position: static; }
+}
+
+/* =====================================================================
+   MTF mode (js/40-mtf.js): the few pieces the rx components lack
+   ===================================================================== */
+/* MTF Summary tab (js/40-mtf.js mtfBuildSummary): the Revenue Summary's Excel
+   tables (.xl-segment, .xl-period-table, .wire-table above), sized like the
+   brokers' Summary panel (brokers.css .brk-panel) */
+.mtf-sum { padding: var(--space-3) var(--space-2) var(--space-6); max-width: 1120px; }
+.mtf-sum-bar { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-bottom: var(--space-3); font-size: 12px; color: var(--color-text-muted); }
+.mtf-sum-bar b { color: var(--color-text); font-weight: 600; }
+.mtf-sum-panel .xl-period-table { flex: 0 0 57%; width: 57%; }
+.mtf-sum-panel .xl-main-row > .wire-table-scroll { padding-right: 0; border-right: 0; }
+.mtf-sum-panel .xl-col-period { width: 43%; }
+.mtf-sum-panel .xl-col-val    { width: 23%; }
+.mtf-sum-panel .xl-col-chg1,
+.mtf-sum-panel .xl-col-chg2   { width: 17%; }
+.mtf-sum-panel .xl-period-table tr:not(.xl-col-hdr) td:first-child { white-space: normal; line-height: 1.25; }
+.mtf-sum-panel .xl-period-table tr.xl-col-hdr td { padding-left: 3px; padding-right: 3px; }
+.mtf-sum-panel .weekday-wire-table { font-size: 12px; }
+.mtf-sum-panel .weekday-wire-table col:nth-child(1) { width: 38%; }
+.mtf-sum-panel .weekday-wire-table col:nth-child(2) { width: 28%; }
+.mtf-sum-panel .weekday-wire-table col:nth-child(3),
+.mtf-sum-panel .weekday-wire-table col:nth-child(4) { width: 17%; }
+.mtf-sum-panel .weekday-wire-table th { padding: 3px 2px; }
+.mtf-sum-panel .weekday-wire-table td.wire-value { white-space: nowrap; padding-right: 4px; }
+.mtf-sum-panel .weekday-wire-table td.wire-delta { padding: 3px 2px; font-size: 11.5px; white-space: nowrap; }
+.mtf-sum-from, .mtf-sum-date { font-size: 10.5px; font-weight: 400; color: var(--color-text-muted); white-space: nowrap; }
+.mtf-sum-muted { color: var(--color-text-secondary); font-size: 11.5px; }
+.mtf-sum-share { margin-top: var(--space-4); padding: 0; }
+.mtf-sum-notes { margin: var(--space-3) 0 0; padding-left: 18px; display: grid; gap: 3px; font-size: 12px; color: var(--color-text-muted); }
+@media (max-width: 900px) {
+  .mtf-sum-panel .xl-main-row { flex-direction: column; }
+  .mtf-sum-panel .xl-period-table { flex: none; width: 100%; border-right: 0; }
+  .mtf-sum-panel .xl-main-row > .wire-table-scroll { width: 100%; border-top: 2px solid var(--color-border); }
+}
+@media (max-width: 480px) {
+  .mtf-sum { padding-left: 0; padding-right: 0; }
+  .mtf-sum-panel .xl-col-period { width: 34%; }
+  .mtf-sum-panel .xl-col-val    { width: 24%; }
+  .mtf-sum-panel .xl-col-chg1,
+  .mtf-sum-panel .xl-col-chg2   { width: 21%; }
+  .mtf-sum-panel .xl-period-table tr:not(.xl-col-hdr) td:first-child { font-size: 12px; }
+}
+.mtf-about ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 12.5px; color: var(--rx-ink-2); }
+.mtf-about code { font-size: 11.5px; }
+.mtf-about .rx-foot { margin-top: 10px; }
+.mtf-notes .rx-alert + .rx-alert { margin-top: 6px; }
+.mtf-dagger { color: var(--rx-warn); font-weight: 700; margin-left: 2px; cursor: help; }
+.mtf-stocks td.mtf-name { white-space: normal; min-width: 180px; }
+@media (max-width: 640px) {
+  .mtf-stocks .mtf-id { display: none; }
+  .mtf-stocks td.mtf-name { min-width: 140px; }
 }

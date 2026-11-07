@@ -83,7 +83,7 @@ function brkPriceModel(adr, prices, dma, months) {
 
 async function buildBrokersPrice() {
   const el = brkSection('price'), summary = BRK.summary, st = BRK.priceView;
-  if (!summary.run) { el.innerHTML = `<div class="brk-wrap">${brkRunBar()}${brkNoRunHTML()}</div>`; return; }
+  if (!summary.run) { el.innerHTML = `<div class="brk-wrap">${brkRunBar({ legend: false })}${brkNoRunHTML()}</div>`; return; }
   if (!BRK.daily || !BRK.prices) {
     el.innerHTML = '<div class="brk-wrap"><div class="brk-empty">Loading daily ADR and share prices…</div></div>';
     let daily, prices;
@@ -96,7 +96,7 @@ async function buildBrokersPrice() {
   const view = BRK_BROKER.view, name = escHtml(BRK_BROKER.name);
   const prices = BRK.prices.prices.filter(p => p.close > 0).map(p => ({ date: p.trade_date, price: p.close }));
   if (!prices.length) {
-    el.innerHTML = `<div class="brk-wrap">${brkRunBar()}<div class="chart-panel brk-norun" role="status">
+    el.innerHTML = `<div class="brk-wrap">${brkRunBar({ legend: false })}<div class="chart-panel brk-norun" role="status">
       <b>No share prices published for ${name} yet.</b>
       <p>The brokers-dashboard engine stores daily closes in <code>sb_share_prices</code>; this tab fills in once it has ${name}'s (ticker ${escHtml(BRK_BROKER.id)}).</p></div></div>`;
     return;
@@ -135,7 +135,7 @@ async function buildBrokersPrice() {
     foot: 'A fair value is published only when ExchangesDash\'s gate passes: ≥ 60 sessions, a positive slope with Newey-West t ≥ 2, and an ADR-DMA that moved ≥ 10 % over the period.' });
 
   if (res.status !== 'ok') {
-    el.innerHTML = `<div class="brk-wrap">${brkRunBar()}<div class="rx">${controls}
+    el.innerHTML = `<div class="brk-wrap">${brkRunBar({ legend: false })}<div class="rx">${controls}
       ${rxAlert(`<strong>Insufficient history for ${periodName}.</strong> ${res.from ? `Prices paired with the ${dma}-day ADR average start on ${escHtml(fmtLongDate(res.from))}` : 'There are no prices paired with this ADR'}, so this period is not covered. Pick a shorter period.`)}
       ${horizonPanel}</div></div>`;
     brkPriceListeners(el.firstElementChild);
@@ -148,15 +148,26 @@ async function buildBrokersPrice() {
   const ratioNow = last.price / last.rev_ma;
   const z = rs && rs.sd ? (ratioNow - rs.mean) / rs.sd : null;
   const fv = d.meth.fair_value_supported ? d.reg.slope * last.rev_ma + d.reg.intercept : null;
+  // The ratio chart's tooltip shows a second, proportional value (mean ratio × ADR-DMA). The two
+  // agree near the period's average ADR-DMA and part as ADR moves from it, so say so with the figures.
+  const fitMa = rows.filter(r => r.in_fit && r.rev_ma > 0 && r.price > 0).map(r => r.rev_ma);
+  const maMean = fitMa.length ? fitMa.reduce((a, v) => a + v, 0) / fitMa.length : null;
+  const twoValues = fv != null && rs && maMean ? `<p class="rx-foot brk-price-foot">Two fair values, two models. <b>Regression</b> (the tile):
+    ${fmtNum(d.reg.slope, 2)} × ADR-DMA${dma} ${d.reg.intercept >= 0 ? '+' : '−'} ₹${fmtNum(Math.abs(d.reg.intercept), 1)} = ${rxRupee(fv, 0)}.
+    <b>Proportional</b> (the ratio chart): mean ratio ${fmtNum(rs.mean, 2)} × ADR-DMA${dma} = ${rxRupee(rs.mean * last.rev_ma, 0)}.
+    At the period's average ADR-DMA${dma} (${rxCr(maMean, 2)}) they give ${rxRupee(d.reg.slope * maMean + d.reg.intercept, 0)} and ${rxRupee(rs.mean * maMean, 0)};
+    they part as ADR moves away from it, because the regression adds ₹${fmtNum(d.reg.slope, 2)} of price per ₹1 Cr of ADR-DMA and the proportional value ₹${fmtNum(rs.mean, 2)}.
+    Today's ADR-DMA${dma} is ${rxCr(last.rev_ma, 2)}${last.in_fit ? '' : ' and includes projected ADR'}.</p>` : '';
   const partialNote = res.partial ? rxAlert(`<strong>${periodName} is partly covered.</strong> ${escHtml(basisLabel)} ADR starts on ${escHtml(fmtLongDate(adr.start))}, so prices paired with its ${dma}-day average start on ${escHtml(fmtLongDate(res.partial.from))}: ${fmtNum(res.partial.months, 1)} of ${BRK_PRICE_PERIODS.find(p => p[0] === st.period)[2]} months. Every figure below is over that span.`, 'info') : '';
-  el.innerHTML = `<div class="brk-wrap">${brkRunBar()}<div class="rx">${controls}${partialNote}
+  el.innerHTML = `<div class="brk-wrap">${brkRunBar({ legend: false })}<div class="rx">${controls}${partialNote}
     <section class="rx-kpis" aria-label="Price vs ADR">
       ${rxKpi('Close', rxRupee(last.price, 2), escHtml(fmtLongDate(last.date)))}
       ${rxKpi(`ADR-DMA${dma}`, rxCr(last.rev_ma, 2), `${escHtml(basisLabel)} · to the session before`)}
       ${rxKpi('Price ÷ ADR-DMA', fmtNum(ratioNow, 1), rs ? `mean ${fmtNum(rs.mean, 1)} · ${z == null ? '' : `${z >= 0 ? '+' : '−'}${Math.abs(z).toFixed(1)}σ`} over ${periodLabel}` : 'no in-fit days')}
-      ${rxKpi(`Fair value · ${periodLabel}`, fv == null ? '—' : rxRupee(fv, 0), fv == null ? `not supported: ${escHtml(d.meth.gate_reasons[0] || 'gate failed')}` : `${rxChangeHTML(fv / last.price - 1)} vs close`, { accent: true })}
+      ${rxKpi(`Fair value (regression) · ${periodLabel}`, fv == null ? '—' : rxRupee(fv, 0), fv == null ? `not supported: ${escHtml(d.meth.gate_reasons[0] || 'gate failed')}` : `${rxChangeHTML(fv / last.price - 1)} vs close`, { accent: true })}
       ${rxKpi('R²', fmtNum(d.reg.r_squared, 2), `${fmtNum(d.n, 0)} sessions in the fit`)}
     </section>
+    ${twoValues}
     ${rxPanel({ title: 'Price ÷ ADR-DMA', meta: `${periodLabel} · mean and ±1σ / ±2σ of the in-fit days`, body: `<div class="rx-pb">${rxCanvas(id('ratio'))}<div data-brk-leg="ratio"></div></div>` })}
     <div class="rx-row">
       ${rxPanel({ cls: 'rx-col-wide', title: 'Price vs ADR-DMA', meta: escHtml(d.reg.equation.replace('Rev_MA', 'ADR_DMA')), body: `<div class="rx-pb">${rxCanvas(id('scatter'))}<div data-brk-leg="scatter"></div></div>` })}
@@ -190,10 +201,10 @@ async function buildBrokersPrice() {
           callbacks: {
             title: dateTitle,
             label: ctx => { const zz = (ctx.raw - rs.mean) / rs.sd; return ` Ratio ${fmtNum(ctx.raw, 1)} (${zz >= 0 ? '+' : '−'}${Math.abs(zz).toFixed(1)}σ)${rows[ctx.dataIndex].in_fit ? '' : ' · includes projected ADR'}`; },
-            footer: items => `At the mean ratio: ₹${fmtNum(rs.mean * rows[items[0].dataIndex].rev_ma, 0)}`,
+            footer: items => `Proportional value (mean ratio × ADR-DMA): ₹${fmtNum(rs.mean * rows[items[0].dataIndex].rev_ma, 0)}`,
           },
         } },
-        scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 6, maxRotation: 0, autoSkip: true } }, y: { ticks: { callback: v => fmtNum(v, 0) } } },
+        scales: { x: { grid: { display: false }, afterBuildTicks: brkMonthTicks(rows.map(r => r.date), 6), ticks: { maxTicksLimit: 6, maxRotation: 0, autoSkip: true } }, y: { ticks: { callback: v => fmtNum(v, 0) } } },
       },
     });
     root.querySelector('[data-brk-leg="ratio"]').innerHTML = rxLegend([

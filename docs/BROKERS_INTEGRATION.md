@@ -20,11 +20,12 @@ The engine, its Supabase project (`everjfpbnlbcpuarnhob`) and its daily job stay
 
 ## The Exchanges | Brokers switch
 
-The sidebar has an **Exchanges | Brokers** switch. In Brokers mode, a pill of brokers replaces the
+The sidebar has an **Exchanges | Brokers | MTF** switch (MTF is the exchanges' margin trading books,
+`js/40-mtf.js`, registered the same way with `registerModeView('mtf', …)`; it does not affect broker
+views). In Brokers mode, a pill of brokers replaces the
 NSE/BSE/MCX pill, and the exchange-only header parts are hidden: the revenue banner, the Fees
-toggle, the Report/Mobile buttons and the phone "At a glance" view. The switch stays hidden until
-at least one broker view registers, so the dashboard looks exactly as before until the first
-Brokers PR is merged.
+toggle, the Report/Mobile buttons and the phone "At a glance" view. The Brokers button stays hidden
+until at least one broker view registers.
 
 A broker view is a classic script that registers itself when it loads:
 
@@ -68,7 +69,9 @@ The shell lives in `dashboard/js/00-core.js` ("BROKERS MODE"). It handles the re
   the browser code. Set `Cache-Control` (`s-maxage`) **identically** in the function and in
   `dashboard/vercel.json`, and never add cache-busting query parameters to `/api/*` URLs.
 - **Numbers:** the front end shows what the engine published (`sb_summary_cells`,
-  `sb_daily_revenue`, `sb_calibration`). It never re-computes ADR. Use the Indian FY (Apr–Mar),
+  `sb_daily_revenue`, `sb_calibration`). It never re-computes ADR. The summary view also returns each
+  panel's last data day (`through`); the run bar shows MTF's, and a panel whose data ends before the
+  run's as-of date is flagged (the engine has published runs whose MTF stopped days early). Use the Indian FY (Apr–Mar),
   ₹ Cr, and `quarterSortKey` to sort quarters.
 - **Checks before opening the PR:**
   - `python3 -m unittest discover -s tests`
@@ -87,6 +90,15 @@ Exchange-wide margin trading (MTF) books are published daily, without a key, at
 per security. Rows are keyed on the reporting date; each exchange publishes a day the next trading
 day, so the latest date trails the exchange data by one session.
 
+`nse_mtf_daily.json`, beside it, is NSE's closing book alone in the shape the engine's
+`src/live/refresh_market.py` already reads for `mtf_industry/book_cr`: `{"daily": [{"date", "book_cr"}]}`.
+It is the same figure as `codex_public_nse_mtf_daily.closing_outstanding_cr` (it matches the engine's four
+check values), needs no key, and has every NSE reporting date the pipeline holds (back to April 2021 once the backfill has run). Until
+it existed the engine's industry book stopped at 19 Oct 2026 (the view answered 401 to its key), so
+Angel One's and Motilal Oswal's MTF, and with them Consolidated ADR and the Price tab's latest close,
+stopped there too. If the engine reads the view again: new-style keys (`sb_publishable_…`) go in the
+`apikey` header only; sent as `Authorization: Bearer`, a key that is not a JWT is refused.
+
 ## Data: one lake
 
 The dashboard reads the broker results from the brokers-dashboard project through
@@ -96,7 +108,9 @@ GitHub's schedule, which is often hours late) copies the `sb_*` tables that the 
 can read into the ExchangesDash Supabase project (NSE-BSE), with the same names and columns.
 `brokers_mirror_schema.sql` defines the copies. Their schema endpoint refuses the publishable key,
 so `--emit-ddl` cannot generate that file; it comes from the brokers team's catalog (#36, 3 Nov
-2026: 8 tables). The copies keep their columns, types and primary keys, but not their foreign keys
+2026: 8 tables; `sb_pat_lines`, the PAT model's output, added on 5 Nov 2026). Create a new table's copy
+only once the table exists on their side: the mirror copies every `sb_*` table that exists here, and one
+their side lacks fails every run. The copies keep their columns, types and primary keys, but not their foreign keys
 or CHECK constraints, because the mirror loads tables in name order.
 
 - A column change on the brokers side makes that table's copy stop with an error until the copy's
