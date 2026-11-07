@@ -11,7 +11,7 @@ from helpers import NODE, ROOT, js_eval
 import share_regression as sr
 
 SHARE_JS = ["computeRollingMA", "computeOLS", "buildSeriesWithDMA", "SHARE_GATE",
-            "shareOlsStats", "shareHoldout", "shareGateReasons", "computeShareModel"]
+            "shareOlsStats", "shareHoldout", "shareGateReasons", "shareFitFrom", "computeShareModel"]
 
 
 def weekdays(start, n):
@@ -141,6 +141,185 @@ class DashboardMirror(unittest.TestCase):
                 continue
             with self.subTest(ex=ex):
                 self.check(out, window=out["ma_window"])
+
+
+SHARE_RANGE_JS = SHARE_JS + ["shareRatioStats"]
+
+
+def break_fixture(n=400, seed=11):
+    """Like fixture(), but the price-revenue line changes on the 250th weekday
+    (slope 100 → 60, and a lower price ÷ MA), so a fit on the later sessions
+    has its own slope and ratio."""
+    rng = random.Random(seed)
+    dates = weekdays(date(2025, 1, 1), n)
+    rev = [(d, 10 + 5 * math.sin(i / 15) + 0.3 * i / n * 10) for i, d in enumerate(dates)]
+    mas = sr.revenue_ma(rev, 5)
+    prices = {}
+    for i, d in enumerate(dates):
+        if i % 9 == 4 or i == 0 or mas[i - 1] is None:
+            continue
+        slope, icpt = (100, 500) if i < 250 else (60, 700)
+        prices[d] = round(slope * mas[i - 1] + icpt + rng.gauss(0, 10), 4)
+    return dates, rev, prices
+
+
+def ratio_stats(prices, rev, window, dates):
+    """Mean and population σ of close ÷ lagged revenue MA over `dates`, in Python."""
+    lag = sr.lagged_ma_for(sorted(prices), rev, window)
+    ratios = [prices[d] / lag[d][0] for d in dates]
+    mean = sum(ratios) / len(ratios)
+    return mean, math.sqrt(sum((r - mean) ** 2 for r in ratios) / len(ratios))
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class RangeRefit(unittest.TestCase):
+    """computeShareModel's `fitStart` (the Regression tab's Range): a later start
+    re-fits on those sessions only, an earlier one is held at regression_start,
+    and without it the published fit is unchanged."""
+
+    def model(self, out, fit_start=None, window=5, lag=0):
+        arg = "undefined" if fit_start is None else json.dumps(fit_start)
+        return js_eval(SHARE_RANGE_JS, f"computeShareModel(DATA, {window}, {lag}, {arg})", out)
+
+    def test_no_fit_start_is_the_published_fit(self):
+        dates, rev, prices = break_fixture()
+        for modelled in (None, {d for d, _ in rev[:30]}):
+            out = sr.build_output(ticker="T", prices=prices, rev_rows=rev, reg_start="2025-01-01",
+                                  window=5, ma_windows=[5], updated_at="x", modelled=modelled)
+            with self.subTest(modelled=bool(modelled)):
+                three = js_eval(SHARE_RANGE_JS, "[computeShareModel(DATA, 5, 0), computeShareModel(DATA, 5, 0, undefined),"
+                                " computeShareModel(DATA, 5, 0, DATA.regression_start)].map(m => JSON.stringify(m))", out)
+                self.assertEqual(three[0], three[1])
+                self.assertEqual(three[0], three[2])
+
+    def test_start_before_regression_start_is_clamped(self):
+        dates, rev, prices = break_fixture()
+        out = sr.build_output(ticker="T", prices=prices, rev_rows=rev, reg_start=dates[100],
+                              window=5, ma_windows=[5], updated_at="x")
+        self.assertEqual(self.model(out, dates[20]), self.model(out))
+        self.assertEqual(self.model(out, "2020-01-01"), self.model(out))
+        self.assertEqual(js_eval(SHARE_RANGE_JS, f"shareFitFrom('{dates[100]}', '{dates[20]}')"), dates[100])
+
+    def test_later_start_refits_on_those_sessions(self):
+        dates, rev, prices = break_fixture()
+        out = sr.build_output(ticker="T", prices=prices, rev_rows=rev, reg_start="2025-01-01",
+                              window=5, ma_windows=[5], updated_at="x")
+        later = dates[260]
+        full, js = self.model(out), self.model(out, later)
+        py = sr.fit_model(prices, rev, 5, later)          # the same fit, computed independently
+        self.assertLess(js["n"], full["n"])
+        self.assertEqual(js["n"], py["n"])
+        self.assertAlmostEqual(js["reg"]["slope"], py["slope"], places=3)
+        self.assertAlmostEqual(js["reg"]["intercept"], py["intercept"], places=1)
+        self.assertAlmostEqual(js["reg"]["r_squared"], py["r2"], places=4)
+        self.assertAlmostEqual(js["meth"]["t_stat_newey_west"], py["t_nw"], places=1)
+        self.assertAlmostEqual(js["meth"]["durbin_watson"], py["durbin_watson"], places=2)
+        self.assertAlmostEqual(js["meth"]["holdout"]["mape_pct"], py["holdout"]["mape"], places=1)
+        self.assertEqual(js["meth"]["fair_value_supported"], py["supported"])
+        self.assertAlmostEqual(js["reg"]["slope"], 60, delta=5)          # the post-break line, not the blend
+        self.assertGreater(abs(js["reg"]["slope"] - full["reg"]["slope"]), 5)
+        # In-fit rows are exactly the later sessions, and the fair value uses the new line
+        self.assertEqual([r["date"] for r in js["series"] if r["in_fit"]], py["dates"])
+        last = js["series"][-1]
+        self.assertAlmostEqual(last["price_pred"], py["slope"] * last["rev_ma"] + py["intercept"], delta=0.02)
+        # Price ÷ MA mean and σ over the re-fitted rows
+        mean, sd = ratio_stats(prices, rev, 5, py["dates"])
+        rs = js_eval(SHARE_RANGE_JS, f"shareRatioStats(computeShareModel(DATA, 5, 0, '{later}').series, '{later}')", out)
+        full_rs = js_eval(SHARE_RANGE_JS, "shareRatioStats(computeShareModel(DATA, 5, 0).series, DATA.regression_start)", out)
+        self.assertAlmostEqual(rs["mean"], mean, delta=0.01)
+        self.assertAlmostEqual(rs["sd"], sd, delta=0.01)
+        self.assertGreater(abs(rs["mean"] - full_rs["mean"]), 1)
+
+    def test_modelled_rows_stay_out_of_a_refit(self):
+        # Modelled history runs past the range start: those rows stay out, as in the published fit
+        dates, rev, prices = break_fixture()
+        modelled = {d for d, _ in rev[:80]}
+        out = sr.build_output(ticker="T", prices=prices, rev_rows=rev, reg_start="2025-01-01",
+                              window=5, ma_windows=[5], updated_at="x", modelled=modelled)
+        ref = sr.build_output(ticker="T", prices=prices, rev_rows=rev, reg_start=dates[60],
+                              window=5, ma_windows=[5], updated_at="x", modelled=modelled)
+        js = self.model(out, dates[60])
+        self.assertEqual(js["n"], ref["n_days"])
+        self.assertAlmostEqual(js["reg"]["slope"], ref["regression"]["slope"], places=3)
+        self.assertTrue(all(r["date"] > dates[83] for r in js["series"] if r["in_fit"]))
+
+    def test_too_few_sessions_gives_no_model(self):
+        dates, rev, prices = break_fixture()
+        out = sr.build_output(ticker="T", prices=prices, rev_rows=rev, reg_start="2025-01-01",
+                              window=5, ma_windows=[5], updated_at="x")
+        self.assertIsNone(self.model(out, dates[-8]))
+
+
+# buildShareAnalysis against a minimal DOM: each [data-rx] slot is one node,
+# rxOnSeg's click handlers are kept so a Range click can be replayed, and
+# Chart.js drawing is stubbed out.
+TAB_JS = SHARE_RANGE_JS + [
+    "latestShareRow", "SHARE_RANGE_MONTHS", "shareRangeStart", "filterShareSeries", "SHARE_EXCHANGE_NAMES",
+    "SHARE_MA_WINDOWS", "SHARE_LAGS", "shareRanges", "shareChecksHTML", "shareHeroHTML", "buildShareAnalysis",
+    "rxPanel", "rxChip", "rxSeg", "rxOnSeg", "rxCheck", "rxAlert", "rxHow", "rxLegend", "rxSignedPct", "rxRupee",
+    "rxDate", "rxCanvas", "escHtml", "fmtNum", "fmtChartDate", "RX", "RX_ICONS", "charts"]
+TAB_HARNESS = r"""(() => {
+  const nodes = {}, clicks = {}, blocks = [0, 1, 2].map(() => ({ style: {} }));
+  const node = k => nodes[k] || (nodes[k] = { innerHTML: '', textContent: '', hidden: false, style: {},
+    addEventListener: (t, f) => { clicks[k] = f; }, querySelectorAll: () => [] });
+  const root = { set innerHTML(v) {}, querySelector: sel => node(sel),
+    querySelectorAll: sel => sel === '[data-rx-chartblock]' ? blocks : [node(sel)] };
+  globalThis.document = { getElementById: () => root };
+  globalThis.SHARE_DATA = DATA;
+  globalThis.RX_TAB_REFRESH = {};
+  globalThis.rxChart = () => null;
+  globalThis.rxFixHeight = () => {};
+  globalThis.fmtTradeDate = iso => iso;
+  const pick = v => clicks['[data-rx-seg="range"]']({ target: { closest: () => ({ getAttribute: () => 'false', dataset: { value: v } }) } });
+  const shot = () => ({ hero: node('[data-rx="hero"]').innerHTML, checks: node('[data-rx="checks"]').innerHTML,
+    r2: node('[data-rx="r2"]').innerHTML, charts: blocks.map(b => b.style.display || '') });
+  buildShareAnalysis('bse');
+  const out = { fit: shot() };
+  for (const v of RANGES) { pick(v); out[v] = shot(); }
+  return out;
+})()"""
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class RangeRefitTab(unittest.TestCase):
+    def run_tab(self, out, ranges):
+        return js_eval(TAB_JS, f"(globalThis.RANGES = {json.dumps(ranges)}, {TAB_HARNESS})", out)
+
+    def test_range_click_refits_every_figure(self):
+        dates, rev, prices = break_fixture()
+        out = sr.build_output(ticker="T", prices=prices, rev_rows=rev, reg_start=dates[150],
+                              window=5, ma_windows=[5], updated_at="x")
+        out["ma_window"] = 10          # a window the tab offers
+        tab = self.run_tab(out, ["3m", "1y", "fit"])
+        self.assertIn("fitted over", tab["fit"]["hero"])
+        self.assertNotIn("stays the full-window fit", tab["fit"]["hero"])
+        three = tab["3m"]
+        self.assertNotEqual(three["hero"], tab["fit"]["hero"])
+        self.assertNotEqual(three["checks"], tab["fit"]["checks"])
+        self.assertIn("Re-fitted on the last 3 months", three["hero"])
+        self.assertIn("stays the full-window fit", three["hero"])
+        self.assertIn("this range", three["r2"])
+        # 1 Y reaches back past regression_start: the fit is held there, and says so
+        self.assertIn("the regression start", tab["1y"]["hero"])
+        # Back on the published window, the first render returns exactly
+        self.assertEqual(tab["fit"]["hero"], self.run_tab(out, [])["fit"]["hero"])
+
+    def test_range_with_too_few_sessions(self):
+        # No quotes for most of the last three months (a suspension): 3 M cannot be fitted
+        dates, rev, prices = break_fixture()
+        cutoff = (date.fromisoformat(dates[-1]) - timedelta(days=88)).isoformat()
+        kept = [d for d in sorted(prices) if d >= cutoff][-4:]
+        prices = {d: p for d, p in prices.items() if d < cutoff or d in kept}
+        out = sr.build_output(ticker="T", prices=prices, rev_rows=rev, reg_start="2025-01-01",
+                              window=10, ma_windows=[10], updated_at="x")
+        tab = self.run_tab(out, ["3m", "fit"])
+        self.assertIn("Too few sessions in this range", tab["3m"]["hero"])
+        self.assertEqual(tab["3m"]["checks"], "")
+        self.assertEqual(tab["3m"]["charts"], ["none"] * 3)
+        self.assertIn("—", tab["3m"]["r2"])
+        # The controls still work: picking the full window brings the model and charts back
+        self.assertIn("fitted over", tab["fit"]["hero"])
+        self.assertEqual(tab["fit"]["charts"], [""] * 3)
 
 
 

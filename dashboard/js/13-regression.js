@@ -131,11 +131,21 @@ function shareGateReasons(st, X) {
   return reasons;
 }
 
+// First date the fit may use: a later `fitStart` (the Regression tab's Range)
+// narrows the published window, an earlier one is held at regression_start,
+// which marks the listing or regime change the fit must not reach back past.
+function shareFitFrom(regStart, fitStart) {
+  return fitStart && fitStart > regStart ? fitStart : regStart;
+}
+
 // Model for one DMA window / extra lag. Files written before the Phase 5
-// method (no `revenue_daily`) fall back to the old same-day fit.
-function computeShareModel(shareData, dmaWindow, extraLag = 0) {
+// method (no `revenue_daily`) fall back to the old same-day fit. `fitStart`
+// (ISO date, optional) re-fits on the sessions from that date only; the MA
+// still runs over every revenue day. Without it the result is the published
+// fit that scripts/share_regression.py writes.
+function computeShareModel(shareData, dmaWindow, extraLag = 0, fitStart) {
   const prices = shareData.series || [];
-  const regStart = shareData.regression_start;
+  const regStart = shareFitFrom(shareData.regression_start, fitStart);
   const rev = shareData.revenue_daily;
   if (!rev) {
     const legacy = buildSeriesWithDMA(prices, dmaWindow, regStart, extraLag, shareData.revenue_prefix || []);
@@ -194,19 +204,20 @@ function latestShareRow(series, asOfDate) {
   return series.find(r => r.date === asOfDate) || series[series.length - 1];
 }
 
+const SHARE_RANGE_MONTHS = { '1m': 1, '3m': 3, '6m': 6, '1y': 12, '2y': 24 };
+
+// First date of a Range button's span: 'fit' is the published window, the
+// fixed spans count back from the series' last date (UTC, as shareRanges does)
+function shareRangeStart(ser, range, regStart) {
+  const months = SHARE_RANGE_MONTHS[range];
+  if (!months || !ser.length) return regStart;
+  const d = new Date(ser[ser.length - 1].date + 'T00:00:00Z');
+  d.setUTCMonth(d.getUTCMonth() - months);
+  return d.toISOString().slice(0, 10);
+}
+
 function filterShareSeries(ser, range, regStart) {
-  const last = new Date(ser[ser.length - 1].date);
-  let cutoff;
-  const d = new Date(last);
-  switch (range) {
-    case '1m':      d.setMonth(d.getMonth() - 1);      cutoff = d.toISOString().slice(0, 10); break;
-    case '3m':      d.setMonth(d.getMonth() - 3);      cutoff = d.toISOString().slice(0, 10); break;
-    case '6m':      d.setMonth(d.getMonth() - 6);      cutoff = d.toISOString().slice(0, 10); break;
-    case '1y':      d.setFullYear(d.getFullYear() - 1); cutoff = d.toISOString().slice(0, 10); break;
-    case '2y':      d.setFullYear(d.getFullYear() - 2); cutoff = d.toISOString().slice(0, 10); break;
-    case 'fit':
-    default:        cutoff = regStart;
-  }
+  const cutoff = shareRangeStart(ser, range, regStart);
   return ser.filter(r => r.date >= cutoff);
 }
 
@@ -281,7 +292,13 @@ function shareChecksHTML(d) {
   return `<section class="rx-checks" aria-label="Model checks">${items.join('')}</section>`;
 }
 
-function shareHeroHTML(ex, s, d, regStart, w, lag) {
+// `fit` describes the window the model was fitted on (fitScope in
+// buildShareAnalysis): its first date `from`, the Range `key` / `label`, and
+// `clamped` when the Range reaches back past regression_start.
+function shareHeroHTML(ex, s, d, fit, w, lag) {
+  const regStart = s.regression_start;
+  const inFit = d.series.filter(r => r.in_fit === undefined ? r.date >= fit.from : r.in_fit);
+  const fitSpan = inFit.length ? `${rxDate(inFit[0].date)} – ${rxDate(inFit[inFit.length - 1].date)}` : `from ${rxDate(fit.from)}`;
   const lat = s.latest || {};
   const row = latestShareRow(d.series, lat.date);
   const price = lat.is_live ? lat.price_actual : row.price;
@@ -309,9 +326,13 @@ function shareHeroHTML(ex, s, d, regStart, w, lag) {
       <div class="rx-hero-line">No fair value for this window: ${escHtml(why)}.</div>`;
   }
   main += `<div class="rx-mono">${eq}</div>
-    <p class="rx-foot" style="margin-top:3px">n ${fmtNum(d.n, 0)} sessions · fitted from ${rxDate(regStart)} · revenue lagged ${lagTxt} · R² ${d.reg.r_squared.toFixed(2)}, r ${d.reg.pearson_r.toFixed(2)} (in-sample) · ${priceWhen}</p>`;
+    <p class="rx-foot" style="margin-top:3px">n ${fmtNum(d.n, 0)} sessions · fitted over ${fitSpan} · revenue lagged ${lagTxt} · R² ${d.reg.r_squared.toFixed(2)}, r ${d.reg.pearson_r.toFixed(2)} (in-sample) · ${priceWhen}</p>`;
+  if (fit.key !== 'fit') {
+    main += `<p class="rx-foot" style="margin-top:3px">${rxChip(fit.clamped ? `Fit from ${rxDate(regStart)}, the regression start` : `Re-fitted on the last ${fit.label}`, 'data')}
+      Every figure on this tab is fitted on the range picked below. The published fair value used elsewhere (banner, Valuation tab, share file) stays the full-window fit from ${rxDate(regStart)}.</p>`;
+  }
 
-  const rs = shareRatioStats(d.series, regStart);
+  const rs = shareRatioStats(d.series, fit.from);
   let side = '';
   if (rs && rs.sd > 0 && row.rev_ma > 0) {
     const ratio = price / row.rev_ma;
@@ -320,7 +341,7 @@ function shareHeroHTML(ex, s, d, regStart, w, lag) {
     const pin = Math.max(0, Math.min(100, (z + 2) / 4 * 100));
     side = `<div class="rx-lbl">Price ÷ revenue MA${w}</div>
       <div class="rx-hero-v">${fmtNum(ratio, 0)} <small>mean ${fmtNum(rs.mean, 0)} · σ ${fmtNum(rs.sd, 1)}</small></div>
-      <div class="rx-hero-line">${z >= 0 ? '+' : '−'}${Math.abs(z).toFixed(1)} σ: <strong>${where}</strong> its fit-window average</div>
+      <div class="rx-hero-line">${z >= 0 ? '+' : '−'}${Math.abs(z).toFixed(1)} σ: <strong>${where}</strong> its average over the fit</div>
       <div class="rx-gauge" role="img" aria-label="Ratio at ${z >= 0 ? 'plus' : 'minus'} ${Math.abs(z).toFixed(1)} standard deviations, on a scale from minus 2 to plus 2">
         <div class="rx-gauge-track"><div style="background:#C9D6F3"></div><div style="background:#EAF0FB"></div><div style="background:#EAF0FB"></div><div style="background:#C9D6F3"></div></div>
         <div class="rx-gauge-mid"></div>
@@ -332,7 +353,8 @@ function shareHeroHTML(ex, s, d, regStart, w, lag) {
 
   const how = rxHow('How this model works', `<ul>
     <li>Each close is paired with the ${w}-session average of daily transaction revenue up to the previous session${lag ? `, shifted back a further ${lag} sessions` : ''}. The average runs over every revenue day, so missing quotes do not shorten it.</li>
-    <li>The fit is ordinary least squares over the sessions from ${rxDate(regStart)}${ex === 'mcx' ? '; modelled MCX revenue (before 2 Sep 2024) is left out' : ''}. R² and r describe that same window (in-sample).</li>
+    <li>The fit is ordinary least squares over the sessions from ${rxDate(fit.from)}${ex === 'mcx' ? '; modelled MCX revenue (before 2 Sep 2024) is left out' : ''}. R² and r describe that same window (in-sample), as do the price ÷ MA mean and σ.</li>
+    <li>The Range buttons re-fit on their span, but never before ${rxDate(regStart)}, where the published fit starts; the fair value shown on other tabs is always that full-window fit.</li>
     <li>Slope significance uses Newey-West standard errors (bandwidth 1.3·√n), which allow for the autocorrelation Durbin-Watson measures.</li>
     <li>Holdout: the model is refitted on the first 80 % of the window and scored on the last 20 % against “price unchanged”.</li>
     <li>A fair value is shown only with ≥ ${SHARE_GATE.minN} sessions, a positive slope with t ≥ ${SHARE_GATE.minT}, and a revenue MA that moved ≥ ${Math.round(SHARE_GATE.minSpread * 100)} %.</li>
@@ -355,10 +377,20 @@ function buildShareAnalysis(ex) {
   const name = SHARE_EXCHANGE_NAMES[ex];
   const regStart = s.regression_start;
   const state = { dma: SHARE_MA_WINDOWS.includes(s.ma_window) ? s.ma_window : 45, lag: 0, range: 'fit' };
+  // The Range re-fits the model: 'fit' is the published window (no fitStart,
+  // so the figures match the share file); a fixed span starts where its chart
+  // does, held at regression_start.
+  const fitScope = () => {
+    const start = shareRangeStart(s.series || [], state.range, regStart);
+    const fitStart = state.range === 'fit' ? undefined : start;
+    return { key: state.range, fitStart, from: shareFitFrom(regStart, fitStart), clamped: fitStart !== undefined && start < regStart,
+      label: { '1m': 'month', '3m': '3 months', '6m': '6 months', '1y': 'year', '2y': '2 years' }[state.range] || state.range };
+  };
   const cache = {};
   const model = (w, lag) => {
-    const k = w + '_' + lag;
-    if (!(k in cache)) cache[k] = computeShareModel(s, w, lag);
+    const { fitStart } = fitScope();
+    const k = w + '_' + lag + '_' + (fitStart || 'fit');
+    if (!(k in cache)) cache[k] = computeShareModel(s, w, lag, fitStart);
     return cache[k];
   };
   const id = k => `rxShare${k}-${ex}`;
@@ -370,20 +402,20 @@ function buildShareAnalysis(ex) {
     <div class="rx-bar" role="toolbar" aria-label="Model and chart controls">
       <div class="rx-grp"><span class="rx-lbl">MA window</span>${rxSeg('dma', SHARE_MA_WINDOWS.map(w => [w, w + ' D']), state.dma, 'Revenue moving-average window')}</div>
       <div class="rx-grp"><span class="rx-lbl">Extra lag</span>${rxSeg('lag', SHARE_LAGS.map(l => [l, l ? l + ' D' : 'None']), state.lag, 'Extra revenue lag')}</div>
-      <div class="rx-grp"><span class="rx-lbl">Range</span>${rxSeg('range', shareRanges(s.series || [], regStart), state.range, 'Chart range')}</div>
+      <div class="rx-grp"><span class="rx-lbl">Range</span>${rxSeg('range', shareRanges(s.series || [], regStart), state.range, 'Fit and chart range')}</div>
       <p class="rx-foot" data-rx="r2"></p>
     </div>
-    ${rxPanel({ title: 'Share price: actual vs model', meta: `₹ · <span data-rx="span"></span>`,
+    ${rxPanel({ title: 'Share price: actual vs model', meta: `₹ · <span data-rx="span"></span>`, attrs: 'data-rx-chartblock',
       right: `<span data-rx="legPrice"></span>`,
       body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas(id('Price'))}<div data-rx="residWrap">${rxCanvas(id('Resid'))}</div></div>`,
       foot: `<span data-rx="residNote"></span>` })}
-    <div class="rx-row">
-      ${rxPanel({ cls: 'rx-col-half', title: `Price ÷ revenue MA<span data-rx="w"></span>`, meta: 'mean ± 1σ and ± 2σ over the fit window',
+    <div class="rx-row" data-rx-chartblock>
+      ${rxPanel({ cls: 'rx-col-half', title: `Price ÷ revenue MA<span data-rx="w"></span>`, meta: 'mean ± 1σ and ± 2σ over the fitted range',
         body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas(id('Ratio'))}</div><div class="rx-chart-note" data-rx="legRatio"></div>` })}
       ${rxPanel({ cls: 'rx-col-half', title: `Revenue MA<span data-rx="w"></span> → price`, meta: 'each session, shaded by date',
         body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas(id('Scatter'))}</div><div class="rx-chart-note" data-rx="legScatter"></div>` })}
     </div>
-    ${rxPanel({ title: `Price and revenue MA<span data-rx="w"></span>, indexed`, meta: 'start of range = 100 · one axis, so the two lines compare like for like',
+    ${rxPanel({ title: `Price and revenue MA<span data-rx="w"></span>, indexed`, meta: 'start of range = 100 · one axis, so the two lines compare like for like', attrs: 'data-rx-chartblock',
       right: `<span data-rx="legIndex"></span>`,
       body: `<div class="rx-pb" style="padding-bottom:10px">${rxCanvas(id('Index'))}</div>` })}
   </div>`;
@@ -393,30 +425,36 @@ function buildShareAnalysis(ex) {
 
   function renderText() {
     const d = model(state.dma, state.lag);
+    const fit = fitScope();
     setAll('w', String(state.dma));
-    if (!d) {
-      q('hero').innerHTML = rxAlert(`Too few overlapping price and revenue sessions to fit a ${state.dma}-session MA${state.lag ? ` with a ${state.lag}-session lag` : ''}.`);
-      q('checks').innerHTML = '';
-      return null;
-    }
-    q('hero').innerHTML = shareHeroHTML(ex, s, d, regStart, state.dma, state.lag);
-    q('checks').innerHTML = shareChecksHTML(d);
     const r2 = SHARE_MA_WINDOWS.map(w => {
       const m = model(w, state.lag);
       const v = m ? m.reg.r_squared.toFixed(2) : '—';
       return w === state.dma ? `<strong class="rx-strong">${w} D ${v}</strong>` : `${w} D ${v}`;
     }).join(' · ');
-    q('r2').innerHTML = `R² by window (in-sample): ${r2}`;
+    q('r2').innerHTML = `R² by window (in-sample${fit.key === 'fit' ? '' : ', this range'}): ${r2}`;
+    if (!d) {
+      const lagTxt = state.lag ? ` with a ${state.lag}-session lag` : '';
+      q('hero').innerHTML = fit.key === 'fit'
+        ? rxAlert(`Too few overlapping price and revenue sessions to fit a ${state.dma}-session MA${lagTxt}.`)
+        : rxAlert(`<strong>Too few sessions in this range.</strong> Fewer than 10 sessions from ${rxDate(fit.from)} have a ${state.dma}-session revenue MA${lagTxt}, so there is nothing to fit. Pick a longer range.`);
+      q('checks').innerHTML = '';
+      return null;
+    }
+    q('hero').innerHTML = shareHeroHTML(ex, s, d, fit, state.dma, state.lag);
+    q('checks').innerHTML = shareChecksHTML(d);
     return d;
   }
 
   function renderCharts() {
     const d = model(state.dma, state.lag);
+    const fit = fitScope();
     ['shPrice', 'shResid', 'shRatio', 'shScatter', 'shIndex'].forEach(k => { if (charts[k]) { charts[k].destroy(); delete charts[k]; } });
-    if (!d || !d.series.length) return;
-    const lat = s.latest || {};
-    const view = filterShareSeries(d.series, state.range, regStart);
+    const view = d ? filterShareSeries(d.series, state.range, regStart) : [];
+    // No model for this range (renderText says why): hide the charts rather than leave stale legends
+    el.querySelectorAll('[data-rx-chartblock]').forEach(n => { n.style.display = view.length ? '' : 'none'; });
     if (!view.length) return;
+    const lat = s.latest || {};
     const w = state.dma;
     const hasFv = view.some(r => r.price_pred != null);
     const labels = view.map(r => fmtChartDate(r.date));
@@ -469,7 +507,7 @@ function buildShareAnalysis(ex) {
       rxFixHeight(charts.shResid);
     }
 
-    const rs = shareRatioStats(d.series, regStart);
+    const rs = shareRatioStats(d.series, fit.from);
     if (rs) {
       const ratios = view.map(r => r.price / r.rev_ma);
       const flat = v => view.map(() => v);
@@ -506,7 +544,7 @@ function buildShareAnalysis(ex) {
         { label: `± 2σ (${fmtNum(rs.mean - 2 * rs.sd, 0)}–${fmtNum(rs.mean + 2 * rs.sd, 0)})`, color: 'rgba(43, 92, 200, 0.07)', style: 'box-shadow:inset 0 0 0 1px #DCE5F7' },
         { label: `Mean ${fmtNum(rs.mean, 0)}`, color: RX.muted, kind: 'dash' },
       ]);
-    }
+    } else q('legRatio').innerHTML = '';
 
     const last = view[view.length - 1];
     const lastPrice = last.date === lat.date && lat.is_live ? lat.price_actual : last.price;
@@ -576,7 +614,7 @@ function buildShareAnalysis(ex) {
 
   rxOnSeg(el, 'dma', v => { state.dma = +v; renderText(); renderCharts(); });
   rxOnSeg(el, 'lag', v => { state.lag = +v; renderText(); renderCharts(); });
-  rxOnSeg(el, 'range', v => { state.range = v; renderCharts(); });
+  rxOnSeg(el, 'range', v => { state.range = v; renderText(); renderCharts(); });
   renderText();
   renderCharts();
   RX_TAB_REFRESH.share = renderCharts;
