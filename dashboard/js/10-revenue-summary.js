@@ -706,10 +706,19 @@ function syncXLM(rowNum, mIdx) {
     if (sel && parseInt(sel.value) !== mIdx) sel.value = mIdx;
     renderMRow(rowNum, mIdx, sk);
     if (rowNum === 0) {
-      const r1 = parseInt(document.getElementById('xlM1-' + sk)?.value);
-      if (!isNaN(r1)) renderMRow(1, r1, sk);
+      [1, 2].forEach(r => {
+        const ri = parseInt(document.getElementById('xlM' + r + '-' + sk)?.value);
+        if (!isNaN(ri)) renderMRow(r, ri, sk);
+      });
     }
   });
+}
+
+// Month rows' defaults: the latest three months (current, previous, the month
+// before), newest first. DATA.monthly runs oldest first, so a calendar- or
+// FY-year boundary needs no special case.
+function defaultMonthIdxs(nM) {
+  return [0, 1, 2].map(k => Math.max(0, nM - 1 - k));
 }
 
 // ── Segment block template ────────────────────────────────────────────────────
@@ -816,8 +825,8 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
       ${expTd(`xlQExp${r}-${segKey}`)}
     </tr>`).join('');
 
-  // Month: 2 selectable rows + 1 Avg 6M (125 days) row
-  const mRows = [0, 1].map(r => `
+  // Month: 3 selectable rows (current, previous, the month before) + 1 Avg 6M (125 days) row
+  const mRows = [0, 1, 2].map(r => `
     <tr${r === 0 ? ' class="xl-r-cur"' : ''}>
       <td>${mkSel('xlM' + r + '-' + segKey, mOpts)}</td>
       <td id="xlMVal${r}-${segKey}"></td>
@@ -968,8 +977,7 @@ function buildRevenueSummary() {
       if (allQ[i].quarter.startsWith('Q' + curQNum + ' ')) { defQ3 = i; break; }
     }
   }
-  const defM0 = nM - 1;
-  const defM1 = Math.max(0, nM - 2);
+  const [defM0, defM1, defM2] = defaultMonthIdxs(nM);
 
   // Set select values then render data
   XL_SEGS.forEach(sk => {
@@ -982,10 +990,11 @@ function buildRevenueSummary() {
     document.getElementById('xlQ3-'  + sk).value = defQ3;
     document.getElementById('xlM0-'  + sk).value = defM0;
     document.getElementById('xlM1-'  + sk).value = defM1;
+    document.getElementById('xlM2-'  + sk).value = defM2;
 
     renderFYRow(0, defFY0, sk); renderFYRow(1, defFY1, sk);
     [defQ0, defQ1, defQ2, defQ3].forEach((qi, r) => renderQRow(r, qi, sk));
-    renderMRow(0, defM0, sk); renderMRow(1, defM1, sk);
+    [defM0, defM1, defM2].forEach((mi, r) => renderMRow(r, mi, sk));
 
     // Quarter wire-table's 3 per-weekday selectable rows — same current/prev/
     // same-Q-last-year defaults the fixed trio used to show.
@@ -1009,7 +1018,7 @@ function buildRevenueSummary() {
         syncXLQ(r, parseInt(this.value));
       });
     });
-    [0, 1].forEach(r => {
+    [0, 1, 2].forEach(r => {
       document.getElementById('xlM' + r + '-' + sk).addEventListener('change', function() {
         syncXLM(r, parseInt(this.value));
       });
@@ -1181,6 +1190,19 @@ const MS_SEG_FIELD = {
   seg_cash:      'cash_rev',
 };
 
+// The month before an exchange's previous month, for the market-share panel's
+// third month row: the raw monthly row ahead of the enriched `previous` label,
+// and its daily average (the pipelines' enriched data stops at current and
+// previous). Per exchange, like the quarter rows; null when the raw rows do not
+// reach back that far.
+function msMonthBefore(rawEx, enrSeg, msKey) {
+  const monthly = rawEx?.monthly || [];
+  const i = monthly.findIndex(x => x.month === enrSeg?.monthly?.previous?.label);
+  if (i < 1) return null;
+  const row = monthly[i - 1];
+  return { label: row.month, row, value: (row[MS_SEG_FIELD[msKey]] || 0) / (row.days || row.trading_days || 1) };
+}
+
 function buildMarketSharePanel(exList) {
   const el = document.getElementById('marketSharePanel');
   if (!el) return;
@@ -1225,6 +1247,14 @@ function buildMarketSharePanel(exList) {
     const lbl = ed(ex)[key]?.monthly?.[which]?.label;
     return periodFlags((raw(ex).monthly || []).find(x => x.month === lbl), sk);
   }));
+  // One month for every exchange, named by the reference exchange (as the
+  // quarter rows do), so a lagging exchange never fills the row with its own month
+  const m3 = (ex, key) => {
+    const lbl = msMonthBefore(raw(refEx), ed(refEx)[key], key)?.label;
+    const row = lbl && (raw(ex).monthly || []).find(x => x.month === lbl);
+    return row ? { label: lbl, row, value: (row[MS_SEG_FIELD[key]] || 0) / (row.days || row.trading_days || 1) } : null;
+  };
+  const m3Flags = (key, sk) => mergeFlags(exList.map(ex => periodFlags(m3(ex, key)?.row, sk)));
   const tFlags = (from, to, sk) => mergeFlags(exList.map(ex => rowsFlags((raw(ex).daily_all || []).slice(from, to), sk)));
 
   // Expiry days behind each period, per exchange with an expiry rule (not MCX):
@@ -1240,6 +1270,10 @@ function buildMarketSharePanel(exList) {
   const qExp = label => expCell(d => d.filter(r => r.fy_quarter === label));
   const mExp = (which, key) => expCell((d, ex) => {
     const lbl = ed(ex)[key]?.monthly?.[which]?.label;
+    return lbl ? d.filter(r => r.fy_month === lbl) : [];
+  });
+  const m3Exp = key => expCell((d, ex) => {
+    const lbl = m3(ex, key)?.label;
     return lbl ? d.filter(r => r.fy_month === lbl) : [];
   });
   const tExp = (from, to) => expCell(d => d.slice(from, to));
@@ -1262,8 +1296,9 @@ function buildMarketSharePanel(exList) {
     const showExp = key === expSegKey;
     const refED = ed(refEx)[key];
     const sk = SEG_OF_MS_KEY[key];
+    const m3Label = m3(refEx, key)?.label;
 
-    // Build period rows — quarterly from raw (correct per-exchange days), rest from enriched
+    // Build period rows — quarterly and the third month from raw (correct per-exchange days), rest from enriched
     const periods = [
       ...(curFYLabel  ? [{ lbl: curFYLabel,   vals: exList.map(ex => ed(ex)[key]?.fy?.current         || 0), flags: fyFlagsMS(curFYLabel, sk), exp: fyExp(curFYLabel) }] : []),
       ...(curQLabel   ? [{ lbl: curQLabel,    vals: exList.map(ex => qAvg(ex, curQLabel,   key)), cur: true, flags: qFlags(curQLabel, sk), exp: qExp(curQLabel) }] : []),
@@ -1272,6 +1307,7 @@ function buildMarketSharePanel(exList) {
       ...(yoyQLabel && yoyQLabel !== prevQLabel && yoyQLabel !== prev2QLabel ? [{ lbl: yoyQLabel, vals: exList.map(ex => qAvg(ex, yoyQLabel, key)), flags: qFlags(yoyQLabel, sk), exp: qExp(yoyQLabel) }] : []),
       { lbl: refED.monthly?.current?.label  || 'Cur Month',  vals: exList.map(ex => ed(ex)[key]?.monthly?.current?.value  || 0), flags: mFlags('current', key, sk), exp: mExp('current', key) },
       { lbl: refED.monthly?.previous?.label || 'Prev Month', vals: exList.map(ex => ed(ex)[key]?.monthly?.previous?.value || 0), flags: mFlags('previous', key, sk), exp: mExp('previous', key) },
+      ...(m3Label ? [{ lbl: m3Label, vals: exList.map(ex => m3(ex, key)?.value || 0), flags: m3Flags(key, sk), exp: m3Exp(key) }] : []),
       { lbl: AVG_6M_LABEL,    vals: exList.map(ex => ed(ex)[key]?.monthly?.avg_6m?.value  || 0), flags: tFlags(-125, undefined, sk), exp: tExp(-125) },
       { lbl: 'Last 5 Days',   vals: exList.map(ex => ed(ex)[key]?.weekly?.last5?.value    || 0), flags: tFlags(-5, undefined, sk), exp: tExp(-5) },
       { lbl: 'Prev 5 Days',   vals: exList.map(ex => ed(ex)[key]?.weekly?.prev5?.value    || 0), flags: tFlags(-10, -5, sk), exp: tExp(-10, -5) },

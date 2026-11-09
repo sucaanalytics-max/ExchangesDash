@@ -316,5 +316,65 @@ class QuarterLabels(unittest.TestCase):
         self.assertEqual(js, ["May 2026", "May–Aug 2026", "Dec 2025–Aug 2026", "May 2026"])
 
 
+@unittest.skipUnless(NODE, "node not installed")
+class RevenueSummaryMonths(unittest.TestCase):
+    """Revenue Summary shows three months (current, previous, the month before) ahead
+    of Avg 6M; the market-share panel's third month comes from the raw monthly rows."""
+
+    def test_default_months_are_latest_three_across_year_boundaries(self):
+        # Ends in January (calendar wrap: Jan, Dec, Nov) and, one month later, in April (FY wrap)
+        months = ["FY 2026 October", "FY 2026 November", "FY 2026 December", "FY 2026 January",
+                  "FY 2026 February", "FY 2026 March", "FY 2027 April"]
+        expr = "[4, 7, 2, 1].map(n => defaultMonthIdxs(n).map(i => DATA[i]))"
+        got = js_eval(["defaultMonthIdxs"], expr, months)
+        self.assertEqual(got[0], ["FY 2026 January", "FY 2026 December", "FY 2026 November"])
+        self.assertEqual(got[1], ["FY 2027 April", "FY 2026 March", "FY 2026 February"])
+        # Too few months: the missing rows repeat the oldest, as the second row always did
+        self.assertEqual(got[2], ["FY 2026 November", "FY 2026 October", "FY 2026 October"])
+        self.assertEqual(got[3], ["FY 2026 October"] * 3)
+
+    def _raw(self, daily_by_month, modelled=()):
+        """Raw dashboard file: daily rows and the pipelines' monthly sums of them."""
+        daily, monthly = [], []
+        for month, revs in daily_by_month.items():
+            rows = [{"fy_month": month, "total_rev": t, "opt_rev": t * 0.8, "fut_rev": t * 0.2}
+                    for t in revs]
+            daily += rows
+            row = {"month": month, "days": len(rows),
+                   **{f: sum(r[f] for r in rows) for f in ("total_rev", "opt_rev", "fut_rev")}}
+            if month in modelled:
+                row["modelled_days"] = len(rows)
+            monthly.append(row)
+        return {"daily_all": daily, "monthly": monthly}
+
+    def test_market_share_third_month_is_raw_daily_average(self):
+        raw = self._raw({"FY 2026 November": [10.0, 12.0, 17.0], "FY 2026 December": [20.0, 22.0],
+                         "FY 2026 January": [30.0]})
+        enr = {"monthly": {"current": {"label": "FY 2026 January"}, "previous": {"label": "FY 2026 December"}}}
+        got = js_eval(["MS_SEG_FIELD", "msMonthBefore"],
+                      "['summary_total', 'seg_options'].map(k => msMonthBefore(DATA.raw, DATA.enr, k))",
+                      {"raw": raw, "enr": enr})
+        nov = [r for r in raw["daily_all"] if r["fy_month"] == "FY 2026 November"]
+        for res, field in zip(got, ("total_rev", "opt_rev")):
+            self.assertEqual(res["label"], "FY 2026 November")
+            self.assertAlmostEqual(res["value"], sum(r[field] for r in nov) / len(nov))
+        # Nothing before the previous month (or no previous label): no third row
+        short = self._raw({"FY 2026 December": [20.0], "FY 2026 January": [30.0]})
+        self.assertIsNone(js_eval(["MS_SEG_FIELD", "msMonthBefore"],
+                                  "msMonthBefore(DATA.raw, DATA.enr, 'summary_total')",
+                                  {"raw": short, "enr": enr}))
+        self.assertIsNone(js_eval(["MS_SEG_FIELD", "msMonthBefore"],
+                                  "msMonthBefore(DATA.raw, {}, 'summary_total')", {"raw": raw}))
+
+    def test_market_share_third_month_keeps_mcx_modelled_flag(self):
+        raw = self._raw({"FY 2025 June": [5.0], "FY 2025 July": [6.0], "FY 2025 August": [7.0]},
+                        modelled={"FY 2025 June"})
+        enr = {"monthly": {"previous": {"label": "FY 2025 July"}}}
+        got = js_eval(["MS_SEG_FIELD", "msMonthBefore", "SEG_PRODUCT", "NO_FLAGS", "periodFlags"],
+                      "periodFlags(msMonthBefore(DATA.raw, DATA.enr, 'summary_total').row, 'total').modelled",
+                      {"raw": raw, "enr": enr})
+        self.assertTrue(got)
+
+
 if __name__ == "__main__":
     unittest.main()
