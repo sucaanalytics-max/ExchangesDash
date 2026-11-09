@@ -171,6 +171,74 @@ class TriangulatedTarget(unittest.TestCase):
         self.assertAlmostEqual(js["adr"]["oi"] / js["adr"]["total"], 0.30, places=9)
 
 
+EXCEL_LAYOUT_JS = TRIANGULATION_JS + ["valuationExcelRows", "triangulationSummaryRows", "valuationExcelCells",
+                                      "fmtNum", "rxSignedPct"]
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class ExcelValuationLayout(unittest.TestCase):
+    """The workbook's Bear / Base / Bull block and Summary at the top of the Valuation tab."""
+
+    def test_row_order_and_labels(self):
+        js = js_eval(EXCEL_LAYOUT_JS, "[valuationExcelRows(2028, 'fixed'), valuationExcelRows(2028, 'pct'),"
+                                      " triangulationSummaryRows(DATA[0]), triangulationSummaryRows(DATA[1])]",
+                     [{"w0": 20, "w1": 40, "w2": 40}, {"w0": 30, "w1": 30, "w2": 30}])
+        fixed, pct, weighted, equal = js
+        self.assertEqual([r["label"] for r in fixed],
+                         ["ADR FY 28", "Other Income", "Total Income", "PAT Margin", "EPS", "PE", "Price Target FY 28",
+                          "Upside", "Discount %", "Target Price FY 27", "Discount %", "Target Price Current"])
+        self.assertEqual([r["block"] for r in fixed], [0] * 8 + [1, 1, 2, 2])
+        self.assertEqual([r.get("gut") for r in fixed[:2]], ["qoq", "oiG"])
+        self.assertEqual(pct[1]["gut"], "oi")   # NSE: other income as a % of total income
+        self.assertEqual({r["key"]: r.get("tint") for r in fixed if r.get("tint")}, {"pe": "green", "up": "peach"})
+        self.assertEqual([r["key"] for r in fixed if r.get("bold")], ["adrFY", "fwd", "mid", "now"])
+        self.assertEqual([r.get("input") for r in fixed if r.get("input")],
+                         [["pe0", "pe1", "pe2"], [None, "d1", None], [None, "d2", None]])
+        self.assertEqual([r["label"] for r in weighted], ["Regression", "Ratio Analysis", "ADR", "Weighted average"])
+        self.assertEqual(equal[3]["label"], "Average")
+        self.assertEqual([r.get("w") for r in weighted], ["w0", "w1", "w2", None])
+        self.assertEqual(weighted[0]["gut"], "band")
+
+    def test_figures_match_the_workbook(self):
+        # ADR 25.11 (25.1145 unrounded: exactly 25.11 gives 8,566), other income 2,055.39 × 1.15 = 2,364,
+        # 247 sessions, 51 % margin, 40.79 Cr shares, PE 40 / 45 / 50, discounts 18 % then 9 %
+        adr, cmp = 25.1145, 3500
+        expr = """(() => {
+          const t = { ...TRIANGULATION_DEFAULTS.bse, w0: 1, w1: 1, w2: 1 };
+          // Regression flat at 3,544; ratio bear set so its today value is 3,408
+          const k = 3408 * 1.18 * 1.09 / DATA.adr;
+          const tri = triangulationModel(t, { adrFY: DATA.adr, regAdr: 22, reg: { intercept: 3544, slope: 0 },
+                                              ratio: { mean: k + 10, sd: 10 }, shares: 40.79 });
+          return { cells: valuationExcelCells(tri, t, DATA.cmp), avg: triangulationSummaryRows(t)[3].label };
+        })()"""
+        js = js_eval(EXCEL_LAYOUT_JS, expr, {"adr": adr, "cmp": cmp})
+        c = js["cells"]
+        self.assertEqual(c["adrFY"], ["25.1"] * 3)
+        self.assertEqual(c["oi"], ["2,364"] * 3)
+        self.assertEqual(c["total"], ["8,567"] * 3)
+        self.assertEqual(c["margin"], ["51 %"] * 3)
+        self.assertEqual(c["eps"], ["107"] * 3)
+        self.assertEqual(c["fwd"], ["4,285", "4,820", "5,356"])
+        self.assertEqual(c["up"], ["+22 %", "+38 %", "+53 %"])   # vs CMP 3,500
+        self.assertEqual((c["d1"], c["d2"]), (["18.0 %"] * 3, ["9.0 %"] * 3))
+        self.assertEqual(c["mid"], ["3,631", "4,085", "4,539"])
+        self.assertEqual(c["now"], ["3,331", "3,748", "4,164"])
+        self.assertEqual((c["reg"][0], c["ratio"][0], c["adr"][0]), ("3,544", "3,408", "3,331"))
+        self.assertEqual(c["avg"][0], "3,428")
+        self.assertEqual(js["avg"], "Average")
+
+    def test_missing_methods_show_a_dash(self):
+        expr = """(() => {
+          const t = { ...TRIANGULATION_DEFAULTS.nse };
+          const tri = triangulationModel(t, { adrFY: 400, regAdr: 380, reg: null, ratio: null, shares: null });
+          return valuationExcelCells(tri, t, null);
+        })()"""
+        c = js_eval(EXCEL_LAYOUT_JS, expr)
+        for k in ("reg", "ratio", "adr", "avg", "eps", "fwd", "up", "now"):
+            with self.subTest(row=k):
+                self.assertEqual(c[k], ["—"] * 3)
+
+
 def _day(eod, revs, preds=None):
     cps = {}
     for i, label in enumerate(["10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00"]):

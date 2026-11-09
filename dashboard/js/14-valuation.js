@@ -294,6 +294,69 @@ function triangulationModel(t, { adrFY, regAdr, reg, ratio, shares }) {
   return { adr, reg: regVals, ratio: ratioM, avg, used: used.map(([k]) => k), wSum, wTotal: t.w0 + t.w1 + t.w2 };
 }
 
+// ========================
+// EXCEL LAYOUT — the workbook's valuation block and Summary, top of the tab
+// ========================
+// Pure row lists and cell text, so the layout is testable without a DOM.
+// block: boxed group (0 = ADR to upside, 1 = to this FY end, 2 = to today);
+// gut: input in the left gutter; input: [bear, base, bull] input keys (null = shown).
+
+// fy: the next FY (2028 → "FY 28"); oiMode picks the other-income gutter input
+function valuationExcelRows(fy, oiMode) {
+  const y1 = `FY ${String(fy).slice(-2)}`, y0 = `FY ${String(fy - 1).slice(-2)}`;
+  return [
+    { key: 'adrFY', label: `ADR ${y1}`, block: 0, bold: true, gut: 'qoq' },
+    { key: 'oi', label: 'Other Income', block: 0, gut: oiMode === 'pct' ? 'oi' : 'oiG' },
+    { key: 'total', label: 'Total Income', block: 0 },
+    { key: 'margin', label: 'PAT Margin', block: 0 },
+    { key: 'eps', label: 'EPS', block: 0 },
+    { key: 'pe', label: 'PE', block: 0, tint: 'green', input: ['pe0', 'pe1', 'pe2'] },
+    { key: 'fwd', label: `Price Target ${y1}`, block: 0, bold: true, boxed: true },
+    { key: 'up', label: 'Upside', block: 0, tint: 'peach' },
+    { key: 'd1', label: 'Discount %', block: 1, input: [null, 'd1', null] },
+    { key: 'mid', label: `Target Price ${y0}`, block: 1, bold: true },
+    { key: 'd2', label: 'Discount %', block: 2, input: [null, 'd2', null] },
+    { key: 'now', label: 'Target Price Current', block: 2, bold: true },
+  ];
+}
+
+// The Summary rows; the last is "Average" only while the three weights are equal
+function triangulationSummaryRows(t) {
+  const equal = Math.abs(t.w0 - t.w1) < 1e-9 && Math.abs(t.w1 - t.w2) < 1e-9;
+  return [
+    { key: 'reg', label: 'Regression', gut: 'band', w: 'w0' },
+    { key: 'ratio', label: 'Ratio Analysis', tint: 'peach', w: 'w1' },
+    { key: 'adr', label: 'ADR', w: 'w2' },
+    { key: 'avg', label: equal ? 'Average' : 'Weighted average', tint: 'lilac', bold: true },
+  ];
+}
+
+// Cell text, [bear, base, bull] per row key of both tables, from triangulationModel's
+// result: ADR to 1 decimal, ₹ and EPS whole, margin and upside whole %, discounts 1-decimal %.
+// Upside is the next-FY-end target against CMP.
+function valuationExcelCells(tri, t, cmp) {
+  const n0 = x => x == null || !isFinite(x) ? '—' : fmtNum(x, 0);
+  const each = f => [0, 1, 2].map(f);
+  const a = tri.adr;
+  return {
+    adrFY: each(() => fmtNum(a.adrFY, 1)),
+    oi: each(() => n0(a.oi)),
+    total: each(() => n0(a.total)),
+    margin: each(() => `${fmtNum(t.margin, 0)} %`),
+    eps: each(() => n0(a.eps)),
+    fwd: each(i => n0(a.fwd[i])),
+    up: each(i => a.fwd[i] != null && cmp ? rxSignedPct(a.fwd[i] / cmp - 1, 0) : '—'),
+    d1: each(() => `${fmtNum(t.d1, 1)} %`),
+    mid: each(i => n0(a.mid[i])),
+    d2: each(() => `${fmtNum(t.d2, 1)} %`),
+    now: each(i => n0(a.now[i])),
+    reg: each(i => tri.reg ? n0(tri.reg[i]) : '—'),
+    ratio: each(i => tri.ratio ? n0(tri.ratio.now[i]) : '—'),
+    adr: each(i => n0(a.now[i])),
+    avg: each(i => tri.avg ? n0(tri.avg[i]) : '—'),
+  };
+}
+
 // Rounded axis bounds and tick step for a ₹ range
 function niceRange(lo, hi, ticks = 6) {
   const span = Math.max(hi - lo, 1);
@@ -394,53 +457,75 @@ async function buildValuation(ex) {
       <tr><td>BSE share</td><td>${fmtPct(mkt.shareFY)}</td><td>${fmtPct(mkt.share45)}</td><td>${fmtPct(mkt.share20)}</td></tr>
       <tr><td>BSE ADR, ₹ Cr</td><td>${fmtNum(mkt.adrFY, 2)}</td><td>${fmtNum(mkt.adr45, 2)}</td><td>${fmtNum(mkt.adr20, 2)}</td></tr></tbody></table></div>` : '';
 
-  const tin = (key, step, aria, w = "") => `<input class="rx-in rx-num-in" type="number" step="${step}" inputmode="decimal" data-tkey="${key}" aria-label="${escHtml(aria)}" value="${tShow(key)}"${w ? ` style="width:${w}"` : ""}>`;
-  const tout = (k, n = 3) => [0, 1, 2].slice(0, n).map(i => `<td data-tout="${k}-${i}"></td>`).join('');
-  const tone = k => `<td colspan="3" class="rx-c" data-tout="${k}"></td>`;
+  const tin = (key, step, aria, w = '', cls = '') => `<input class="rx-in rx-num-in${cls ? ' ' + cls : ''}" type="number" step="${step}" inputmode="decimal" data-tkey="${key}" aria-label="${escHtml(aria)}" value="${tShow(key)}"${w ? ` style="width:${w}"` : ''}>`;
   const tsrc = k => `<td class="rx-src" data-tsrc="${k}"></td>`;
-  const tcol = html => `<td colspan="3" class="rx-c">${html}</td>`;
   const triPath = startQ ? triangulationAdrPath(startQ, 0, 0).path : [];
+
+  // The workbook's layout: gutter inputs | label | Bear | Base | Bull, blocks boxed
+  const xlGutIn = {
+    qoq: [0.5, 'QoQ ADR growth, %', `ADR growth each quarter from ${qLabel} to Q4 ${fy1S}`],
+    oiG: [1, `Other income growth ${fy0S} to ${fy1S}, %`, `Other income growth from ${fy0S} to ${fy1S}`],
+    oi: [1, 'Other income, % of total income', 'Other income as a % of total income'],
+    band: [1, 'Regression Bear / Bull ADR band, ± %', 'Bear / Bull: the regression ADR ∓ this %'],
+  };
+  const xlGut = key => key
+    ? `<td class="rx-xl-gut" title="${escHtml(xlGutIn[key][2])}">${tin(key, xlGutIn[key][0], xlGutIn[key][1], '', 'rx-xl-in')}<span class="rx-xl-unit">%</span></td>`
+    : '<td class="rx-xl-gut"></td>';
+  const xlHeads = ['Bear', 'Base', 'Bull'].map((s, i) => `<th scope="col" class="rx-xl-h rx-xl-${s.toLowerCase()} rx-xl-t${i === 2 ? ' rx-xl-r' : ''}">${s}</th>`).join('');
+  const xlGap = cols => `<tr class="rx-xl-gap" aria-hidden="true"><td colspan="${cols}"></td></tr>`;
+  const xlInAria = {
+    pe0: `Bear PE ${fy1S}`, pe1: `Base PE ${fy1S}`, pe2: `Bull PE ${fy1S}`,
+    d1: `Discount from ${fy1S} end to ${fy0S} end, %`, d2: `Discount from ${fy0S} end to today, %`,
+  };
+  // edge(rows, i): the box edges a row's cells carry (top of a later block, bottom of a block or of a boxed row)
+  const xlEdge = (rows, i) => {
+    const r = rows[i], prev = rows[i - 1], next = rows[i + 1];
+    return (prev && prev.block !== r.block ? ' rx-xl-t' : '') + (!next || next.block !== r.block || next.boxed || r.boxed ? ' rx-xl-b' : '');
+  };
+  const xlTr = (r, e, gut, cells, after = '') => {
+    const cls = [r.tint ? `rx-xl-${r.tint}` : '', r.bold ? 'rx-xl-bold' : '', r.boxed ? 'rx-xl-boxed' : ''].filter(Boolean).join(' ');
+    return `<tr${cls ? ` class="${cls}"` : ''}>${gut}<td class="rx-xl-lab${e}"${r.key === 'avg' ? ' data-rx="xlAvgLabel"' : ''}>${r.label}</td>${cells}${after}</tr>`;
+  };
+  const xlRows = startQ ? valuationExcelRows(startQ.fy + 1, t.oiMode) : [];
+  const xlBody = xlRows.map((r, i) => {
+    const e = xlEdge(xlRows, i);
+    const cells = [0, 1, 2].map(j => {
+      const key = r.input && r.input[j];
+      const cls = `${e}${j === 2 ? ' rx-xl-r' : ''}${key && r.key !== 'pe' ? ' rx-xl-key' : ''}`.trim();
+      return `<td${cls ? ` class="${cls}"` : ''}${key ? '' : ` data-xout="${r.key}-${j}"`}>${key ? tin(key, r.key === 'pe' ? 1 : 0.5, xlInAria[key], '', r.key === 'pe' ? '' : 'rx-xl-in') : ''}</td>`;
+    }).join('');
+    return (e.includes('rx-xl-t') ? xlGap(5) : '') + xlTr(r, e, xlGut(r.gut), cells);
+  }).join('');
+  const sumRows = triangulationSummaryRows(t);
+  const sumBody = sumRows.map((r, i) => {
+    const e = xlEdge(sumRows, i);
+    const cells = [0, 1, 2].map(j => `<td class="${`${e}${j === 2 ? ' rx-xl-r' : ''}`.trim()}" data-xout="${r.key}-${j}"></td>`).join('');
+    const w = `<td class="rx-xl-w">${r.w ? `${tin(r.w, 5, `${r.label} weight, %`, '', 'rx-xl-in')}<span class="rx-xl-unit">%</span>` : '<span data-tout="wsum"></span>'}</td>`;
+    return xlTr(r, e, xlGut(r.gut), cells, w);
+  }).join('');
+
   const triHTML = startQ ? `
-    ${rxPanel({ title: 'Triangulated target', meta: `today, ₹ per share · three methods, weighted · ${fy1S} ADR from ${qLabel}`,
-      right: '<button type="button" class="rx-link" data-rx="triReset">Reset to defaults</button>',
-      body: `<div class="rx-scroll"><table class="rx-table">
-        <thead><tr><th scope="col">Method</th><th scope="col">Bear</th><th scope="col">Base</th><th scope="col">Bull</th><th scope="col">Weight, %</th><th scope="col" class="rx-l">Basis</th></tr></thead>
-        <tbody>
-          <tr><td>Regression · 45-session fit</td>${tout('reg')}<td>${tin('w0', 5, 'Regression weight')}</td><td class="rx-wrap" data-tsrc="reg"></td></tr>
-          <tr><td>Ratio · price ÷ 45-session MA</td>${tout('ratio')}<td>${tin('w1', 5, 'Ratio weight')}</td><td class="rx-wrap" data-tsrc="ratio"></td></tr>
-          <tr><td>ADR model · P/E × EPS ${fy1S}E</td>${tout('adr')}<td>${tin('w2', 5, 'ADR model weight')}</td><td class="rx-wrap" data-tsrc="adr"></td></tr>
-          <tr class="rx-out"><td>Weighted average</td>${tout('avg')}<td data-tout="wsum"></td><td class="rx-src" data-tsrc="avg"></td></tr>
-          <tr><td>Upside vs CMP</td>${tout('up')}<td></td><td class="rx-src">CMP ${cmp != null ? rxRupee(cmp) : '—'}, ${cmpWhen}</td></tr>
-        </tbody></table></div>`,
-      foot: '<span data-rx="triNote"></span>' })}
     <div class="rx-row">
-      <section class="rx-panel rx-col-wide" aria-label="ADR model ${fy1S}E">
-        <div class="rx-ph"><h2>ADR model · ${fy1S}E</h2><span class="rx-meta">Feeds the ratio and ADR rows · saved in this browser</span></div>
-        <div class="rx-scroll"><table class="rx-table">
-          <thead><tr><th scope="col">Line</th><th scope="col">Bear</th><th scope="col">Base</th><th scope="col">Bull</th><th scope="col" class="rx-l">Source</th></tr></thead>
-          <tbody>
-            <tr><td>ADR ${fy1S}E, ₹ Cr / session${flagTags(qFlags)}</td>${tone('adrFY')}<td class="rx-src">from the ADR path</td></tr>
-            <tr><td>Trading sessions in ${fy1S}</td>${tcol(tin('days', 1, `Trading sessions in ${fy1S}`))}${tsrc('days')}</tr>
-            <tr><td>Transaction revenue, ₹ Cr</td>${tone('txn')}<td class="rx-src">ADR × sessions</td></tr>
-            ${t.oiMode === 'pct'
-              ? `<tr><td>Other income, % of total income</td>${tcol(tin('oi', 1, 'Other income, % of total income'))}${tsrc('oi')}</tr>
-                 <tr><td>Other income, ₹ Cr</td>${tone('oi')}<td class="rx-src">solved from the %</td></tr>`
-              : `<tr><td>Other income ${fy0S}, ₹ Cr</td>${tcol(tin("oi", 10, `Other income ${fy0S}`, "96px"))}${tsrc('oi')}</tr>
-                 <tr><td>Other income growth to ${fy1S}, %</td>${tcol(tin('oiG', 1, 'Other income growth'))}${tsrc('oiG')}</tr>
-                 <tr><td>Other income ${fy1S}, ₹ Cr</td>${tone('oi')}<td class="rx-src"></td></tr>`}
-            <tr class="rx-sub"><td>Total income, ₹ Cr</td>${tone('total')}<td class="rx-src"></td></tr>
-            <tr><td>PAT margin, %</td>${tcol(tin('margin', 0.5, `PAT margin ${fy1S}`))}${tsrc('margin')}</tr>
-            <tr class="rx-sub"><td>PAT, ₹ Cr</td>${tone('pat')}<td class="rx-src"></td></tr>
-            <tr><td>Shares, Cr</td>${tone('shares')}<td class="rx-src">${sharesChip(ex)} set in the ${ctx.fyShort} model below</td></tr>
-            <tr class="rx-sub"><td>EPS ${fy1S}E, ₹</td>${tone('eps')}<td class="rx-src"></td></tr>
-            <tr><td>P/E, ×</td><td>${tin('pe0', 1, `Bear P/E ${fy1S}`)}</td><td>${tin('pe1', 1, `Base P/E ${fy1S}`)}</td><td>${tin('pe2', 1, `Bull P/E ${fy1S}`)}</td>${tsrc('pe')}</tr>
-            <tr class="rx-sub"><td>Target at ${fy1S} end, ₹</td>${tout('fwd')}<td class="rx-src">EPS × P/E</td></tr>
-            <tr><td>Discount to ${fy0S} end, %</td>${tcol(tin('d1', 0.5, `Discount from ${fy1S} end to ${fy0S} end`))}${tsrc('d1')}</tr>
-            <tr><td>Target at ${fy0S} end, ₹</td>${tout('mid')}<td class="rx-src">÷ (1 + discount)</td></tr>
-            <tr><td>Discount to today, %</td>${tcol(tin('d2', 0.5, `Discount from ${fy0S} end to today`))}${tsrc('d2')}</tr>
-            <tr class="rx-out"><td>Target today, ₹</td>${tout('now')}<td class="rx-src">÷ (1 + discount)</td></tr>
-          </tbody></table></div>
-      </section>
+      ${rxPanel({ cls: 'rx-col-half', title: `Valuation · ${fy1S}E`, meta: `ADR ₹ Cr / session · income ₹ Cr · EPS and targets ₹ per share · ADR from ${qLabel}`,
+        right: '<button type="button" class="rx-link" data-rx="triReset">Reset to defaults</button>',
+        body: `<div class="rx-pb rx-scroll"><table class="rx-table rx-xl" aria-label="Valuation ${fy1S}E, Bear / Base / Bull">
+          <thead><tr><td class="rx-xl-gut"></td><th scope="col" class="rx-xl-lab rx-xl-cmp rx-xl-t">CMP ${cmp != null ? rxRupee(cmp) : '—'}</th>${xlHeads}</tr></thead>
+          <tbody>${xlBody}</tbody></table></div>`,
+        foot: `Light-blue boxes are inputs: QoQ ADR growth beside ADR ${fy1S.replace('FY', 'FY ')}, ${t.oiMode === 'pct' ? 'other income as a % of total income' : `other-income growth from ${fy0S}`} beside Other Income, and each discount in the Base column; the PE row is editable. Upside: the ${fy1S}-end target vs CMP (${cmpWhen}). Sessions${t.oiMode === 'pct' ? '' : `, ${fy0S} other income`} and PAT margin are set under ADR model inputs below.` })}
+      ${rxPanel({ cls: 'rx-col-half', title: 'Triangulated target', meta: 'today, ₹ per share · three methods, weighted',
+        body: `<div class="rx-pb rx-scroll"><table class="rx-table rx-xl" aria-label="Triangulated target summary">
+          <thead><tr><td class="rx-xl-gut"></td><th scope="col" class="rx-xl-lab rx-xl-h rx-xl-sum rx-xl-t">Summary</th>${xlHeads}<th scope="col" class="rx-xl-w">Weight</th></tr></thead>
+          <tbody>${sumBody}</tbody></table></div>`,
+        foot: '<span data-rx="triUp"></span> <span data-rx="triNote"></span>',
+        how: rxHow('Basis of each row', `<ul>
+          <li><strong>Regression:</strong> <span data-tsrc="reg"></span></li>
+          <li><strong>Ratio Analysis:</strong> <span data-tsrc="ratio"></span></li>
+          <li><strong>ADR:</strong> <span data-tsrc="adr"></span> (Target Price Current, left).</li>
+          <li><strong>Average:</strong> <span data-tsrc="avg"></span>.</li></ul>`) })}
+    </div>` : '';
+  // How the figures are built: the ADR path, the ADR model's other inputs, the fits
+  const triDetailHTML = startQ ? `
+    <div class="rx-row">
       ${rxPanel({ cls: 'rx-col-narrow', title: `ADR path to ${fy1S}`, meta: '₹ Cr / session · compounding QoQ',
         body: `<div class="rx-scroll"><table class="rx-table">
           <thead><tr><th scope="col">Quarter</th><th scope="col">ADR</th><th scope="col" class="rx-l">Source</th></tr></thead>
@@ -449,15 +534,37 @@ async function buildValuation(ex) {
               ? `<tr><td>${p.label} · to date${flagTags(qFlags)}</td><td>${tin('adr0', 0.1, `${p.label} ADR`)}</td>${tsrc('adr0')}</tr>`
               : `<tr><td>${p.label}</td><td data-tout="path-${i}"></td><td class="rx-src"></td></tr>`).join('')}
             <tr class="rx-sub"><td>${fy1S} average</td><td data-tout="pathAvg"></td><td class="rx-src">mean of its four quarters</td></tr>
-            <tr><td>QoQ growth, %</td><td>${tin('qoq', 0.5, 'QoQ ADR growth')}</td>${tsrc('qoq')}</tr>
+            <tr><td>QoQ growth, %</td><td data-tout="qoqV"></td>${tsrc('qoq')}</tr>
+          </tbody></table></div>` })}
+      ${rxPanel({ cls: 'rx-col-wide', title: `ADR model ${fy1S}E · inputs`, meta: 'How the figures above are built · saved in this browser',
+        body: `<div class="rx-scroll"><table class="rx-table rx-wrap-lab">
+          <thead><tr><th scope="col">ADR model</th><th scope="col">Value</th><th scope="col" class="rx-l">Source</th></tr></thead>
+          <tbody>
+            <tr><td>ADR ${fy1S}E, ₹ Cr / session${flagTags(qFlags)}</td><td data-tout="adrFY"></td><td class="rx-src">from the ADR path</td></tr>
+            <tr><td>Trading sessions in ${fy1S}</td><td>${tin('days', 1, `Trading sessions in ${fy1S}`)}</td>${tsrc('days')}</tr>
+            <tr><td>Transaction revenue, ₹ Cr</td><td data-tout="txn"></td><td class="rx-src">ADR × sessions</td></tr>
+            ${t.oiMode === 'pct'
+              ? `<tr><td>Other income, % of total income</td><td data-tout="oiV"></td>${tsrc('oi')}</tr>
+                 <tr><td>Other income, ₹ Cr</td><td data-tout="oi"></td><td class="rx-src">solved from the %</td></tr>`
+              : `<tr><td>Other income ${fy0S}, ₹ Cr</td><td>${tin('oi', 10, `Other income ${fy0S}`, '96px')}</td>${tsrc('oi')}</tr>
+                 <tr><td>Other income growth to ${fy1S}, %</td><td data-tout="oiGV"></td>${tsrc('oiG')}</tr>
+                 <tr><td>Other income ${fy1S}, ₹ Cr</td><td data-tout="oi"></td><td class="rx-src"></td></tr>`}
+            <tr class="rx-sub"><td>Total income, ₹ Cr</td><td data-tout="total"></td><td class="rx-src"></td></tr>
+            <tr><td>PAT margin, %</td><td>${tin('margin', 0.5, `PAT margin ${fy1S}`)}</td>${tsrc('margin')}</tr>
+            <tr class="rx-sub"><td>PAT, ₹ Cr</td><td data-tout="pat"></td><td class="rx-src"></td></tr>
+            <tr><td>Shares, Cr</td><td data-tout="shares"></td><td class="rx-src">${sharesChip(ex)} set in the current FY model below</td></tr>
+            <tr class="rx-sub"><td>EPS ${fy1S}E, ₹</td><td data-tout="eps"></td><td class="rx-src"></td></tr>
+            <tr><td>PE, Bear / Base / Bull, ×</td><td data-tout="peV"></td>${tsrc('pe')}</tr>
+            <tr><td>Discount to ${fy0S} end, %</td><td data-tout="d1V"></td>${tsrc('d1')}</tr>
+            <tr><td>Discount to today, %</td><td data-tout="d2V"></td>${tsrc('d2')}</tr>
           </tbody></table>
-          <table class="rx-table" style="margin-top:10px">
+          <table class="rx-table rx-wrap-lab" style="margin-top:10px">
           <thead><tr><th scope="col">Regression and ratio</th><th scope="col">Value</th><th scope="col" class="rx-l">Source</th></tr></thead>
           <tbody>
             <tr><td>Intercept, ₹</td><td data-tout="regA"></td><td class="rx-src" rowspan="2" data-tsrc="fit"></td></tr>
             <tr><td>Slope, ₹ per ₹ Cr</td><td data-tout="regB"></td></tr>
             <tr><td>ADR into the fit, ₹ Cr</td><td>${tin('regAdr', 0.1, 'ADR into the regression')}</td>${tsrc('regAdr')}</tr>
-            <tr><td>Bear / Bull ADR band, ± %</td><td>${tin('band', 1, 'Regression ADR band')}</td>${tsrc('band')}</tr>
+            <tr><td>Bear / Bull ADR band, ± %</td><td data-tout="bandV"></td>${tsrc('band')}</tr>
             <tr><td>Price ÷ MA, mean ×</td><td data-tout="ratioMean"></td><td class="rx-src" rowspan="2" data-tsrc="ratioFit"></td></tr>
             <tr><td>Price ÷ MA, σ ×</td><td data-tout="ratioSd"></td></tr>
           </tbody></table></div>` })}
@@ -465,14 +572,15 @@ async function buildValuation(ex) {
 
   el.innerHTML = `<div class="rx">
     ${ex === 'mcx' ? rxAlert('<strong>Placeholder inputs.</strong> There is no MCX valuation baseline in this repo: PAT margin, other income and P/E multiples are round-number placeholders, so these targets are illustrative until you set them.') : ''}
-    <section class="rx-kpis" aria-label="Valuation summary" data-rx="kpis"></section>
     ${triHTML}
+    <section class="rx-kpis" aria-label="Valuation summary" data-rx="kpis"></section>
+    ${triDetailHTML}
     ${rxPanel({ title: 'Valuation range by method', meta: '₹ per share · bars span the range, tick = base or centre',
       right: rxLegend([{ label: 'This model', color: RX.model }, { label: 'Market-based', color: RX.grey }, { label: cmp != null ? `CMP ${rxRupee(cmp)}` : 'CMP', color: RX.neg, kind: 'tick' }]),
       body: '<div class="rx-pb"><div class="rx-ff" data-rx="ff"></div></div>', foot: '<span data-rx="ffNote"></span>' })}
     <div class="rx-row">
-      <section class="rx-panel rx-col-wide" aria-label="${ctx.fyShort} model assumptions">
-        <div class="rx-ph"><h2>${ctx.fyShort} model · assumptions</h2><span class="rx-meta">One model, three scenarios · saved in this browser</span>
+      <section class="rx-panel rx-col-wide" aria-label="Current FY model, ${ctx.fyShort}">
+        <div class="rx-ph"><h2>Current FY model · ${ctx.fyShort}</h2><span class="rx-meta">Feeds the football field and sensitivity · one model, three scenarios · saved in this browser</span>
           <div class="rx-ph-right"><span class="rx-lbl">Targets as</span>${rxSeg('basis', [['fwd', `${ctx.fyShort} end`], ['now', 'Today (discounted)']], state.basis, 'Target basis')}<button type="button" class="rx-link" data-rx="reset">Reset to defaults</button></div></div>
         <div class="rx-pb" style="padding-bottom:6px">
           <div style="display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center"><span class="rx-lbl">Base ADR from</span>${rxSeg('src', adrSrcOptions, v.src, 'Base ADR method')}</div>
@@ -537,18 +645,16 @@ async function buildValuation(ex) {
     const tri = triangulationModel(t, { adrFY: path.adr, regAdr, reg: regFit, ratio, shares: v.shares });
     const set = (k, html) => { const n = el.querySelector(`[data-tout="${k}"]`); if (n) n.innerHTML = html; };
     const src = (k, html) => { const n = el.querySelector(`[data-tsrc="${k}"]`); if (n) n.innerHTML = html; };
-    const rup = x => x == null || !isFinite(x) ? '—' : fmtNum(x, 0);
-    const upC = x => x == null || !cmp ? '—' : `<span class="${x / cmp - 1 >= 0 ? 'rx-up' : 'rx-dn'}">${rxSignedPct(x / cmp - 1)}</span>`;
+    const upC = x => x == null || !cmp ? '—' : `<span class="${x / cmp - 1 >= 0 ? 'rx-up' : 'rx-dn'}">${rxSignedPct(x / cmp - 1, 0)}</span>`;
     const disc = `÷ ${fmtNum(1 + t.d1 / 100, 2)} ÷ ${fmtNum(1 + t.d2 / 100, 2)}`;
-    [0, 1, 2].forEach(i => {
-      set(`reg-${i}`, tri.reg ? rup(tri.reg[i]) : '—');
-      set(`ratio-${i}`, tri.ratio ? rup(tri.ratio.now[i]) : '—');
-      set(`adr-${i}`, rup(tri.adr.now[i]));
-      set(`avg-${i}`, tri.avg ? rup(tri.avg[i]) : '—');
-      set(`up-${i}`, tri.avg ? upC(tri.avg[i]) : '—');
-      set(`fwd-${i}`, rup(tri.adr.fwd[i])); set(`mid-${i}`, rup(tri.adr.mid[i])); set(`now-${i}`, rup(tri.adr.now[i]));
-    });
+    // The two Excel-layout tables; upside cells keep the up / down colour
+    Object.entries(valuationExcelCells(tri, t, cmp)).forEach(([k, vals]) => vals.forEach((txt, i) => {
+      const n = el.querySelector(`[data-xout="${k}-${i}"]`);
+      if (n) n.innerHTML = k === 'up' && txt !== '—' ? `<span class="${txt[0] === '+' ? 'rx-up' : 'rx-dn'}">${txt}</span>` : txt;
+    }));
+    q('xlAvgLabel').textContent = triangulationSummaryRows(t)[3].label;
     set('wsum', `${fmtNum(tri.wTotal, 0)} %`);
+    q('triUp').innerHTML = tri.avg && cmp ? `Average vs CMP: ${[0, 1, 2].map(i => upC(tri.avg[i])).join(' / ')}.` : '';
     src('reg', regFit
       ? `₹${fmtNum(regFit.intercept, 0)} + ${fmtNum(regFit.slope, 1)} × ADR ${fmtNum(regAdr, 2)}, ∓ ${fmtNum(t.band, 0)} % for Bear / Bull`
       : `<span class="rx-foot">${escHtml(regWhy)}</span>`);
@@ -566,6 +672,11 @@ async function buildValuation(ex) {
     set('pathAvg', fmtNum(path.adr, 2));
     set('regA', regFit ? fmtNum(regFit.intercept, 0) : '—'); set('regB', regFit ? fmtNum(regFit.slope, 2) : '—');
     set('ratioMean', ratio ? fmtNum(ratio.mean, 1) : '—'); set('ratioSd', ratio ? fmtNum(ratio.sd, 1) : '—');
+    // Inputs that live in the Excel layout, echoed beside their sources
+    set('qoqV', `${fmtNum(t.qoq, 1)} %`); set('bandV', `± ${fmtNum(t.band, 0)} %`);
+    set('oiV', `${fmtNum(t.oi, 1)} %`); set('oiGV', `${fmtNum(t.oiG, 1)} %`);
+    set('peV', `${fmtNum(t.pe0, 0)} / ${fmtNum(t.pe1, 0)} / ${fmtNum(t.pe2, 0)}`);
+    set('d1V', `${fmtNum(t.d1, 1)} %`); set('d2V', `${fmtNum(t.d2, 1)} %`);
     src('fit', regFit ? chip('data', `${SHARE_DATA.ticker} · R² ${fmtNum(regFit.r_squared, 2)}`) : `<span class="rx-foot">${escHtml(regWhy)}</span>`);
     src('ratioFit', ratio ? chip('data', `fit sessions since ${rxDate(SHARE_DATA.regression_start)}`) : '');
     const ed = keys => keys.some(k => t[k] !== tDefaults[k] && !(t[k] != null && tDefaults[k] != null && Math.abs(t[k] - tDefaults[k]) < 1e-9));
@@ -589,6 +700,7 @@ async function buildValuation(ex) {
     const notes = [];
     if (!regFit) notes.push(`Regression unavailable (${regWhy}); its weight is shared by the other methods.`);
     if (!ratio) notes.push('No price ÷ MA history for the ratio method.');
+    if (tri.adr.eps == null) notes.push('ADR model unavailable: needs a share count; its weight is shared by the other methods.');
     if (tri.wTotal !== 100) notes.push(`Weights add to ${fmtNum(tri.wTotal, 0)} %; the average divides by the weights used.`);
     notes.push(`${qLabel} ADR is ${qRows.length} sessions to date and follows the Fees toggle${ex === 'bse' ? ' (the Excel workbook prices at today’s rates, so “At today’s rates” matches it)' : ''}.`);
     if (ex !== 'bse') notes.push('P/E, margin and other income start from this tab’s FY model; discounts and weights from the Excel BSE sheet.');
