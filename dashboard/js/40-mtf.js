@@ -322,6 +322,10 @@ const MTF_MEASURE_CHIPS = {
   unstated: ['basis not stated', '', 'The document calls it the MTF book without saying gross or net'],
 };
 
+// How a figure's basis reads beside its measure ('period_end' says nothing): a monthly average, or
+// a reading of a figure the broker keeps updating on its web page, taken on each MTF run
+const MTF_BASIS_LABELS = { month_avg: 'month avg', live: 'live' };
+
 // A broker's figures on its primary measure and basis, oldest first: the series the
 // league table, the chart and the share-by-quarter table follow
 function mtfBrokerPrimary(b) {
@@ -1006,7 +1010,7 @@ function mtfBrokerSourceCell(p, alts) {
   if (!p) return '<td class="rx-src">—</td>';
   const link = q => `<a href="${escHtml(q.url)}" target="_blank" rel="noopener noreferrer" title="${escHtml(q.quote || '')}">${escHtml(q.source)}${q.page ? ` · p.${q.page}` : ''}</a>`;
   const altLines = (alts || []).map(alt => `<div class="mtf-bk-sub" title="${escHtml(`${alt.source}${alt.page ? `, p.${alt.page}` : ''}: ${alt.quote || ''}`)}">Also ${
-    escHtml((MTF_MEASURE_CHIPS[alt.measure] || [alt.measure])[0])}${alt.basis === 'month_avg' ? ', month avg' : ''}: ${mtfBookText(alt)} (${mtfShareText(alt)}) · ${rxDate(alt.as_of)}</div>`).join('');
+    escHtml((MTF_MEASURE_CHIPS[alt.measure] || [alt.measure])[0])}${MTF_BASIS_LABELS[alt.basis] ? `, ${MTF_BASIS_LABELS[alt.basis]}` : ''}: ${mtfBookText(alt)} (${mtfShareText(alt)}) · ${rxDate(alt.as_of)}</div>`).join('');
   return `<td class="rx-src mtf-bk-src">${link(p)}${altLines}</td>`;
 }
 
@@ -1020,7 +1024,7 @@ function mtfBrokerLeague(doc, rows, todayIso) {
       <td>${i + 1}</td>
       <td class="rx-l mtf-bk-name"><i class="mtf-bk-sw${st.dash.length ? ' mtf-bk-sw--dash' : ''}" style="color:${st.color}"></i><b>${escHtml(r.short)}</b>
         <div class="mtf-bk-sub">${escHtml(r.parent ? `${r.name} · ${r.parent}` : r.name)}</div></td>
-      <td class="rx-l">${p ? mtfMeasureChip(p.measure) : ''}${p && p.basis === 'month_avg' ? ` ${rxChip('month avg')}` : ''}</td>
+      <td class="rx-l">${p ? mtfMeasureChip(p.measure) : ''}${p && MTF_BASIS_LABELS[p.basis] ? ` ${rxChip(MTF_BASIS_LABELS[p.basis])}` : ''}</td>
       <td class="rx-strong">${p ? mtfBookText(p) : '—'}<div class="mtf-bk-sub">${p ? rxDate(p.as_of) : 'no figure'}${ageChip}</div></td>
       <td class="rx-strong">${mtfShareText(p)}</td>
       ${mtfBrokerChgCell(p, p && p.chg)}

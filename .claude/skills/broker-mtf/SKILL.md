@@ -17,6 +17,10 @@ cd scripts && python3 -c "import mtf_pipeline as m; from datetime import date; p
 
 `BROKERS[id]["sources"]` names each broker's best source, how often it publishes and the fallbacks. For example, Bajaj Finance's presentation gives Bajaj Broking's book; ICICI Bank's and Kotak Bank's presentations give their broking arms' market share; and rating rationales are the only source for HDFC, Axis, SBI, Mirae and Nuvama.
 
+## Figures read automatically
+
+Groww's investor-relations "MTF Net Book" is read on every MTF run (`LIVE_FEEDS` in the register; `refresh_live` in `scripts/mtf_pipeline.py`) into `dashboard/data/mtf_broker_live.json`, under basis `live`. Don't add it by hand: `validate()` rejects hand-kept `live` rows. If the job warns that the page changed, fix `parse_groww_ir`.
+
 ## Add a figure
 
 1. **Fetch the primary document**, never an aggregator such as mtf.trading or a news site, and find the figure and its page:

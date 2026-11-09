@@ -30,7 +30,10 @@ Conventions:
   client_funding  MTF plus interest-bearing trade receivables (Angel One
                   publishes no MTF-only figure), so its share overstates
   unstated        the document calls it the MTF book without saying which
-- basis: period_end, or month_avg (Angel One's monthly business update).
+- basis: period_end, or month_avg (Angel One's monthly business update), or
+  live: a figure the broker keeps updating on a web page, read by the MTF job
+  on every run (LIVE_FEEDS; mtf_pipeline.refresh_live) into
+  dashboard/data/mtf_broker_live.json, never typed into DISCLOSURES.
 - precision 'integer' marks a share the filing rounds to a whole number
   ("~14 %"); rounded marks a ₹ figure the document rounds ("₹9,600+ Cr").
 - Changes and market-share moves are only measured between figures of the same
@@ -44,7 +47,7 @@ Conventions:
 import re
 
 MEASURES = ("share", "gross", "net", "client_funding", "unstated")
-BASES = ("period_end", "month_avg")
+BASES = ("period_end", "month_avg", "live")
 CADENCES = ("monthly", "quarterly", "irregular")
 TYPES = ("bank", "discount", "full_service")
 _ISO = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -155,7 +158,8 @@ BROKERS = {
             "where": "resources.groww.in/web-assets/media-library/…; also filed on NSE / BSE",
             "cadence": "quarterly", "lag_days": 18,
             "metric": "'MTF Book': the outstanding funded MTF balance at the period end",
-            "fallbacks": "groww.in/investor-relations 'MTF Net Book' (near-live)",
+            "fallbacks": "groww.in/investor-relations 'MTF Net Book' (platform-level, near-live): read on every MTF "
+                         "run (LIVE_FEEDS)",
         },
     },
     "sbisec": {
@@ -223,6 +227,20 @@ BROKERS = {
             "metric": "'MTF book' (₹ mn)",
             "fallbacks": "ICRA / CARE rationales on Anand Rathi Share and Stock Brokers",
         },
+    },
+}
+
+# Figures a broker keeps updating on a web page: the MTF job reads each on every run
+# (mtf_pipeline.refresh_live, with the parser named here) into mtf_broker_live.json, one
+# reading per weekday, and brokers_doc adds them to the broker's series under basis 'live'.
+LIVE_FEEDS = {
+    "groww": {
+        "url": "https://groww.in/investor-relations",
+        "parser": "groww_ir",
+        "measure": "net",
+        "source": "Groww investor relations page, 'Our Metrics' (read on each MTF run)",
+        "note": "Platform-level figure based on the latest available data (the page's disclaimer), updated daily; "
+                "the Shareholders' Letter figures are the consolidated balance at each quarter end.",
     },
 }
 
@@ -991,11 +1009,6 @@ DISCLOSURES = [
      "url": "https://resources.groww.in/web-assets/media-library/2026/10/Q2%20FY27%20Shareholders%27%20Letter.pdf",
      "quote": "Margin Trading Facility ₹12,322 Cr ₹9,574 Cr ₹4,351 Cr 11.0% 8.6% ₹1,668 Cr 2.7% 1.6% Q2 FY26 Q2 FY27 Equity Derivatives Premium ADTO Retail Market Share Q2 FY26 MTF Book Q2 FY27 Market Share",
      "note": "\"Margin Trading Facility\" tile: MTF Book Q2 FY27 ₹4,351 Cr vs Q2 FY26 ₹1,668 Cr (derivatives tile values interleaved). MTF Book defined in the letters as \"Loan - Margin Trading Facility\", the outstanding (funded) MTF book on the last day of the period; the Q2 FY26 letter calls it the \"net funded book\""},
-    {"broker": "groww", "as_of": "2026-11-09", "book_cr": 3972, "measure": "net", "basis": "period_end", "rounded": True,
-     "source": "Groww investor relations page, 'Our Metrics' (read 9 Nov 2026)", "page": None,
-     "url": "https://groww.in/investor-relations",
-     "quote": "Our Metrics as of 09 Nov 2026 … MTF Net Book ₹39.72 Bn … MTF Net Book, MF Assets and Stock Assets are platform-level figures based on the latest available data.",
-     "note": "A near-live, platform-level figure: the page updates it daily, so this is the value it showed on 9 Nov 2026 (the book is the latest available, likely the previous trading day's). The Shareholders' Letter figures are the consolidated balance at the period end."},
     # ── sbisec
     {"broker": "sbisec", "as_of": "2023-03-31", "book_cr": 600, "measure": "unstated", "basis": "period_end",
      "source": "ICRA rationale, SBICAP Securities, Mar 2025", "page": 2,
@@ -1335,8 +1348,11 @@ DISCLOSURES = [
 ]
 
 
-def validate(brokers=None, disclosures=None):
-    """Problems with the register, as a list of strings (empty = valid)."""
+def validate(brokers=None, disclosures=None, live_feeds=None):
+    """Problems with the register, as a list of strings (empty = valid). The live feeds checked
+    default to LIVE_FEEDS when the register's own brokers are, otherwise to none."""
+    if live_feeds is None:
+        live_feeds = LIVE_FEEDS if brokers is None else {}
     brokers = BROKERS if brokers is None else brokers
     disclosures = DISCLOSURES if disclosures is None else disclosures
     out = []
@@ -1363,6 +1379,15 @@ def validate(brokers=None, disclosures=None):
                    for d in disclosures):
             out.append(f"{bid}: no figure on its primary measure {p.get('measure')} / {p.get('basis')}")
 
+    for bid, f in live_feeds.items():
+        if bid not in brokers:
+            out.append(f"LIVE_FEEDS {bid}: unknown broker")
+        if f.get("measure") not in MEASURES or not str(f.get("url", "")).startswith("https://"):
+            out.append(f"LIVE_FEEDS {bid}: needs a known measure and an https url")
+        for k in ("parser", "source", "note"):
+            if not f.get(k):
+                out.append(f"LIVE_FEEDS {bid}: missing {k}")
+
     seen, prev = set(), None
     for i, d in enumerate(disclosures):
         tag = f"{d.get('broker')} {d.get('as_of')} ({i})"
@@ -1382,6 +1407,8 @@ def validate(brokers=None, disclosures=None):
                 out.append(f"{tag}: {name} {v!r} out of range")
         if d.get("measure") not in MEASURES:
             out.append(f"{tag}: measure {d.get('measure')!r} not in {MEASURES}")
+        if d.get("basis") == "live":
+            out.append(f"{tag}: basis 'live' is for the readings the MTF job fetches (LIVE_FEEDS), not hand-kept rows")
         if d.get("basis") not in BASES:
             out.append(f"{tag}: basis {d.get('basis')!r} not in {BASES}")
         if d.get("precision") not in (None, "integer"):

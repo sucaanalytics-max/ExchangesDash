@@ -181,12 +181,99 @@ class Due(unittest.TestCase):
         self.assertEqual(due, [("disc", "2026-08-26", "2026-09-30", "2026-10-15")])
 
 
+GROWW_PAGE = """<html><head><script>var cached = "MTF Net Book ₹99.99 Bn";</script></head><body>
+<h2>Our Metrics as of 09 Nov 2026</h2>
+<div><p>Transacting Users</p><p>24.2 Mn</p></div>
+<div><p>MTF Net Book</p><p>&#8377;39.72 Bn</p></div>
+<p>Disclaimer: Data for Stocks Turnover reflect the current calendar quarter. MTF Net Book, MF Assets and Stock
+Assets are platform-level figures based on the latest available data. Total Transacting Users are for Groww only.</p>
+</body></html>"""
+
+FEEDS = {"disc": {"url": "https://x.in/ir", "parser": "groww_ir", "measure": "net", "source": "Disc IR page",
+                  "note": "platform-level"}}
+
+
+class Resp:
+    def __init__(self, status, text=""):
+        self.status_code, self.text = status, text
+
+
+class LiveFeeds(unittest.TestCase):
+    def test_parse_groww_page(self):
+        r = m.parse_groww_ir(GROWW_PAGE)
+        self.assertEqual((r["date"], r["book_cr"]), ("2026-11-09", 3972.0))     # the visible figure, not the script's
+        self.assertIn("MTF Net Book ₹39.72 Bn", r["quote"])
+        self.assertIn("platform-level figures based on the latest available data.", r["quote"])
+
+    def test_changed_page_is_not_read(self):
+        self.assertIsNone(m.parse_groww_ir(GROWW_PAGE.replace("platform-level", "consolidated")))
+        self.assertIsNone(m.parse_groww_ir(GROWW_PAGE.replace("Our Metrics as of", "Metrics on")))
+        self.assertIsNone(m.parse_groww_ir(GROWW_PAGE.replace("&#8377;39.72 Bn", "n/a")))
+        self.assertIsNone(m.parse_groww_ir(""))
+
+    def test_fetch_failures_only_warn(self):
+        feed = FEEDS["disc"]
+        self.assertIsNone(m.fetch_live(feed, get=lambda url: Resp(403)))
+        self.assertIsNone(m.fetch_live(feed, get=lambda url: (_ for _ in ()).throw(OSError("reset"))))
+        self.assertIsNone(m.fetch_live(feed, get=lambda url: Resp(200, "<html>new layout</html>")))
+        r = m.fetch_live(feed, get=lambda url: Resp(200, GROWW_PAGE))
+        self.assertEqual((r["book_cr"], r["url"]), (3972.0, "https://x.in/ir"))
+
+    def test_store_one_reading_per_weekday(self):
+        rd = lambda d, v: {"date": d, "book_cr": v, "quote": "q", "url": "https://x.in/ir"}
+        store = {}
+        self.assertEqual(m.update_live_store(store, "disc", rd("2026-11-09", 3972), "t1"), (True, "stored"))
+        self.assertEqual(m.update_live_store(store, "disc", rd("2026-11-09", 3972), "t2"), (False, "unchanged"))
+        self.assertEqual(m.update_live_store(store, "disc", rd("2026-11-09", 3970), "t3"), (True, "stored"))
+        self.assertEqual([(r["date"], r["book_cr"], r["fetched_at"]) for r in store["disc"]], [("2026-11-09", 3970, "t3")])
+        self.assertFalse(m.update_live_store(store, "disc", rd("2026-11-14", 3990), "t4")[0])       # Saturday
+        changed, why = m.update_live_store(store, "disc", rd("2026-11-10", 6000), "t5")             # +51 %: misread
+        self.assertFalse(changed)
+        self.assertIn("not stored", why)
+        self.assertTrue(m.update_live_store(store, "disc", rd("2026-11-06", 3900), "t6")[0])        # kept in date order
+        self.assertEqual([r["date"] for r in store["disc"]], ["2026-11-06", "2026-11-09"])
+
+    def test_refresh_keeps_stored_readings_when_a_fetch_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "live.json"
+            with unittest.mock.patch.object(m, "BROKER_LIVE_PATH", path):
+                m.refresh_live("2026-11-09T08:00:00Z", get=lambda url: Resp(200, GROWW_PAGE), feeds=FEEDS)
+                m.refresh_live("2026-11-10T08:00:00Z", get=lambda url: Resp(503), feeds=FEEDS)
+            doc = json.loads(path.read_text())
+            self.assertEqual([(r["date"], r["book_cr"]) for r in doc["readings"]["disc"]], [("2026-11-09", 3972.0)])
+
+    def test_live_readings_are_their_own_series(self):
+        live = {"disc": [{"date": "2026-09-30", "book_cr": 4300, "quote": "q", "url": "https://x.in/ir"},
+                         {"date": "2026-10-01", "book_cr": 4400, "quote": "q", "url": "https://x.in/ir"}]}
+        doc = m.brokers_doc(COMBINED, "t", BROKERS, DISCLOSURES, live=live, feeds=FEEDS)
+        series = next(b for b in doc["brokers"] if b["id"] == "disc")["series"]
+        lv = [p for p in series if p["basis"] == "live"]
+        self.assertEqual([(p["as_of"], p["measure"], p.get("rounded")) for p in lv], [("2026-09-30", "net", True), ("2026-10-01", "net", True)])
+        self.assertIsNone(lv[0]["chg"])                                          # not compared with the letter's 30 Sep
+        self.assertEqual(lv[1]["chg"]["from"], "2026-09-30")
+        self.assertEqual(lv[1]["industry_date"], "2026-09-30")                   # priced on or before, as a period end
+        letter = next(p for p in series if p["as_of"] == "2026-09-30" and p["basis"] == "period_end")
+        self.assertEqual(letter["chg"]["from"], "2026-06-30")                    # the letter series is untouched
+        self.assertEqual(m.brokers_doc(COMBINED, "t", BROKERS, DISCLOSURES, live={"nobody": live["disc"]}, feeds=FEEDS),
+                         m.brokers_doc(COMBINED, "t", BROKERS, DISCLOSURES, feeds=FEEDS))   # no feed, no rows
+
+    def test_register_live_feeds(self):
+        self.assertEqual(reg.validate(BROKERS, DISCLOSURES + [fig("rated", "2026-07-01", "gross", "live", book=1)])[-1],
+                         "rated 2026-07-01 (12): basis 'live' is for the readings the MTF job fetches (LIVE_FEEDS), "
+                         "not hand-kept rows")
+        self.assertIn("LIVE_FEEDS ghost: unknown broker", reg.validate(BROKERS, DISCLOSURES, {"ghost": FEEDS["disc"]}))
+        for bid, f in reg.LIVE_FEEDS.items():
+            self.assertIn(f["parser"], m.LIVE_PARSERS)
+
+
 class BrokersOnly(unittest.TestCase):
     def test_rebuilds_from_the_committed_daily_file_without_network(self):
         with tempfile.TemporaryDirectory() as tmp:
             daily, out = Path(tmp) / "mtf_daily.json", Path(tmp) / "mtf_brokers.json"
             daily.write_text(json.dumps({"combined": COMBINED}))
             with unittest.mock.patch.object(m, "OUT_PATH", daily), unittest.mock.patch.object(m, "BROKERS_PATH", out), \
+                    unittest.mock.patch.object(m, "BROKER_LIVE_PATH", Path(tmp) / "none.json"), \
+                    unittest.mock.patch.object(m, "fetch_live", side_effect=AssertionError("fetched")), \
                     unittest.mock.patch.object(m, "report_brokers_due"), \
                     unittest.mock.patch("sys.argv", ["mtf_pipeline.py", "--brokers-only"]), \
                     unittest.mock.patch.dict("sys.modules", {"nse_pipeline": None, "bse_pipeline": None}):
@@ -203,8 +290,11 @@ class CommittedFile(unittest.TestCase):
             self.skipTest("no committed mtf_brokers.json")
         doc = json.loads(path.read_text())
         self.assertEqual([b["id"] for b in doc["brokers"]], list(reg.BROKERS))
+        live_path = DASHBOARD / "data" / "mtf_broker_live.json"
+        live = json.loads(live_path.read_text()).get("readings", {}) if live_path.exists() else {}
         n = sum(len(b["series"]) for b in doc["brokers"])
-        self.assertEqual(n, len(reg.DISCLOSURES), "rebuild it: python3 scripts/mtf_pipeline.py --brokers-only")
+        n_live = sum(len(v) for k, v in live.items() if k in reg.LIVE_FEEDS)
+        self.assertEqual(n, len(reg.DISCLOSURES) + n_live, "rebuild it: python3 scripts/mtf_pipeline.py --brokers-only")
 
 
 if __name__ == "__main__":

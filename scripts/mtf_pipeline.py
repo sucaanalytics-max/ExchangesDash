@@ -18,6 +18,10 @@ Writes, after each daily update:
                                          share of the NSE + BSE book on the same date, and
                                          a share-by-quarter table (brokers_doc); the run
                                          also prints the brokers whose next figure is due
+  dashboard/data/mtf_broker_live.json    readings of figures brokers keep updating on their
+                                         web pages (the register's LIVE_FEEDS: Groww's IR
+                                         page), read on each run, one per weekday; a page
+                                         that fails or changes layout only warns
 
 Sources (one file per reporting date, published the next trading day):
   NSE  nsearchives.nseindia.com/content/equities/mrg_trading_DDMMYY.zip — a CSV with
@@ -46,8 +50,8 @@ A file an exchange served for more than one date goes under `unavailable` for ea
 of them: BSE's files carry no date, so which date it belongs to cannot be told.
 
   python scripts/mtf_pipeline.py --brokers-only
-      rebuilds mtf_brokers.json from the committed mtf_daily.json after an edit
-      to the broker register (no network).
+      rebuilds mtf_brokers.json from the committed mtf_daily.json and
+      mtf_broker_live.json after an edit to the broker register (no network).
 
   python scripts/mtf_pipeline.py --compare-bse [YYYY-MM-DD …]
       fetches BSE's margin trading CSV and its margin archive for the same dates
@@ -69,6 +73,7 @@ repository) is left alone.
 import bisect
 import csv
 import hashlib
+import html
 import io
 import json
 import os
@@ -90,6 +95,7 @@ OUT_PATH = DATA_DIR / "mtf_daily.json"
 STOCKS_PATH = DATA_DIR / "mtf_stocks_latest.json"
 NSE_FEED_PATH = DATA_DIR / "nse_mtf_daily.json"
 BROKERS_PATH = DATA_DIR / "mtf_brokers.json"
+BROKER_LIVE_PATH = DATA_DIR / "mtf_broker_live.json"
 NEW_DAYS_FILE = ROOT / ".new_mtf_days_count"
 
 NSE_URL = "https://nsearchives.nseindia.com/content/equities/mrg_trading_{ddmmyy}.zip"
@@ -902,6 +908,10 @@ def main():
     wrote = write_if_changed(OUT_PATH, doc)
     write_if_changed(NSE_FEED_PATH, nse_feed_doc(store, now_iso))
     try:
+        refresh_live(now_iso)
+    except Exception as e:  # a broker's web page must never stop the exchanges' data
+        print(f"::warning::live broker figures not read ({type(e).__name__}: {e})")
+    try:
         write_brokers(doc["combined"], now_iso)
     except Exception as e:  # the register must never stop the exchanges' data
         print(f"::warning::mtf_brokers.json not written ({type(e).__name__}: {e})")
@@ -1136,17 +1146,36 @@ def broker_series(rows, at):
     return pts
 
 
-def brokers_doc(combined, updated_at, brokers=None, disclosures=None):
-    """mtf_brokers.json: each broker's register figures priced against the exchanges' combined
-    book, plus a share-by-quarter table on each broker's primary measure. Nothing in it depends
-    on today's date, so it changes only when the register or the exchanges' book does."""
+def live_rows(readings, feeds=None):
+    """The MTF job's stored readings ({broker: [{date, book_cr, quote, url}]}) as register-style
+    rows under basis 'live', with the feed's measure, source and note (broker_mtf_register.LIVE_FEEDS)."""
+    import broker_mtf_register as reg
+    feeds = reg.LIVE_FEEDS if feeds is None else feeds
+    out = []
+    for bid, rows in (readings or {}).items():
+        f = feeds.get(bid)
+        if not f:
+            continue
+        for r in rows:
+            out.append({"broker": bid, "as_of": r["date"], "book_cr": r["book_cr"], "measure": f["measure"],
+                        "basis": "live", "rounded": True, "source": f["source"], "url": r.get("url") or f["url"],
+                        "page": None, "quote": r["quote"], "note": f["note"]})
+    return out
+
+
+def brokers_doc(combined, updated_at, brokers=None, disclosures=None, live=None, feeds=None):
+    """mtf_brokers.json: each broker's register figures (and the MTF job's live readings, `live`)
+    priced against the exchanges' combined book, plus a share-by-quarter table on each broker's
+    primary measure. Nothing in it depends on today's date, so it changes only when the register,
+    a live reading or the exchanges' book does."""
     import broker_mtf_register as reg
     brokers = reg.BROKERS if brokers is None else brokers
     disclosures = reg.DISCLOSURES if disclosures is None else disclosures
     at = industry_lookup(combined)
+    rows = list(disclosures) + live_rows(live, feeds)
     out = []
     for bid, b in brokers.items():
-        series = broker_series([d for d in disclosures if d["broker"] == bid], at)
+        series = broker_series([d for d in rows if d["broker"] == bid], at)
         out.append({"id": bid, "name": b["name"], "short": b["short"], "type": b["type"], "parent": b.get("parent"),
                     "primary": b["primary"], "sources": b["sources"], "series": series})
     quarters = []
@@ -1227,10 +1256,101 @@ def report_brokers_due(today, summary_path=None):
 
 
 def write_brokers(combined, updated_at):
-    """Write mtf_brokers.json if anything but its timestamp changed; report the figures due. True if written."""
-    wrote = write_if_changed(BROKERS_PATH, brokers_doc(combined, updated_at))
+    """Write mtf_brokers.json (register + the stored live readings) if anything but its timestamp
+    changed; report the figures due. True if written."""
+    live = (load_json(BROKER_LIVE_PATH) or {}).get("readings")
+    wrote = write_if_changed(BROKERS_PATH, brokers_doc(combined, updated_at, live=live))
     report_brokers_due(date.today(), os.environ.get("GITHUB_STEP_SUMMARY"))
     return wrote
+
+
+# ── Live feeds: figures a broker keeps updating on a web page (broker_mtf_register.LIVE_FEEDS),
+# read on every MTF run into mtf_broker_live.json, one reading per weekday
+
+BROKER_LIVE_MAX_JUMP = 0.30      # a reading this far from the previous day's is not stored (a misread page)
+BROKER_LIVE_NOTE = ("Readings of figures brokers keep updating on their web pages (scripts/broker_mtf_register.py "
+                    "LIVE_FEEDS), one per weekday page date (a later run that day replaces it), written by "
+                    "scripts/mtf_pipeline.py on each MTF run; mtf_brokers.json lists them under basis 'live'.")
+GROWW_DATE_RE = re.compile(r"Our Metrics as of (\d{1,2} [A-Za-z]{3} \d{4})")
+GROWW_MTF_RE = re.compile(r"MTF Net Book\s*₹\s*([\d,]+(?:\.\d+)?)\s*Bn")
+GROWW_DISCLAIMER_RE = re.compile(r"MTF Net Book, MF Assets and Stock Assets are platform-level figures[^.]*\.")
+
+
+def _page_text(page):
+    """A web page's visible text, whitespace collapsed."""
+    t = re.sub(r"<script.*?</script>|<style.*?</style>", " ", page, flags=re.S | re.I)
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", t))).strip()
+
+
+def parse_groww_ir(page):
+    """Groww's investor relations page → {date, book_cr, quote}, or None when the date, the MTF Net Book
+    or its 'platform-level' disclaimer is missing (a changed page is not read)."""
+    text = _page_text(page or "")
+    d, b, disc = GROWW_DATE_RE.search(text), GROWW_MTF_RE.search(text), GROWW_DISCLAIMER_RE.search(text)
+    days = _dates_in(d.group(1)) if d else []
+    if not (days and b and disc):
+        return None
+    return {"date": days[0].isoformat(), "book_cr": round(float(b.group(1).replace(",", "")) * 100, 2),
+            "quote": f"{d.group(0)} … {b.group(0)} … {disc.group(0)}"}
+
+
+LIVE_PARSERS = {"groww_ir": parse_groww_ir}
+
+
+def fetch_live(feed, get=None):
+    """One feed's current reading ({date, book_cr, quote, url}), or None with a warning printed."""
+    if get is None:
+        from curl_cffi import requests as cffi_requests
+        get = lambda url: cffi_requests.get(url, impersonate="chrome", timeout=30)  # noqa: E731
+    try:
+        resp = get(feed["url"])
+    except Exception as e:  # network, block: try again next run
+        print(f"::warning::{feed['url']} not read ({type(e).__name__}: {e})")
+        return None
+    if getattr(resp, "status_code", None) != 200:
+        print(f"::warning::{feed['url']} answered HTTP {getattr(resp, 'status_code', '?')}")
+        return None
+    reading = LIVE_PARSERS[feed["parser"]](resp.text)
+    if not reading:
+        print(f"::warning::{feed['url']}: the MTF figure, its date or its disclaimer is missing; page changed?")
+        return None
+    return {**reading, "url": feed["url"]}
+
+
+def update_live_store(readings, broker, reading, fetched_at, max_jump=BROKER_LIVE_MAX_JUMP):
+    """Add `reading` to readings[broker] (oldest first, one per page date): (changed, why)."""
+    rows = readings.setdefault(broker, [])
+    if date.fromisoformat(reading["date"]).weekday() >= 5:
+        return False, "weekend page date (the book does not move)"
+    same = next((r for r in rows if r["date"] == reading["date"]), None)
+    if same and same["book_cr"] == reading["book_cr"]:
+        return False, "unchanged"
+    before = [r for r in rows if r["date"] < reading["date"]]
+    if before and before[-1]["book_cr"] and abs(reading["book_cr"] / before[-1]["book_cr"] - 1) > max_jump:
+        return False, (f"{reading['book_cr']:,.0f} Cr is {reading['book_cr'] / before[-1]['book_cr'] - 1:+.0%} on "
+                       f"{before[-1]['date']}: not stored")
+    rec = {"date": reading["date"], "book_cr": reading["book_cr"], "quote": reading["quote"], "url": reading["url"],
+           "fetched_at": fetched_at}
+    rows[:] = sorted([r for r in rows if r["date"] != reading["date"]] + [rec], key=lambda r: r["date"])
+    return True, "stored"
+
+
+def refresh_live(now_iso, get=None, feeds=None):
+    """Read every live feed and store the readings in mtf_broker_live.json. A feed that fails keeps its stored
+    readings (a warning, never an error)."""
+    import broker_mtf_register as reg
+    feeds = reg.LIVE_FEEDS if feeds is None else feeds
+    doc = load_json(BROKER_LIVE_PATH) or {}
+    readings = doc.get("readings") or {}
+    for bid, feed in feeds.items():
+        reading = fetch_live(feed, get)
+        if reading:
+            changed, why = update_live_store(readings, bid, reading, now_iso)
+            print(f"Live {bid}: {reading['date']} ₹{reading['book_cr']:,.2f} Cr: {why}")
+            if why.endswith("not stored"):
+                print(f"::warning::live {bid}: {why}")
+    write_if_changed(BROKER_LIVE_PATH, {"updated_at": now_iso, "note": BROKER_LIVE_NOTE, "readings": readings})
+    return readings
 
 
 def brokers_main():
