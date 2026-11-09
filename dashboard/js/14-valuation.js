@@ -592,6 +592,7 @@ async function buildValuation(ex) {
     ${ex === 'mcx' ? rxAlert('<strong>Placeholder inputs.</strong> There is no MCX valuation baseline in this repo: PAT margin, other income and P/E multiples are round-number placeholders, so these targets are illustrative until you set them.') : ''}
     ${triHTML}
     <section class="rx-kpis" aria-label="Valuation summary" data-rx="kpis"></section>
+    <p class="rx-foot rx-kpi-note" data-rx="kpiNote"></p>
     ${triDetailHTML}
     ${rxPanel({ title: 'Valuation range by method', meta: '₹ per share · bars span the range, tick = base or centre',
       right: rxLegend([{ label: 'This model', color: RX.model }, { label: 'Market-based', color: RX.grey }, { label: cmp != null ? `CMP ${rxRupee(cmp)}` : 'CMP', color: RX.neg, kind: 'tick' }]),
@@ -758,19 +759,42 @@ async function buildValuation(ex) {
       .forEach(([k, keys]) => { const n = el.querySelector(`[data-src="${k}"]`); if (n) n.innerHTML = fieldChip[k]() + editedChip(keys); });
     el.querySelectorAll('input[data-key]').forEach(i => i.classList.toggle('is-edited', Math.abs(Number(v[i.dataset.key]) - Number(defaults[i.dataset.key])) > 1e-9));
 
-    // KPIs
+    // KPIs. The targets value different things, so each tile names what: the current-FY model
+    // (P/E × this FY's EPS), the triangulated target (next-FY methods, today) and, where there
+    // are broker notes, the analysts' 12-month mean; the note under the row says why they differ.
     const triBase = tri && tri.avg ? tri.avg[1] : null;
-    const triW = tri ? [['regression', t.w0, 'reg'], ['ratio', t.w1, 'ratio'], ['ADR', t.w2, 'adr']].filter(([, , k]) => tri.used.includes(k)).map(([n, w]) => `${n} ${fmtNum(w, 0)}`).join(' · ') : '';
+    const triNames = { reg: 'regression', ratio: 'ratio', adr: 'ADR' };
+    const triW = !tri ? '' : tri.used.length === 1 ? `${triNames[tri.used[0]]} only`
+      : [['reg', t.w0], ['ratio', t.w1], ['adr', t.w2]].filter(([k]) => tri.used.includes(k)).map(([k, w]) => `${triNames[k]} ${fmtNum(w, 0)}`).join(' · ');
     const range = yr.length ? `${sinceListing ? 'since listing' : '52-week'} ${rxRupee(Math.min(...yr))} – ${fmtNum(Math.max(...yr), 0)}` : cmpWhen;
-    q('kpis').innerHTML = [
+    const vsCmp = x => cmp && x != null ? `${rxChangeHTML(x / cmp - 1)} vs CMP` : 'no CMP yet';
+    const tiles = [
       rxKpi('CMP', cmp != null ? rxRupee(cmp) : '—', `${cmpWhen}${yr.length ? ' · ' + range : ''}`),
       rxKpi(`EPS ${fyE} · base`, rxRupee(base.eps, 2), `PAT ${rxCr(base.pat, 0)} on ${fmtNum(v.shares, 2)} Cr shares`),
       rxKpi('P/E at CMP', cmp && base.eps ? `${fmtNum(cmp / base.eps, 1)}×` : '—', `vs base multiple ${fmtNum(v.pe1, 0)}×`),
-      rxKpi(`Base target · ${basisName}`, rxRupee(pick(base)), up(base) == null ? 'no CMP yet' : `${rxChangeHTML(up(base))} vs CMP`, { accent: true }),
+      rxKpi(`${ctx.fyShort} model · base · ${basisName}`, rxRupee(pick(base)), `${vsCmp(pick(base))} · ${fmtNum(v.pe1, 0)}× ${fyE} EPS`, { accent: true }),
       triBase != null
-        ? rxKpi('Triangulated target · today', rxRupee(triBase), `${cmp ? rxChangeHTML(triBase / cmp - 1) + ' vs CMP · ' : ''}weights ${triW}`)
-        : rxKpi('Triangulated target · today', '—', 'no method has a value'),
-    ].join('');
+        ? rxKpi('Triangulated · base · today', rxRupee(triBase), `${vsCmp(triBase)} · ${fy1S} methods: ${triW}`)
+        : rxKpi('Triangulated · base · today', '—', 'no method has a value'),
+    ];
+    if (brokerAvg != null) {
+      const stale = oldestAge != null && oldestAge > ANALYST_TARGET_STALE_DAYS;
+      tiles.push(rxKpi('Analysts · 12-month', rxRupee(brokerAvg), `${vsCmp(brokerAvg)} · mean of ${analysts.length}${stale ? ` · oldest ${oldestAge} days` : ''}`));
+    }
+    q('kpis').innerHTML = tiles.join('');
+    // Why the model targets differ: they price different years' earnings
+    const fyDisc = state.basis === 'now' && v.disc > 0 ? `, discounted ÷ ${fmtNum(1 + v.disc / 100, 2)} to today` : '';
+    let triText = '';
+    if (triBase != null) {
+      const adrHow = `${fy1S}E EPS ${rxRupee(tri.adr.eps, 2)} at ${fmtNum(t.pe1, 0)}×, ÷ ${fmtNum(1 + t.d1 / 100, 2)} ÷ ${fmtNum(1 + t.d2 / 100, 2)} to today`;
+      const names = tri.used.map(k => triNames[k]);
+      const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0];
+      triText = tri.used.length === 1 && tri.used[0] === 'adr'
+        ? `The triangulated target is the ${fy1S} ADR method alone: ${adrHow}. `
+        : `The triangulated target is built on ${fy1S}: the ${list} method${names.length > 1 ? 's' : ''}, each a price for today${tri.used.includes('adr') ? `; its ADR method is ${adrHow}` : ''}. `;
+    }
+    q('kpiNote').innerHTML = (base.eps != null ? `The ${ctx.fyShort} model prices ${fyE} EPS of ${rxRupee(base.eps, 2)} at ${fmtNum(v.pe1, 0)}×${fyDisc}. ` : '')
+      + triText + (brokerAvg != null ? 'Analyst targets are their 12-month prices, not discounted.' : '');
 
     // Football field
     const rows = [];
