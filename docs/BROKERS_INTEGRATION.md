@@ -57,7 +57,7 @@ The shell lives in `dashboard/js/00-core.js` ("BROKERS MODE"). It handles the re
 ## Rules for a Brokers PR
 
 - **Files:** new code goes in new files, named so they load after the exchange tabs and before
-  `99-init.js`: `dashboard/js/30-brokers.js`, `31-brokers-pat.js`, and so on. Each needs its
+  `99-init.js`: `dashboard/js/30-brokers.js`, `31-brokers-price.js`, … `33-brokers-pat.js`. Each needs its
   `<script src="./js/NN-….js"></script>` tag in `index.html`, in name order. Styles go in a
   separate CSS file linked from `index.html`. No changes to `00-core.js`/`01-data.js` should be
   needed; if one is, explain it in the PR.
@@ -108,7 +108,8 @@ GitHub's schedule, which is often hours late) copies the `sb_*` tables that the 
 can read into the ExchangesDash Supabase project (NSE-BSE), with the same names and columns.
 `brokers_mirror_schema.sql` defines the copies. Their schema endpoint refuses the publishable key,
 so `--emit-ddl` cannot generate that file; it comes from the brokers team's catalog (#36, 3 Nov
-2026: 8 tables; `sb_pat_lines`, the PAT model's output, added on 5 Nov 2026). Create a new table's copy
+2026: 8 tables; `sb_pat_lines`, the PAT model's output, from their 5 Nov 2026 migration, created there on
+6 Nov and here on 7 Nov). Create a new table's copy
 only once the table exists on their side: the mirror copies every `sb_*` table that exists here, and one
 their side lacks fails every run. The copies keep their columns, types and primary keys, but not their foreign keys
 or CHECK constraints, because the mirror loads tables in name order.
