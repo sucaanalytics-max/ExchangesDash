@@ -335,6 +335,11 @@ DISCLOSURES = [
      "url": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/b831cebf-9ddc-48a6-861f-1879e07a86fc.pdf",
      "quote": "Market share in MTF3 of about 16.1% at September 30, 2026",
      "note": "ICICI Securities' MTF market share as given in ICICI Bank's deck; the digit after 'MTF' is a footnote marker (Margin Trading Funding/Facility)."},
+    {"broker": "icicidirect", "as_of": "2026-09-30", "book_cr": 20220.09, "measure": "net", "basis": "period_end",
+     "source": "ICICI Securities results, quarter and half year ended 30 Sep 2026 (NSE debt filing, 14 Oct 2026)", "page": 8,
+     "url": "https://nsearchives.nseindia.com/content/debt/WDM/ISEC_DEBT_14102026131115_OutcomeofBoardMeetingOctober142026.pdf",
+     "quote": "STANDALONE BALANCE SHEET (₹ million) As at September 30, 2026 (Unaudited) As at March 31, 2026 (Audited) … (f) Loans 2,02,200.9 1,45,605.9",
+     "note": "Standalone balance-sheet Loans (₹ mn). Its 31 Mar 2026 value (₹14,560.6 Cr) is CRISIL's 'MTF lending book' of ₹14,561 Cr for that date, so the line is the MTF book, net."},
     # ── kotaksec
     {"broker": "kotaksec", "as_of": "2023-03-31", "book_cr": 3767.53, "measure": "net", "basis": "period_end",
      "source": "Kotak Securities Annual Report FY 2023-24 (Note 6 Loans, comparative)", "page": 61,
@@ -406,6 +411,11 @@ DISCLOSURES = [
      "source": "Kotak Mahindra Bank Q2 FY27 investor presentation", "page": 18,
      "url": "https://www.kotak.bank.in/content/dam/Kotak/investor-relation/Financial-Result/QuarterlyReport/FY-2027/q2/investor-presentation/Q2FY27-Investor-Presentation.pdf",
      "quote": "Market share in Margin Trading Funding (MTF): ~14% as at 30th September, 2026"},
+    {"broker": "kotaksec", "as_of": "2026-09-30", "book_cr": 19009.75, "measure": "unstated", "basis": "period_end",
+     "source": "Kotak Securities special-purpose results, quarter and half year ended 30 Sep 2026", "page": 5,
+     "url": "https://nsearchives.nseindia.com/content/debt/WDM/08081_25102026170739_KSL_LR_Sep_2026.pdf",
+     "quote": "As at September 30, 2026 (Unaudited) As at September 30, 2025 (Unaudited) As at March 31, 2026 (Audited) … Advances (Refer note 12) 19,00,974.66 13,49,852.46 13,36,401.69 … 12 Advances include Margin Funding, Deposits and Other advances.",
+     "note": "Scanned page, quote transcribed from the image. Indian-GAAP balance-sheet 'Advances' (₹ lakh), which note 12 says include margin funding, deposits and other advances; its 30 Sep 2025 value matches the earlier filing's."},
     # ── hdfcsec
     {"broker": "hdfcsec", "as_of": "2023-03-31", "book_cr": 2751.53, "measure": "net", "basis": "period_end",
      "source": "HDFC Securities Annual Report FY2023-24, note 7 (Loans)", "page": 90,
