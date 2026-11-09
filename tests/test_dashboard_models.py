@@ -208,6 +208,27 @@ class TriangulatedTarget(unittest.TestCase):
         self.assertEqual(got[6], [None, None, None])        # dated by default; a typed value overrides
         self.assertEqual(got[7], 9)
 
+    def test_differences_from_the_fy_model(self):
+        """The next-FY block keeps its own margin, P/E and other income, as the workbook does; the tab
+        lists where they differ from the current-FY model and can copy them over."""
+        got = js_eval(TRIANGULATION_JS + ["VALUATION_DEFAULTS", "TRIANGULATION_SHARED", "triangulationVsFyModel"], """(() => {
+          const d = ex => triangulationVsFyModel(TRIANGULATION_DEFAULTS[ex], VALUATION_DEFAULTS[ex]);
+          const t = { ...TRIANGULATION_DEFAULTS.bse, pe2: 55, oi: 2100 };
+          const matched = { ...t };
+          triangulationVsFyModel(t, VALUATION_DEFAULTS.bse).forEach(g => g.keys.forEach(k => { matched[k] = VALUATION_DEFAULTS.bse[k]; }));
+          return { bse: d('bse'), nse: d('nse'), mcx: d('mcx'), edited: triangulationVsFyModel(t, VALUATION_DEFAULTS.bse),
+                   modes: triangulationVsFyModel({ ...t, oiMode: 'pct' }, VALUATION_DEFAULTS.bse).map(g => g.label),
+                   after: triangulationVsFyModel(matched, VALUATION_DEFAULTS.bse) };
+        })()""")
+        # BSE: the workbook's 51 % here against 52 % in the FY model; P/E and FY27 other income agree
+        self.assertEqual([(g["label"], g["fy1"], g["fy0"]) for g in got["bse"]], [("PAT margin", [51], [52])])
+        self.assertEqual(got["nse"], [])   # NSE and MCX start from their FY model's own values
+        self.assertEqual(got["mcx"], [])
+        self.assertEqual([(g["label"], g["fy1"], g["fy0"]) for g in got["edited"]],
+                         [("PAT margin", [51], [52]), ("P/E", [40, 45, 55], [40, 45, 50]), ("other income", [2100], [2055.39])])
+        self.assertEqual(got["modes"], ["PAT margin", "P/E"])   # other income in different units: not compared
+        self.assertEqual(got["after"], [])                       # copying the differing keys over matches
+
     def test_fit_basis_adr(self):
         rev = [{"date": "2026-11-04", "revenue_cr": 36.3687}, {"date": "2026-11-05", "revenue_cr": 53.7859},
                {"date": "2026-11-06", "revenue_cr": 12.7992}, {"date": "2026-11-08", "revenue_cr": 1.0}]

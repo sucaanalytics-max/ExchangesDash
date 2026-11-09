@@ -237,6 +237,24 @@ const triangulationStorageKey = ex => `triangulation_${ex}_v1`;
 // The workbook's discount to today, and the fallback without a date
 const TRIANGULATION_FLAT_D2 = 9;
 
+// Inputs the next-FY block shares in meaning with the current-FY model but keeps apart, as the
+// workbook does (BSE: 51 % PAT margin there, 52 % in the FY model). Other income compares the
+// current FY's base (₹ Cr, grown by oiG in the next-FY block) or its % of total income.
+const TRIANGULATION_SHARED = [
+  { label: 'PAT margin', keys: ['margin'] },
+  { label: 'P/E', keys: ['pe0', 'pe1', 'pe2'] },
+  { label: 'other income', keys: ['oi'] },
+];
+
+// The shared inputs on which the next-FY block (t) differs from the current-FY model (v):
+// [{ label, keys, fy1: t's values, fy0: v's values }]; other income only when both use the same mode
+function triangulationVsFyModel(t, v) {
+  return TRIANGULATION_SHARED
+    .filter(g => g.keys[0] !== 'oi' || t.oiMode === v.oiMode)
+    .filter(g => g.keys.some(k => !(Math.abs(Number(t[k]) - Number(v[k])) < 1e-9)))
+    .map(g => ({ ...g, fy1: g.keys.map(k => t[k]), fy0: g.keys.map(k => v[k]) }));
+}
+
 // Discount from the current FY's end back to today, in %: the annual rate d1 for the part of a
 // year left, (1 + d1)^(days / 365) − 1; 0 once that FY has ended; null without valid dates.
 function discountToToday(d1Pct, todayIso, fyEndIso) {
@@ -548,7 +566,7 @@ async function buildValuation(ex) {
         body: `<div class="rx-pb rx-scroll"><table class="rx-table rx-xl" aria-label="Valuation ${fy1S}E, Bear / Base / Bull">
           <thead><tr><td class="rx-xl-gut"></td><th scope="col" class="rx-xl-lab rx-xl-cmp rx-xl-t">CMP ${cmp != null ? rxRupee(cmp) : '—'}</th>${xlHeads}</tr></thead>
           <tbody>${xlBody}</tbody></table></div>`,
-        foot: `Light-blue boxes are inputs: QoQ ADR growth beside ADR ${fy1S.replace('FY', 'FY ')}, ${t.oiMode === 'pct' ? 'other income as a % of total income' : `other-income growth from ${fy0S}`} beside Other Income, and each discount in the Base column; the PE row is editable. Upside: the ${fy1S}-end target vs CMP (${cmpWhen}). Sessions${t.oiMode === 'pct' ? '' : `, ${fy0S} other income`} and PAT margin are set under ADR model inputs below.` })}
+        foot: `Light-blue boxes are inputs: QoQ ADR growth beside ADR ${fy1S.replace('FY', 'FY ')}, ${t.oiMode === 'pct' ? 'other income as a % of total income' : `other-income growth from ${fy0S}`} beside Other Income, and each discount in the Base column; the PE row is editable. Upside: the ${fy1S}-end target vs CMP (${cmpWhen}). Sessions${t.oiMode === 'pct' ? '' : `, ${fy0S} other income`} and PAT margin are set under ADR model inputs below. <span data-rx="triDiff"></span>` })}
       ${rxPanel({ cls: 'rx-col-xl-sum', title: 'Triangulated target', meta: 'today, ₹ per share · three methods, weighted',
         body: `<div class="rx-pb rx-scroll"><table class="rx-table rx-xl" aria-label="Triangulated target summary">
           <thead><tr><td class="rx-xl-gut"></td><th scope="col" class="rx-xl-lab rx-xl-h rx-xl-sum rx-xl-t">Summary</th>${xlHeads}<th scope="col" class="rx-xl-w">Weight</th></tr></thead>
@@ -734,9 +752,18 @@ async function buildValuation(ex) {
     src('regAdr', ed(['regAdr']) ? rxChip('Edited', 'edit') : chip('', qFit ? `= ${qLabel} ADR at today’s rates` : `= ${qLabel} ADR`));
     src('qoq', (ex === 'bse' ? chip('', 'Excel model') : chip('', 'No growth assumed')) + ` ${fmtPct(qoqA)} a year` + eChip(['qoq']));
     src('days', chip(ctx.prevFYDays && t.days === ctx.prevFYDays ? 'data' : '', ctx.prevFYDays ? `${ctx.prevFY.replace(' ', '')} had ${ctx.prevFYDays}` : 'Assumption') + eChip(['days']));
-    ['oi', 'margin'].forEach(k => src(k, provC + eChip([k])));
+    // Where this block's margin, P/E or other income differs from the FY model's
+    const diffs = triangulationVsFyModel(t, v);
+    const diffOf = key => diffs.find(d => d.keys.includes(key));
+    const diffVals = (d, vals) => d.keys[0] === 'oi' ? (t.oiMode === 'pct' ? `${fmtNum(vals[0], 1)} %` : `₹${fmtNum(vals[0], 0)} Cr`)
+      : d.keys[0] === 'margin' ? `${fmtNum(vals[0], 1)} %` : `${vals.map(x => fmtNum(x, 0)).join(' / ')}×`;
+    const fyChip = key => { const d = diffOf(key); return d ? ' ' + rxChip(`${ctx.fyShort} model: ${diffVals(d, d.fy0)}`, 'warn') : ''; };
+    q('triDiff').innerHTML = diffs.length
+      ? `Differs from the ${ctx.fyShort} model below${ex === 'bse' ? ' (the workbook keeps the two apart)' : ''}: ${diffs.map(d => `${d.label} ${diffVals(d, d.fy1)} here, ${diffVals(d, d.fy0)} there`).join('; ')}. <button type="button" class="rx-link" data-rx="triMatch">Use the ${ctx.fyShort} model’s</button>`
+      : `PAT margin, P/E and ${t.oiMode === 'pct' ? 'other income %' : `${fy0S} other income`} match the ${ctx.fyShort} model below.`;
+    ['oi', 'margin'].forEach(k => src(k, provC + eChip([k]) + fyChip(k)));
     src('oiG', provC + eChip(['oiG']));
-    src('pe', provC + eChip(['pe0', 'pe1', 'pe2']));
+    src('pe', provC + eChip(['pe0', 'pe1', 'pe2']) + fyChip('pe0'));
     ['d1', 'band'].forEach(k => src(k, excel + eChip([k])));
     src('d2', ed(['d2']) ? rxChip('Edited', 'edit')
       : daysToFYEnd != null ? chip('data', `${daysToFYEnd} days to ${fy0S} end at ${fmtNum(t.d1, 1)} % a year`) : excel);
@@ -896,6 +923,14 @@ async function buildValuation(ex) {
     tsave();
   });
   el.addEventListener('change', e => { const key = e.target.dataset && e.target.dataset.tkey; if (key) e.target.value = tShow(key); });
+  // "Use the FY model's": copy its margin, P/E and other income into this block (saved like an edit)
+  el.addEventListener('click', e => {
+    if (!e.target.closest || !e.target.closest('[data-rx="triMatch"]')) return;
+    triangulationVsFyModel(t, v).forEach(d => d.keys.forEach(k => { t[k] = v[k]; }));
+    el.querySelectorAll('input[data-tkey]').forEach(i => { i.value = tShow(i.dataset.tkey); });
+    render();
+    tsave();
+  });
   const triReset = q('triReset');
   if (triReset) triReset.addEventListener('click', () => {
     Object.assign(t, tDefaults);
