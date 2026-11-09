@@ -119,7 +119,8 @@ class ValuationModel(unittest.TestCase):
         self.assertEqual((js["saved"]["pe1"], js["saved"]["margin"], js["saved"]["disc"]), (47, 52, 18))
 
 
-TRIANGULATION_JS = ["TRIANGULATION_DEFAULTS", "fitBasisAdr", "triangulationAdrPath", "triangulationModel"]
+TRIANGULATION_JS = ["TRIANGULATION_DEFAULTS", "TRIANGULATION_FLAT_D2", "discountToToday", "fitBasisAdr",
+                    "triangulationAdrPath", "triangulationModel"]
 
 
 @unittest.skipUnless(NODE, "node not installed")
@@ -134,7 +135,7 @@ class TriangulatedTarget(unittest.TestCase):
         args = {"regAdr": 22, "reg": self.FIT, "ratio": self.RATIO, "shares": 40.78841, **kw}
         expr = """(() => {
           const path = triangulationAdrPath({ q: 3, fy: 2027 }, DATA.q3, 2);
-          const t = { ...TRIANGULATION_DEFAULTS.bse, oi: 2055.3897222222213, ...DATA.t };   // Q26 unrounded
+          const t = { ...TRIANGULATION_DEFAULTS.bse, oi: 2055.3897222222213, d2: 9, ...DATA.t };   // Q26 unrounded; D79
           return { path, m: triangulationModel(t, { adrFY: path.adr, ...DATA.args }) };
         })()"""
         return js_eval(TRIANGULATION_JS, expr, {"q3": self.Q3_ADR, "t": t_over or {}, "args": args})
@@ -175,7 +176,7 @@ class TriangulatedTarget(unittest.TestCase):
         the ADR model keeps the one that follows the Fees toggle (BSE, 9 Nov 2026: 24.42 date-effective,
         23.91 at today's rates)."""
         expr = """(() => {
-          const t = { ...TRIANGULATION_DEFAULTS.bse, oi: 2055.3897222222213 };
+          const t = { ...TRIANGULATION_DEFAULTS.bse, oi: 2055.3897222222213, d2: 9 };
           const fit = triangulationAdrPath({ q: 3, fy: 2027 }, 23.905, 2).adr;
           const eff = triangulationAdrPath({ q: 3, fy: 2027 }, 24.417, 2).adr;
           const a = { regAdr: 23.905, reg: DATA.fit, ratio: DATA.ratio, shares: 40.78841 };
@@ -189,6 +190,23 @@ class TriangulatedTarget(unittest.TestCase):
             self.assertAlmostEqual(both["ratio"]["now"][i], fit_only["ratio"]["now"][i], places=6)
             self.assertAlmostEqual(both["adr"]["now"][i], eff_only["adr"]["now"][i], places=6)
         self.assertAlmostEqual(eff_only["ratio"]["adrFY"], js["eff"], places=9)   # without it: the ADR model's
+
+    def test_discount_to_today_follows_the_date(self):
+        """d1's annual rate for the part of the FY left, instead of the workbook's flat 9 %."""
+        got = js_eval(TRIANGULATION_JS, """[
+          discountToToday(18, '2026-11-09', '2027-03-31'), discountToToday(18, '2026-03-31', '2027-03-31'),
+          discountToToday(18, '2027-03-31', '2027-03-31'), discountToToday(18, '2027-04-02', '2027-03-31'),
+          discountToToday(12, '2026-09-30', '2027-03-31'), discountToToday(18, null, '2027-03-31'),
+          ['bse', 'nse', 'mcx'].map(ex => TRIANGULATION_DEFAULTS[ex].d2), TRIANGULATION_FLAT_D2]""")
+        self.assertAlmostEqual(got[0], (1.18 ** (142 / 365) - 1) * 100, places=9)   # 9 Nov 2026: 142 days, 6.65 %
+        self.assertAlmostEqual(got[0], 6.65, places=2)
+        self.assertAlmostEqual(got[1], 18.0, places=9)    # a whole year left: the full rate
+        self.assertEqual(got[2], 0)                        # on the FY's last day
+        self.assertEqual(got[3], 0)                        # after it, never negative
+        self.assertAlmostEqual(got[4], (1.12 ** (182 / 365) - 1) * 100, places=9)   # follows an edited d1
+        self.assertIsNone(got[5])
+        self.assertEqual(got[6], [None, None, None])        # dated by default; a typed value overrides
+        self.assertEqual(got[7], 9)
 
     def test_fit_basis_adr(self):
         rev = [{"date": "2026-11-04", "revenue_cr": 36.3687}, {"date": "2026-11-05", "revenue_cr": 53.7859},
@@ -236,7 +254,7 @@ class ExcelValuationLayout(unittest.TestCase):
         # 247 sessions, 51 % margin, 40.79 Cr shares, PE 40 / 45 / 50, discounts 18 % then 9 %
         adr, cmp = 25.1145, 3500
         expr = """(() => {
-          const t = { ...TRIANGULATION_DEFAULTS.bse, w0: 1, w1: 1, w2: 1 };
+          const t = { ...TRIANGULATION_DEFAULTS.bse, d2: 9, w0: 1, w1: 1, w2: 1 };   // the workbook's flat 9 %
           // Regression flat at 3,544; ratio bear set so its today value is 3,408
           const k = 3408 * 1.18 * 1.09 / DATA.adr;
           const tri = triangulationModel(t, { adrFY: DATA.adr, regAdr: 22, reg: { intercept: 3544, slope: 0 },
@@ -261,7 +279,7 @@ class ExcelValuationLayout(unittest.TestCase):
 
     def test_missing_methods_show_a_dash(self):
         expr = """(() => {
-          const t = { ...TRIANGULATION_DEFAULTS.nse };
+          const t = { ...TRIANGULATION_DEFAULTS.nse, d2: 9 };
           const tri = triangulationModel(t, { adrFY: 400, regAdr: 380, reg: null, ratio: null, shares: null });
           return valuationExcelCells(tri, t, null);
         })()"""
