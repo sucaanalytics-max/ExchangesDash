@@ -3473,6 +3473,22 @@ a.rx-link { display: inline; }
 .mtf-notes .rx-alert + .rx-alert { margin-top: 6px; }
 .mtf-dagger { color: var(--rx-warn); font-weight: 700; margin-left: 2px; cursor: help; }
 .mtf-stocks td.mtf-name { white-space: normal; min-width: 180px; }
+/* MTF Brokers tab */
+.mtf-bk-sub { font-size: 11px; font-weight: 400; color: var(--rx-muted); margin-top: 1px; white-space: nowrap; }
+.mtf-bk-sw { display: inline-block; width: 14px; height: 0; border-top: 3px solid currentColor; margin: 0 6px 3px 0; vertical-align: middle; }
+.mtf-bk-sw--dash { border-top-style: dashed; }
+.mtf-bk-table td { vertical-align: top; }
+.mtf-bk-table td.mtf-bk-name { min-width: 150px; }
+.mtf-bk-table td.mtf-bk-name .mtf-bk-sub { white-space: normal; max-width: 220px; }
+.mtf-bk-table td.mtf-bk-old { color: var(--rx-ink-2); }
+.mtf-bk-table td.mtf-bk-src { min-width: 210px; max-width: 320px; }
+.mtf-bk-table td.mtf-bk-src .mtf-bk-sub { white-space: normal; }
+.mtf-bk-table .rx-chip, .mtf-bk-qtable .rx-chip { white-space: nowrap; }
+.mtf-bk-qtable td.mtf-bk-none { color: var(--rx-muted); }
+.mtf-bk-qtable td .rx-chip { margin-left: 4px; font-size: 10px; }
+.mtf-bk-mv { font-size: 10px; }
+.mtf-bk-srcs td.rx-wrap { min-width: 180px; font-size: 12px; }
+.mtf-about .rx-chip { margin-right: 2px; }
 @media (max-width: 640px) {
   .mtf-stocks .mtf-id { display: none; }
   .mtf-stocks td.mtf-name { min-width: 140px; }

@@ -13,6 +13,11 @@ Writes, after each daily update:
                                          brokers engine (abiyani-tools/brokersdashboard,
                                          src/live/refresh_market.py) reads from this repo
                                          for Angel One's and Motilal Oswal's MTF revenue
+  dashboard/data/mtf_brokers.json        each broker's disclosed MTF book (the hand-kept
+                                         register scripts/broker_mtf_register.py) with its
+                                         share of the NSE + BSE book on the same date, and
+                                         a share-by-quarter table (brokers_doc); the run
+                                         also prints the brokers whose next figure is due
 
 Sources (one file per reporting date, published the next trading day):
   NSE  nsearchives.nseindia.com/content/equities/mrg_trading_DDMMYY.zip — a CSV with
@@ -40,6 +45,10 @@ missing one, so a parser fix reaches history.
 A file an exchange served for more than one date goes under `unavailable` for each
 of them: BSE's files carry no date, so which date it belongs to cannot be told.
 
+  python scripts/mtf_pipeline.py --brokers-only
+      rebuilds mtf_brokers.json from the committed mtf_daily.json after an edit
+      to the broker register (no network).
+
   python scripts/mtf_pipeline.py --compare-bse [YYYY-MM-DD …]
       fetches BSE's margin trading CSV and its margin archive for the same dates
       and prints their totals side by side (nothing is written); workflow
@@ -57,6 +66,7 @@ The codex pipeline's public.codex_nse_mtf_daily (NSE totals, written from anothe
 repository) is left alone.
 """
 
+import bisect
 import csv
 import hashlib
 import io
@@ -69,7 +79,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from trading_calendar import equity_days_pre_fy24
@@ -79,6 +89,7 @@ DATA_DIR = ROOT / "dashboard" / "data"
 OUT_PATH = DATA_DIR / "mtf_daily.json"
 STOCKS_PATH = DATA_DIR / "mtf_stocks_latest.json"
 NSE_FEED_PATH = DATA_DIR / "nse_mtf_daily.json"
+BROKERS_PATH = DATA_DIR / "mtf_brokers.json"
 NEW_DAYS_FILE = ROOT / ".new_mtf_days_count"
 
 NSE_URL = "https://nsearchives.nseindia.com/content/equities/mrg_trading_{ddmmyy}.zip"
@@ -140,6 +151,9 @@ NOTES = [
     "BSE's amount financed and its closing book differ by more than 1 %.",
     "A file an exchange served for more than one date goes under unavailable for each of them (BSE's files "
     "carry no date, so which date it belongs to cannot be told); they are asked for again.",
+    "NSE's book steps up 7 % on 2025-10-01 (Rs 99,446 to 1,06,409 Cr; fresh exposure Rs 10,389 Cr against about "
+    "Rs 6,000 Cr on ordinary days): from that day brokers report MTF to the exchanges on revised rules, which moved "
+    "several of them to gross reporting.",
     "A BSE day re-read from a file listing fewer securities than the stored one keeps the stored copy: BSE "
     "serves smaller files for older days (its 23 and 24 Sep 2026 files listed 1,860 and 1,868 securities when "
     "published, 1,857 and 1,865 when asked again on 4 Nov). A parser upgrade still replaces the stored day.",
@@ -839,6 +853,8 @@ def run_exchange(ex, session, fetch, store, dates, backfill, now_iso, db=None, p
 
 
 def main():
+    if sys.argv[1:2] == ["--brokers-only"]:
+        return brokers_main()
     from nse_pipeline import nse_session
     from bse_pipeline import _make_bse_session
 
@@ -881,8 +897,13 @@ def main():
     for ex, key, cur, prev, nxt in flag_spikes(store):
         print(f"{ex.upper()} {key}: spike (₹{cur:,.0f} Cr against ₹{prev:,.0f} / ₹{nxt:,.0f} Cr either side)"
               " — flagged, left out of combined")
-    wrote = write_if_changed(OUT_PATH, build_doc(store, now_iso))
+    doc = build_doc(store, now_iso)
+    wrote = write_if_changed(OUT_PATH, doc)
     write_if_changed(NSE_FEED_PATH, nse_feed_doc(store, now_iso))
+    try:
+        write_brokers(doc["combined"], now_iso)
+    except Exception as e:  # the register must never stop the exchanges' data
+        print(f"::warning::mtf_brokers.json not written ({type(e).__name__}: {e})")
     if latest:
         old = load_json(STOCKS_PATH)
         doc = stocks_doc(latest, now_iso)
@@ -995,6 +1016,234 @@ def load_json(path):
         return json.loads(Path(path).read_text())
     except (OSError, ValueError):
         return None
+
+
+# ═══════════════════════════════════════════════════════════════
+# BROKERS: each broker's disclosed MTF book against the exchanges' book
+# (register: scripts/broker_mtf_register.py; output: mtf_brokers.json)
+# ═══════════════════════════════════════════════════════════════
+
+BROKER_INDUSTRY_GAP_DAYS = 7     # a period-end figure takes the combined book on the last reporting date on or
+                                 # before it, at most this many days earlier (a holiday or weekend quarter end)
+BROKER_QUARTERS = 8              # quarter ends in the share-by-quarter table
+BROKER_YOY_DAYS = (300, 430)     # "a year earlier" = the same-measure figure nearest 365 days back in this window
+
+BROKER_MEASURES = {
+    "share": "a market share the filing states; the book is that share of the exchanges' book on the date",
+    "gross": "the gross MTF book, the basis the exchanges' book is on",
+    "net": "net of client cash collateral, or the balance-sheet loan line: usually 80-87 % of gross, so the share "
+           "understates",
+    "client_funding": "MTF plus interest-bearing trade receivables (no MTF-only figure is published), so the share "
+                      "overstates",
+    "unstated": "the document calls it the MTF book without saying gross or net",
+}
+
+BROKER_NOTES = [
+    "share_pct = the broker's figure / the exchanges' combined MTF book (NSE closing book + BSE amount financed, "
+    "mtf_daily.json) on the same date: the last reporting date on or before a period-end figure (within 7 days), or "
+    "the month's average for a monthly average. Shares the brokers publish use their own denominators; these don't.",
+    "A row with measure 'share' is a share the filing states (ICICI Bank, Kotak Bank); its book_cr is derived "
+    "(share x the exchanges' book) and marked derived.",
+    "chg / yoy compare a figure with the broker's previous figure (or the one about a year earlier) of the same "
+    "measure and basis only.",
+    "From 1 Oct 2025 brokers report MTF to the exchanges on revised (gross) rules: NSE's book steps up 7 % that day, "
+    "so changes across it compare different bases.",
+    "Figures come from each broker's or parent's own documents (url, page, quote); none from aggregators.",
+]
+
+
+def fy_quarter_label(iso):
+    """'Q2 FY 2027' for 2026-09-30 (Indian FY, Apr-Mar)."""
+    y, m = int(iso[:4]), int(iso[5:7])
+    return f"Q{(m - 4) % 12 // 3 + 1} FY {y + 1 if m >= 4 else y}"
+
+
+def quarter_ends_to(last_iso, n):
+    """The n quarter ends (31 Mar, 30 Jun, 30 Sep, 31 Dec) on or before last_iso, oldest first."""
+    ends = []
+    y = int(last_iso[:4])
+    while len(ends) < n:
+        for md in ("12-31", "09-30", "06-30", "03-31"):
+            d = f"{y}-{md}"
+            if d <= last_iso and len(ends) < n:
+                ends.append(d)
+        y -= 1
+    return ends[::-1]
+
+
+def industry_lookup(combined):
+    """at(as_of, basis) -> (combined book ₹ Cr, the reporting date used or None for an average), or (None, None)."""
+    dates = [r["date"] for r in combined]
+    vals = [r["total_cr"] for r in combined]
+
+    def at(as_of, basis):
+        if not dates:
+            return None, None
+        d0 = date.fromisoformat(as_of)
+        if basis == "month_avg":
+            if (d0 - date.fromisoformat(dates[-1])).days > BROKER_INDUSTRY_GAP_DAYS:
+                return None, None            # the month is not over in the exchanges' series yet
+            xs = [v for d, v in zip(dates, vals) if d[:7] == as_of[:7]]
+            return (round(sum(xs) / len(xs), 2), None) if xs else (None, None)
+        i = bisect.bisect_right(dates, as_of) - 1
+        if i < 0 or (d0 - date.fromisoformat(dates[i])).days > BROKER_INDUSTRY_GAP_DAYS:
+            return None, None
+        return vals[i], dates[i]
+    return at
+
+
+def _broker_change(a, b):
+    """b's change from a (same broker, measure and basis)."""
+    out = {"from": a["as_of"], "days": (date.fromisoformat(b["as_of"]) - date.fromisoformat(a["as_of"])).days}
+    if a.get("book_cr") and b.get("book_cr") is not None:
+        out["book_cr"] = round(b["book_cr"] - a["book_cr"], 1)
+        out["book_pct"] = round(b["book_cr"] / a["book_cr"] - 1, 4)
+    if a.get("share_pct") is not None and b.get("share_pct") is not None:
+        out["share_pp"] = round(b["share_pct"] - a["share_pct"], 3)
+    return out
+
+
+def broker_series(rows, at):
+    """A broker's figures (register rows, any order) priced against the exchanges' book, oldest first."""
+    pts = []
+    for d in sorted(rows, key=lambda r: (r["as_of"], r["measure"], r["basis"])):
+        ind, ind_date = at(d["as_of"], d["basis"])
+        p = {"as_of": d["as_of"], "measure": d["measure"], "basis": d["basis"]}
+        if d.get("share_pct") is not None:
+            p["share_pct"] = d["share_pct"]
+            p["book_cr"] = round(d["share_pct"] / 100 * ind, 1) if ind else None
+            p["derived"] = True
+        else:
+            p["book_cr"] = d["book_cr"]
+            p["share_pct"] = round(d["book_cr"] / ind * 100, 3) if ind else None
+        p["industry_cr"] = round(ind, 2) if ind else None
+        p["industry_date"] = ind_date
+        for k in ("precision", "rounded", "note"):
+            if d.get(k) is not None:
+                p[k] = d[k]
+        p.update({"source": d["source"], "url": d["url"], "page": d.get("page"), "quote": d["quote"]})
+        pts.append(p)
+    chains = {}
+    for p in pts:
+        chain = chains.setdefault((p["measure"], p["basis"]), [])
+        p["chg"] = _broker_change(chain[-1], p) if chain else None
+        d0 = date.fromisoformat(p["as_of"])
+        back = [(abs((d0 - date.fromisoformat(q["as_of"])).days - 365), q) for q in chain
+                if BROKER_YOY_DAYS[0] <= (d0 - date.fromisoformat(q["as_of"])).days <= BROKER_YOY_DAYS[1]]
+        p["yoy"] = _broker_change(min(back, key=lambda t: t[0])[1], p) if back else None
+        chain.append(p)
+    return pts
+
+
+def brokers_doc(combined, updated_at, brokers=None, disclosures=None):
+    """mtf_brokers.json: each broker's register figures priced against the exchanges' combined
+    book, plus a share-by-quarter table on each broker's primary measure. Nothing in it depends
+    on today's date, so it changes only when the register or the exchanges' book does."""
+    import broker_mtf_register as reg
+    brokers = reg.BROKERS if brokers is None else brokers
+    disclosures = reg.DISCLOSURES if disclosures is None else disclosures
+    at = industry_lookup(combined)
+    out = []
+    for bid, b in brokers.items():
+        series = broker_series([d for d in disclosures if d["broker"] == bid], at)
+        out.append({"id": bid, "name": b["name"], "short": b["short"], "type": b["type"], "parent": b.get("parent"),
+                    "primary": b["primary"], "sources": b["sources"], "series": series})
+    quarters = []
+    if combined:
+        for qe in quarter_ends_to(combined[-1]["date"], BROKER_QUARTERS):
+            ind, ind_date = at(qe, "period_end")
+            shares = {}
+            for b in out:
+                pm = b["primary"]
+                hit = next((p for p in b["series"] if p["as_of"] == qe and p["measure"] == pm["measure"]
+                            and p["basis"] == pm["basis"] and p.get("share_pct") is not None), None)
+                if hit:
+                    shares[b["id"]] = hit["share_pct"]
+            quarters.append({"end": qe, "label": fy_quarter_label(qe), "industry_cr": ind, "industry_date": ind_date,
+                             "shares": shares, "tracked_n": len(shares),
+                             "tracked_pct": round(sum(shares.values()), 3) if shares else None})
+    return {
+        "updated_at": updated_at,
+        "unit": "INR crore",
+        "notes": BROKER_NOTES,
+        "measures": BROKER_MEASURES,
+        "industry_latest": ({"date": combined[-1]["date"], "total_cr": combined[-1]["total_cr"]} if combined else None),
+        "brokers": out,
+        "quarters": quarters,
+    }
+
+
+def _month_end(y, m):
+    """The last day of month m of year y (m may run past 12)."""
+    y, m = y + (m - 1) // 12, (m - 1) % 12 + 1
+    return date(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1)
+
+
+def brokers_due(today, brokers=None, disclosures=None):
+    """Brokers whose next figure should be out by `today` (a date) but is not in the register:
+    [(id, latest as_of, next period end or None, due date)]. For the run's log and summary only."""
+    import broker_mtf_register as reg
+    brokers = reg.BROKERS if brokers is None else brokers
+    disclosures = reg.DISCLOSURES if disclosures is None else disclosures
+    out = []
+    for bid, b in brokers.items():
+        dates = [d["as_of"] for d in disclosures if d["broker"] == bid]
+        if not dates:
+            continue
+        last = date.fromisoformat(max(dates))
+        src = b["sources"]
+        if src["cadence"] == "irregular":
+            nxt = None
+            due = last + timedelta(days=src["lag_days"])
+        else:
+            step = 1 if src["cadence"] == "monthly" else 3
+            end = _month_end(last.year, -(-last.month // step) * step)   # the period end on or after the figure
+            nxt = _month_end(last.year, -(-last.month // step) * step + step) if end == last else end
+            due = nxt + timedelta(days=src["lag_days"])
+        if today > due:
+            out.append((bid, last.isoformat(), nxt.isoformat() if nxt else None, due.isoformat()))
+    return out
+
+
+def report_brokers_due(today, summary_path=None):
+    """Print (and add to the job summary) the brokers whose next MTF figure is due."""
+    import broker_mtf_register as reg
+    due = brokers_due(today)
+    if not due:
+        print("Broker MTF register: no figure due")
+        return due
+    lines = []
+    for bid, last, nxt, when in due:
+        what = f"the figure for the period ending {nxt}" if nxt else "a newer figure"
+        lines.append(f"{reg.BROKERS[bid]['short']}: {what} was due by about {when} "
+                     f"({reg.BROKERS[bid]['sources']['primary']}); latest in the register: {last}")
+    print("Broker MTF register: due\n  " + "\n  ".join(lines))
+    if summary_path:
+        with open(summary_path, "a") as fh:
+            fh.write("## Broker MTF register: figures due\n\nAdd them to `scripts/broker_mtf_register.py` "
+                     "(see `.claude/skills/broker-mtf/SKILL.md`).\n\n" + "\n".join(f"- {x}" for x in lines) + "\n")
+    return due
+
+
+def write_brokers(combined, updated_at):
+    """Write mtf_brokers.json if anything but its timestamp changed; report the figures due. True if written."""
+    wrote = write_if_changed(BROKERS_PATH, brokers_doc(combined, updated_at))
+    report_brokers_due(date.today(), os.environ.get("GITHUB_STEP_SUMMARY"))
+    return wrote
+
+
+def brokers_main():
+    """--brokers-only: rebuild mtf_brokers.json from the committed mtf_daily.json (no network)."""
+    import broker_mtf_register as reg
+    problems = reg.validate()
+    if problems:
+        print("broker_mtf_register.py is invalid:\n  " + "\n  ".join(problems))
+        return 1
+    doc = load_json(OUT_PATH) or {}
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    wrote = write_brokers(doc.get("combined") or [], now_iso)
+    print(f"mtf_brokers.json {'written' if wrote else 'unchanged'}")
+    return 0
 
 
 if __name__ == "__main__":

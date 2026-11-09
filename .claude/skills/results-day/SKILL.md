@@ -42,6 +42,10 @@ Everything below is a hand edit to a Python register. Never edit the generated J
    Run this after step 3 and edit the constant; before this change the formula gave 616.
 5. `tests/test_fees.py` `test_bse_cash_calibrated_then_provisional` pins a reported date (Q1 FY 2027, rate 557) and an unreported date (2026-10-15). Once 2026-10-15 falls in a reported quarter, move the unreported date forward.
 
+## Brokers' MTF books (`scripts/broker_mtf_register.py`)
+
+Brokers' results (Bajaj Finance, Motilal Oswal, Angel One, Groww, IIFL Capital, Anand Rathi, JM Financial) and the parent banks' presentations (ICICI Bank, Kotak Bank) carry the MTF figures behind the MTF mode's Brokers tab. Add them by following the `broker-mtf` skill (`.claude/skills/broker-mtf/SKILL.md`).
+
 ## Special session (`scripts/trading_calendar.py`)
 
 When an exchange announces a Muhurat or DR-test session, add `{"date", "type": "muhurat" | "dr_test", "exchanges": (...), "note"}` to `SPECIAL_SESSIONS`, naming the circular in `note`. Full weekend sessions, such as Budget day, are normal trading days: don't add them.

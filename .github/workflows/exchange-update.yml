@@ -475,7 +475,7 @@ jobs:
           git config user.name "Research-Tusk"
           git config user.email "research@tuskinvest.com"
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-          for f in dashboard/data/mtf_daily.json dashboard/data/mtf_stocks_latest.json dashboard/data/nse_mtf_daily.json; do
+          for f in dashboard/data/mtf_daily.json dashboard/data/mtf_stocks_latest.json dashboard/data/nse_mtf_daily.json dashboard/data/mtf_brokers.json; do
             if [ -f "$f" ]; then git add "$f"; fi
           done
           git diff --cached --quiet || git commit -m "📊 MTF update: $(date +%Y-%m-%d) — ${{ steps.check_new.outputs.new_days }} new day(s)"
