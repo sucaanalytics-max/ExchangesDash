@@ -1,11 +1,15 @@
-"""The NSE and BSE pipelines' run count (.new_days_count / .new_bse_days_count):
-the days whose published row is new, corrected or gone, not every day the
-exchange's fetch returned. The workflow runs the share analyses and the Excel
-sync only when it is non-zero, and commits whatever changed regardless.
+"""The NSE, BSE and MCX pipelines' run count (.new_days_count /
+.new_bse_days_count / .new_mcx_days_count): the days whose published row is new,
+corrected or gone, not every day the exchange's fetch returned. The workflow runs
+the share analyses and the Excel sync only when it is non-zero; NSE and BSE
+commit whatever changed regardless, MCX only when it is non-zero.
 
 In shadow mode the count used to be the size of the fetch window (about a month
 for NSE, 45 days for BSE), so a repeat run reported 22 / 44 "new days" with
-nothing to commit (Exchange Daily Update, 4 Nov 2026)."""
+nothing to commit (Exchange Daily Update, 4 Nov 2026). MCX's counted only new
+dates, so a day's contracts, which reach mcx_commodity_daily a run after its
+revenue, were not committed until the next trading day's revenue (6 Nov 2026's
+waited over the weekend, and the brokers engine's as-of date with them)."""
 
 import contextlib
 import io
@@ -18,9 +22,11 @@ from pathlib import Path
 import helpers  # noqa: F401  (puts scripts/ on sys.path)
 
 import bse_pipeline as bse
+import mcx_pipeline as mcx
 import nse_pipeline as nse
 import trading_calendar
 from test_bse_corrections import weekdays_back
+from test_mcx_contracts import rev_row
 from test_nse_cash_corrections import REGISTER, cm_rec, fo_rec, stored
 
 
@@ -138,6 +144,38 @@ class BseRunCount(unittest.TestCase):
         # old_gap's cash completed and the latest day added; the other 28 re-fetched days unchanged
         self.assertEqual(run_bse(tmp, fo, cash), 2)
         self.assertEqual(run_bse(tmp, fo, cash), 0)
+
+
+def run_mcx(tmp, revenue_days, contracts):
+    """mcx_pipeline.main() with Supabase faked; returns its run count."""
+    def fake_get(path, **kw):
+        if path.startswith("mcx_daily_revenue"):
+            return [rev_row(d) for d in revenue_days]
+        return [{"trading_date": d, "contracts": c} for d, c in contracts.items()]
+    saved = mcx._sb_get, mcx.DATA_DIR, mcx.DASHBOARD_DIR, mcx.MCX_SUPABASE_KEY
+    mcx._sb_get, mcx.DATA_DIR, mcx.DASHBOARD_DIR, mcx.MCX_SUPABASE_KEY = fake_get, tmp / "data", tmp / "dash", "k"
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            return mcx.main()
+    finally:
+        mcx._sb_get, mcx.DATA_DIR, mcx.DASHBOARD_DIR, mcx.MCX_SUPABASE_KEY = saved
+
+
+class McxRunCount(unittest.TestCase):
+    def test_a_late_contracts_count_is_a_change(self):
+        tmp = Path(tempfile.mkdtemp())
+        days = ["2026-11-04", "2026-11-05", "2026-11-06"]
+        # Friday evening: 6 Nov's revenue is new, its contracts not yet in the bhavcopy table
+        self.assertEqual(run_mcx(tmp, days, {"2026-11-04": 20_923_946, "2026-11-05": 16_747_657}), 3)
+        # Monday morning: no new revenue day, but 6 Nov's contracts have arrived
+        friday = {"2026-11-04": 20_923_946, "2026-11-05": 16_747_657, "2026-11-06": 16_323_010}
+        self.assertEqual(run_mcx(tmp, days, friday), 1)
+        doc = json.loads((tmp / "dash" / "mcx_dashboard_data.json").read_text())
+        self.assertEqual(doc["daily_all"][-1]["total_contracts"], 16_323_010)
+        # The same inputs again: nothing to commit
+        self.assertEqual(run_mcx(tmp, days, friday), 0)
+        # A new revenue day counts as before
+        self.assertEqual(run_mcx(tmp, days + ["2026-11-09"], friday), 1)
 
 
 if __name__ == "__main__":

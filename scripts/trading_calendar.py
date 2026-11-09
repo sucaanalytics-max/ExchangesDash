@@ -99,10 +99,10 @@ def merge_special(daily, special):
 def changed_days(before, after):
     """Sorted dates whose published row (in `daily_all` or `special_sessions`)
     was added, changed or removed between two dashboard documents: the last
-    committed one and the one a run is about to write. The NSE and BSE
+    committed one and the one a run is about to write. The NSE, BSE and MCX
     pipelines report this as their run's count of new days, which decides
-    whether the share analyses and the Excel sync run. Rows are compared as
-    JSON, exactly as they are written."""
+    whether the share analyses and the Excel sync run (and, for MCX, whether
+    the run commits). Rows are compared as JSON, exactly as they are written."""
     def rows(doc):
         doc = doc or {}
         listed = list(doc.get("daily_all") or []) + list(doc.get("special_sessions") or [])

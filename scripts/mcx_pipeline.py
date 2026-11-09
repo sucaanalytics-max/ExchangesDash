@@ -473,15 +473,13 @@ def main():
         print("ERROR: MCX_SUPABASE_KEY is not set (GitHub secret).")
         sys.exit(1)
 
-    # Read existing latest date before overwriting
-    existing_latest = None
+    # The file as last committed, read before it is overwritten: the run's count
+    # compares against it
     existing_json = DASHBOARD_DIR / "mcx_dashboard_data.json"
-    if existing_json.exists():
-        try:
-            with open(existing_json) as f:
-                existing_latest = json.load(f).get("summary", {}).get("last_date")
-        except Exception:
-            pass
+    try:
+        previous = json.loads(existing_json.read_text())
+    except (OSError, ValueError):
+        previous = {}
 
     print("Fetching MCX daily revenue from Supabase…")
     try:
@@ -525,15 +523,6 @@ def main():
     print(f"  Total daily records: {len(daily)}")
     print(f"  Current quarter: {summary['current_quarter']}")
 
-    # Count new days added vs previous run
-    new_count = 0
-    if existing_latest and new_latest > existing_latest:
-        # Approximate count by date comparison
-        new_count = sum(1 for d in daily if d["date"] > existing_latest)
-    elif not existing_latest:
-        new_count = len(daily)
-    print(f"  New days this run: {new_count}")
-
     # dashboard_data.json
     dashboard_data = {
         "daily":     daily,
@@ -544,6 +533,17 @@ def main():
         "modelled_history": modelled_history(daily),
         "special_sessions": special,
     }
+
+    # The run's count, which decides whether the workflow commits: days whose
+    # published row is new, changed or gone (as for NSE and BSE). A day's
+    # contracts reach mcx_commodity_daily a run after its revenue, so counting
+    # only new dates left a Friday's count unpublished until Monday's revenue
+    # (6 Nov 2026), and the brokers engine's as-of date stops at the last day
+    # with MCX contracts.
+    changed = trading_calendar.changed_days(previous, dashboard_data)
+    new_count = len(changed)
+    print(f"  New or changed days this run: {new_count}"
+          + (f" ({', '.join(changed[-5:])}{', …' if new_count > 5 else ''})" if changed else ""))
 
     for out_dir in [DATA_DIR, DASHBOARD_DIR]:
         write_json(out_dir / "mcx_dashboard_data.json", dashboard_data)
