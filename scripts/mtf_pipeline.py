@@ -153,7 +153,8 @@ NOTES = [
     "carry no date, so which date it belongs to cannot be told); they are asked for again.",
     "NSE's book steps up 7 % on 2025-10-01 (Rs 99,446 to 1,06,409 Cr; fresh exposure Rs 10,389 Cr against about "
     "Rs 6,000 Cr on ordinary days): from that day brokers report MTF to the exchanges on revised rules, which moved "
-    "several of them to gross reporting.",
+    "several of them to gross reporting (ICRA, 'Securities Broking', 24 Jun 2026, p.6: 'revised MTF reporting led to the "
+    "shifting of several brokers to gross reporting, resulting in some optical growth').",
     "A BSE day re-read from a file listing fewer securities than the stored one keeps the stored copy: BSE "
     "serves smaller files for older days (its 23 and 24 Sep 2026 files listed 1,860 and 1,868 securities when "
     "published, 1,857 and 1,865 when asked again on 4 Nov). A parser upgrade still replaces the stored day.",

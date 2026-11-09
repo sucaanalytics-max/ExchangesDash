@@ -3481,8 +3481,8 @@ a.rx-link { display: inline; }
 .mtf-bk-table td.mtf-bk-name { min-width: 150px; }
 .mtf-bk-table td.mtf-bk-name .mtf-bk-sub { white-space: normal; max-width: 220px; }
 .mtf-bk-table td.mtf-bk-old { color: var(--rx-ink-2); }
-.mtf-bk-table td.mtf-bk-src { min-width: 210px; max-width: 320px; }
-.mtf-bk-table td.mtf-bk-src .mtf-bk-sub { white-space: normal; }
+.mtf-bk-table td.mtf-bk-src { min-width: 200px; max-width: 280px; }
+.mtf-bk-table td.mtf-bk-src .mtf-bk-sub { white-space: normal; cursor: help; }
 .mtf-bk-table .rx-chip, .mtf-bk-qtable .rx-chip { white-space: nowrap; }
 .mtf-bk-qtable td.mtf-bk-none { color: var(--rx-muted); }
 .mtf-bk-qtable td .rx-chip { margin-left: 4px; font-size: 10px; }

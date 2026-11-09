@@ -43,7 +43,9 @@ const MTF_NOTES = [
   { ex: 'nse', date: '2025-10-01', kind: 'break',
     text: 'NSE’s book rises 7 % on 1 Oct 2025 (₹99,446 Cr on 30 Sep, ₹1,06,409 Cr on 1 Oct), with ₹10,389 Cr of fresh exposure '
       + 'against about ₹6,000 Cr on an ordinary day. From that day brokers report MTF to the exchanges on revised rules, which '
-      + 'moved several of them to reporting their gross book, so part of the step is a change of basis, not new lending.' },
+      + 'moved several of them to reporting their gross book, so part of the step is a change of basis, not new lending '
+      + '(ICRA, “Securities Broking”, 24 Jun 2026: “revised MTF reporting led to the shifting of several brokers to gross reporting, '
+      + 'resulting in some optical growth”).' },
   { ex: 'bse', date: '2025-10-20', kind: 'excluded',
     text: 'BSE’s 20 Oct 2025 file doubles the book (₹6,379 Cr against ₹3,199 and ₹3,194 Cr either side); the day is left out.' },
 ];
@@ -328,7 +330,7 @@ function mtfBrokerPrimary(b) {
 }
 
 // League-table rows, largest latest book first (brokers with none last, in register order):
-// the latest primary figure, the three before it (newest first), and the latest figure on
+// the latest primary figure, the two before it (newest first), and the latest figure on
 // another measure or basis when it is at least as recent (e.g. a monthly average)
 function mtfBrokerRows(doc) {
   if (!doc || !Array.isArray(doc.brokers)) return [];
@@ -338,7 +340,7 @@ function mtfBrokerRows(doc) {
     const others = (b.series || []).filter(p => !pts.includes(p));
     const alt = others.length ? others[others.length - 1] : null;
     return { id: b.id, short: b.short, name: b.name, type: b.type, parent: b.parent, primary: b.primary, sources: b.sources,
-      order, latest, history: pts.slice(-4, -1).reverse(), count: pts.length,
+      order, latest, history: pts.slice(-3, -1).reverse(), count: pts.length,
       alt: alt && (!latest || alt.as_of >= latest.as_of) ? alt : null };
   }).sort((a, b) => ((b.latest && b.latest.book_cr) || -1) - ((a.latest && a.latest.book_cr) || -1) || a.order - b.order);
 }
@@ -979,6 +981,7 @@ function mtfMeasureChip(measure) {
 // "▲ +0.42 pp" (green) / "▼ −0.30 pp" (red); † when the two dates straddle a series change
 function mtfPpHTML(pp, from, to, digits = 2) {
   if (pp == null || !isFinite(pp)) return '—';
+  pp = +pp.toFixed(digits);                 // a move that rounds to 0 is no move
   const cls = pp > 0 ? 'rx-up' : pp < 0 ? 'rx-dn' : '';
   const txt = pp > 0 ? `▲ +${pp.toFixed(digits)}` : pp < 0 ? `▼ −${Math.abs(pp).toFixed(digits)}` : (0).toFixed(digits);
   return `<span class="${cls}">${txt} pp</span>${mtfBreakMark('combined', from, to)}`;
@@ -1000,8 +1003,8 @@ function mtfBrokerFigCell(p) {
 function mtfBrokerSourceCell(p, alt) {
   if (!p) return '<td class="rx-src">—</td>';
   const link = q => `<a href="${escHtml(q.url)}" target="_blank" rel="noopener noreferrer" title="${escHtml(q.quote || '')}">${escHtml(q.source)}${q.page ? ` · p.${q.page}` : ''}</a>`;
-  const altLine = alt ? `<div class="mtf-bk-sub">Also ${escHtml((MTF_MEASURE_CHIPS[alt.measure] || [alt.measure])[0])}${
-    alt.basis === 'month_avg' ? ' (month average)' : ''}: ${mtfBookText(alt)} on ${rxDate(alt.as_of)}, ${mtfShareText(alt)} · ${link(alt)}</div>` : '';
+  const altLine = alt ? `<div class="mtf-bk-sub" title="${escHtml(`${alt.source}${alt.page ? `, p.${alt.page}` : ''}: ${alt.quote || ''}`)}">Also ${
+    escHtml((MTF_MEASURE_CHIPS[alt.measure] || [alt.measure])[0])}${alt.basis === 'month_avg' ? ', month avg' : ''}: ${mtfBookText(alt)} · ${rxDate(alt.as_of)}</div>` : '';
   return `<td class="rx-src mtf-bk-src">${link(p)}${altLine}</td>`;
 }
 
@@ -1020,14 +1023,14 @@ function mtfBrokerLeague(doc, rows, todayIso) {
       <td class="rx-strong">${mtfShareText(p)}</td>
       ${mtfBrokerChgCell(p, p && p.chg)}
       ${mtfBrokerChgCell(p, p && p.yoy)}
-      ${mtfBrokerFigCell(r.history[0])}${mtfBrokerFigCell(r.history[1])}${mtfBrokerFigCell(r.history[2])}
+      ${mtfBrokerFigCell(r.history[0])}${mtfBrokerFigCell(r.history[1])}
       ${mtfBrokerSourceCell(p, r.alt)}
     </tr>`;
   }).join('');
   return `<div class="rx-scroll"><table class="rx-table mtf-bk-table">
     <thead><tr><th scope="col">#</th><th scope="col" class="rx-l">Broker</th><th scope="col" class="rx-l">Measure</th><th scope="col">Latest</th>
       <th scope="col">Market share</th><th scope="col">vs previous</th><th scope="col">vs a year earlier</th>
-      <th scope="col">Previous</th><th scope="col">Earlier</th><th scope="col">Older</th><th scope="col" class="rx-l">Source</th></tr></thead>
+      <th scope="col">Previous</th><th scope="col">Earlier</th><th scope="col" class="rx-l">Source</th></tr></thead>
     <tbody>${body}</tbody></table></div>`;
 }
 
@@ -1096,10 +1099,11 @@ function mtfBuildBrokers(el) {
     kpis.push(rxKpi('NSE + BSE book', rxCr(cur.industry_cr, 0), `${escHtml(cur.label)} · ${rxDate(cur.end)}`, { accent: true }));
     kpis.push(rxKpi(`Disclosed for ${escHtml(cur.label)}`, `${cur.tracked_n} of ${rows.length}`,
       `brokers; together ${cur.tracked_pct.toFixed(1)} % of the book (mixed measures)`));
-    kpis.push(rxKpi('Biggest gain', gain && gain.pp > 0 ? `${short(gain.id)} <span class="rx-up">▲ +${gain.pp.toFixed(2)} pp</span>` : '—',
-      gain && gain.pp > 0 ? `${gain.from.toFixed(2)} % → ${gain.to.toFixed(2)} % (${escHtml(prev.label)} → ${escHtml(cur.label)})` : `no broker gained share in ${escHtml(cur.label)}`));
-    kpis.push(rxKpi('Biggest loss', loss && loss.pp < 0 ? `${short(loss.id)} <span class="rx-dn">▼ −${Math.abs(loss.pp).toFixed(2)} pp</span>` : '—',
-      loss && loss.pp < 0 ? `${loss.from.toFixed(2)} % → ${loss.to.toFixed(2)} % (${escHtml(prev.label)} → ${escHtml(cur.label)})` : `no broker lost share in ${escHtml(cur.label)}`));
+    const span = `${escHtml(prev.label)} → ${escHtml(cur.label)}`;
+    kpis.push(rxKpi(`Biggest gain, ${span}`, gain && gain.pp > 0 ? `<span class="rx-up">▲ +${gain.pp.toFixed(2)} pp</span>` : '—',
+      gain && gain.pp > 0 ? `<b>${short(gain.id)}</b> · ${gain.from.toFixed(2)} % → ${gain.to.toFixed(2)} %` : 'no broker gained share'));
+    kpis.push(rxKpi(`Biggest loss, ${span}`, loss && loss.pp < 0 ? `<span class="rx-dn">▼ −${Math.abs(loss.pp).toFixed(2)} pp</span>` : '—',
+      loss && loss.pp < 0 ? `<b>${short(loss.id)}</b> · ${loss.from.toFixed(2)} % → ${loss.to.toFixed(2)} %` : 'no broker lost share'));
   }
   el.innerHTML = `<div class="rx">
     ${kpis.length ? rxKpis(kpis, 'Brokers’ MTF share') : ''}
