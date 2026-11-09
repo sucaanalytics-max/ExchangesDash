@@ -330,18 +330,20 @@ function mtfBrokerPrimary(b) {
 }
 
 // League-table rows, largest latest book first (brokers with none last, in register order):
-// the latest primary figure, the two before it (newest first), and the latest figure on
-// another measure or basis when it is at least as recent (e.g. a monthly average)
+// the latest primary figure, the two before it (newest first), and, newest first, the latest
+// figure on each other measure or basis that is at least as recent (e.g. a monthly average,
+// or a balance-sheet book beside a published share)
 function mtfBrokerRows(doc) {
   if (!doc || !Array.isArray(doc.brokers)) return [];
   return doc.brokers.map((b, order) => {
     const pts = mtfBrokerPrimary(b);
     const latest = pts.length ? pts[pts.length - 1] : null;
-    const others = (b.series || []).filter(p => !pts.includes(p));
-    const alt = others.length ? others[others.length - 1] : null;
+    const lastOf = new Map();                       // measure|basis → its latest figure (series is oldest first)
+    (b.series || []).filter(p => !pts.includes(p)).forEach(p => lastOf.set(`${p.measure}|${p.basis}`, p));
+    const alts = [...lastOf.values()].filter(p => !latest || p.as_of >= latest.as_of)
+      .sort((x, y) => (x.as_of < y.as_of ? 1 : x.as_of > y.as_of ? -1 : 0));
     return { id: b.id, short: b.short, name: b.name, type: b.type, parent: b.parent, primary: b.primary, sources: b.sources,
-      order, latest, history: pts.slice(-3, -1).reverse(), count: pts.length,
-      alt: alt && (!latest || alt.as_of >= latest.as_of) ? alt : null };
+      order, latest, history: pts.slice(-3, -1).reverse(), count: pts.length, alts };
   }).sort((a, b) => ((b.latest && b.latest.book_cr) || -1) - ((a.latest && a.latest.book_cr) || -1) || a.order - b.order);
 }
 
@@ -1000,12 +1002,12 @@ function mtfBrokerFigCell(p) {
   return `<td class="mtf-bk-old">${mtfBookText(p)}<div class="mtf-bk-sub">${rxDate(p.as_of)} · ${mtfShareText(p)}</div></td>`;
 }
 
-function mtfBrokerSourceCell(p, alt) {
+function mtfBrokerSourceCell(p, alts) {
   if (!p) return '<td class="rx-src">—</td>';
   const link = q => `<a href="${escHtml(q.url)}" target="_blank" rel="noopener noreferrer" title="${escHtml(q.quote || '')}">${escHtml(q.source)}${q.page ? ` · p.${q.page}` : ''}</a>`;
-  const altLine = alt ? `<div class="mtf-bk-sub" title="${escHtml(`${alt.source}${alt.page ? `, p.${alt.page}` : ''}: ${alt.quote || ''}`)}">Also ${
-    escHtml((MTF_MEASURE_CHIPS[alt.measure] || [alt.measure])[0])}${alt.basis === 'month_avg' ? ', month avg' : ''}: ${mtfBookText(alt)} · ${rxDate(alt.as_of)}</div>` : '';
-  return `<td class="rx-src mtf-bk-src">${link(p)}${altLine}</td>`;
+  const altLines = (alts || []).map(alt => `<div class="mtf-bk-sub" title="${escHtml(`${alt.source}${alt.page ? `, p.${alt.page}` : ''}: ${alt.quote || ''}`)}">Also ${
+    escHtml((MTF_MEASURE_CHIPS[alt.measure] || [alt.measure])[0])}${alt.basis === 'month_avg' ? ', month avg' : ''}: ${mtfBookText(alt)} (${mtfShareText(alt)}) · ${rxDate(alt.as_of)}</div>`).join('');
+  return `<td class="rx-src mtf-bk-src">${link(p)}${altLines}</td>`;
 }
 
 function mtfBrokerLeague(doc, rows, todayIso) {
@@ -1024,7 +1026,7 @@ function mtfBrokerLeague(doc, rows, todayIso) {
       ${mtfBrokerChgCell(p, p && p.chg)}
       ${mtfBrokerChgCell(p, p && p.yoy)}
       ${mtfBrokerFigCell(r.history[0])}${mtfBrokerFigCell(r.history[1])}
-      ${mtfBrokerSourceCell(p, r.alt)}
+      ${mtfBrokerSourceCell(p, r.alts)}
     </tr>`;
   }).join('');
   return `<div class="rx-scroll"><table class="rx-table mtf-bk-table">

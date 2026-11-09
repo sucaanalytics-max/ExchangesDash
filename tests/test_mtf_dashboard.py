@@ -306,6 +306,13 @@ BROKERS = {
          ]},
         {"id": "c", "short": "C", "name": "C Ltd", "type": "full_service", "parent": None, "primary": {"measure": "unstated", "basis": "period_end"},
          "sources": {}, "series": []},
+        {"id": "d", "short": "D", "name": "D Ltd", "type": "discount", "parent": None,
+         "primary": {"measure": "client_funding", "basis": "period_end"}, "sources": {}, "series": [
+             {"as_of": "2026-06-30", "measure": "net", "basis": "period_end", "share_pct": 1.0, "book_cr": 14.0},
+             {"as_of": "2026-09-30", "measure": "client_funding", "basis": "period_end", "share_pct": 1.2, "book_cr": 19.0},
+             {"as_of": "2026-09-30", "measure": "net", "basis": "period_end", "share_pct": 1.1, "book_cr": 17.5},
+             {"as_of": "2026-10-31", "measure": "client_funding", "basis": "month_avg", "share_pct": 1.3, "book_cr": 20.0},
+         ]},
     ] + [{"id": f"x{i}", "short": f"X{i}", "name": "", "type": "bank", "parent": None,
           "primary": {"measure": "gross", "basis": "period_end"}, "sources": {}, "series": []} for i in range(7)],
     "quarters": [
@@ -321,17 +328,21 @@ BROKERS = {
 class Brokers(unittest.TestCase):
     def test_rows_follow_the_primary_measure(self):
         rows = js("mtfBrokerRows(DATA)", BROKERS)
-        self.assertEqual([r["id"] for r in rows][:3], ["a", "b", "c"])      # largest latest book first; none last
-        a, b, c = rows[:3]
+        self.assertEqual([r["id"] for r in rows][:4], ["a", "b", "d", "c"])  # largest latest book first; none last
+        a, b, c = rows[0], rows[1], rows[3]
         self.assertEqual((a["latest"]["as_of"], a["latest"]["measure"]), ("2026-09-30", "share"))
         self.assertEqual([p["as_of"] for p in a["history"]], ["2026-06-30"])  # the net figure is not its series
-        self.assertIsNone(a["alt"])                                           # older than the latest share
-        self.assertEqual(b["alt"]["basis"], "month_avg")                      # newer monthly average shown beside it
+        self.assertEqual(a["alts"], [])                                       # its net figure is older than the latest share
+        self.assertEqual([p["basis"] for p in b["alts"]], ["month_avg"])      # newer monthly average shown beside it
         self.assertIsNone(c["latest"])
+        d = next(r for r in rows if r["id"] == "d")
+        # every other measure's latest figure that is at least as recent, newest first; the older net one is not
+        self.assertEqual([(p["as_of"], p["measure"], p["basis"]) for p in d["alts"]],
+                         [("2026-10-31", "client_funding", "month_avg"), ("2026-09-30", "net", "period_end")])
         self.assertEqual(js("mtfBrokerRows(null)"), [])
 
     def test_fixed_styles(self):
-        out = js("['a', 'b', 'x4', 'x5'].map(id => mtfBrokerStyle(DATA, id))", BROKERS)
+        out = js("['a', 'b', 'x3', 'x4'].map(id => mtfBrokerStyle(DATA, id))", BROKERS)
         self.assertEqual([o["slot"] for o in out], [0, 1, 7, 8])
         self.assertEqual(out[0]["color"], js("MTF_BROKER_PALETTE[0]"))
         self.assertEqual(out[2]["dash"], [])
