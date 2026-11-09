@@ -3323,6 +3323,10 @@ a.rx-link { display: inline; }
   --rx-xl-box: #8E9199;
 }
 /* separate borders so the pinned label column keeps its box edge when scrolled */
+/* The two panels sit side by side only when each table fits whole (the
+   Summary is wider: gutter + Weight column); otherwise they stack */
+.rx-col-xl-val { flex: 1 1 550px; }
+.rx-col-xl-sum { flex: 1 1 590px; }
 .rx-table.rx-xl { width: auto; border-collapse: separate; border-spacing: 0; }
 .rx-table.rx-xl th, .rx-table.rx-xl td { padding: 4px 10px; }
 .rx-table.rx-xl td { min-width: 82px; }

@@ -506,13 +506,13 @@ async function buildValuation(ex) {
 
   const triHTML = startQ ? `
     <div class="rx-row">
-      ${rxPanel({ cls: 'rx-col-half', title: `Valuation · ${fy1S}E`, meta: `ADR ₹ Cr / session · income ₹ Cr · EPS and targets ₹ per share · ADR from ${qLabel}`,
+      ${rxPanel({ cls: 'rx-col-xl-val', title: `Valuation · ${fy1S}E`, meta: `ADR ₹ Cr / session · income ₹ Cr · EPS and targets ₹ per share · ADR from ${qLabel}`,
         right: '<button type="button" class="rx-link" data-rx="triReset">Reset to defaults</button>',
         body: `<div class="rx-pb rx-scroll"><table class="rx-table rx-xl" aria-label="Valuation ${fy1S}E, Bear / Base / Bull">
           <thead><tr><td class="rx-xl-gut"></td><th scope="col" class="rx-xl-lab rx-xl-cmp rx-xl-t">CMP ${cmp != null ? rxRupee(cmp) : '—'}</th>${xlHeads}</tr></thead>
           <tbody>${xlBody}</tbody></table></div>`,
         foot: `Light-blue boxes are inputs: QoQ ADR growth beside ADR ${fy1S.replace('FY', 'FY ')}, ${t.oiMode === 'pct' ? 'other income as a % of total income' : `other-income growth from ${fy0S}`} beside Other Income, and each discount in the Base column; the PE row is editable. Upside: the ${fy1S}-end target vs CMP (${cmpWhen}). Sessions${t.oiMode === 'pct' ? '' : `, ${fy0S} other income`} and PAT margin are set under ADR model inputs below.` })}
-      ${rxPanel({ cls: 'rx-col-half', title: 'Triangulated target', meta: 'today, ₹ per share · three methods, weighted',
+      ${rxPanel({ cls: 'rx-col-xl-sum', title: 'Triangulated target', meta: 'today, ₹ per share · three methods, weighted',
         body: `<div class="rx-pb rx-scroll"><table class="rx-table rx-xl" aria-label="Triangulated target summary">
           <thead><tr><td class="rx-xl-gut"></td><th scope="col" class="rx-xl-lab rx-xl-h rx-xl-sum rx-xl-t">Summary</th>${xlHeads}<th scope="col" class="rx-xl-w">Weight</th></tr></thead>
           <tbody>${sumBody}</tbody></table></div>`,
@@ -520,7 +520,7 @@ async function buildValuation(ex) {
         how: rxHow('Basis of each row', `<ul>
           <li><strong>Regression:</strong> <span data-tsrc="reg"></span></li>
           <li><strong>Ratio Analysis:</strong> <span data-tsrc="ratio"></span></li>
-          <li><strong>ADR:</strong> <span data-tsrc="adr"></span> (Target Price Current, left).</li>
+          <li><strong>ADR:</strong> <span data-tsrc="adr"></span> (the valuation block's Target Price Current).</li>
           <li><strong>Average:</strong> <span data-tsrc="avg"></span>.</li></ul>`) })}
     </div>` : '';
   // How the figures are built: the ADR path, the ADR model's other inputs, the fits
