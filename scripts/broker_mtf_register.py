@@ -991,6 +991,11 @@ DISCLOSURES = [
      "url": "https://resources.groww.in/web-assets/media-library/2026/10/Q2%20FY27%20Shareholders%27%20Letter.pdf",
      "quote": "Margin Trading Facility ₹12,322 Cr ₹9,574 Cr ₹4,351 Cr 11.0% 8.6% ₹1,668 Cr 2.7% 1.6% Q2 FY26 Q2 FY27 Equity Derivatives Premium ADTO Retail Market Share Q2 FY26 MTF Book Q2 FY27 Market Share",
      "note": "\"Margin Trading Facility\" tile: MTF Book Q2 FY27 ₹4,351 Cr vs Q2 FY26 ₹1,668 Cr (derivatives tile values interleaved). MTF Book defined in the letters as \"Loan - Margin Trading Facility\", the outstanding (funded) MTF book on the last day of the period; the Q2 FY26 letter calls it the \"net funded book\""},
+    {"broker": "groww", "as_of": "2026-11-09", "book_cr": 3972, "measure": "net", "basis": "period_end", "rounded": True,
+     "source": "Groww investor relations page, 'Our Metrics' (read 9 Nov 2026)", "page": None,
+     "url": "https://groww.in/investor-relations",
+     "quote": "Our Metrics as of 09 Nov 2026 … MTF Net Book ₹39.72 Bn … MTF Net Book, MF Assets and Stock Assets are platform-level figures based on the latest available data.",
+     "note": "A near-live, platform-level figure: the page updates it daily, so this is the value it showed on 9 Nov 2026 (the book is the latest available, likely the previous trading day's). The Shareholders' Letter figures are the consolidated balance at the period end."},
     # ── sbisec
     {"broker": "sbisec", "as_of": "2023-03-31", "book_cr": 600, "measure": "unstated", "basis": "period_end",
      "source": "ICRA rationale, SBICAP Securities, Mar 2025", "page": 2,
