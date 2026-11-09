@@ -253,6 +253,15 @@ function parseFYQuarter(label) {
   return m ? { q: +m[1], fy: +m[2] } : null;
 }
 
+// The quarter's ADR on the share-price fits' own basis: their revenue
+// (SHARE_DATA.revenue_daily, at today's statutory rates whatever the Fees toggle)
+// averaged over the quarter's trading dates it has. { adr, n }, or null when it has none.
+function fitBasisAdr(revenueDaily, dates) {
+  const byDate = new Map((revenueDaily || []).map(r => [r.date, r.revenue_cr]));
+  const vals = dates.map(d => byDate.get(d)).filter(x => x != null && isFinite(x));
+  return vals.length ? { adr: vals.reduce((s, x) => s + x, 0) / vals.length, n: vals.length } : null;
+}
+
 // Quarter-by-quarter ADR from the start quarter to the next FY's Q4, and that FY's average
 function triangulationAdrPath(start, startAdr, qoqPct) {
   const path = [];
@@ -266,10 +275,12 @@ function triangulationAdrPath(start, startAdr, qoqPct) {
   return { path, fy: start.fy + 1, adr: next.reduce((s, p) => s + p.adr, 0) / next.length };
 }
 
-// t: inputs; adrFY: next-FY ADR; regAdr: ADR fed to the fit; reg: { slope, intercept } or
-// null (fit withheld); ratio: { mean, sd } or null; shares in Cr. Weights are normalised
-// over the methods that have a value, so a missing method drops out of the average.
-function triangulationModel(t, { adrFY, regAdr, reg, ratio, shares }) {
+// t: inputs; adrFY: next-FY ADR (ADR model); regAdr: ADR fed to the fit; ratioAdrFY: next-FY
+// ADR for the ratio (default adrFY); the regression and ratio take theirs on the fits' revenue
+// basis; reg: { slope, intercept } or null (fit withheld); ratio: { mean, sd } or null; shares
+// in Cr. Weights are normalised over the methods that have a value, so a missing method drops
+// out of the average.
+function triangulationModel(t, { adrFY, regAdr, ratioAdrFY, reg, ratio, shares }) {
   const toFYEnd = x => x / (1 + t.d1 / 100);
   const toToday = x => toFYEnd(x) / (1 + t.d2 / 100);
   const txn = adrFY * t.days;
@@ -284,8 +295,9 @@ function triangulationModel(t, { adrFY, regAdr, reg, ratio, shares }) {
   let ratioM = null;
   if (ratio) {
     const k = [ratio.mean - ratio.sd, ratio.mean, ratio.mean + ratio.sd];
-    const f = k.map(x => x * adrFY);
-    ratioM = { k, fwd: f, mid: f.map(toFYEnd), now: f.map(toToday) };
+    const rAdr = ratioAdrFY ?? adrFY;
+    const f = k.map(x => x * rAdr);
+    ratioM = { k, adrFY: rAdr, fwd: f, mid: f.map(toFYEnd), now: f.map(toToday) };
   }
   const methods = [['reg', t.w0, regVals], ['ratio', t.w1, ratioM && ratioM.now], ['adr', t.w2, eps != null ? adr.now : null]];
   const used = methods.filter(([, w, vals]) => vals && w > 0);
@@ -422,6 +434,10 @@ async function buildValuation(ex) {
   tDefaults.adrQ = lastRow.fy_quarter;
   const qRows = series.filter(r => r.fy_quarter === lastRow.fy_quarter);
   const qAdr = qRows.length ? qRows.reduce((s, r) => s + (r.total_rev || 0), 0) / qRows.length : 0;
+  // Regression and ratio are fitted on the share feed's revenue (today's rates), so they
+  // take the quarter's ADR on that basis; the ADR model's (qAdr) follows the Fees toggle
+  const qFit = fitBasisAdr(SHARE_DATA?.revenue_daily, qRows.map(r => r.date));
+  const qAdrFit = qFit ? qFit.adr : qAdr;
   const qFlags = rowsFlags(qRows, 'total');
   const yy = fy => `FY${String(fy).slice(-2)}`;
   const qLabel = startQ ? `Q${startQ.q} ${yy(startQ.fy)}` : '';
@@ -431,7 +447,7 @@ async function buildValuation(ex) {
   const regWhy = !shareModel
     ? (SHARE_DATA?.status === 'collecting' ? `${SHARE_DATA.n_days} of ${SHARE_DATA.min_days_required} sessions collected` : 'no share-price fit')
     : regWithheld ? `fit withheld: ${(shareModel.meth?.gate_reasons || ['not significant']).join('; ')}` : '';
-  const tEff = key => key === 'adr0' ? (t.adr0 ?? qAdr) : key === 'regAdr' ? (t.regAdr ?? t.adr0 ?? qAdr) : t[key];
+  const tEff = key => key === 'adr0' ? (t.adr0 ?? qAdr) : key === 'regAdr' ? (t.regAdr ?? t.adr0 ?? qAdrFit) : t[key];
   const tShow = key => key === 'adr0' || key === 'regAdr' ? Math.round(tEff(key) * 100) / 100 : t[key];
 
   const cmpWhen = cmp == null ? 'no price yet' : lat.is_live ? 'live quote' : `close ${fmtTradeDate(lat.date)}`;
@@ -567,6 +583,8 @@ async function buildValuation(ex) {
             <tr><td>Bear / Bull ADR band, ± %</td><td data-tout="bandV"></td>${tsrc('band')}</tr>
             <tr><td>Price ÷ MA, mean ×</td><td data-tout="ratioMean"></td><td class="rx-src" rowspan="2" data-tsrc="ratioFit"></td></tr>
             <tr><td>Price ÷ MA, σ ×</td><td data-tout="ratioSd"></td></tr>
+            <tr><td>${qLabel} ADR at today’s rates, ₹ Cr</td><td data-tout="qAdrFit"></td><td class="rx-src" data-tsrc="qAdrFit"></td></tr>
+            <tr><td>${fy1S} ADR into the ratio, ₹ Cr</td><td data-tout="ratioAdr"></td><td class="rx-src" data-tsrc="ratioAdr"></td></tr>
           </tbody></table></div>` })}
     </div>` : '';
 
@@ -642,7 +660,9 @@ async function buildValuation(ex) {
     const a0 = tEff('adr0');
     const path = triangulationAdrPath(startQ, a0, t.qoq);
     const regAdr = tEff('regAdr');
-    const tri = triangulationModel(t, { adrFY: path.adr, regAdr, reg: regFit, ratio, shares: v.shares });
+    // A typed-over ADR drives every method; otherwise the ratio grows the fit-basis ADR the same way
+    const ratioPath = t.adr0 != null ? path : triangulationAdrPath(startQ, qAdrFit, t.qoq);
+    const tri = triangulationModel(t, { adrFY: path.adr, regAdr, ratioAdrFY: ratioPath.adr, reg: regFit, ratio, shares: v.shares });
     const set = (k, html) => { const n = el.querySelector(`[data-tout="${k}"]`); if (n) n.innerHTML = html; };
     const src = (k, html) => { const n = el.querySelector(`[data-tsrc="${k}"]`); if (n) n.innerHTML = html; };
     const upC = x => x == null || !cmp ? '—' : `<span class="${x / cmp - 1 >= 0 ? 'rx-up' : 'rx-dn'}">${rxSignedPct(x / cmp - 1, 0)}</span>`;
@@ -659,7 +679,7 @@ async function buildValuation(ex) {
       ? `₹${fmtNum(regFit.intercept, 0)} + ${fmtNum(regFit.slope, 1)} × ADR ${fmtNum(regAdr, 2)}, ∓ ${fmtNum(t.band, 0)} % for Bear / Bull`
       : `<span class="rx-foot">${escHtml(regWhy)}</span>`);
     src('ratio', tri.ratio
-      ? `${fmtNum(tri.ratio.k[0], 0)} / ${fmtNum(tri.ratio.k[1], 0)} / ${fmtNum(tri.ratio.k[2], 0)} × ${fy1S} ADR ${fmtNum(path.adr, 2)}, ${disc}`
+      ? `${fmtNum(tri.ratio.k[0], 0)} / ${fmtNum(tri.ratio.k[1], 0)} / ${fmtNum(tri.ratio.k[2], 0)} × ${fy1S} ADR ${fmtNum(tri.ratio.adrFY, 2)}, ${disc}`
       : '<span class="rx-foot">no price ÷ MA history</span>');
     src('adr', tri.adr.eps != null ? `EPS ₹${fmtNum(tri.adr.eps, 2)} × ${fmtNum(t.pe0, 0)} / ${fmtNum(t.pe1, 0)} / ${fmtNum(t.pe2, 0)}, ${disc}` : 'needs a share count');
     src('avg', tri.wSum && tri.wSum !== tri.wTotal ? `over ${tri.used.length} method${tri.used.length === 1 ? '' : 's'} with a value` : 'Σ weight × target ÷ Σ weight');
@@ -672,6 +692,9 @@ async function buildValuation(ex) {
     set('pathAvg', fmtNum(path.adr, 2));
     set('regA', regFit ? fmtNum(regFit.intercept, 0) : '—'); set('regB', regFit ? fmtNum(regFit.slope, 2) : '—');
     set('ratioMean', ratio ? fmtNum(ratio.mean, 1) : '—'); set('ratioSd', ratio ? fmtNum(ratio.sd, 1) : '—');
+    set('qAdrFit', fmtNum(qAdrFit, 2)); set('ratioAdr', fmtNum(ratioPath.adr, 2));
+    src('qAdrFit', qFit ? chip('data', `${qFit.n} sessions · the fits’ revenue`) : '<span class="rx-foot">not in the share feed: the Fees toggle’s ADR</span>');
+    src('ratioAdr', t.adr0 != null ? rxChip('Edited', 'edit') + ` from ${qLabel} ADR ${fmtNum(t.adr0, 2)}` : `the ADR path, from ${qLabel} at today’s rates`);
     // Inputs that live in the Excel layout, echoed beside their sources
     set('qoqV', `${fmtNum(t.qoq, 1)} %`); set('bandV', `± ${fmtNum(t.band, 0)} %`);
     set('oiV', `${fmtNum(t.oi, 1)} %`); set('oiGV', `${fmtNum(t.oiG, 1)} %`);
@@ -685,7 +708,7 @@ async function buildValuation(ex) {
     const provC = ex === 'bse' ? chip('', 'Excel model') : srcChip();
     const qoqA = (Math.pow(1 + t.qoq / 100, 4) - 1);
     src('adr0', (ed(['adr0']) ? rxChip('Edited', 'edit') : chip('data', `${qRows.length} sessions`)));
-    src('regAdr', ed(['regAdr']) ? rxChip('Edited', 'edit') : chip('', `= ${qLabel} ADR`));
+    src('regAdr', ed(['regAdr']) ? rxChip('Edited', 'edit') : chip('', qFit ? `= ${qLabel} ADR at today’s rates` : `= ${qLabel} ADR`));
     src('qoq', (ex === 'bse' ? chip('', 'Excel model') : chip('', 'No growth assumed')) + ` ${fmtPct(qoqA)} a year` + eChip(['qoq']));
     src('days', chip(ctx.prevFYDays && t.days === ctx.prevFYDays ? 'data' : '', ctx.prevFYDays ? `${ctx.prevFY.replace(' ', '')} had ${ctx.prevFYDays}` : 'Assumption') + eChip(['days']));
     ['oi', 'margin'].forEach(k => src(k, provC + eChip([k])));
@@ -702,7 +725,11 @@ async function buildValuation(ex) {
     if (!ratio) notes.push('No price ÷ MA history for the ratio method.');
     if (tri.adr.eps == null) notes.push('ADR model unavailable: needs a share count; its weight is shared by the other methods.');
     if (tri.wTotal !== 100) notes.push(`Weights add to ${fmtNum(tri.wTotal, 0)} %; the average divides by the weights used.`);
-    notes.push(`${qLabel} ADR is ${qRows.length} sessions to date and follows the Fees toggle${ex === 'bse' ? ' (the Excel workbook prices at today’s rates, so “At today’s rates” matches it)' : ''}.`);
+    const basisGap = qFit && Math.abs(qAdr - qAdrFit) > 0.005;
+    notes.push(`${qLabel} ADR is ${qRows.length} sessions to date. `
+      + (qFit ? `Regression and Ratio take it at today’s rates (₹${fmtNum(qAdrFit, 2)} Cr), the basis their fits are built on; the ADR model’s follows the Fees toggle${basisGap ? ` (₹${fmtNum(qAdr, 2)} Cr)` : ''}`
+              : 'The share feed has no revenue for it yet, so all three methods take the Fees toggle’s')
+      + `${ex === 'bse' ? '. The Excel workbook prices at today’s rates, so “At today’s rates” matches it' : ''}.`);
     if (ex !== 'bse') notes.push('P/E, margin and other income start from this tab’s FY model; discounts and weights from the Excel BSE sheet.');
     q('triNote').innerHTML = notes.join(' ');
     return tri;

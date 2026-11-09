@@ -119,7 +119,7 @@ class ValuationModel(unittest.TestCase):
         self.assertEqual((js["saved"]["pe1"], js["saved"]["margin"], js["saved"]["disc"]), (47, 52, 18))
 
 
-TRIANGULATION_JS = ["TRIANGULATION_DEFAULTS", "triangulationAdrPath", "triangulationModel"]
+TRIANGULATION_JS = ["TRIANGULATION_DEFAULTS", "fitBasisAdr", "triangulationAdrPath", "triangulationModel"]
 
 
 @unittest.skipUnless(NODE, "node not installed")
@@ -169,6 +169,38 @@ class TriangulatedTarget(unittest.TestCase):
     def test_other_income_as_share_of_total(self):
         js = self.model({"oiMode": "pct", "oi": 30})["m"]
         self.assertAlmostEqual(js["adr"]["oi"] / js["adr"]["total"], 0.30, places=9)
+
+    def test_ratio_takes_its_own_adr_and_the_adr_model_keeps_the_toggles(self):
+        """The ratio is fitted on today's-rates revenue, so it takes the next-FY ADR on that basis;
+        the ADR model keeps the one that follows the Fees toggle (BSE, 9 Nov 2026: 24.42 date-effective,
+        23.91 at today's rates)."""
+        expr = """(() => {
+          const t = { ...TRIANGULATION_DEFAULTS.bse, oi: 2055.3897222222213 };
+          const fit = triangulationAdrPath({ q: 3, fy: 2027 }, 23.905, 2).adr;
+          const eff = triangulationAdrPath({ q: 3, fy: 2027 }, 24.417, 2).adr;
+          const a = { regAdr: 23.905, reg: DATA.fit, ratio: DATA.ratio, shares: 40.78841 };
+          return { fit, eff, both: triangulationModel(t, { ...a, adrFY: eff, ratioAdrFY: fit }),
+                   effOnly: triangulationModel(t, { ...a, adrFY: eff }), fitOnly: triangulationModel(t, { ...a, adrFY: fit }) };
+        })()"""
+        js = js_eval(TRIANGULATION_JS, expr, {"fit": self.FIT, "ratio": self.RATIO})
+        both, eff_only, fit_only = js["both"], js["effOnly"], js["fitOnly"]
+        self.assertAlmostEqual(both["ratio"]["adrFY"], js["fit"], places=9)
+        for i in range(3):
+            self.assertAlmostEqual(both["ratio"]["now"][i], fit_only["ratio"]["now"][i], places=6)
+            self.assertAlmostEqual(both["adr"]["now"][i], eff_only["adr"]["now"][i], places=6)
+        self.assertAlmostEqual(eff_only["ratio"]["adrFY"], js["eff"], places=9)   # without it: the ADR model's
+
+    def test_fit_basis_adr(self):
+        rev = [{"date": "2026-11-04", "revenue_cr": 36.3687}, {"date": "2026-11-05", "revenue_cr": 53.7859},
+               {"date": "2026-11-06", "revenue_cr": 12.7992}, {"date": "2026-11-08", "revenue_cr": 1.0}]
+        got = js_eval(TRIANGULATION_JS, "[fitBasisAdr(DATA, ['2026-11-04', '2026-11-05', '2026-11-06']),"
+                                        " fitBasisAdr(DATA, ['2026-11-05', '2026-11-09']),"
+                                        " fitBasisAdr(DATA, ['2026-11-09']), fitBasisAdr(undefined, ['2026-11-04'])]", rev)
+        self.assertAlmostEqual(got[0]["adr"], (36.3687 + 53.7859 + 12.7992) / 3, places=9)
+        self.assertEqual(got[0]["n"], 3)
+        self.assertEqual(got[1], {"adr": 53.7859, "n": 1})   # a day the feed lacks is left out
+        self.assertIsNone(got[2])
+        self.assertIsNone(got[3])
 
 
 EXCEL_LAYOUT_JS = TRIANGULATION_JS + ["valuationExcelRows", "triangulationSummaryRows", "valuationExcelCells",
