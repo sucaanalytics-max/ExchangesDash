@@ -407,12 +407,12 @@ function rebuildAll() {
   }
   const common = [updateSnapshotNotice, updateFeeNotice, updateFeeToggle, buildFeeNote, buildRevenueSummary, buildLiveCards];
   const byExchange = {
-    nsebse: [() => buildMarketSharePanel(['nse', 'bse']), buildMarketShareTrend],
-    all:    [() => buildMarketSharePanel(['nse', 'bse', 'mcx'])],
+    nsebse: [() => buildMarketSharePanel(['nse', 'bse']), buildMarketShareTrend, buildContractsPremium],
+    all:    [() => buildMarketSharePanel(['nse', 'bse', 'mcx']), buildContractsPremium],
     nse:    [() => buildRevenuePredictor('nse'), () => buildValuation('nse'), () => buildShareAnalysis('nse'),
-             () => buildLivePredictor('nse')],
+             () => buildLivePredictor('nse'), buildContractsPremium],
     bse:    [() => buildRevenuePredictor('bse'), () => buildShareAnalysis('bse'), () => buildValuation('bse'),
-             () => buildLivePredictor('bse')],
+             () => buildLivePredictor('bse'), buildContractsPremium],
     mcx:    [() => buildRevenuePredictor('mcx'), () => buildShareAnalysis('mcx'), () => buildValuation('mcx')],
   };
   runSections(common.concat(byExchange[currentExchange] || []));

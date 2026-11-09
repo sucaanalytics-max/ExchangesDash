@@ -402,6 +402,7 @@ function feeUnitLabel() {
 // reads NSE's rows (market ADR and share).
 function viewFeeSources() {
   const tab = document.querySelector('.nav-item.active')?.dataset.tab;
+  if (tab === 'contracts') return [];   // contracts and premium are volumes: no fee basis
   const list = viewExchanges().filter(hasFeeVariant);
   if (currentExchange === 'bse' && tab === 'valuation' && MARKET_RAW.nse) list.push('nse');
   return list.map(ex => ({ ex, eff: feeBasisOf(ex) === 'charged' }));

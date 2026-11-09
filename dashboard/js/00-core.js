@@ -511,12 +511,15 @@ const NAV_ICONS = {
   prediction: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>',
   advanced: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>',
   share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>',
+  ratio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="6" r="1.5"/><line x1="5" y1="12" x2="19" y2="12"/><circle cx="12" cy="18" r="1.5"/></svg>',
 };
 
 // ========================
 // TAB DEFINITIONS PER EXCHANGE
 // ========================
 
+// Contracts to Premium (js/16-contracts-premium.js) is market-wide, NSE + BSE
+// combined: the same tab under every view that has NSE or BSE data (not MCX)
 const EXCHANGE_TABS = {
   nse: [
     { id: 'revenue',    label: 'Revenue Summary',    icon: 'revenue' },
@@ -524,6 +527,7 @@ const EXCHANGE_TABS = {
     { id: 'intraday',   label: 'Live Predictor',      icon: 'temporal' },
     { id: 'share',      label: 'Regression',          icon: 'share' },
     { id: 'valuation',  label: 'Valuation Model',     icon: 'advanced' },
+    { id: 'contracts',  label: 'Contracts to Premium', icon: 'ratio' },
   ],
   bse: [
     { id: 'revenue',    label: 'Revenue Summary',     icon: 'revenue' },
@@ -531,6 +535,7 @@ const EXCHANGE_TABS = {
     { id: 'intraday',   label: 'Live Predictor',       icon: 'temporal' },
     { id: 'share',      label: 'Regression',            icon: 'share' },
     { id: 'valuation',  label: 'Valuation Model',       icon: 'advanced' },
+    { id: 'contracts',  label: 'Contracts to Premium', icon: 'ratio' },
   ],
   mcx: [
     { id: 'revenue',    label: 'Revenue Summary',     icon: 'revenue' },
@@ -540,10 +545,12 @@ const EXCHANGE_TABS = {
   ],
   all: [
     { id: 'revenue',    label: 'Revenue Summary',     icon: 'revenue' },
+    { id: 'contracts',  label: 'Contracts to Premium', icon: 'ratio' },
   ],
   nsebse: [
     { id: 'revenue',      label: 'Revenue Summary',     icon: 'revenue' },
     { id: 'marketshare',  label: 'Market Share Trend',  icon: 'share' },
+    { id: 'contracts',    label: 'Contracts to Premium', icon: 'ratio' },
   ],
 };
 
@@ -554,6 +561,7 @@ const TAB_TITLES = {
     intraday: 'Live Predictor',
     share: 'Regression',
     valuation: 'Valuation Model',
+    contracts: 'Contracts to Premium — NSE + BSE',
   },
   bse: {
     revenue: 'Revenue Summary',
@@ -561,6 +569,7 @@ const TAB_TITLES = {
     intraday: 'Live Predictor',
     share: 'Regression',
     valuation: 'Valuation Model',
+    contracts: 'Contracts to Premium — NSE + BSE',
   },
   mcx: {
     revenue: 'Revenue Summary',
@@ -570,10 +579,12 @@ const TAB_TITLES = {
   },
   all: {
     revenue: 'Combined Revenue — NSE + BSE + MCX',
+    contracts: 'Contracts to Premium — NSE + BSE',
   },
   nsebse: {
     revenue: 'NSE + BSE Revenue Summary',
     marketshare: 'NSE vs BSE Market Share Trend',
+    contracts: 'Contracts to Premium — NSE + BSE',
   },
 };
 
