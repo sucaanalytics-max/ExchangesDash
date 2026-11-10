@@ -114,6 +114,22 @@ only once the table exists on their side: the mirror copies every `sb_*` table t
 their side lacks fails every run. The copies keep their columns, types and primary keys, but not their foreign keys
 or CHECK constraints, because the mirror loads tables in name order.
 
+- Each run copies only what changed. A table whose primary key includes `run_id` (`sb_calibration`,
+  `sb_daily_revenue`, `sb_summary_cells`, `sb_pat_lines`, and `sb_valuation_lines` once its copy exists)
+  reads only the runs our `sb_runs` lacks or holds in a different state (one that has finished since),
+  plus each broker and mode's latest successful run on either side, and upserts only rows that differ
+  from the copy. This relies on how the engine writes: `src/live/publish.py` inserts a run's
+  calibration, daily and summary rows before marking it `success` and never touches them after, while
+  `run_pat.py` upserts `sb_pat_lines` / `sb_valuation_lines` into the latest successful live run after
+  it has finished, and again on a later day while no newer run exists. If the engine ever rewrites an
+  older run, or deletes rows inside a run, tell the ExchangesDash owner: the copy would need a full
+  resync. A run deleted from `sb_runs` there is deleted from every copy here (at most 20 % of the runs
+  at once).
+- `sb_runs` is copied whole, after the run-keyed tables, and records which runs are copied: when one
+  run-keyed table fails, new runs stay out of it and are read again on the next run. `sb_brokers`,
+  `sb_calendar`, `sb_broker_daily` and `sb_share_prices` are copied whole each run.
+- A full resync (`brokers-mirror.yml` run by hand with mode `full`, or `brokers_mirror.py --full`)
+  re-reads and re-upserts every row of every table.
 - A column change on the brokers side makes that table's copy stop with an error until the copy's
   definition is updated.
 - While their schema endpoint is closed, a new table on their side is not detected. The brokers
