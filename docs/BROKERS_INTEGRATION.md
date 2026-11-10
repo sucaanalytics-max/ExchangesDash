@@ -109,13 +109,14 @@ can read into the ExchangesDash Supabase project (NSE-BSE), with the same names 
 `brokers_mirror_schema.sql` defines the copies. Their schema endpoint refuses the publishable key,
 so `--emit-ddl` cannot generate that file; it comes from the brokers team's catalog (#36, 3 Nov
 2026: 8 tables; `sb_pat_lines`, the PAT model's output, from their 5 Nov 2026 migration, created there on
-6 Nov and here on 7 Nov). Create a new table's copy
+6 Nov and here on 7 Nov; `sb_valuation_lines`, the valuation's output, defined on #75, created there on 9 Nov
+and here on 10 Nov). Create a new table's copy
 only once the table exists on their side: the mirror copies every `sb_*` table that exists here, and one
 their side lacks fails every run. The copies keep their columns, types and primary keys, but not their foreign keys
 or CHECK constraints, because the mirror loads tables in name order.
 
 - Each run copies only what changed. A table whose primary key includes `run_id` (`sb_calibration`,
-  `sb_daily_revenue`, `sb_summary_cells`, `sb_pat_lines`, and `sb_valuation_lines` once its copy exists)
+  `sb_daily_revenue`, `sb_summary_cells`, `sb_pat_lines`, `sb_valuation_lines`)
   reads only the runs our `sb_runs` lacks or holds in a different state (one that has finished since),
   plus each broker and mode's latest successful run on either side, and upserts only rows that differ
   from the copy. This relies on how the engine writes: `src/live/publish.py` inserts a run's
