@@ -52,6 +52,7 @@ Environment:
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -211,15 +212,34 @@ def row_key(row, pk):
     return tuple(row.get(c) for c in pk)
 
 
+ISO_PARTS = re.compile(r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?)(?:\.(\d+))?(Z|[+-]\d{2}(?::?\d{2})?)?$")
+
+
+def parse_timestamp(text):
+    """An ISO 8601 timestamp as PostgREST writes it ('…Z', '…+00:00', '…+05',
+    1 to 6 fractional digits) as a UTC datetime; None if it is not one. Python
+    3.10's datetime.fromisoformat takes only 0, 3 or 6 fractional digits and no
+    'Z', so the text is normalised first and the result is the same on every
+    Python."""
+    m = ISO_PARTS.match(text.strip())
+    if not m:
+        return None
+    base, frac, tz = m.groups()
+    tz = "+00:00" if tz in (None, "Z") else tz if ":" in tz else (tz + ":00" if len(tz) == 3 else tz[:3] + ":" + tz[3:])
+    try:
+        d = datetime.fromisoformat(base.replace(" ", "T") + (f".{(frac + '000000')[:6]}" if frac else "") + tz)
+    except ValueError:
+        return None
+    return d.astimezone(timezone.utc)
+
+
 def canon(value, pg):
     """A value as compared between the two projects: timestamps as instants, so
-    '…Z' and '…+00:00' (or another session time zone) read the same."""
+    '…Z' and '…+00:00' (or another session time zone) read the same. A
+    timestamp without a zone is taken as UTC, on both sides alike."""
     if isinstance(value, str) and pg.startswith("timestamp"):
-        try:
-            d = datetime.fromisoformat(value)
-        except ValueError:
-            return value
-        return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+        d = parse_timestamp(value)
+        return value if d is None else d
     return value
 
 

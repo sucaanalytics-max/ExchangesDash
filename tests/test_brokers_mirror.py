@@ -449,6 +449,24 @@ class IncrementalMirror(unittest.TestCase):
         self.assertEqual(by["sb_brokers"]["upserted"], 2)
 
 
+class Timestamps(unittest.TestCase):
+    """The same instant reads the same on every Python (3.10's fromisoformat takes no 'Z' and only 0, 3 or 6
+    fractional digits)."""
+
+    def test_formats(self):
+        same = ["2026-11-09T14:41:07.25+00:00", "2026-11-09T14:41:07.250Z", "2026-11-09T14:41:07.250000+00:00",
+                "2026-11-09T20:11:07.25+05:30", "2026-11-09 20:11:07.25+0530", "2026-11-09T19:41:07.25+05:00",
+                "2026-11-09T14:41:07.25"]
+        instants = {bm.parse_timestamp(s) for s in same}
+        self.assertEqual(len(instants), 1, instants)
+        self.assertEqual(bm.parse_timestamp("2026-11-09T19:41:07+05"), bm.parse_timestamp("2026-11-09T14:41:07Z"))
+        self.assertEqual(bm.parse_timestamp("2026-11-09T14:41:07.1234567+00:00"),
+                         bm.parse_timestamp("2026-11-09T14:41:07.123456Z"))
+        self.assertIsNone(bm.parse_timestamp("not a time"))
+        self.assertEqual(bm.canon("not a time", "timestamp with time zone"), "not a time")
+        self.assertEqual(bm.canon("2026-11-09", "date"), "2026-11-09")
+
+
 class Plan(unittest.TestCase):
     def test_latest_runs(self):
         rows = [run("a1", day=1), run("a2", day=2), run("a3", day=3, status="failed"), run("a4", day=4, status="running"),
