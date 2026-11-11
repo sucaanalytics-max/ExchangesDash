@@ -226,12 +226,14 @@ function valuationFromAdr(adr, v, pe, cmp) {
 // the next FY's Q4, averaged over that FY's four quarters. The start (input `start`) is either
 // the current quarter's ADR to date ('q', the workbook's D28) or the current FY's run-rate ('fy':
 // the FY model's base ADR, FY revenue to date + its rest-of-year rate), which a short, busy
-// quarter to date cannot inflate.
+// quarter to date cannot inflate. Every exchange defaults to the run-rate; BSE's workbook starts
+// from the quarter to date, which the 'q' start reproduces.
 // The inputs are separate from the FY model above (the Excel keeps them apart:
 // BSE's 51 % margin and other income × 1.15 here, 52 % and a fixed ₹2,055 Cr there).
 const TRIANGULATION_DEFAULTS = {
-  // Excel "BSE" sheet: ADR Estimate (D28:D34), section 3 (D69:F82), Summary (D87:G90)
-  bse: { start: 'q', adr0: null, qoq: 2, regAdr: null, band: 10, days: 247, oiMode: 'fixed', oi: 2055.39, oiG: 15, margin: 51, pe0: 40, pe1: 45, pe2: 50, d1: 18, d2: null, w0: 20, w1: 40, w2: 40 },
+  // Excel "BSE" sheet: ADR Estimate (D28:D34), section 3 (D69:F82), Summary (D87:G90), except the
+  // start: the FY run-rate, where the workbook takes the quarter to date (start 'q' matches it)
+  bse: { start: 'fy', adr0: null, qoq: 2, regAdr: null, band: 10, days: 247, oiMode: 'fixed', oi: 2055.39, oiG: 15, margin: 51, pe0: 40, pe1: 45, pe2: 50, d1: 18, d2: null, w0: 20, w1: 40, w2: 40 },
   // NSE / MCX: the FY model's own assumptions and run-rate, no growth, the Excel's discounts and weights
   nse: { start: 'fy', adr0: null, qoq: 0, regAdr: null, band: 10, days: 247, oiMode: 'pct', oi: 30, oiG: 0, margin: 55, pe0: 25, pe1: 35, pe2: 45, d1: 18, d2: null, w0: 20, w1: 40, w2: 40 },
   mcx: { start: 'fy', adr0: null, qoq: 0, regAdr: null, band: 10, days: 257, oiMode: 'fixed', oi: 0, oiG: 0, margin: 50, pe0: 25, pe1: 30, pe2: 35, d1: 18, d2: null, w0: 20, w1: 40, w2: 40 },
@@ -848,7 +850,8 @@ async function buildValuation(ex) {
     if (t.adr0 == null && t.start === 'fy') {
       const a = startAdr(), basisGap = Math.abs(a - aFit) > 0.005;
       notes.push(`${fy1S} ADR starts from the ${fy0S} run-rate, ₹${fmtNum(a, 2)} Cr: the ${fy0S} model’s base ADR below (${ctx.elapsed} sessions actual, then its rest-of-year rate), not ${qLabel}’s ₹${fmtNum(qAdr, 2)} Cr over ${qRows.length} sessions to date.`
-        + (basisGap ? ` Regression and Ratio take it at today’s rates (₹${fmtNum(aFit, 2)} Cr), the basis their fits are built on.` : ''));
+        + (basisGap ? ` Regression and Ratio take it at today’s rates (₹${fmtNum(aFit, 2)} Cr), the basis their fits are built on.` : '')
+        + (ex === 'bse' ? ` The Excel workbook starts from the quarter to date: “${qLabel} to date” with “At today’s rates” matches it.` : ''));
     } else if (t.adr0 == null) {
       const basisGap = qFit && Math.abs(qAdr - qAdrFit) > 0.005;
       notes.push(`${qLabel} ADR is ${qRows.length} sessions to date. `

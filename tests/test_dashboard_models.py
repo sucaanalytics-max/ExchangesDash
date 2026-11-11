@@ -253,9 +253,9 @@ class TriangulatedTarget(unittest.TestCase):
         self.assertEqual(js["wEff"], [20, 40, 40])
 
     def test_start_defaults(self):
-        """BSE keeps the workbook's start (the quarter to date); NSE and MCX start from the FY run-rate."""
+        """Every exchange starts from the FY run-rate; BSE's workbook start (the quarter to date) is the 'q' option."""
         got = js_eval(TRIANGULATION_JS, "['bse', 'nse', 'mcx'].map(ex => TRIANGULATION_DEFAULTS[ex].start)")
-        self.assertEqual(got, ["q", "fy", "fy"])
+        self.assertEqual(got, ["fy", "fy", "fy"])
 
     def test_fit_basis_scale(self):
         rev = [{"date": "2026-11-04", "revenue_cr": 30.0}, {"date": "2026-11-05", "revenue_cr": 60.0}]
