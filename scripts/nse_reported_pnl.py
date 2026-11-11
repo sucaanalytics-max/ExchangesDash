@@ -80,8 +80,8 @@ REPORTED = [
                  "data_centre), data feed and operating investment income: rack, index licensing, clearing "
                  "and other operating revenue are together in other_operating, all other income in "
                  "investment_income, and technology and CSR in other_expense. No SEBI settlement or "
-                 "disincentive is booked in the quarter: the ₹14.74 Cr paid to SEBI on 31 Jul 2026 (note 2) "
-                 "came out of the FY26 provision. No Core SGF contribution and no exceptional items."),
+                 "disincentive is booked in the quarter: the ₹714.74 Cr paid to SEBI on 31 Jul 2026 (note 2) "
+                 "and the ₹776.47 Cr deposit settle the ₹1,491.21 Cr provided in FY23 and FY26. No Core SGF contribution and no exceptional items."),
     },
 ]
 
