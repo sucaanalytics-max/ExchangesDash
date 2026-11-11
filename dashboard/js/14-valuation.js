@@ -222,21 +222,16 @@ function valuationFromAdr(adr, v, pe, cmp) {
 //     the part of this FY left, from today's date; the workbook keeps a flat 9 %).
 //   ADR model: next-FY ADR × sessions + other income → × PAT margin ÷ shares →
 //     EPS × P/E (Bear / Base / Bull), discounted the same way.
-// Next-FY ADR: a start ADR, placed on the current quarter and grown qoq % each quarter through
-// the next FY's Q4, averaged over that FY's four quarters. The start (input `start`) is either
-// the current quarter's ADR to date ('q', the workbook's D28) or the current FY's run-rate ('fy':
-// the FY model's base ADR, FY revenue to date + its rest-of-year rate), which a short, busy
-// quarter to date cannot inflate. Every exchange defaults to the run-rate; BSE's workbook starts
-// from the quarter to date, which the 'q' start reproduces.
+// Next-FY ADR: the current quarter's ADR grown qoq % each quarter through the
+// next FY's Q4, averaged over that FY's four quarters.
 // The inputs are separate from the FY model above (the Excel keeps them apart:
 // BSE's 51 % margin and other income × 1.15 here, 52 % and a fixed ₹2,055 Cr there).
 const TRIANGULATION_DEFAULTS = {
-  // Excel "BSE" sheet: ADR Estimate (D28:D34), section 3 (D69:F82), Summary (D87:G90), except the
-  // start: the FY run-rate, where the workbook takes the quarter to date (start 'q' matches it)
-  bse: { start: 'fy', adr0: null, qoq: 2, regAdr: null, band: 10, days: 247, oiMode: 'fixed', oi: 2055.39, oiG: 15, margin: 51, pe0: 40, pe1: 45, pe2: 50, d1: 18, d2: null, w0: 20, w1: 40, w2: 40 },
-  // NSE / MCX: the FY model's own assumptions and run-rate, no growth, the Excel's discounts and weights
-  nse: { start: 'fy', adr0: null, qoq: 0, regAdr: null, band: 10, days: 247, oiMode: 'pct', oi: 30, oiG: 0, margin: 55, pe0: 25, pe1: 35, pe2: 45, d1: 18, d2: null, w0: 20, w1: 40, w2: 40 },
-  mcx: { start: 'fy', adr0: null, qoq: 0, regAdr: null, band: 10, days: 257, oiMode: 'fixed', oi: 0, oiG: 0, margin: 50, pe0: 25, pe1: 30, pe2: 35, d1: 18, d2: null, w0: 20, w1: 40, w2: 40 },
+  // Excel "BSE" sheet: ADR Estimate (D28:D34), section 3 (D69:F82), Summary (D87:G90)
+  bse: { adr0: null, qoq: 2, regAdr: null, band: 10, days: 247, oiMode: 'fixed', oi: 2055.39, oiG: 15, margin: 51, pe0: 40, pe1: 45, pe2: 50, d1: 18, d2: null, w0: 20, w1: 40, w2: 40 },
+  // NSE / MCX: the FY model's own assumptions, no growth, the Excel's discounts and weights
+  nse: { adr0: null, qoq: 0, regAdr: null, band: 10, days: 247, oiMode: 'pct', oi: 30, oiG: 0, margin: 55, pe0: 25, pe1: 35, pe2: 45, d1: 18, d2: null, w0: 20, w1: 40, w2: 40 },
+  mcx: { adr0: null, qoq: 0, regAdr: null, band: 10, days: 257, oiMode: 'fixed', oi: 0, oiG: 0, margin: 50, pe0: 25, pe1: 30, pe2: 35, d1: 18, d2: null, w0: 20, w1: 40, w2: 40 },
 };
 const triangulationStorageKey = ex => `triangulation_${ex}_v1`;
 // The workbook's discount to today, and the fallback without a date
@@ -299,33 +294,6 @@ function fitBasisAdr(revenueDaily, dates) {
   return vals.length ? { adr: vals.reduce((s, x) => s + x, 0) / vals.length, n: vals.length } : null;
 }
 
-// Fit basis ÷ the Fees toggle's basis over the given rows' dates: the share feed's revenue (today's
-// rates) against the rows' total_rev, over the dates both have; 1 when they share none. Converts an
-// ADR built from the rows (the FY run-rate) to the fits' basis.
-function fitBasisScale(revenueDaily, rows) {
-  const byDate = new Map((revenueDaily || []).map(r => [r.date, r.revenue_cr]));
-  let fit = 0, own = 0;
-  (rows || []).forEach(r => {
-    const x = byDate.get(r.date);
-    if (x != null && isFinite(x) && r.total_rev) { fit += x; own += r.total_rev; }
-  });
-  return own > 0 ? fit / own : 1;
-}
-
-// The ratio method's price ÷ revenue MA needs far fewer sessions than the regression's fair value
-// (min_days_required, 60): its mean ± 1σ is used from this many fit sessions, so a newly listed
-// share has it weeks before the regression.
-const RATIO_MIN_SESSIONS = 20;
-
-// The ratio method's { mean, sd } over a share model's fit sessions, with { n } and, when it is
-// withheld, why. series: computeShareModel(...).series, or null without a share-price fit.
-function valuationRatio(series, regStart) {
-  if (!series) return { stats: null, n: 0, why: 'no share-price feed' };
-  const n = series.filter(r => (r.in_fit === undefined ? r.date >= regStart : r.in_fit) && r.rev_ma > 0 && r.price > 0).length;
-  if (n < RATIO_MIN_SESSIONS) return { stats: null, n, why: `only ${n} price sessions (needs ${RATIO_MIN_SESSIONS})` };
-  return { stats: shareRatioStats(series, regStart), n, why: '' };
-}
-
 // Quarter-by-quarter ADR from the start quarter to the next FY's Q4, and that FY's average
 function triangulationAdrPath(start, startAdr, qoqPct) {
   const path = [];
@@ -343,8 +311,7 @@ function triangulationAdrPath(start, startAdr, qoqPct) {
 // ADR for the ratio (default adrFY); the regression and ratio take theirs on the fits' revenue
 // basis; reg: { slope, intercept } or null (fit withheld); ratio: { mean, sd } or null; shares
 // in Cr. Weights are normalised over the methods that have a value, so a missing method drops
-// out of the average; wEff holds each method's weight as used, in % ([reg, ratio, adr], 0 when
-// it has no value).
+// out of the average.
 function triangulationModel(t, { adrFY, regAdr, ratioAdrFY, reg, ratio, shares }) {
   const toFYEnd = x => x / (1 + t.d1 / 100);
   const toToday = x => toFYEnd(x) / (1 + t.d2 / 100);
@@ -368,8 +335,7 @@ function triangulationModel(t, { adrFY, regAdr, ratioAdrFY, reg, ratio, shares }
   const used = methods.filter(([, w, vals]) => vals && w > 0);
   const wSum = used.reduce((s, [, w]) => s + w, 0);
   const avg = wSum > 0 ? [0, 1, 2].map(i => used.reduce((s, [, w, vals]) => s + vals[i] * w, 0) / wSum) : null;
-  const wEff = methods.map(([k, w]) => wSum > 0 && used.some(([u]) => u === k) ? w / wSum * 100 : 0);
-  return { adr, reg: regVals, ratio: ratioM, avg, used: used.map(([k]) => k), wSum, wTotal: t.w0 + t.w1 + t.w2, wEff };
+  return { adr, reg: regVals, ratio: ratioM, avg, used: used.map(([k]) => k), wSum, wTotal: t.w0 + t.w1 + t.w2 };
 }
 
 // ========================
@@ -482,12 +448,8 @@ async function buildValuation(ex) {
   const meth = SHARE_DATA?.methodology || null;
   const mape = meth?.holdout?.mape_pct ?? null;
   const shareModel = SHARE_DATA?.regression && SHARE_DATA.status !== 'collecting' ? computeShareModel(SHARE_DATA, SHARE_DATA.ma_window || 45) : null;
-  // The ratio does not wait for the regression's 60 sessions (see RATIO_MIN_SESSIONS): while the
-  // feed is still collecting, it is fitted on the sessions there are
-  const ratioModel = shareModel || (SHARE_DATA?.revenue_daily ? computeShareModel(SHARE_DATA, SHARE_DATA.ma_window || 45) : null);
-  const ratioFit = valuationRatio(ratioModel ? ratioModel.series : null, SHARE_DATA?.regression_start);
-  const ratio = ratioFit.stats;
-  const lastMa = ratio ? latestShareRow(ratioModel.series, lat.date)?.rev_ma : null;
+  const ratio = shareModel ? shareRatioStats(shareModel.series, SHARE_DATA.regression_start) : null;
+  const lastMa = shareModel ? latestShareRow(shareModel.series, lat.date)?.rev_ma : null;
   const brokerAvg = analysts.length ? analysts.reduce((s, t) => s + t.target_price, 0) / analysts.length : null;
   const oldest = analysts.reduce((mn, t) => (t.date && (!mn || t.date < mn) ? t.date : mn), null);
   const newest = analysts.reduce((mx, t) => (t.date && (!mx || t.date > mx) ? t.date : mx), null);
@@ -498,14 +460,10 @@ async function buildValuation(ex) {
   const t = loadTriangulationInputs(ex);
   const lastRow = series[series.length - 1];
   const startQ = parseFYQuarter(lastRow.fy_quarter);
-  // Typed-over ADRs belong to the quarter and start they were typed for; a new quarter or start
-  // starts from the data
-  if (t.start !== 'fy' && t.start !== 'q') t.start = tDefaults.start;
-  if (t.adrQ !== lastRow.fy_quarter || t.adrStart !== t.start) { t.adr0 = null; t.regAdr = null; }
+  // Typed-over ADRs belong to the quarter they were typed in; a new quarter starts from the data
+  if (t.adrQ !== lastRow.fy_quarter) { t.adr0 = null; t.regAdr = null; }
   t.adrQ = lastRow.fy_quarter;
-  t.adrStart = t.start;
   tDefaults.adrQ = lastRow.fy_quarter;
-  tDefaults.adrStart = tDefaults.start;
   const qRows = series.filter(r => r.fy_quarter === lastRow.fy_quarter);
   const qAdr = qRows.length ? qRows.reduce((s, r) => s + (r.total_rev || 0), 0) / qRows.length : 0;
   // Regression and ratio are fitted on the share feed's revenue (today's rates), so they
@@ -516,14 +474,6 @@ async function buildValuation(ex) {
   const yy = fy => `FY${String(fy).slice(-2)}`;
   const qLabel = startQ ? `Q${startQ.q} ${yy(startQ.fy)}` : '';
   const fy0S = startQ ? yy(startQ.fy) : ctx.fyShort, fy1S = startQ ? yy(startQ.fy + 1) : '';
-  // The FY run-rate start: the FY model's base ADR (follows its inputs and the Fees toggle), and on
-  // the fits' basis for the regression and ratio
-  const fyRunRate = () => valuationScenario(ctx, v, v.g1, v.pe1, cmp).adr;
-  const fyRunRows = [...new Set(ctx.fyRows.concat(series.slice(-45)))];
-  const fyFitScale = SHARE_DATA?.revenue_daily ? fitBasisScale(SHARE_DATA.revenue_daily, fyRunRows) : 1;
-  const startAdr = () => t.start === 'fy' ? fyRunRate() : qAdr;
-  const startAdrFit = () => t.start === 'fy' ? fyRunRate() * fyFitScale : qAdrFit;
-  const startName = () => t.start === 'fy' ? `${fy0S} run-rate` : `${qLabel} ADR`;
   const regWithheld = shareModel ? (shareModel.meth ? !shareModel.meth.fair_value_supported : fv == null) : true;
   const regFit = shareModel && !regWithheld ? shareModel.reg : null;
   const regWhy = !shareModel
@@ -534,7 +484,7 @@ async function buildValuation(ex) {
   const fyEndIso = startQ ? `${startQ.fy}-03-31` : null;
   const daysToFYEnd = todayIso && fyEndIso ? Math.max(0, Math.round((Date.parse(`${fyEndIso}T00:00:00Z`) - Date.parse(`${todayIso}T00:00:00Z`)) / 86400000)) : null;
   const autoD2 = () => discountToToday(t.d1, todayIso, fyEndIso) ?? TRIANGULATION_FLAT_D2;
-  const tEff = key => key === 'adr0' ? (t.adr0 ?? startAdr()) : key === 'regAdr' ? (t.regAdr ?? t.adr0 ?? startAdrFit())
+  const tEff = key => key === 'adr0' ? (t.adr0 ?? qAdr) : key === 'regAdr' ? (t.regAdr ?? t.adr0 ?? qAdrFit)
     : key === 'd2' ? (t.d2 ?? autoD2()) : t[key];
   const tShow = key => key === 'adr0' || key === 'regAdr' ? Math.round(tEff(key) * 100) / 100
     : key === 'd2' ? Math.round(tEff(key) * 10) / 10 : t[key];
@@ -605,14 +555,14 @@ async function buildValuation(ex) {
   const sumBody = sumRows.map((r, i) => {
     const e = xlEdge(sumRows, i);
     const cells = [0, 1, 2].map(j => `<td class="${`${e}${j === 2 ? ' rx-xl-r' : ''}`.trim()}" data-xout="${r.key}-${j}"></td>`).join('');
-    const w = `<td class="rx-xl-w">${r.w ? `${tin(r.w, 5, `${r.label} weight, %`, '', 'rx-xl-in')}<span class="rx-xl-unit">%</span><span class="rx-xl-weff" data-tout="weff-${r.w}"></span>` : '<span data-tout="wsum"></span>'}</td>`;
+    const w = `<td class="rx-xl-w">${r.w ? `${tin(r.w, 5, `${r.label} weight, %`, '', 'rx-xl-in')}<span class="rx-xl-unit">%</span>` : '<span data-tout="wsum"></span>'}</td>`;
     return xlTr(r, e, xlGut(r.gut), cells, w);
   }).join('');
 
   const triHTML = startQ ? `
     <div class="rx-row">
-      ${rxPanel({ cls: 'rx-col-xl-val', title: `Valuation · ${fy1S}E`, meta: `ADR ₹ Cr / session · income ₹ Cr · EPS and targets ₹ per share · ADR from the <span data-rx="triFrom"></span>`,
-        right: `${rxSeg('triStart', [['fy', `${fy0S} run-rate`], ['q', `${qLabel} to date`]], t.start, `${fy1S} ADR starts from`)} <button type="button" class="rx-link" data-rx="triReset">Reset to defaults</button>`,
+      ${rxPanel({ cls: 'rx-col-xl-val', title: `Valuation · ${fy1S}E`, meta: `ADR ₹ Cr / session · income ₹ Cr · EPS and targets ₹ per share · ADR from ${qLabel}`,
+        right: '<button type="button" class="rx-link" data-rx="triReset">Reset to defaults</button>',
         body: `<div class="rx-pb rx-scroll"><table class="rx-table rx-xl" aria-label="Valuation ${fy1S}E, Bear / Base / Bull">
           <thead><tr><td class="rx-xl-gut"></td><th scope="col" class="rx-xl-lab rx-xl-cmp rx-xl-t">CMP ${cmp != null ? rxRupee(cmp) : '—'}</th>${xlHeads}</tr></thead>
           <tbody>${xlBody}</tbody></table></div>`,
@@ -636,7 +586,7 @@ async function buildValuation(ex) {
           <thead><tr><th scope="col">Quarter</th><th scope="col">ADR</th><th scope="col" class="rx-l">Source</th></tr></thead>
           <tbody>
             ${triPath.map((p, i) => i === 0
-              ? `<tr><td data-tout="startLab"></td><td>${tin('adr0', 0.1, `Start ADR, ${p.label}`)}</td>${tsrc('adr0')}</tr>`
+              ? `<tr><td>${p.label} · to date${flagTags(qFlags)}</td><td>${tin('adr0', 0.1, `${p.label} ADR`)}</td>${tsrc('adr0')}</tr>`
               : `<tr><td>${p.label}</td><td data-tout="path-${i}"></td><td class="rx-src"></td></tr>`).join('')}
             <tr class="rx-sub"><td>${fy1S} average</td><td data-tout="pathAvg"></td><td class="rx-src">mean of its four quarters</td></tr>
             <tr><td>QoQ growth, %</td><td data-tout="qoqV"></td>${tsrc('qoq')}</tr>
@@ -645,7 +595,7 @@ async function buildValuation(ex) {
         body: `<div class="rx-scroll"><table class="rx-table rx-wrap-lab">
           <thead><tr><th scope="col">ADR model</th><th scope="col">Value</th><th scope="col" class="rx-l">Source</th></tr></thead>
           <tbody>
-            <tr><td>ADR ${fy1S}E, ₹ Cr / session<span data-tout="adrFlags"></span></td><td data-tout="adrFY"></td><td class="rx-src">from the ADR path</td></tr>
+            <tr><td>ADR ${fy1S}E, ₹ Cr / session${flagTags(qFlags)}</td><td data-tout="adrFY"></td><td class="rx-src">from the ADR path</td></tr>
             <tr><td>Trading sessions in ${fy1S}</td><td>${tin('days', 1, `Trading sessions in ${fy1S}`)}</td>${tsrc('days')}</tr>
             <tr><td>Transaction revenue, ₹ Cr</td><td data-tout="txn"></td><td class="rx-src">ADR × sessions</td></tr>
             ${t.oiMode === 'pct'
@@ -672,7 +622,7 @@ async function buildValuation(ex) {
             <tr><td>Bear / Bull ADR band, ± %</td><td data-tout="bandV"></td>${tsrc('band')}</tr>
             <tr><td>Price ÷ MA, mean ×</td><td data-tout="ratioMean"></td><td class="rx-src" rowspan="2" data-tsrc="ratioFit"></td></tr>
             <tr><td>Price ÷ MA, σ ×</td><td data-tout="ratioSd"></td></tr>
-            <tr><td>Start ADR at today’s rates, ₹ Cr</td><td data-tout="qAdrFit"></td><td class="rx-src" data-tsrc="qAdrFit"></td></tr>
+            <tr><td>${qLabel} ADR at today’s rates, ₹ Cr</td><td data-tout="qAdrFit"></td><td class="rx-src" data-tsrc="qAdrFit"></td></tr>
             <tr><td>${fy1S} ADR into the ratio, ₹ Cr</td><td data-tout="ratioAdr"></td><td class="rx-src" data-tsrc="ratioAdr"></td></tr>
           </tbody></table></div>` })}
     </div>` : '';
@@ -750,9 +700,8 @@ async function buildValuation(ex) {
     const a0 = tEff('adr0');
     const path = triangulationAdrPath(startQ, a0, t.qoq);
     const regAdr = tEff('regAdr');
-    // A typed-over ADR drives every method; otherwise the ratio grows the fit-basis start the same way
-    const aFit = startAdrFit();
-    const ratioPath = t.adr0 != null ? path : triangulationAdrPath(startQ, aFit, t.qoq);
+    // A typed-over ADR drives every method; otherwise the ratio grows the fit-basis ADR the same way
+    const ratioPath = t.adr0 != null ? path : triangulationAdrPath(startQ, qAdrFit, t.qoq);
     const tm = { ...t, d2: tEff('d2') };   // the inputs as used: the dated discount filled in
     const tri = triangulationModel(tm, { adrFY: path.adr, regAdr, ratioAdrFY: ratioPath.adr, reg: regFit, ratio, shares: v.shares });
     const set = (k, html) => { const n = el.querySelector(`[data-tout="${k}"]`); if (n) n.innerHTML = html; };
@@ -766,20 +715,13 @@ async function buildValuation(ex) {
     }));
     q('xlAvgLabel').textContent = triangulationSummaryRows(t)[3].label;
     set('wsum', `${fmtNum(tri.wTotal, 0)} %`);
-    // The weights as used: a method without a value gets none, the rest are rescaled to 100 %
-    ['w0', 'w1', 'w2'].forEach((k, i) => {
-      const typed = tri.wTotal > 0 ? t[k] / tri.wTotal * 100 : 0;
-      set(`weff-${k}`, Math.abs(tri.wEff[i] - typed) > 0.05 ? ` → ${fmtNum(tri.wEff[i], 0)} %` : '');
-      const inp = el.querySelector(`input[data-tkey="${k}"]`);
-      if (inp) inp.classList.toggle('is-off', tri.wEff[i] === 0 && t[k] > 0);
-    });
     q('triUp').innerHTML = tri.avg && cmp ? `Average vs CMP: ${[0, 1, 2].map(i => upC(tri.avg[i])).join(' / ')}.` : '';
     src('reg', regFit
       ? `₹${fmtNum(regFit.intercept, 0)} + ${fmtNum(regFit.slope, 1)} × ADR ${fmtNum(regAdr, 2)}, ∓ ${fmtNum(t.band, 0)} % for Bear / Bull`
       : `<span class="rx-foot">${escHtml(regWhy)}</span>`);
     src('ratio', tri.ratio
       ? `${fmtNum(tri.ratio.k[0], 0)} / ${fmtNum(tri.ratio.k[1], 0)} / ${fmtNum(tri.ratio.k[2], 0)} × ${fy1S} ADR ${fmtNum(tri.ratio.adrFY, 2)}, ${disc}`
-      : `<span class="rx-foot">${escHtml(ratioFit.why)}</span>`);
+      : '<span class="rx-foot">no price ÷ MA history</span>');
     src('adr', tri.adr.eps != null ? `EPS ₹${fmtNum(tri.adr.eps, 2)} × ${fmtNum(t.pe0, 0)} / ${fmtNum(t.pe1, 0)} / ${fmtNum(t.pe2, 0)}, ${disc}` : 'needs a share count');
     src('avg', tri.wSum && tri.wSum !== tri.wTotal ? `over ${tri.used.length} method${tri.used.length === 1 ? '' : 's'} with a value` : 'Σ weight × target ÷ Σ weight');
 
@@ -791,16 +733,9 @@ async function buildValuation(ex) {
     set('pathAvg', fmtNum(path.adr, 2));
     set('regA', regFit ? fmtNum(regFit.intercept, 0) : '—'); set('regB', regFit ? fmtNum(regFit.slope, 2) : '—');
     set('ratioMean', ratio ? fmtNum(ratio.mean, 1) : '—'); set('ratioSd', ratio ? fmtNum(ratio.sd, 1) : '—');
-    set('qAdrFit', fmtNum(aFit, 2)); set('ratioAdr', fmtNum(ratioPath.adr, 2));
-    src('qAdrFit', t.start === 'fy'
-      ? chip('data', `${fy0S} run-rate`) + (Math.abs(fyFitScale - 1) > 1e-6 ? ` × ${fmtNum(fyFitScale, 3)}, the fits’ revenue ÷ the Fees toggle’s over its sessions` : '')
-      : qFit ? chip('data', `${qLabel} · ${qFit.n} sessions · the fits’ revenue`) : '<span class="rx-foot">not in the share feed: the Fees toggle’s ADR</span>');
-    src('ratioAdr', t.adr0 != null ? rxChip('Edited', 'edit') + ` from a start ADR of ${fmtNum(t.adr0, 2)}` : `the ADR path, from the ${startName()} at today’s rates`);
-    // The start: the label and flags follow it
-    const startFlags = flagTags(t.start === 'fy' ? ctx.flags : qFlags);
-    set('startLab', `${triPath[0].label} · ${t.start === 'fy' ? `${fy0S} run-rate` : 'to date'}${startFlags}`);
-    set('adrFlags', startFlags);
-    q('triFrom').textContent = t.adr0 != null ? 'typed start ADR' : startName();
+    set('qAdrFit', fmtNum(qAdrFit, 2)); set('ratioAdr', fmtNum(ratioPath.adr, 2));
+    src('qAdrFit', qFit ? chip('data', `${qFit.n} sessions · the fits’ revenue`) : '<span class="rx-foot">not in the share feed: the Fees toggle’s ADR</span>');
+    src('ratioAdr', t.adr0 != null ? rxChip('Edited', 'edit') + ` from ${qLabel} ADR ${fmtNum(t.adr0, 2)}` : `the ADR path, from ${qLabel} at today’s rates`);
     // Inputs that live in the Excel layout, echoed beside their sources
     set('qoqV', `${fmtNum(t.qoq, 1)} %`); set('bandV', `± ${fmtNum(t.band, 0)} %`);
     set('oiV', `${fmtNum(t.oi, 1)} %`); set('oiGV', `${fmtNum(t.oiG, 1)} %`);
@@ -813,10 +748,8 @@ async function buildValuation(ex) {
     const excel = ex === 'bse' ? chip('', 'Excel model') : chip('', 'Excel BSE sheet');
     const provC = ex === 'bse' ? chip('', 'Excel model') : srcChip();
     const qoqA = (Math.pow(1 + t.qoq / 100, 4) - 1);
-    src('adr0', ed(['adr0']) ? rxChip('Edited', 'edit')
-      : t.start === 'fy' ? chip('data', `${fy0S} model · base`) : chip('data', `${qRows.length} sessions`));
-    src('regAdr', ed(['regAdr']) ? rxChip('Edited', 'edit')
-      : chip('', t.adr0 != null ? '= the typed start ADR' : t.start === 'fy' ? `= ${fy0S} run-rate at today’s rates` : qFit ? `= ${qLabel} ADR at today’s rates` : `= ${qLabel} ADR`));
+    src('adr0', (ed(['adr0']) ? rxChip('Edited', 'edit') : chip('data', `${qRows.length} sessions`)));
+    src('regAdr', ed(['regAdr']) ? rxChip('Edited', 'edit') : chip('', qFit ? `= ${qLabel} ADR at today’s rates` : `= ${qLabel} ADR`));
     src('qoq', (ex === 'bse' ? chip('', 'Excel model') : chip('', 'No growth assumed')) + ` ${fmtPct(qoqA)} a year` + eChip(['qoq']));
     src('days', chip(ctx.prevFYDays && t.days === ctx.prevFYDays ? 'data' : '', ctx.prevFYDays ? `${ctx.prevFY.replace(' ', '')} had ${ctx.prevFYDays}` : 'Assumption') + eChip(['days']));
     // Where this block's margin, P/E or other income differs from the FY model's
@@ -837,28 +770,19 @@ async function buildValuation(ex) {
     el.querySelectorAll('input[data-tkey]').forEach(i => {
       i.classList.toggle('is-edited', ed([i.dataset.tkey]));
       if (i.dataset.tkey === 'regAdr' && t.regAdr == null && document.activeElement !== i) i.value = tShow('regAdr');
-      if (i.dataset.tkey === 'adr0' && t.adr0 == null && document.activeElement !== i) i.value = tShow('adr0');   // follows the FY model
       if (i.dataset.tkey === 'd2' && t.d2 == null && document.activeElement !== i) i.value = tShow('d2');   // follows d1
     });
 
     const notes = [];
     if (!regFit) notes.push(`Regression unavailable (${regWhy}); its weight is shared by the other methods.`);
-    if (!ratio) notes.push(`Ratio unavailable (${ratioFit.why}); its weight is shared by the other methods.`);
-    else if (!regFit && SHARE_DATA?.status === 'collecting') notes.push(`Ratio on the ${ratioFit.n} price sessions since listing; its mean ± 1σ will move as more arrive.`);
+    if (!ratio) notes.push('No price ÷ MA history for the ratio method.');
     if (tri.adr.eps == null) notes.push('ADR model unavailable: needs a share count; its weight is shared by the other methods.');
     if (tri.wTotal !== 100) notes.push(`Weights add to ${fmtNum(tri.wTotal, 0)} %; the average divides by the weights used.`);
-    if (t.adr0 == null && t.start === 'fy') {
-      const a = startAdr(), basisGap = Math.abs(a - aFit) > 0.005;
-      notes.push(`${fy1S} ADR starts from the ${fy0S} run-rate, ₹${fmtNum(a, 2)} Cr: the ${fy0S} model’s base ADR below (${ctx.elapsed} sessions actual, then its rest-of-year rate), not ${qLabel}’s ₹${fmtNum(qAdr, 2)} Cr over ${qRows.length} sessions to date.`
-        + (basisGap ? ` Regression and Ratio take it at today’s rates (₹${fmtNum(aFit, 2)} Cr), the basis their fits are built on.` : '')
-        + (ex === 'bse' ? ` The Excel workbook starts from the quarter to date: “${qLabel} to date” with “At today’s rates” matches it.` : ''));
-    } else if (t.adr0 == null) {
-      const basisGap = qFit && Math.abs(qAdr - qAdrFit) > 0.005;
-      notes.push(`${qLabel} ADR is ${qRows.length} sessions to date. `
-        + (qFit ? `Regression and Ratio take it at today’s rates (₹${fmtNum(qAdrFit, 2)} Cr), the basis their fits are built on; the ADR model’s follows the Fees toggle${basisGap ? ` (₹${fmtNum(qAdr, 2)} Cr)` : ''}`
-                : 'The share feed has no revenue for it yet, so all three methods take the Fees toggle’s')
-        + `${ex === 'bse' ? '. The Excel workbook prices at today’s rates, so “At today’s rates” matches it' : ''}.`);
-    }
+    const basisGap = qFit && Math.abs(qAdr - qAdrFit) > 0.005;
+    notes.push(`${qLabel} ADR is ${qRows.length} sessions to date. `
+      + (qFit ? `Regression and Ratio take it at today’s rates (₹${fmtNum(qAdrFit, 2)} Cr), the basis their fits are built on; the ADR model’s follows the Fees toggle${basisGap ? ` (₹${fmtNum(qAdr, 2)} Cr)` : ''}`
+              : 'The share feed has no revenue for it yet, so all three methods take the Fees toggle’s')
+      + `${ex === 'bse' ? '. The Excel workbook prices at today’s rates, so “At today’s rates” matches it' : ''}.`);
     if (t.d2 == null && daysToFYEnd != null) notes.push(`Discount to today: ${fmtNum(tm.d2, 1)} %, ${fmtNum(t.d1, 1)} % a year for the ${daysToFYEnd} days left to ${fy0S} end (the workbook keeps a flat ${TRIANGULATION_FLAT_D2} %).`);
     if (ex !== 'bse') notes.push('P/E, margin and other income start from this tab’s FY model; discounts and weights from the Excel BSE sheet.');
     q('triNote').innerHTML = notes.join(' ');
@@ -1007,19 +931,10 @@ async function buildValuation(ex) {
     render();
     tsave();
   });
-  // Where the next-FY ADR path starts: a typed-over start belongs to the start it was typed for
-  rxOnSeg(el, 'triStart', s => {
-    t.start = t.adrStart = s;
-    t.adr0 = null; t.regAdr = null;
-    el.querySelectorAll('input[data-tkey="adr0"], input[data-tkey="regAdr"]').forEach(i => { i.value = tShow(i.dataset.tkey); });
-    render();
-    tsave();
-  });
   const triReset = q('triReset');
   if (triReset) triReset.addEventListener('click', () => {
     Object.assign(t, tDefaults);
     el.querySelectorAll('input[data-tkey]').forEach(i => { i.value = tShow(i.dataset.tkey); });
-    el.querySelectorAll('[data-rx-seg="triStart"] button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.value === t.start)));
     try { localStorage.removeItem(triangulationStorageKey(ex)); } catch (e) { /* storage blocked */ }
     render();
   });
