@@ -61,6 +61,28 @@ REPORTED = [
                  "disincentives SEBI directed to the Investor Protection Fund (notes 4a, 4b). labour_codes: "
                  "reversal of the FY26 provision for the new Labour Codes (note 7)."),
     },
+    {
+        "quarter": "Q2 FY 2027", "trading_days": 65, "is_predicted": False,
+        "transaction_rev": 3035, "listing_income": 150, "data_centre": 267, "data_feed": 165,
+        "index_licensing": None, "clearing_settlement": None, "operating_investment": 237,
+        "other_operating": 212.80, "investment_income": 487.66, "other_non_operating": None,
+        "total_revenue": 4554.46,
+        "employee_cost": 220.12, "regulatory_fees": 171.25, "depreciation": 173.88,
+        "technology_expense": None, "sebi_settlement": None, "csr_expense": None, "other_expense": 596.10,
+        "sgf_contribution": 0, "total_expense": 1161.35,
+        "ebitda": 3393.11, "ebitda_margin": 0.75,
+        "share_profit_associates": 31.41, "profit_sale_investment": 0, "labour_codes": 0,
+        "discontinued_operations": 1.73,
+        "pbt": 3426.25, "income_tax": 848.63, "tax_rate": 0.25,
+        "pat": 2577.62, "pat_margin": 0.57, "eps": 10.41,
+        "source": "NSE Q2 FY27 press release with audited consolidated results, 3 Nov 2026",
+        "note": ("The press release splits out transaction charges, listing, data connectivity (in "
+                 "data_centre), data feed and operating investment income: rack, index licensing, clearing "
+                 "and other operating revenue are together in other_operating, all other income in "
+                 "investment_income, and technology and CSR in other_expense. No SEBI settlement or "
+                 "disincentive is booked in the quarter: the ₹714.74 Cr paid to SEBI on 31 Jul 2026 (note 2) "
+                 "and the ₹776.47 Cr deposit settle the ₹1,491.21 Cr provided in FY23 and FY26. No Core SGF contribution and no exceptional items."),
+    },
 ]
 
 

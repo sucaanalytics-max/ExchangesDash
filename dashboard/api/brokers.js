@@ -11,7 +11,7 @@
  *   broker = ANGELONE | GROWW | MOSL …    an active sb_brokers.broker_id (404 otherwise)
  *   mode   = live | parity         latest successful run of that mode (default live)
  *   run    = <uuid>                a specific run instead
- *   view   = summary | daily | calibration | calendar | brokers | prices | pat
+ *   view   = summary | daily | calibration | calendar | brokers | prices | pat | valuation
  *
  * brokers     → active brokers (sb_brokers) with a short label and their latest
  *               successful live and parity runs (null when none is published)
@@ -40,6 +40,11 @@
  *               scenario, each with its rule) for the latest successful run of the
  *               mode that has them (the PAT step writes after its ADR run), or for
  *               `run`; run: null with a reason when none has, or the table is missing
+ * valuation   → the valuation's published lines (sb_valuation_lines: regression, ratio and
+ *               ADR values per scenario, their weighted net value and upside, the inputs
+ *               with their arithmetic, and the daily series behind the charts: ADR, its
+ *               45-day average, close, ratio, regression-implied price; Angel One's TTM
+ *               P/E and its bands), found the same way as pat
  *
  * Example: GET /api/brokers?broker=ANGELONE&view=summary
  */
@@ -263,6 +268,25 @@ async function patLines(broker, mode, runId) {
   return { run: null, rows: [], reason: `No PAT lines published for ${runId ? 'run ' + runId : 'the latest ' + mode + ' runs'} yet` };
 }
 
+// Valuation lines (sb_valuation_lines), found like the PAT lines: the valuation is
+// written by the same step, right after them
+const VAL_COLS = 'section,period_key,line,scenario,label,value,unit,rule,sort_order';
+async function valuationLines(broker, mode, runId) {
+  const runs = await sb(`sb_runs?select=run_id,broker_id,mode,as_of_date,started_at,finished_at,status&broker_id=eq.${encodeURIComponent(broker)}&`
+    + (runId ? `run_id=eq.${runId}` : `mode=eq.${mode}&status=eq.success&order=started_at.desc&limit=10`));
+  for (const run of runs) {
+    let rows;
+    try {
+      rows = await sb(`sb_valuation_lines?select=${VAL_COLS}&run_id=eq.${run.run_id}&broker_id=eq.${encodeURIComponent(broker)}&order=section,sort_order,period_key`, { all: true });
+    } catch (err) {
+      if (err.supabaseStatus !== 404) throw err;   // the table does not exist yet
+      return { run: null, rows: [], reason: 'The valuation has not been published yet (table sb_valuation_lines not created)' };
+    }
+    if (rows.length) return { run, rows: rows.map(r => ({ ...r, value: r.value == null ? null : Number(r.value) })) };
+  }
+  return { run: null, rows: [], reason: `No valuation published for ${runId ? 'run ' + runId : 'the latest ' + mode + ' runs'} yet` };
+}
+
 // "Billionbrains Garage Ventures Ltd (Groww)" → "Groww"; "Angel One Ltd" → "Angel One"
 const SHORT_NAMES = { MOSL: 'Motilal Oswal' };
 function shortName(name, id) {
@@ -290,7 +314,7 @@ module.exports = async function handler(req, res) {
   const view = String(req.query.view || 'summary').toLowerCase();
   const runId = req.query.run ? String(req.query.run).toLowerCase() : null;
   if (!/^[A-Z0-9_]{2,32}$/.test(broker) || !['live', 'parity'].includes(mode)
-    || !['summary', 'daily', 'calibration', 'calendar', 'brokers', 'prices', 'pat'].includes(view) || (runId && !UUID.test(runId))) {
+    || !['summary', 'daily', 'calibration', 'calendar', 'brokers', 'prices', 'pat', 'valuation'].includes(view) || (runId && !UUID.test(runId))) {
     return res.status(400).json({ error: 'Invalid broker, mode, view or run param' });
   }
   try {
@@ -316,6 +340,10 @@ module.exports = async function handler(req, res) {
     if (view === 'pat') {
       res.setHeader('Cache-Control', CACHE_CONTROL);
       return res.status(200).json({ broker: known, ...await patLines(broker, mode, runId) });
+    }
+    if (view === 'valuation') {
+      res.setHeader('Cache-Control', CACHE_CONTROL);
+      return res.status(200).json({ broker: known, ...await valuationLines(broker, mode, runId) });
     }
     const run = await findRun(broker, mode, runId);
     // A broker can be listed before its first run is published (facts awaiting
@@ -350,4 +378,5 @@ module.exports = async function handler(req, res) {
 
 module.exports.panelsThrough = panelsThrough;   // tests/test_brokers_api.py
 module.exports.patLines = patLines;           // tests/test_brokers_api.py
+module.exports.valuationLines = valuationLines; // tests/test_brokers_api.py
 module.exports.openPeriods = openPeriods;       // tests/test_brokers_open_periods.py

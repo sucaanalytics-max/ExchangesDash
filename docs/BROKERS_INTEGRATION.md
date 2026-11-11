@@ -57,7 +57,7 @@ The shell lives in `dashboard/js/00-core.js` ("BROKERS MODE"). It handles the re
 ## Rules for a Brokers PR
 
 - **Files:** new code goes in new files, named so they load after the exchange tabs and before
-  `99-init.js`: `dashboard/js/30-brokers.js`, `31-brokers-pat.js`, and so on. Each needs its
+  `99-init.js`: `dashboard/js/30-brokers.js`, `31-brokers-price.js`, … `33-brokers-pat.js`, `34-brokers-valuation.js`. Each needs its
   `<script src="./js/NN-….js"></script>` tag in `index.html`, in name order. Styles go in a
   separate CSS file linked from `index.html`. No changes to `00-core.js`/`01-data.js` should be
   needed; if one is, explain it in the PR.
@@ -69,7 +69,12 @@ The shell lives in `dashboard/js/00-core.js` ("BROKERS MODE"). It handles the re
   the browser code. Set `Cache-Control` (`s-maxage`) **identically** in the function and in
   `dashboard/vercel.json`, and never add cache-busting query parameters to `/api/*` URLs.
 - **Numbers:** the front end shows what the engine published (`sb_summary_cells`,
-  `sb_daily_revenue`, `sb_calibration`). It never re-computes ADR. The summary view also returns each
+  `sb_daily_revenue`, `sb_calibration`). It never re-computes ADR. One exception: when the reader
+  edits the PAT Predictor's inputs (QoQ ADR growth, P/E, discount rates), `patRecompute` in
+  `33-brokers-pat.js` re-runs the engine's PAT recompute (a port of its `src/engine/pat_kit.py`)
+  from the kit rows the engine publishes in `sb_pat_lines`, and the Valuation tab re-weights its ADR
+  method with it; at the defaults it must reproduce the published lines (checked on load), and
+  `tests/test_broker_pat.py` runs it on the engine's vectors (`tests/fixtures/pat_vectors_*.json`). The summary view also returns each
   panel's last data day (`through`); the run bar shows MTF's, and a panel whose data ends before the
   run's as-of date is flagged (the engine has published runs whose MTF stopped days early). Use the Indian FY (Apr–Mar),
   ₹ Cr, and `quarterSortKey` to sort quarters.
@@ -108,11 +113,29 @@ GitHub's schedule, which is often hours late) copies the `sb_*` tables that the 
 can read into the ExchangesDash Supabase project (NSE-BSE), with the same names and columns.
 `brokers_mirror_schema.sql` defines the copies. Their schema endpoint refuses the publishable key,
 so `--emit-ddl` cannot generate that file; it comes from the brokers team's catalog (#36, 3 Nov
-2026: 8 tables; `sb_pat_lines`, the PAT model's output, added on 5 Nov 2026). Create a new table's copy
+2026: 8 tables; `sb_pat_lines`, the PAT model's output, from their 5 Nov 2026 migration, created there on
+6 Nov and here on 7 Nov; `sb_valuation_lines`, the valuation's output, defined on #75, created there on 9 Nov
+and here on 10 Nov). Create a new table's copy
 only once the table exists on their side: the mirror copies every `sb_*` table that exists here, and one
 their side lacks fails every run. The copies keep their columns, types and primary keys, but not their foreign keys
 or CHECK constraints, because the mirror loads tables in name order.
 
+- Each run copies only what changed. A table whose primary key includes `run_id` (`sb_calibration`,
+  `sb_daily_revenue`, `sb_summary_cells`, `sb_pat_lines`, `sb_valuation_lines`)
+  reads only the runs our `sb_runs` lacks or holds in a different state (one that has finished since),
+  plus each broker and mode's latest successful run on either side, and upserts only rows that differ
+  from the copy. This relies on how the engine writes: `src/live/publish.py` inserts a run's
+  calibration, daily and summary rows before marking it `success` and never touches them after, while
+  `run_pat.py` upserts `sb_pat_lines` / `sb_valuation_lines` into the latest successful live run after
+  it has finished, and again on a later day while no newer run exists. If the engine ever rewrites an
+  older run, or deletes rows inside a run, tell the ExchangesDash owner: the copy would need a full
+  resync. A run deleted from `sb_runs` there is deleted from every copy here (at most 20 % of the runs
+  at once).
+- `sb_runs` is copied whole, after the run-keyed tables, and records which runs are copied: when one
+  run-keyed table fails, new runs stay out of it and are read again on the next run. `sb_brokers`,
+  `sb_calendar`, `sb_broker_daily` and `sb_share_prices` are copied whole each run.
+- A full resync (`brokers-mirror.yml` run by hand with mode `full`, or `brokers_mirror.py --full`)
+  re-reads and re-upserts every row of every table.
 - A column change on the brokers side makes that table's copy stop with an error until the copy's
   definition is updated.
 - While their schema endpoint is closed, a new table on their side is not detected. The brokers

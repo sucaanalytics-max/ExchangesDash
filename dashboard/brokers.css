@@ -148,3 +148,36 @@
 .brk-pat-pl th .brk-tag { margin-left: 3px; }
 .brk-pat-rules td.rx-wrap { white-space: normal; min-width: 220px; font-size: 11.5px; line-height: 1.35; }
 .rx-kpi-v small { font-size: 11px; font-weight: 500; color: var(--color-text-muted); }
+
+/* PAT Predictor, editable layout: ADR build-up, the predictor (rx-xl, as the workbook) and its inputs */
+.brk-pat .rx-xl .rx-xl-w .rx-num-in { width: 64px; }
+.brk-pat-build td.rx-xl-w, .brk-pat-build th.rx-xl-w { padding-left: 12px; color: var(--rx-ink-2); }
+.brk-pat-build tr.brk-pat-ref td { color: var(--rx-muted); font-style: italic; }
+.rx-table.rx-xl.brk-pat-build td.brk-pat-note { font-size: 12px; color: var(--rx-muted); white-space: normal; min-width: 110px; line-height: 1.3; }
+.brk-pat-est { font-weight: 400; font-size: 11.5px; color: var(--rx-muted); }
+.brk-pat-pred { display: flex; flex-wrap: wrap; gap: var(--space-4); align-items: flex-start; padding: 10px 12px; }
+.brk-pat-pred-t { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.brk-pat-inputs { flex: 1 1 220px; max-width: 320px; }
+.brk-pat-inputs .rx-btn { margin-top: 8px; }
+.brk-pat-inputs .rx-btn:disabled { opacity: .5; cursor: default; }
+.brk-pat-inputs .rx-foot { margin: 8px 0 0; }
+:root { --brk-pat-shade: #E7E7E3; }
+:root:not([data-theme="light"]) { --brk-pat-shade: #2C2E33; }
+.rx-table.rx-xl tr.brk-pat-shade td:not(.rx-xl-gut):not(.rx-xl-w) { background: var(--brk-pat-shade); color: var(--rx-xl-fill-ink); }
+.rx-in:disabled { opacity: .55; cursor: not-allowed; }
+/* a figure recalculated on the page from the reader's inputs */
+.rx-table td.brk-pat-chg { box-shadow: inset 0 -2px 0 #D9A54A; }
+.rx-table td.rx-wrap.brk-pat-chg { color: #8a5a00; box-shadow: none; }
+@media (max-width: 640px) {
+  .brk-pat-pred { padding: 8px 0; }
+  .brk-pat-inputs { max-width: none; }
+  /* the predictor fits a phone: wrapping labels, narrower scenario columns */
+  .rx-scroll .rx-table.rx-xl.brk-pat-xl .rx-xl-lab { white-space: normal; min-width: 104px; line-height: 1.25; }
+  .rx-table.rx-xl.brk-pat-xl td, .rx-table.rx-xl.brk-pat-xl th { min-width: 0; padding: 4px 6px; }
+  .rx-table.rx-xl.brk-pat-xl .rx-num-in { width: 52px; }
+  .rx-table.rx-xl.brk-pat-build td, .rx-table.rx-xl.brk-pat-build th { min-width: 0; padding: 4px 6px; }
+  .rx-scroll .rx-table.rx-xl.brk-pat-build .rx-xl-lab { min-width: 0; }
+  .rx-table.rx-xl.brk-pat-build td.brk-pat-note { min-width: 72px; font-size: 11px; }
+}
+.brk-pat-inputs .rx-in { background: var(--rx-xl-key); border-color: var(--rx-xl-key-rule); color: var(--rx-xl-fill-ink); }
+.brk-pat-inputs .rx-in.is-edited { border-color: #D9A54A; }

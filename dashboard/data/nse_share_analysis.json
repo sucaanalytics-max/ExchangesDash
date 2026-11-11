@@ -1,67 +1,66 @@
 {
-  "updated_at": "2026-11-06T19:38:17Z",
+  "updated_at": "2026-11-11T15:03:44Z",
   "ticker": "NSE.BO",
   "ma_window": 45,
   "regression_start": "2026-09-24",
-  "n_days": 30,
+  "n_days": 33,
   "ma_window_comparison": {
     "20": {
-      "r_squared": 0.1083,
-      "pearson_r": 0.3292,
-      "n": 30
+      "r_squared": 0.3145,
+      "pearson_r": 0.5608,
+      "n": 33
     },
     "30": {
-      "r_squared": 0.1975,
-      "pearson_r": 0.4444,
-      "n": 30
+      "r_squared": 0.4321,
+      "pearson_r": 0.6573,
+      "n": 33
     },
     "45": {
-      "r_squared": 0.2587,
-      "pearson_r": 0.5086,
-      "n": 30
+      "r_squared": 0.4745,
+      "pearson_r": 0.6889,
+      "n": 33
     },
     "50": {
-      "r_squared": 0.3112,
-      "pearson_r": 0.5578,
-      "n": 30
+      "r_squared": 0.5329,
+      "pearson_r": 0.73,
+      "n": 33
     },
     "60": {
-      "r_squared": 0.2842,
-      "pearson_r": 0.5331,
-      "n": 30
+      "r_squared": 0.5426,
+      "pearson_r": 0.7366,
+      "n": 33
     },
     "90": {
-      "r_squared": 0.487,
-      "pearson_r": 0.6979,
-      "n": 30
+      "r_squared": 0.6502,
+      "pearson_r": 0.8063,
+      "n": 33
     }
   },
   "regression": {
-    "slope": 6.3567,
-    "intercept": 1456.84,
-    "r_squared": 0.2587,
-    "pearson_r": 0.5086,
-    "equation": "Price = 6.36 \u00d7 Rev_MA45[t-1] + 1456.84",
-    "fit": "weak"
+    "slope": 10.3773,
+    "intercept": 1269.2,
+    "r_squared": 0.4745,
+    "pearson_r": 0.6889,
+    "equation": "Price = 10.38 \u00d7 Rev_MA45[t-1] + 1269.20",
+    "fit": "moderate"
   },
   "methodology": {
     "revenue_lag_days": 1,
     "ma_basis": "all revenue trading days",
-    "slope_se_newey_west": 3.3315,
-    "t_stat_newey_west": 1.91,
+    "slope_se_newey_west": 3.6766,
+    "t_stat_newey_west": 2.82,
     "newey_west_lags": 7,
-    "durbin_watson": 0.378,
+    "durbin_watson": 0.254,
     "holdout": {
-      "n_train": 20,
+      "n_train": 23,
       "n_test": 10,
-      "mape_pct": 8.95,
-      "naive_mape_pct": 7.59,
+      "mape_pct": 7.1,
+      "naive_mape_pct": 4.2,
       "beats_naive": false
     },
     "fair_value_supported": false,
     "gate_reasons": [
-      "only 30 observations (needs 60)",
-      "slope not significant (Newey-West t = 1.91, needs 2)"
+      "only 33 observations (needs 60)"
     ],
     "thresholds": {
       "min_n": 60,
@@ -71,10 +70,10 @@
     }
   },
   "latest": {
-    "date": "2026-11-06",
-    "revenue_cr": 101.2904,
-    "rev_ma": 55.772,
-    "price_actual": 1908.35,
+    "date": "2026-11-11",
+    "revenue_cr": 69.9074,
+    "rev_ma": 57.9627,
+    "price_actual": 1945.9,
     "price_pred": null,
     "error_pct": null
   },
@@ -287,6 +286,27 @@
       "revenue_cr": 101.2904,
       "rev_ma": 55.772,
       "price": 1908.35,
+      "price_pred": null
+    },
+    {
+      "date": "2026-11-08",
+      "revenue_cr": null,
+      "rev_ma": 56.5859,
+      "price": 1930.5,
+      "price_pred": null
+    },
+    {
+      "date": "2026-11-09",
+      "revenue_cr": 98.224,
+      "rev_ma": 56.5859,
+      "price": 1928.15,
+      "price_pred": null
+    },
+    {
+      "date": "2026-11-11",
+      "revenue_cr": 69.9074,
+      "rev_ma": 57.9627,
+      "price": 1945.9,
       "price_pred": null
     }
   ],
@@ -1014,6 +1034,14 @@
     {
       "date": "2026-11-06",
       "revenue_cr": 101.2904
+    },
+    {
+      "date": "2026-11-09",
+      "revenue_cr": 98.224
+    },
+    {
+      "date": "2026-11-11",
+      "revenue_cr": 69.9074
     }
   ],
   "status": "collecting",

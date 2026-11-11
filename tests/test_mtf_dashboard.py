@@ -1,7 +1,8 @@
 """The MTF page's calculation helpers (dashboard/js/40-mtf.js), run in Node: the
 series each view shows, Indian FY periods and their averages, the changes in
-the KPIs, monthly flows, the dated notes on BSE's series and the top-securities
-table. The page itself is checked in a browser."""
+the KPIs, monthly flows, the dated notes on the exchanges' series, the
+top-securities table and the Brokers tab's rows. The page itself is checked in a
+browser."""
 
 import json
 import unittest
@@ -11,7 +12,9 @@ from helpers import DASHBOARD, NODE, js_eval
 
 HELPERS = ["MTF_MONTHS", "MTF_WEEKDAYS", "MTF_AVG6M_DAYS", "MTF_NOTES", "MTF_RANGES", "mtfQuarterOf", "mtfPeriodOf",
            "mtfDaysAfter", "mtfMonthsBack", "mtfSeries", "mtfPointOnOrBefore", "mtfChanges", "mtfInRange",
-           "mtfRangeIsShort", "mtfDateTick", "mtfPeriodRows", "mtfSummary", "mtfFlowRows", "mtfNotesBetween", "mtfTopRows"]
+           "mtfRangeIsShort", "mtfDateTick", "mtfPeriodRows", "mtfSummary", "mtfFlowRows", "mtfNotesFor", "mtfNotesBetween",
+           "mtfTopRows", "MTF_BROKER_PALETTE", "MTF_MEASURE_CHIPS", "mtfBrokerPrimary", "mtfBrokerRows", "mtfBrokerStyle",
+           "mtfBrokerPoints", "mtfBrokerMoves", "mtfShareText", "mtfBookText", "mtfQuarterTicks", "rxCr", "fmtNum"]
 
 
 def js(expr, data=None):
@@ -250,9 +253,11 @@ class Notes(unittest.TestCase):
     def test_breaks_between(self):
         dates = "ns => ns.map(n => n.date)"
         self.assertEqual(js(f"({dates})(mtfNotesBetween('bse', '2025-09-01', '2025-12-31'))"), ["2025-10-01"])
-        self.assertEqual(js(f"({dates})(mtfNotesBetween('combined', null, null))"), ["2024-03-12", "2025-10-01"])
+        # every exchange's notes apply to the combined view: BSE's two and NSE's switch to gross reporting
+        self.assertEqual(js(f"({dates})(mtfNotesBetween('combined', null, null))"), ["2024-03-12", "2025-10-01", "2025-10-01"])
         self.assertEqual(js(f"({dates})(mtfNotesBetween('bse', '2025-10-01', null))"), [])     # from is exclusive
-        self.assertEqual(js(f"({dates})(mtfNotesBetween('nse', null, null))"), [])
+        self.assertEqual(js(f"({dates})(mtfNotesBetween('nse', null, null))"), ["2025-10-01"])
+        self.assertEqual(js("mtfNotesBetween('nse', null, null)[0].ex"), "nse")
         self.assertEqual(js(f"({dates})(mtfNotesBetween('bse', null, null, 'excluded'))"), ["2025-10-20"])
 
     def test_notes_are_dated_and_sorted(self):
@@ -285,6 +290,89 @@ class TopSecurities(unittest.TestCase):
         self.assertIsNone(js("mtfTopRows(null, 'nse')"))
 
 
+BROKERS = {
+    "brokers": [
+        {"id": "a", "short": "A", "name": "A Ltd", "type": "bank", "parent": None, "primary": {"measure": "share", "basis": "period_end"},
+         "sources": {}, "series": [
+             {"as_of": "2026-06-30", "measure": "share", "basis": "period_end", "share_pct": 16.5, "book_cr": 231.0, "derived": True},
+             {"as_of": "2026-06-30", "measure": "net", "basis": "period_end", "share_pct": 13.0, "book_cr": 182.0},
+             {"as_of": "2026-09-30", "measure": "share", "basis": "period_end", "share_pct": 16.1, "book_cr": 241.5, "derived": True},
+         ]},
+        {"id": "b", "short": "B", "name": "B Ltd", "type": "discount", "parent": None, "primary": {"measure": "net", "basis": "period_end"},
+         "sources": {}, "series": [
+             {"as_of": "2026-06-30", "measure": "net", "basis": "period_end", "share_pct": 2.0, "book_cr": 28.0},
+             {"as_of": "2026-09-30", "measure": "net", "basis": "period_end", "share_pct": 2.7, "book_cr": 40.5},
+             {"as_of": "2026-10-31", "measure": "net", "basis": "month_avg", "share_pct": 2.8, "book_cr": 41.0},
+         ]},
+        {"id": "c", "short": "C", "name": "C Ltd", "type": "full_service", "parent": None, "primary": {"measure": "unstated", "basis": "period_end"},
+         "sources": {}, "series": []},
+        {"id": "d", "short": "D", "name": "D Ltd", "type": "discount", "parent": None,
+         "primary": {"measure": "client_funding", "basis": "period_end"}, "sources": {}, "series": [
+             {"as_of": "2026-06-30", "measure": "net", "basis": "period_end", "share_pct": 1.0, "book_cr": 14.0},
+             {"as_of": "2026-09-30", "measure": "client_funding", "basis": "period_end", "share_pct": 1.2, "book_cr": 19.0},
+             {"as_of": "2026-09-30", "measure": "net", "basis": "period_end", "share_pct": 1.1, "book_cr": 17.5},
+             {"as_of": "2026-10-31", "measure": "client_funding", "basis": "month_avg", "share_pct": 1.3, "book_cr": 20.0},
+         ]},
+    ] + [{"id": f"x{i}", "short": f"X{i}", "name": "", "type": "bank", "parent": None,
+          "primary": {"measure": "gross", "basis": "period_end"}, "sources": {}, "series": []} for i in range(7)],
+    "quarters": [
+        {"end": "2026-03-31", "label": "Q4 FY 2026", "shares": {}, "tracked_n": 0},
+        {"end": "2026-06-30", "label": "Q1 FY 2027", "shares": {"a": 16.5, "b": 2.0}, "tracked_n": 2},
+        {"end": "2026-09-30", "label": "Q2 FY 2027", "shares": {"a": 16.1, "b": 2.7}, "tracked_n": 2},
+        {"end": "2026-12-31", "label": "Q3 FY 2027", "shares": {}, "tracked_n": 0},
+    ],
+}
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class Brokers(unittest.TestCase):
+    def test_rows_follow_the_primary_measure(self):
+        rows = js("mtfBrokerRows(DATA)", BROKERS)
+        self.assertEqual([r["id"] for r in rows][:4], ["a", "b", "d", "c"])  # largest latest book first; none last
+        a, b, c = rows[0], rows[1], rows[3]
+        self.assertEqual((a["latest"]["as_of"], a["latest"]["measure"]), ("2026-09-30", "share"))
+        self.assertEqual([p["as_of"] for p in a["history"]], ["2026-06-30"])  # the net figure is not its series
+        self.assertEqual(a["alts"], [])                                       # its net figure is older than the latest share
+        self.assertEqual([p["basis"] for p in b["alts"]], ["month_avg"])      # newer monthly average shown beside it
+        self.assertIsNone(c["latest"])
+        d = next(r for r in rows if r["id"] == "d")
+        # every other measure's latest figure that is at least as recent, newest first; the older net one is not
+        self.assertEqual([(p["as_of"], p["measure"], p["basis"]) for p in d["alts"]],
+                         [("2026-10-31", "client_funding", "month_avg"), ("2026-09-30", "net", "period_end")])
+        self.assertEqual(js("mtfBrokerRows(null)"), [])
+
+    def test_fixed_styles(self):
+        out = js("['a', 'b', 'x3', 'x4'].map(id => mtfBrokerStyle(DATA, id))", BROKERS)
+        self.assertEqual([o["slot"] for o in out], [0, 1, 7, 8])
+        self.assertEqual(out[0]["color"], js("MTF_BROKER_PALETTE[0]"))
+        self.assertEqual(out[2]["dash"], [])
+        self.assertEqual(out[3]["color"], out[0]["color"])                   # the ninth reuses slot 1, dashed
+        self.assertTrue(out[3]["dash"])
+
+    def test_moves_between_last_disclosed_quarters(self):
+        out = js("mtfBrokerMoves(DATA)", BROKERS)
+        self.assertEqual((out["prev"]["end"], out["cur"]["end"]), ("2026-06-30", "2026-09-30"))   # empty Q3 skipped
+        self.assertEqual([m["id"] for m in out["moves"]], ["b", "a"])                              # gains first
+        self.assertAlmostEqual(out["moves"][0]["pp"], 0.7)
+        self.assertAlmostEqual(out["moves"][1]["pp"], -0.4)
+        self.assertIsNone(js("mtfBrokerMoves({quarters: []})"))
+
+    def test_points_and_text(self):
+        pts = js("mtfBrokerPoints(DATA.brokers[1], 'book').map(q => [q.x, q.y])", BROKERS)
+        self.assertEqual(pts, [[1782777600000, 28.0], [1790726400000, 40.5]])    # 30 Jun, 30 Sep 2026 UTC; month avg left out
+        self.assertEqual(js("mtfShareText({share_pct: 14, precision: 'integer', measure: 'share'})"), "~14 %")
+        self.assertEqual(js("mtfShareText({share_pct: 16.1, measure: 'share'})"), "16.1 %")
+        self.assertEqual(js("mtfShareText({share_pct: 6.6142, measure: 'unstated'})"), "6.61 %")
+        self.assertEqual(js("mtfShareText(null)"), "—")
+        self.assertEqual(js("mtfBookText({book_cr: 25553.4, derived: true})"), "≈ ₹25,553 Cr")
+        self.assertEqual(js("mtfBookText({book_cr: 9600, rounded: true})"), "~₹9,600 Cr")
+        self.assertEqual(js("mtfBookText({book_cr: null})"), "—")
+
+    def test_quarter_ticks(self):
+        ticks = js("mtfQuarterTicks(Date.UTC(2025, 11, 15), Date.UTC(2026, 9, 1)).map(v => new Date(v).toISOString().slice(0, 10))")
+        self.assertEqual(ticks, ["2025-12-31", "2026-03-31", "2026-06-30", "2026-09-30"])
+
+
 @unittest.skipUnless(NODE, "node not installed")
 class Views(unittest.TestCase):
     def test_view_tabs_exist(self):
@@ -296,6 +384,22 @@ class Views(unittest.TestCase):
                 self.assertIn(t, out["tabs"])
                 self.assertIn(out["tabs"][t]["icon"], out["icons"])
         self.assertNotIn("flows", out["defs"][0]["tabs"])    # nothing to combine
+        # brokers' shares are of the NSE + BSE book: the tab is in that view only
+        self.assertEqual([d["id"] for d in out["defs"] if "brokers" in d["tabs"]], ["combined"])
+
+    def test_committed_brokers_file_reads(self):
+        path = DASHBOARD / "data" / "mtf_brokers.json"
+        if not path.exists():
+            self.skipTest("no committed mtf_brokers.json")
+        doc = json.loads(path.read_text())
+        out = js("(() => { const rows = mtfBrokerRows(DATA); return { n: rows.length, ids: rows.map(r => r.id),"
+                 " latest: rows.filter(r => r.latest).length, shares: rows.filter(r => r.latest && r.latest.share_pct != null).length,"
+                 " q: (DATA.quarters || []).length }; })()", doc)
+        self.assertEqual(out["n"], len(doc["brokers"]))
+        self.assertEqual(len(set(out["ids"])), out["n"])
+        self.assertEqual(out["latest"], out["n"])              # every broker has a figure on its main measure
+        self.assertEqual(out["shares"], out["n"])              # ... priced against the NSE + BSE book
+        self.assertEqual(out["q"], 8)
 
     def test_committed_file_reads(self):
         path = DASHBOARD / "data" / "mtf_daily.json"

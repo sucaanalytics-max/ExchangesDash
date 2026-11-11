@@ -3056,6 +3056,9 @@ span.pr-neu {
 .rx-kpi-v small { font-size: 13px; font-weight: 500; color: var(--rx-muted); }
 .rx-kpi-s { font-size: 12px; color: var(--rx-muted); margin-top: 2px; }
 .rx-kpi--accent { box-shadow: inset 0 3px 0 var(--rx-model); }
+/* The note under the KPI row sits close to it, not a full section gap away */
+.rx-kpis + .rx-kpi-note { margin-top: calc(6px - var(--space-4)); padding: 0 2px; }
+.rx-kpi-note:empty { display: none; }
 .rx-kpi svg.rx-spark { display: block; width: 100%; height: 26px; margin-top: 6px; overflow: visible; }
 
 /* Chips: source tags and small states */
@@ -3288,6 +3291,84 @@ a.rx-link { display: inline; }
 .rx-sens th { text-align: center; }
 .rx-sens td.is-base { outline: 2px solid var(--rx-ink); outline-offset: -2px; }
 
+/* Excel valuation layout (js/14-valuation.js valuationExcelRows, triangulationSummaryRows):
+   the workbook's Bear / Base / Bull block and Summary. Coloured scenario headers,
+   tinted rows, light-blue input cells, a 2px box round each block. Fills are muted
+   with light text in dark mode (any theme but data-theme="light", as above). */
+:root {
+  --rx-xl-bear: #F4B0B0;
+  --rx-xl-base: #FFE38A;
+  --rx-xl-bull: #B4DCA2;
+  --rx-xl-head-ink: #16181D;
+  --rx-xl-sum: #000000;
+  --rx-xl-sum-ink: #FFFFFF;
+  --rx-xl-green: #E2EFDA;
+  --rx-xl-peach: #FCE4D6;
+  --rx-xl-lilac: #E4DFEC;
+  --rx-xl-key: #DDEBF7;
+  --rx-xl-key-rule: #9DC3E6;
+  --rx-xl-fill-ink: #16181D;
+  --rx-xl-box: #16181D;
+}
+:root:not([data-theme="light"]) {
+  --rx-xl-bear: #6B3234;
+  --rx-xl-base: #645416;
+  --rx-xl-bull: #2F5636;
+  --rx-xl-head-ink: #F2F2F0;
+  --rx-xl-sum: #0B0B0C;
+  --rx-xl-sum-ink: #F2F2F0;
+  --rx-xl-green: #263D29;
+  --rx-xl-peach: #4A3326;
+  --rx-xl-lilac: #362F47;
+  --rx-xl-key: #1E3A55;
+  --rx-xl-key-rule: #4A7BA6;
+  --rx-xl-fill-ink: #F2F2F0;
+  --rx-xl-box: #8E9199;
+}
+/* separate borders so the pinned label column keeps its box edge when scrolled */
+/* The two panels sit side by side only when each table fits whole (the
+   Summary is wider: gutter + Weight column); otherwise they stack */
+.rx-col-xl-val { flex: 1 1 550px; }
+.rx-col-xl-sum { flex: 1 1 590px; }
+.rx-table.rx-xl { width: auto; border-collapse: separate; border-spacing: 0; }
+.rx-table.rx-xl th, .rx-table.rx-xl td { padding: 4px 10px; }
+.rx-table.rx-xl td { min-width: 82px; }
+.rx-table.rx-xl .rx-xl-lab { text-align: left; min-width: 150px; color: var(--rx-ink); background: var(--rx-surface); }
+.rx-table.rx-xl th.rx-xl-lab { font: 600 12px var(--font-body); letter-spacing: 0; text-transform: none; }
+.rx-table.rx-xl th.rx-xl-h { text-align: center; color: var(--rx-xl-head-ink); font: 700 12px var(--font-body); letter-spacing: 0.02em; text-transform: none; }
+.rx-table.rx-xl th.rx-xl-bear { background: var(--rx-xl-bear); }
+.rx-table.rx-xl th.rx-xl-base { background: var(--rx-xl-base); }
+.rx-table.rx-xl th.rx-xl-bull { background: var(--rx-xl-bull); }
+.rx-table.rx-xl th.rx-xl-sum { background: var(--rx-xl-sum); color: var(--rx-xl-sum-ink); text-align: left; }
+.rx-table.rx-xl tr.rx-xl-bold td { font-weight: 700; }
+.rx-table.rx-xl tr.rx-xl-green td:not(.rx-xl-gut):not(.rx-xl-w) { background: var(--rx-xl-green); color: var(--rx-xl-fill-ink); }
+.rx-table.rx-xl tr.rx-xl-peach td:not(.rx-xl-gut):not(.rx-xl-w) { background: var(--rx-xl-peach); color: var(--rx-xl-fill-ink); }
+.rx-table.rx-xl tr.rx-xl-lilac td:not(.rx-xl-gut):not(.rx-xl-w) { background: var(--rx-xl-lilac); color: var(--rx-xl-fill-ink); }
+.rx-table.rx-xl td.rx-xl-key { background: var(--rx-xl-key); }
+/* gutter (inputs left of the box) and weight column (right of it): no box, no fill */
+.rx-table.rx-xl .rx-xl-gut, .rx-table.rx-xl .rx-xl-w { min-width: 0; border-bottom: 0; background: transparent; white-space: nowrap; }
+.rx-table.rx-xl .rx-xl-gut { padding: 3px 8px 3px 0; }
+.rx-table.rx-xl .rx-xl-w { padding: 3px 0 3px 10px; text-align: left; }
+.rx-table.rx-xl th.rx-xl-w { border-bottom: 0; text-transform: none; letter-spacing: 0; font: 600 12px var(--font-body); vertical-align: middle; }
+.rx-table.rx-xl .rx-xl-gut .rx-num-in, .rx-table.rx-xl .rx-xl-w .rx-num-in { width: 56px; }
+.rx-xl .rx-xl-unit { margin-left: 3px; color: var(--rx-muted); font-size: 12px; }
+.rx-xl .rx-xl-in { background: var(--rx-xl-key); border-color: var(--rx-xl-key-rule); color: var(--rx-xl-fill-ink); }
+.rx-xl tr.rx-xl-green .rx-in { background: transparent; color: var(--rx-xl-fill-ink); }
+.rx-xl .rx-in.is-edited { border-color: #D9A54A; }
+/* boxes: top / bottom of each block and of the boxed row, left of the label, right of Bull */
+.rx-table.rx-xl .rx-xl-t { border-top: 2px solid var(--rx-xl-box); }
+.rx-table.rx-xl .rx-xl-b { border-bottom: 2px solid var(--rx-xl-box); }
+.rx-table.rx-xl .rx-xl-lab { border-left: 2px solid var(--rx-xl-box); }
+.rx-table.rx-xl .rx-xl-r { border-right: 2px solid var(--rx-xl-box); }
+.rx-table.rx-xl tr.rx-xl-gap td { height: 10px; padding: 0; border: 0; background: transparent; }
+@media (max-width: 640px) {
+  /* pin the label column, not the gutter */
+  .rx-scroll .rx-table.rx-xl th:first-child,
+  .rx-scroll .rx-table.rx-xl td:first-child { position: static; box-shadow: none; background: transparent; }
+  .rx-scroll .rx-table.rx-xl .rx-xl-lab { position: sticky; left: 0; z-index: 1; min-width: 132px; }
+  .rx-table.rx-xl td { min-width: 74px; }
+}
+
 /* Bridge (PAT walk) rows drawn in HTML */
 .rx-walk { display: flex; flex-direction: column; gap: 5px; }
 .rx-walk-row { display: grid; grid-template-columns: 118px minmax(0, 1fr) 70px; gap: 8px; align-items: center; font-size: 12px; }
@@ -3335,6 +3416,9 @@ a.rx-link { display: inline; }
   .rx-scroll .rx-table th:first-child,
   .rx-scroll .rx-table td:first-child { position: sticky; left: 0; z-index: 1; background: var(--rx-surface); box-shadow: 1px 0 0 var(--rx-rule); }
   .rx-scroll .rx-table tr.rx-out td:first-child { background: var(--rx-sunk); }
+  /* Long input labels wrap so the Value column stays beside the pinned label */
+  .rx-scroll .rx-table.rx-wrap-lab th:first-child,
+  .rx-scroll .rx-table.rx-wrap-lab td:first-child { white-space: normal; min-width: 120px; max-width: 170px; }
 }
 
 @media print {
@@ -3389,6 +3473,22 @@ a.rx-link { display: inline; }
 .mtf-notes .rx-alert + .rx-alert { margin-top: 6px; }
 .mtf-dagger { color: var(--rx-warn); font-weight: 700; margin-left: 2px; cursor: help; }
 .mtf-stocks td.mtf-name { white-space: normal; min-width: 180px; }
+/* MTF Brokers tab */
+.mtf-bk-sub { font-size: 11px; font-weight: 400; color: var(--rx-muted); margin-top: 1px; white-space: nowrap; }
+.mtf-bk-sw { display: inline-block; width: 14px; height: 0; border-top: 3px solid currentColor; margin: 0 6px 3px 0; vertical-align: middle; }
+.mtf-bk-sw--dash { border-top-style: dashed; }
+.mtf-bk-table td { vertical-align: top; }
+.mtf-bk-table td.mtf-bk-name { min-width: 150px; }
+.mtf-bk-table td.mtf-bk-name .mtf-bk-sub { white-space: normal; max-width: 220px; }
+.mtf-bk-table td.mtf-bk-old { color: var(--rx-ink-2); }
+.mtf-bk-table td.mtf-bk-src { min-width: 200px; max-width: 280px; }
+.mtf-bk-table td.mtf-bk-src .mtf-bk-sub { white-space: normal; cursor: help; }
+.mtf-bk-table .rx-chip, .mtf-bk-qtable .rx-chip { white-space: nowrap; }
+.mtf-bk-qtable td.mtf-bk-none { color: var(--rx-muted); }
+.mtf-bk-qtable td .rx-chip { margin-left: 4px; font-size: 10px; }
+.mtf-bk-mv { font-size: 10px; }
+.mtf-bk-srcs td.rx-wrap { min-width: 180px; font-size: 12px; }
+.mtf-about .rx-chip { margin-right: 2px; }
 @media (max-width: 640px) {
   .mtf-stocks .mtf-id { display: none; }
   .mtf-stocks td.mtf-name { min-width: 140px; }

@@ -553,6 +553,11 @@ class WorkflowWiring(unittest.TestCase):
         job = self.wf[self.wf.index("\n  mtf-update:"):self.wf.index("\n  deploy:")]
         self.assertIn("dashboard/data/nse_mtf_daily.json", job[job.index("Commit MTF data"):])
 
+    def test_broker_shares_are_committed(self):
+        job = self.wf[self.wf.index("\n  mtf-update:"):self.wf.index("\n  deploy:")]
+        self.assertIn("dashboard/data/mtf_brokers.json", job[job.index("Commit MTF data"):])
+        self.assertIn("dashboard/data/mtf_broker_live.json", job[job.index("Commit MTF data"):])
+
     def test_commit_message_is_a_skipped_bot_commit(self):
         self.assertIn('git commit -m "📊 MTF update: ', self.wf)
         self.assertIn('"📊 MTF update: "*', (ROOT / "dashboard" / "vercel-ignore-build.sh").read_text())

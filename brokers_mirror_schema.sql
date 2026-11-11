@@ -2,9 +2,11 @@
 -- everjfpbnlbcpuarnhob), filled on weekdays by scripts/brokers_mirror.py (.github/workflows/brokers-mirror.yml).
 -- Definitions: the brokers team's catalog, sucaanalytics-max/ExchangesDash#36, 3 Nov 2026. Their schema
 -- endpoint does not serve the publishable key, so --emit-ddl cannot generate this file.
--- sb_pat_lines (the PAT model's output, 5 Nov 2026) is from their migrations/20261105_sb_pat_lines.sql.
--- Create it here only after that migration has run on their side: the mirror copies every sb_* table that
--- exists here, and a table their side does not have yet fails each run (HTTP 404 from their API).
+-- sb_pat_lines (the PAT model's output) is from their migrations/20261105_sb_pat_lines.sql, applied there on
+-- 6 Nov 2026 and here on 7 Nov; sb_valuation_lines (the valuation's output) is from their
+-- migrations/20261109_sb_valuation_lines.sql (definition posted on #75), applied there on 9 Nov and here on 10 Nov.
+-- Add a new table here only after it exists on their side: the mirror copies
+-- every sb_* table that exists here, and one their side does not have yet fails each run (HTTP 404 from their API).
 -- Same names, columns, types, NOT NULL, defaults and primary keys. Their foreign keys and CHECK constraints
 -- are left out: the mirror loads tables in name order, and the source already enforces both.
 -- RLS is on with no policies: only the service role reads or writes these tables.
@@ -147,3 +149,20 @@ create table if not exists public.sb_pat_lines (
 );
 alter table public.sb_pat_lines enable row level security;
 comment on table public.sb_pat_lines is 'Copy of brokers-dashboard sb_pat_lines (scripts/brokers_mirror.py); not edited by hand.';
+
+create table if not exists public.sb_valuation_lines (
+  run_id uuid not null,
+  broker_id text not null,
+  section text not null,
+  period_key text not null default '',
+  line text not null,
+  scenario text not null default '',
+  label text not null,
+  value numeric not null,
+  unit text not null,
+  rule text,
+  sort_order integer not null,
+  primary key (run_id, section, period_key, line, scenario)
+);
+alter table public.sb_valuation_lines enable row level security;
+comment on table public.sb_valuation_lines is 'Copy of brokers-dashboard sb_valuation_lines (scripts/brokers_mirror.py); not edited by hand.';

@@ -95,7 +95,7 @@ class Page(unittest.TestCase):
         self.assertEqual(out, {"item": "", "note": ""})
 
 
-def pat(tables, runs, run_id=None):
+def pat(tables, runs, run_id=None, fn="patLines"):
     """patLines('GROWW', 'live', run_id) against a stubbed Supabase: `runs` answers sb_runs,
     `tables` maps a run_id to its sb_pat_lines rows (None: the table does not exist)."""
     script = f"""
@@ -107,8 +107,8 @@ globalThis.fetch = async url => {{
   if (TABLES === null) return {{ ok: false, status: 404 }};
   return {{ ok: true, json: async () => TABLES[run] || [] }};
 }};
-const {{ patLines }} = require({json.dumps(str(API))});
-patLines('GROWW', 'live', {json.dumps(run_id)}).then(o => process.stdout.write(JSON.stringify(o)));"""
+const {{ {fn} }} = require({json.dumps(str(API))});
+{fn}('GROWW', 'live', {json.dumps(run_id)}).then(o => process.stdout.write(JSON.stringify(o)));"""
     out = subprocess.run([NODE, "-"], input=script, capture_output=True, text=True)
     if out.returncode:
         raise RuntimeError(out.stderr)
@@ -136,6 +136,26 @@ class PatView(unittest.TestCase):
         out = pat(None, RUNS)
         self.assertIsNone(out["run"])
         self.assertIn("sb_pat_lines not created", out["reason"])
+
+
+VAL = {"section": "summary", "period_key": "", "line": "net", "scenario": "base", "label": "Net value (weighted)",
+       "value": "221.19", "unit": "Rs", "rule": "20% × 201.05 + 30% × 221.01 + 50% × 229.36", "sort_order": 12}
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class ValuationView(unittest.TestCase):
+    def test_latest_run_with_lines(self):
+        out = pat({"new": [VAL], "old": [VAL]}, RUNS, fn="valuationLines")
+        self.assertEqual(out["run"]["run_id"], "new")
+        self.assertEqual(out["rows"][0]["value"], 221.19)
+
+    def test_falls_back_while_the_valuation_has_not_published(self):
+        self.assertEqual(pat({"old": [VAL]}, RUNS, fn="valuationLines")["run"]["run_id"], "old")
+
+    def test_no_table(self):
+        out = pat(None, RUNS, fn="valuationLines")
+        self.assertIsNone(out["run"])
+        self.assertIn("sb_valuation_lines not created", out["reason"])
 
 
 if __name__ == "__main__":

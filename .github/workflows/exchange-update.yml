@@ -210,7 +210,7 @@ jobs:
         run: |
           NEW_DAYS=$(cat .new_mcx_days_count 2>/dev/null || echo "0")
           echo "new_days=$NEW_DAYS" >> $GITHUB_OUTPUT
-          echo "MCX new trading days: $NEW_DAYS"
+          echo "MCX new or changed days: $NEW_DAYS"
 
       - name: Commit MCX data
         # Manual runs always publish, so a code fix can regenerate the JSON without a new trading day
@@ -220,7 +220,7 @@ jobs:
           git config user.email "research@tuskinvest.com"
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
           git add data/mcx_dashboard_data.json data/mcx_enriched_data.json dashboard/data/mcx_dashboard_data.json dashboard/data/mcx_enriched_data.json
-          git diff --cached --quiet || git commit -m "📊 MCX update: $(date +%Y-%m-%d) — ${{ steps.check_new.outputs.new_days }} new day(s)"
+          git diff --cached --quiet || git commit -m "📊 MCX update: $(date +%Y-%m-%d) — ${{ steps.check_new.outputs.new_days }} new or changed day(s)"
           for i in 1 2 3 4 5; do
             git push && exit 0
             echo "Push rejected (concurrent job likely pushed first) — retrying with rebase, attempt $i…"
@@ -475,7 +475,7 @@ jobs:
           git config user.name "Research-Tusk"
           git config user.email "research@tuskinvest.com"
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-          for f in dashboard/data/mtf_daily.json dashboard/data/mtf_stocks_latest.json dashboard/data/nse_mtf_daily.json; do
+          for f in dashboard/data/mtf_daily.json dashboard/data/mtf_stocks_latest.json dashboard/data/nse_mtf_daily.json dashboard/data/mtf_brokers.json dashboard/data/mtf_broker_live.json; do
             if [ -f "$f" ]; then git add "$f"; fi
           done
           git diff --cached --quiet || git commit -m "📊 MTF update: $(date +%Y-%m-%d) — ${{ steps.check_new.outputs.new_days }} new day(s)"
@@ -555,7 +555,7 @@ jobs:
           echo "- **Trigger:** $TRIGGER" >> $GITHUB_STEP_SUMMARY
           echo "- **NSE:** ${{ needs.nse-update.result }}, new or changed days ${{ needs.nse-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **BSE:** ${{ needs.bse-update.result }}, new or changed days ${{ needs.bse-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **MCX:** ${{ needs.mcx-update.result }}, new days ${{ needs.mcx-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **MCX:** ${{ needs.mcx-update.result }}, new or changed days ${{ needs.mcx-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **MTF:** ${{ needs.mtf-update.result }}, new or revised days ${{ needs.mtf-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Share analysis:** NSE ${{ needs.nse-share-analysis.result }}, BSE ${{ needs.bse-share-analysis.result }}, MCX ${{ needs.mcx-share-analysis.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Vercel deploy marker:** ${{ needs.deploy.result }}" >> $GITHUB_STEP_SUMMARY

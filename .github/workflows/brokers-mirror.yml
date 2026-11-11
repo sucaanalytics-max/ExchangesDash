@@ -14,6 +14,10 @@ name: Brokers Mirror
 # Vercel Cron starts both slots on time (dashboard/api/trigger-scheduled.js, workflow_dispatch with
 # mode: mirror). GitHub runs the schedule below hours late, so it is only the fallback; a repeat copy
 # is a harmless upsert. Keep these crons equal to the brokers-mirror slots in that file.
+#
+# A copy reads only what changed: tables keyed on run_id copy new or changed engine runs and recheck each
+# broker's latest run; the small tables are copied whole. Mode "full" (manual) re-reads and re-upserts
+# every row of every table, to repair a copy that has drifted.
 
 on:
   schedule:
@@ -24,12 +28,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'mirror: copy the tables; emit-ddl: their table definitions as SQL (artifact)'
+        description: 'mirror: copy what changed; full: re-copy every row (resync); emit-ddl: their table definitions as SQL (artifact)'
         required: false
         default: 'mirror'
         type: choice
         options:
           - mirror
+          - full
           - emit-ddl
 
 permissions:
@@ -44,7 +49,7 @@ jobs:
     # Scheduled runs only once the mirror is switched on; manual runs always
     if: ${{ github.event_name == 'workflow_dispatch' || vars.ENABLE_BROKERS_MIRROR == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30    # a full resync took ~7 min on 9 Nov 2026 and grows with every run
     env:
       BROKERS_SUPABASE_URL: ${{ vars.BROKERS_SUPABASE_URL }}
       BROKERS_SUPABASE_KEY: ${{ secrets.BROKERS_SUPABASE_KEY }}
@@ -74,13 +79,19 @@ jobs:
           retention-days: 30
 
       - name: Copy the tables
-        if: ${{ (github.event_name == 'schedule' || inputs.mode == 'mirror') && vars.ENABLE_BROKERS_MIRROR == 'true' }}
+        if: ${{ (github.event_name == 'schedule' || inputs.mode == 'mirror' || inputs.mode == 'full') && vars.ENABLE_BROKERS_MIRROR == 'true' }}
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python scripts/brokers_mirror.py
+          MODE: ${{ inputs.mode }}
+        run: |
+          if [ "$MODE" = "full" ]; then
+            python scripts/brokers_mirror.py --full
+          else
+            python scripts/brokers_mirror.py
+          fi
 
       - name: Mirror is off
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'mirror' && vars.ENABLE_BROKERS_MIRROR != 'true' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.mode == 'mirror' || inputs.mode == 'full') && vars.ENABLE_BROKERS_MIRROR != 'true' }}
         run: |
           echo "::notice title=Brokers mirror off::Set the repository variable ENABLE_BROKERS_MIRROR to true once brokers_mirror_schema.sql is applied."

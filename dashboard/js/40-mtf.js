@@ -7,6 +7,7 @@
 
 const MTF_DAILY_URL = './data/mtf_daily.json';
 const MTF_STOCKS_URL = './data/mtf_stocks_latest.json';
+const MTF_BROKERS_URL = './data/mtf_brokers.json';
 const MTF_MAX_AGE_MS = 15 * 60 * 1000;   // re-fetch the files when a view loads after this long
 
 // Sidebar tabs: label and NAV_ICONS key
@@ -16,19 +17,21 @@ const MTF_TABS = {
   periods: { label: 'By Quarter', icon: 'temporal' },
   flows:   { label: 'Flows', icon: 'prediction' },
   stocks:  { label: 'Top Securities', icon: 'advanced' },
+  brokers: { label: 'Brokers', icon: 'share' },
 };
 
 // The views: pill order, exchange series, and their tabs (BSE's flows stop at
-// Sep 2025; there are none to combine)
+// Sep 2025; there are none to combine; brokers' shares are of the NSE + BSE book)
 const MTF_VIEW_DEFS = [
-  { id: 'combined', name: 'NSE + BSE', pill: 'NSE+BSE', tabs: ['summary', 'book', 'periods', 'stocks'] },
+  { id: 'combined', name: 'NSE + BSE', pill: 'NSE+BSE', tabs: ['summary', 'book', 'periods', 'stocks', 'brokers'] },
   { id: 'nse', name: 'NSE', pill: 'NSE', tabs: ['summary', 'book', 'periods', 'flows', 'stocks'] },
   { id: 'bse', name: 'BSE', pill: 'BSE', tabs: ['summary', 'book', 'periods', 'flows', 'stocks'] },
 ];
 
 // Dated notes on the exchanges' own series. kind 'break': the series changes
-// level or source on that date, so a change measured across it compares
-// different bases; 'excluded': the day is left out of the series.
+// level, source or reporting basis on that date, so a change measured across it
+// compares different bases; 'excluded': the day is left out of the series.
+// Every exchange's notes also apply to the combined view.
 const MTF_NOTES = [
   { ex: 'bse', date: '2024-03-12', kind: 'break',
     text: 'BSE’s own series steps up 56 % between 7 Mar 2024 (₹1,712 Cr) and 12 Mar 2024 (₹2,675 Cr) and stays there; '
@@ -37,6 +40,12 @@ const MTF_NOTES = [
     text: 'BSE’s book falls 33 % on 1 Oct 2025 (₹4,588 Cr on 30 Sep, ₹3,094 Cr on 1 Oct). The drop is BSE’s own: its old '
       + 'archive, whose last day is 1 Oct, falls the same way (to ₹3,126 Cr). From that day BSE publishes a new file, which has no fresh / '
       + 'liquidated flows and runs 0.05–0.7 % below an independent copy of BSE’s data (1 % below the archive on 1 Oct, the one day both exist).' },
+  { ex: 'nse', date: '2025-10-01', kind: 'break',
+    text: 'NSE’s book rises 7 % on 1 Oct 2025 (₹99,446 Cr on 30 Sep, ₹1,06,409 Cr on 1 Oct), with ₹10,389 Cr of fresh exposure '
+      + 'against about ₹6,000 Cr on an ordinary day. From that day brokers report MTF to the exchanges on revised rules, which '
+      + 'moved several of them to reporting their gross book, so part of the step is a change of basis, not new lending '
+      + '(ICRA, “Securities Broking”, 24 Jun 2026: “revised MTF reporting led to the shifting of several brokers to gross reporting, '
+      + 'resulting in some optical growth”).' },
   { ex: 'bse', date: '2025-10-20', kind: 'excluded',
     text: 'BSE’s 20 Oct 2025 file doubles the book (₹6,379 Cr against ₹3,199 and ₹3,194 Cr either side); the day is left out.' },
 ];
@@ -49,8 +58,9 @@ const MTF_AVG6M_DAYS = 125;
 
 // The files (loaded once, re-fetched after MTF_MAX_AGE_MS), the view on show,
 // and the toggles, which persist across views (sel: the Summary's quarter and month;
-// sumRange: its share chart's range)
-let MTF = { doc: null, stocks: null, at: 0, view: 'combined', range: '1y', sumRange: '1y', gran: 'quarter', sel: {}, built: {} };
+// sumRange: its share chart's range; bMetric: the Brokers chart's share / book)
+let MTF = { doc: null, stocks: null, brokers: null, at: 0, view: 'combined', range: '1y', sumRange: '1y', gran: 'quarter',
+  bMetric: 'share', sel: {}, built: {} };
 
 // ═══════════════════════════════════════════════════════════════
 // PURE HELPERS (tests/test_mtf_dashboard.py runs these in Node)
@@ -265,11 +275,14 @@ function mtfFlowRows(points) {
     partial: r.last === lastDate && r.last < r.end, startsLate: r.first === firstDate && mtfDaysAfter(r.start, r.first) > 7 }));
 }
 
-// The dated notes of a kind for a view whose dates fall in (from, to]; BSE's
-// notes also apply to the combined view
+// The dated notes of a kind for a view (every exchange's for the combined view)
+function mtfNotesFor(view, kind = 'break') {
+  return MTF_NOTES.filter(n => n.kind === kind && (n.ex === view || view === 'combined'));
+}
+
+// The dated notes of a kind for a view whose dates fall in (from, to]
 function mtfNotesBetween(view, from, to, kind = 'break') {
-  return MTF_NOTES.filter(n => n.kind === kind && (n.ex === view || (view === 'combined' && n.ex === 'bse'))
-    && (!from || n.date > from) && (!to || n.date <= to));
+  return mtfNotesFor(view, kind).filter(n => (!from || n.date > from) && (!to || n.date <= to));
 }
 
 // Top securities of an exchange's latest day: rows sorted by amount financed,
@@ -291,6 +304,108 @@ function mtfTopRows(stocks, ex, n = 15) {
   };
 }
 
+// ── Brokers: mtf_brokers.json, which mtf_pipeline.brokers_doc writes from the hand-kept
+// register scripts/broker_mtf_register.py: each broker's disclosed figures (book or market
+// share) priced against the NSE + BSE book on the same date
+
+// The categorical slots, in fixed order (dataviz reference palette, light): a broker keeps
+// its slot (its place in the register), whatever is shown; the brokers after the eighth
+// reuse the slots dashed
+const MTF_BROKER_PALETTE = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948'];
+
+// What each measure is, as a chip: [label, rx-chip kind, title]
+const MTF_MEASURE_CHIPS = {
+  share: ['share as published', 'data', 'The filing states a market share; the book is that share of the NSE + BSE book on the date'],
+  gross: ['gross', 'ok', 'The gross MTF book: the basis the exchanges’ book is on'],
+  net: ['net', 'warn', 'Net of client cash collateral, or the balance-sheet loan line: usually 80–87 % of gross, so the share understates'],
+  client_funding: ['client funding', 'warn', 'MTF plus interest-bearing trade receivables (no MTF-only figure is published), so the share overstates'],
+  unstated: ['basis not stated', '', 'The document calls it the MTF book without saying gross or net'],
+};
+
+// How a figure's basis reads beside its measure ('period_end' says nothing): a monthly average, or
+// a reading of a figure the broker keeps updating on its web page, taken on each MTF run
+const MTF_BASIS_LABELS = { month_avg: 'month avg', live: 'live' };
+
+// A broker's figures on its primary measure and basis, oldest first: the series the
+// league table, the chart and the share-by-quarter table follow
+function mtfBrokerPrimary(b) {
+  const pm = (b && b.primary) || {};
+  return ((b && b.series) || []).filter(p => p.measure === pm.measure && p.basis === pm.basis);
+}
+
+// League-table rows, largest latest book first (brokers with none last, in register order):
+// the latest primary figure, the two before it (newest first), and, newest first, the latest
+// figure on each other measure or basis that is at least as recent (e.g. a monthly average,
+// or a balance-sheet book beside a published share)
+function mtfBrokerRows(doc) {
+  if (!doc || !Array.isArray(doc.brokers)) return [];
+  return doc.brokers.map((b, order) => {
+    const pts = mtfBrokerPrimary(b);
+    const latest = pts.length ? pts[pts.length - 1] : null;
+    const lastOf = new Map();                       // measure|basis → its latest figure (series is oldest first)
+    (b.series || []).filter(p => !pts.includes(p)).forEach(p => lastOf.set(`${p.measure}|${p.basis}`, p));
+    const alts = [...lastOf.values()].filter(p => !latest || p.as_of >= latest.as_of)
+      .sort((x, y) => (x.as_of < y.as_of ? 1 : x.as_of > y.as_of ? -1 : 0));
+    return { id: b.id, short: b.short, name: b.name, type: b.type, parent: b.parent, primary: b.primary, sources: b.sources,
+      order, latest, history: pts.slice(-3, -1).reverse(), count: pts.length, alts };
+  }).sort((a, b) => ((b.latest && b.latest.book_cr) || -1) - ((a.latest && a.latest.book_cr) || -1) || a.order - b.order);
+}
+
+// A broker's fixed chart style: its register slot's colour, dashed after the eighth
+function mtfBrokerStyle(doc, id) {
+  const i = Math.max(0, ((doc && doc.brokers) || []).findIndex(b => b.id === id));
+  const n = MTF_BROKER_PALETTE.length;
+  return { slot: i, color: MTF_BROKER_PALETTE[i % n], dash: i >= n ? [6, 4] : [] };
+}
+
+// A broker's primary figures as chart points {x: ms, y, p}; metric 'share' (%) or 'book' (₹ Cr)
+function mtfBrokerPoints(b, metric) {
+  return mtfBrokerPrimary(b).map(p => ({ x: Date.parse(p.as_of + 'T00:00:00Z'), y: metric === 'book' ? p.book_cr : p.share_pct, p }))
+    .filter(q => q.y != null && isFinite(q.y));
+}
+
+// Share moves from the quarter end before the latest disclosed one to it, for brokers with a
+// share at both (their primary measure both times): {cur, prev, moves: [{id, from, to, pp}]}, gains first
+function mtfBrokerMoves(doc) {
+  const qs = (doc && doc.quarters) || [];
+  let i = qs.length - 1;
+  while (i >= 0 && !qs[i].tracked_n) i--;
+  if (i < 1) return null;
+  const cur = qs[i], prev = qs[i - 1];
+  const moves = Object.keys(cur.shares).filter(id => prev.shares[id] != null)
+    .map(id => ({ id, from: prev.shares[id], to: cur.shares[id], pp: cur.shares[id] - prev.shares[id] }))
+    .sort((a, b) => b.pp - a.pp);
+  return { cur, prev, moves };
+}
+
+// "16.1 %", "~14 %" (a share the filing rounds to a whole number), "6.62 %" (one we compute)
+function mtfShareText(p) {
+  if (!p || p.share_pct == null || !isFinite(p.share_pct)) return '—';
+  if (p.precision === 'integer') return `~${p.share_pct.toFixed(0)} %`;
+  return `${p.share_pct.toFixed(p.measure === 'share' ? 1 : 2)} %`;
+}
+
+// "₹10,498 Cr"; "≈ ₹25,553 Cr" derived from a published share; "~₹9,600 Cr" rounded in the document
+function mtfBookText(p) {
+  if (!p || p.book_cr == null || !isFinite(p.book_cr)) return '—';
+  return `${p.derived ? '≈ ' : p.rounded ? '~' : ''}${rxCr(p.book_cr, 0)}`;
+}
+
+// Quarter ends (ms) from min to max, for the chart's x ticks
+function mtfQuarterTicks(min, max) {
+  const out = [];
+  const d = new Date(min);
+  let y = d.getUTCFullYear(), q = Math.floor(d.getUTCMonth() / 3);
+  for (;;) {
+    const v = Date.UTC(y, q * 3 + 3, 0);
+    if (v > max) break;
+    if (v >= min) out.push(v);
+    q += 1;
+    if (q === 4) { q = 0; y += 1; }
+  }
+  return out;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // VIEW: load, build, show
 // ═══════════════════════════════════════════════════════════════
@@ -301,13 +416,15 @@ function mtfSection(tab) { return viewSection(VIEW_MODES.mtf.prefix + MTF.view, 
 
 async function mtfLoad(def, owns = () => true) {
   if (!MTF.doc || Date.now() - MTF.at > MTF_MAX_AGE_MS) {
-    const [daily, stocks] = await Promise.all([
+    const [daily, stocks, brokers] = await Promise.all([
       fetchDataFile(MTF_DAILY_URL),
       fetchDataFile(MTF_STOCKS_URL).catch(err => { console.warn('MTF securities file not loaded:', err); return null; }),
+      fetchDataFile(MTF_BROKERS_URL).catch(err => { console.warn('MTF brokers file not loaded:', err); return null; }),
     ]);
     if (!owns()) return;
     MTF.doc = daily.json;
     MTF.stocks = stocks ? stocks.json : null;
+    MTF.brokers = brokers ? brokers.json : null;
     MTF.at = Date.now();
   }
   if (!owns()) return;
@@ -329,7 +446,8 @@ function mtfShow(tab) {
   if (MTF.built[tab]) return;
   const el = mtfSection(tab);
   if (!el) return;
-  const builders = { summary: mtfBuildSummary, book: mtfBuildBook, periods: mtfBuildPeriods, flows: mtfBuildFlows, stocks: mtfBuildStocks };
+  const builders = { summary: mtfBuildSummary, book: mtfBuildBook, periods: mtfBuildPeriods, flows: mtfBuildFlows, stocks: mtfBuildStocks,
+    brokers: mtfBuildBrokers };
   try {
     builders[tab]?.(el);
     MTF.built[tab] = true;
@@ -364,12 +482,12 @@ function mtfEmpty(title, why) {
   return `<div class="rx">${rxPanel({ title, body: `<div class="rx-empty"><b>No data yet</b>${why}</div>` })}</div>`;
 }
 
-// "1 month: ▲ +3.2 %" sub-line of a KPI; a comparison that crosses a BSE
+// "1 month: ▲ +3.2 %" sub-line of a KPI; a comparison that crosses a
 // series change says so
 function mtfVsLine(view, c, label) {
   if (!c) return `${label}: no earlier session`;
   const crosses = mtfNotesBetween(view, c.date, null).length;
-  return `vs ${rxDate(c.date)} · ${rxCr(c.value, 0)}${crosses ? ' · crosses a BSE series change' : ''}`;
+  return `vs ${rxDate(c.date)} · ${rxCr(c.value, 0)}${crosses ? ' · crosses a series change' : ''}`;
 }
 
 function mtfKpis(view, pts) {
@@ -429,7 +547,7 @@ function mtfXlVal(w) {
     w.value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>`;
 }
 
-// Change cells (0.0 %, green / red as in the workbooks), with a † when measured across a BSE series change
+// Change cells (0.0 %, green / red as in the workbooks), with a † when measured across a series change
 function mtfXlChg(v, mark = '') {
   if (v == null || !isFinite(v)) return '<td><span class="xl-chg xl-neu">—</span></td>';
   return `<td><span class="xl-chg ${v > 0 ? 'xl-pos' : v < 0 ? 'xl-neg' : 'xl-neu'}">${(v * 100).toFixed(1)}%${mark || ''}</span></td>`;
@@ -499,8 +617,8 @@ function mtfBuildSummary(el) {
   const draw = () => {
     const s = mtfSummary(pts, MTF.sel);
     const first = pts[0].date;
-    const breaks = MTF_NOTES.filter(n => n.kind === 'break' && (n.ex === view || (view === 'combined' && n.ex === 'bse')));
-    const excluded = MTF_NOTES.filter(n => n.kind === 'excluded' && (n.ex === view || (view === 'combined' && n.ex === 'bse')));
+    const breaks = mtfNotesFor(view, 'break');
+    const excluded = mtfNotesFor(view, 'excluded');
     el.innerHTML = `<div class="mtf-sum">
       <div class="mtf-sum-bar"><span><b>${def.name}</b> · as of <b>${rxDate(s.asOf)}</b> (reporting date)</span>
         <span>${s.fy.length} financial years · series from ${rxDate(first)}</span></div>
@@ -515,7 +633,7 @@ function mtfBuildSummary(el) {
         <li>Each figure is the average of the daily book over the reporting days it covers; changes compare those averages. Hover a figure for its days.</li>
         <li>Pick the quarter or the month in its first row; the week and weekday tables run to the latest reporting date.</li>
         ${view === 'combined' ? '<li>NSE + BSE counts only the dates both exchanges published.</li>' : ''}
-        ${breaks.length ? `<li><span class="mtf-dagger">†</span> measured across a change in BSE’s own series (${breaks.map(n => rxDate(n.date)).join(', ')}); see the notes on the MTF Book tab.</li>` : ''}
+        ${breaks.length ? `<li><span class="mtf-dagger">†</span> measured across a change in an exchange’s own series (${breaks.map(n => `${n.ex.toUpperCase()} ${rxDate(n.date)}`).join(', ')}); see the notes on the MTF Book tab.</li>` : ''}
         ${excluded.length ? `<li>Left out: ${excluded.map(n => rxDate(n.date)).join(', ')} (a one-day jump in BSE’s file that reverts).</li>` : ''}
       </ul>
     </div>`;
@@ -678,10 +796,10 @@ function mtfPartChip(r) {
     : r.startsLate ? ` <span class="rx-chip">from ${rxDate(r.first)}</span>` : '';
 }
 
-// A † after a change measured across a BSE series change
+// A † after a change measured across a series change
 function mtfBreakMark(view, from, to) {
   const n = from ? mtfNotesBetween(view, from, to) : [];
-  return n.length ? `<sup class="mtf-dagger" title="${escHtml(n.map(x => rxDate(x.date)).join(', '))}: BSE series change in between">†</sup>` : '';
+  return n.length ? `<sup class="mtf-dagger" title="${escHtml(n.map(x => `${x.ex.toUpperCase()} ${rxDate(x.date)}`).join(', '))}: series change in between">†</sup>` : '';
 }
 
 function mtfBuildPeriods(el) {
@@ -743,7 +861,7 @@ function mtfBuildPeriods(el) {
       <tbody>${body}</tbody>`;
     const breaks = mtfNotesBetween(view, null, null);
     q('perFoot').innerHTML = `Changes compare average daily books. * : part of the ${unit} (“to …”: so far; “from …”: the first day in the file).`
-      + (breaks.length ? ` † The comparison spans a change in BSE’s own series (${breaks.map(n => rxDate(n.date)).join(', ')}; see the MTF Book tab).` : '')
+      + (breaks.length ? ` † The comparison spans a change in an exchange’s own series (${breaks.map(n => `${n.ex.toUpperCase()} ${rxDate(n.date)}`).join(', ')}; see the MTF Book tab).` : '')
       + (gran === 'month' ? ' The chart shows the last 24 months; the table all of them.' : '');
   };
   draw();
@@ -835,6 +953,218 @@ function mtfBuildStocks(el) {
   </div>`;
 }
 
+// ── Brokers tab: league table, share over time, share by quarter, sources
+
+const MTF_BROKER_STALE_DAYS = 120;   // a latest figure older than this gets an age chip
+
+// A dashed vertical line at each date in options.plugins.mtfBreakLine.dates (series changes)
+const MTF_BREAK_LINE = {
+  id: 'mtfBreakLine',
+  afterDatasetsDraw(chart, args, opts) {
+    const x = chart.scales.x, area = chart.chartArea, ctx = chart.ctx;
+    ((opts && opts.dates) || []).forEach(iso => {
+      const v = Date.parse(iso + 'T00:00:00Z');
+      if (!x || v < x.min || v > x.max) return;
+      const px = x.getPixelForValue(v);
+      ctx.save();
+      ctx.strokeStyle = RX.grey;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(px, area.top);
+      ctx.lineTo(px, area.bottom);
+      ctx.stroke();
+      ctx.restore();
+    });
+  },
+};
+
+function mtfMeasureChip(measure) {
+  const [label, kind, title] = MTF_MEASURE_CHIPS[measure] || [measure, '', ''];
+  return `<span title="${escHtml(title)}">${rxChip(escHtml(label), kind)}</span>`;
+}
+
+// "▲ +0.42 pp" (green) / "▼ −0.30 pp" (red); † when the two dates straddle a series change
+function mtfPpHTML(pp, from, to, digits = 2) {
+  if (pp == null || !isFinite(pp)) return '—';
+  pp = +pp.toFixed(digits);                 // a move that rounds to 0 is no move
+  const cls = pp > 0 ? 'rx-up' : pp < 0 ? 'rx-dn' : '';
+  const txt = pp > 0 ? `▲ +${pp.toFixed(digits)}` : pp < 0 ? `▼ −${Math.abs(pp).toFixed(digits)}` : (0).toFixed(digits);
+  return `<span class="${cls}">${txt} pp</span>${mtfBreakMark('combined', from, to)}`;
+}
+
+// A change cell: share move in pp, then the book's % change and the comparison date
+function mtfBrokerChgCell(p, c) {
+  if (!p || !c) return '<td>—</td>';
+  const pp = c.share_pp != null ? mtfPpHTML(c.share_pp, c.from, p.as_of, p.precision === 'integer' ? 0 : 2) : '—';
+  const book = c.book_pct != null ? rxSignedPct(c.book_pct) : '';
+  return `<td>${pp}<div class="mtf-bk-sub">${book ? `book ${book} · ` : ''}vs ${rxDate(c.from)}</div></td>`;
+}
+
+function mtfBrokerFigCell(p) {
+  if (!p) return '<td class="mtf-bk-old">—</td>';
+  return `<td class="mtf-bk-old">${mtfBookText(p)}<div class="mtf-bk-sub">${rxDate(p.as_of)} · ${mtfShareText(p)}</div></td>`;
+}
+
+function mtfBrokerSourceCell(p, alts) {
+  if (!p) return '<td class="rx-src">—</td>';
+  const link = q => `<a href="${escHtml(q.url)}" target="_blank" rel="noopener noreferrer" title="${escHtml(q.quote || '')}">${escHtml(q.source)}${q.page ? ` · p.${q.page}` : ''}</a>`;
+  const altLines = (alts || []).map(alt => `<div class="mtf-bk-sub" title="${escHtml(`${alt.source}${alt.page ? `, p.${alt.page}` : ''}: ${alt.quote || ''}`)}">Also ${
+    escHtml((MTF_MEASURE_CHIPS[alt.measure] || [alt.measure])[0])}${MTF_BASIS_LABELS[alt.basis] ? `, ${MTF_BASIS_LABELS[alt.basis]}` : ''}: ${mtfBookText(alt)} (${mtfShareText(alt)}) · ${rxDate(alt.as_of)}</div>`).join('');
+  return `<td class="rx-src mtf-bk-src">${link(p)}${altLines}</td>`;
+}
+
+function mtfBrokerLeague(doc, rows, todayIso) {
+  const body = rows.map((r, i) => {
+    const p = r.latest;
+    const st = mtfBrokerStyle(doc, r.id);
+    const age = p ? mtfDaysAfter(p.as_of, todayIso) : null;
+    const ageChip = age != null && age > MTF_BROKER_STALE_DAYS ? ` ${rxChip(`${Math.round(age / 30.4)} months old`, 'warn')}` : '';
+    return `<tr>
+      <td>${i + 1}</td>
+      <td class="rx-l mtf-bk-name"><i class="mtf-bk-sw${st.dash.length ? ' mtf-bk-sw--dash' : ''}" style="color:${st.color}"></i><b>${escHtml(r.short)}</b>
+        <div class="mtf-bk-sub">${escHtml(r.parent ? `${r.name} · ${r.parent}` : r.name)}</div></td>
+      <td class="rx-l">${p ? mtfMeasureChip(p.measure) : ''}${p && MTF_BASIS_LABELS[p.basis] ? ` ${rxChip(MTF_BASIS_LABELS[p.basis])}` : ''}</td>
+      <td class="rx-strong">${p ? mtfBookText(p) : '—'}<div class="mtf-bk-sub">${p ? rxDate(p.as_of) : 'no figure'}${ageChip}</div></td>
+      <td class="rx-strong">${mtfShareText(p)}</td>
+      ${mtfBrokerChgCell(p, p && p.chg)}
+      ${mtfBrokerChgCell(p, p && p.yoy)}
+      ${mtfBrokerFigCell(r.history[0])}${mtfBrokerFigCell(r.history[1])}
+      ${mtfBrokerSourceCell(p, r.alts)}
+    </tr>`;
+  }).join('');
+  return `<div class="rx-scroll"><table class="rx-table mtf-bk-table">
+    <thead><tr><th scope="col">#</th><th scope="col" class="rx-l">Broker</th><th scope="col" class="rx-l">Measure</th><th scope="col">Latest</th>
+      <th scope="col">Market share</th><th scope="col">vs previous</th><th scope="col">vs a year earlier</th>
+      <th scope="col">Previous</th><th scope="col">Earlier</th><th scope="col" class="rx-l">Source</th></tr></thead>
+    <tbody>${body}</tbody></table></div>`;
+}
+
+function mtfBrokerQuarterTable(doc, rows) {
+  const qs = doc.quarters || [];
+  if (!qs.length) return '<div class="rx-empty">No quarter ends yet.</div>';
+  const byId = Object.fromEntries((doc.brokers || []).map(b => [b.id, b]));
+  const cell = (r, q, j) => {
+    const v = q.shares[r.id];
+    if (v == null) return '<td class="mtf-bk-none">—</td>';
+    const p = mtfBrokerPrimary(byId[r.id]).find(x => x.as_of === q.end) || { share_pct: v };
+    const prevQ = qs[j - 1];
+    const pv = prevQ ? prevQ.shares[r.id] : null;
+    let mv = '';
+    if (pv != null) {
+      const pp = v - pv;
+      mv = ` <span class="mtf-bk-mv ${pp > 0 ? 'rx-up' : pp < 0 ? 'rx-dn' : ''}" title="${escHtml(`${pp >= 0 ? '+' : '−'}${Math.abs(pp).toFixed(2)} pp vs ${prevQ.label}`)}">${
+        pp > 0 ? '▲' : pp < 0 ? '▼' : '='}</span>${mtfBreakMark('combined', prevQ.end, q.end)}`;
+    }
+    return `<td>${mtfShareText(p)}${mv}</td>`;
+  };
+  const body = rows.map(r => `<tr><td class="rx-l"><i class="mtf-bk-sw${mtfBrokerStyle(doc, r.id).dash.length ? ' mtf-bk-sw--dash' : ''}" style="color:${
+    mtfBrokerStyle(doc, r.id).color}"></i>${escHtml(r.short)} ${mtfMeasureChip(r.primary.measure)}</td>${qs.map((q, j) => cell(r, q, j)).join('')}</tr>`).join('');
+  return `<div class="rx-scroll"><table class="rx-table mtf-bk-qtable">
+    <thead><tr><th scope="col" class="rx-l">Broker</th>${qs.map(q => `<th scope="col">${escHtml(q.label)}<div class="mtf-bk-sub">${rxDate(q.end)}</div></th>`).join('')}</tr></thead>
+    <tbody>${body}</tbody>
+    <tfoot>
+      <tr><td class="rx-l">NSE + BSE book</td>${qs.map(q => `<td>${rxCr(q.industry_cr, 0)}</td>`).join('')}</tr>
+      <tr><td class="rx-l">Disclosed: brokers · their total share</td>${qs.map(q => `<td>${q.tracked_n ? `${q.tracked_n} · ${q.tracked_pct.toFixed(1)} %` : '—'}</td>`).join('')}</tr>
+    </tfoot></table></div>`;
+}
+
+function mtfBrokerSourcesHTML(doc, rows) {
+  const cad = s => (s.cadence === 'irregular' ? 'irregular (rating rationales, posts)'
+    : `${s.cadence}, about ${s.lag_days} days after the ${s.cadence === 'monthly' ? 'month' : 'quarter'}`);
+  const m = doc.measures || {};
+  return `<div class="rx-pb mtf-about">
+    <ul>
+      <li><b>Market share</b> = a broker’s figure ÷ the exchanges’ combined MTF book (NSE’s closing book + BSE’s amount financed, the NSE + BSE series of this mode) on the same date: the last reporting date on or before a period-end figure, or the month’s average for a monthly average. Brokers’ own share figures use their own denominators; these do not.</li>
+      <li><b>No exchange publishes broker-wise books</b> since NSE’s member-wise “Client Funding” report ended in Apr 2021. Every figure here is from the broker’s or its parent’s own document (linked, with the page; hover a link for the quoted words).</li>
+      <li><b>Measures</b> differ by broker, so each figure is labelled: ${Object.entries(m).map(([k, v]) => `${mtfMeasureChip(k)} ${escHtml(v)}`).join('; ')}.</li>
+      <li>Changes compare a broker’s figure with its previous one (or the one about a year earlier) on the <b>same measure</b> only. ICICI Securities and Kotak Securities publish a share, not a book: their book (≈) is that share of the NSE + BSE book. Kotak’s share is a whole number (“~14 %”), so its moves show as 0 until it changes by a point.</li>
+      <li><span class="mtf-dagger">†</span> The two dates straddle a change in an exchange’s own series. From 1 Oct 2025 brokers report MTF on revised rules that moved several to their gross book: NSE’s book steps up 7 % that day.</li>
+      <li>Brokers publish on different dates and not every quarter, so the “Disclosed” total in the quarter table mixes measures and leaves brokers out; it is not the top brokers’ share of the market.</li>
+    </ul>
+    <p class="rx-lbl" style="margin:12px 0 4px">Where each figure comes from</p>
+    <div class="rx-scroll"><table class="rx-table mtf-bk-srcs"><thead><tr><th scope="col" class="rx-l">Broker</th><th scope="col" class="rx-l">Best source</th>
+      <th scope="col" class="rx-l">How often</th><th scope="col" class="rx-l">What it reports</th><th scope="col" class="rx-l">Fallback</th></tr></thead>
+      <tbody>${rows.map(r => `<tr><td class="rx-l"><b>${escHtml(r.short)}</b></td><td class="rx-wrap">${escHtml(r.sources.primary)}<div class="mtf-bk-sub">${escHtml(r.sources.where)}</div></td>
+        <td class="rx-wrap">${escHtml(cad(r.sources))}</td><td class="rx-wrap">${escHtml(r.sources.metric)}</td><td class="rx-wrap">${escHtml(r.sources.fallbacks || '—')}</td></tr>`).join('')}</tbody></table></div>
+    <p class="rx-foot">Source: <code>dashboard/data/mtf_brokers.json</code>, written ${escHtml(rxDate(doc.updated_at || ''))} by <code>scripts/mtf_pipeline.py</code> from the hand-kept register <code>scripts/broker_mtf_register.py</code>.</p>
+  </div>`;
+}
+
+function mtfBuildBrokers(el) {
+  const doc = MTF.brokers;
+  const rows = mtfBrokerRows(doc);
+  if (!rows.length) { el.innerHTML = mtfEmpty('Brokers', 'mtf_brokers.json is not available.'); return; }
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const mv = mtfBrokerMoves(doc);
+  const short = id => escHtml((doc.brokers.find(b => b.id === id) || {}).short || id);
+  const kpis = [];
+  if (mv) {
+    const { cur, prev, moves } = mv;
+    const gain = moves[0], loss = moves[moves.length - 1];
+    kpis.push(rxKpi('NSE + BSE book', rxCr(cur.industry_cr, 0), `${escHtml(cur.label)} · ${rxDate(cur.end)}`, { accent: true }));
+    kpis.push(rxKpi(`Disclosed for ${escHtml(cur.label)}`, `${cur.tracked_n} of ${rows.length}`,
+      `brokers; together ${cur.tracked_pct.toFixed(1)} % of the book (mixed measures)`));
+    const span = `${escHtml(prev.label)} → ${escHtml(cur.label)}`;
+    kpis.push(rxKpi(`Biggest gain, ${span}`, gain && gain.pp > 0 ? `<span class="rx-up">▲ +${gain.pp.toFixed(2)} pp</span>` : '—',
+      gain && gain.pp > 0 ? `<b>${short(gain.id)}</b> · ${gain.from.toFixed(2)} % → ${gain.to.toFixed(2)} %` : 'no broker gained share'));
+    kpis.push(rxKpi(`Biggest loss, ${span}`, loss && loss.pp < 0 ? `<span class="rx-dn">▼ −${Math.abs(loss.pp).toFixed(2)} pp</span>` : '—',
+      loss && loss.pp < 0 ? `<b>${short(loss.id)}</b> · ${loss.from.toFixed(2)} % → ${loss.to.toFixed(2)} %` : 'no broker lost share'));
+  }
+  el.innerHTML = `<div class="rx">
+    ${kpis.length ? rxKpis(kpis, 'Brokers’ MTF share') : ''}
+    ${rxPanel({ title: 'League table', meta: 'latest disclosed figure per broker · share of the NSE + BSE book on its date',
+      body: mtfBrokerLeague(doc, rows, todayIso),
+      foot: 'Each broker’s main measure; changes compare figures on the same measure. ≈ derived from a published share; ~ rounded in the document. Hover a source for the quoted words.' })}
+    ${rxPanel({ title: 'Market share over time', meta: 'each figure ÷ the NSE + BSE book on its date',
+      right: rxSeg('mtfBkMetric', [['share', 'Share %'], ['book', 'Book ₹ Cr']], MTF.bMetric, 'Chart measure'),
+      body: `<div class="rx-pb">${rxCanvas('mtfBkChart')}</div>`,
+      foot: 'Click a name to show or hide it; the seven smaller brokers (dashed) start hidden. Dotted vertical lines: series changes (1 Oct 2025: brokers moved to gross reporting). Brokers on different measures are not like for like; see the chips in the table.' })}
+    ${rxPanel({ title: 'Share by quarter end', meta: 'main measure, where the broker disclosed a figure for that date',
+      body: mtfBrokerQuarterTable(doc, rows),
+      foot: '▲ / ▼ against the previous quarter end, on the same measure; hover for the move in pp. — no figure for that date.' })}
+    ${rxPanel({ title: 'Sources and method', body: mtfBrokerSourcesHTML(doc, rows) })}
+  </div>`;
+  const breaks = [...new Set(mtfNotesFor('combined', 'break').map(n => n.date))];
+  const draw = () => {
+    const metric = MTF.bMetric;
+    const datasets = doc.brokers.map(b => {
+      const st = mtfBrokerStyle(doc, b.id);
+      return { label: b.short, data: mtfBrokerPoints(b, metric), borderColor: st.color, backgroundColor: st.color,
+        borderDash: st.dash, borderWidth: 2, pointRadius: 3, pointHoverRadius: 5, tension: 0, spanGaps: true,
+        hidden: st.slot >= MTF_BROKER_PALETTE.length };
+    }).filter(ds => ds.data.length);
+    const xs = datasets.flatMap(ds => ds.data.map(q => q.x));
+    const min = Math.min(...xs), max = Math.max(...xs);
+    rxChart('mtfBk', 'mtfBkChart', 340, {
+      type: 'line',
+      data: { datasets },
+      plugins: [MTF_BREAK_LINE],
+      options: {
+        interaction: { mode: 'nearest', intersect: false },
+        plugins: {
+          mtfBreakLine: { dates: breaks },
+          legend: { display: true, position: 'bottom',
+            labels: { boxWidth: 18, boxHeight: 2, padding: 12, color: RX.ink2, font: { family: RX_FONT, size: 11 } } },
+          tooltip: { callbacks: {
+            title: items => rxDate(items[0].raw.p.as_of),
+            label: c => ` ${c.dataset.label}: ${mtfShareText(c.raw.p)} · ${mtfBookText(c.raw.p)}`,
+            footer: items => { const p = items[0].raw.p; return `${(MTF_MEASURE_CHIPS[p.measure] || [p.measure])[0]} · ${p.source}`; },
+          } },
+        },
+        scales: {
+          x: { type: 'linear', min: min - 20 * 864e5, max: max + 20 * 864e5, grid: { display: false },
+            afterBuildTicks: sc => { sc.ticks = mtfQuarterTicks(sc.min, sc.max).map(v => ({ value: v })); },
+            ticks: { maxRotation: 0, autoSkip: true, callback: v => { const d = new Date(v); return `${MTF_MONTHS[d.getUTCMonth()]} ${String(d.getUTCFullYear()).slice(2)}`; } } },
+          y: { beginAtZero: true, ticks: { callback: v => (metric === 'book' ? fmtNum(v, 0) : `${v} %`) } },
+        },
+      },
+    });
+  };
+  draw();
+  rxOnSeg(el, 'mtfBkMetric', v => { MTF.bMetric = v; draw(); });
+}
+
 // Register the three views (MTF pill order = MTF_VIEW_DEFS order)
 MTF_VIEW_DEFS.forEach(def => registerModeView('mtf', {
   id: def.id,
@@ -847,6 +1177,7 @@ MTF_VIEW_DEFS.forEach(def => registerModeView('mtf', {
     periods: `${def.name} MTF book by quarter / month`,
     flows: `${def.name} MTF flows`,
     stocks: `${def.name} MTF: top securities`,
+    brokers: 'Brokers’ MTF books and market share',
   },
   load: owns => mtfLoad(def, owns),
   build: mtfBuild,
