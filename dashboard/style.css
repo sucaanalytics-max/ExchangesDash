@@ -3353,6 +3353,12 @@ a.rx-link { display: inline; }
 .rx-table.rx-xl .rx-xl-gut .rx-num-in, .rx-table.rx-xl .rx-xl-w .rx-num-in { width: 56px; }
 .rx-xl .rx-xl-unit { margin-left: 3px; color: var(--rx-muted); font-size: 12px; }
 .rx-xl .rx-xl-in { background: var(--rx-xl-key); border-color: var(--rx-xl-key-rule); color: var(--rx-xl-fill-ink); }
+/* A weight as used, beside the typed one; a method without a value has its weight dimmed */
+.rx-table.rx-xl .rx-xl-w .rx-num-in { width: 46px; }
+/* ...and the Summary's figure columns a little narrower, so the weights as used fit beside the box */
+.rx-col-xl-sum .rx-table.rx-xl td:not(.rx-xl-gut):not(.rx-xl-w):not(.rx-xl-lab) { min-width: 74px; }
+.rx-xl .rx-xl-weff { margin-left: 2px; color: var(--rx-ink); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.rx-xl .rx-in.is-off { opacity: .45; }
 .rx-xl tr.rx-xl-green .rx-in { background: transparent; color: var(--rx-xl-fill-ink); }
 .rx-xl .rx-in.is-edited { border-color: #D9A54A; }
 /* boxes: top / bottom of each block and of the boxed row, left of the label, right of Bull */

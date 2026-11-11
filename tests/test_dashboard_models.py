@@ -241,6 +241,46 @@ class TriangulatedTarget(unittest.TestCase):
         self.assertIsNone(got[2])
         self.assertIsNone(got[3])
 
+    def test_weights_as_used(self):
+        """A method without a value gets no weight; the others are rescaled to 100 % (NSE, 11 Nov 2026:
+        regression and ratio both off, so the ADR model carries it all)."""
+        js = self.model(reg=None, ratio=None)["m"]
+        self.assertEqual(js["used"], ["adr"])
+        self.assertEqual(js["wEff"], [0, 0, 100])
+        js = self.model(reg=None)["m"]
+        self.assertEqual(js["wEff"], [0, 50, 50])
+        js = self.model()["m"]
+        self.assertEqual(js["wEff"], [20, 40, 40])
+
+    def test_start_defaults(self):
+        """BSE keeps the workbook's start (the quarter to date); NSE and MCX start from the FY run-rate."""
+        got = js_eval(TRIANGULATION_JS, "['bse', 'nse', 'mcx'].map(ex => TRIANGULATION_DEFAULTS[ex].start)")
+        self.assertEqual(got, ["q", "fy", "fy"])
+
+    def test_fit_basis_scale(self):
+        rev = [{"date": "2026-11-04", "revenue_cr": 30.0}, {"date": "2026-11-05", "revenue_cr": 60.0}]
+        rows = [{"date": "2026-11-04", "total_rev": 32.0}, {"date": "2026-11-05", "total_rev": 64.0},
+                {"date": "2026-11-06", "total_rev": 50.0}]
+        got = js_eval(TRIANGULATION_JS + ["fitBasisScale"], "[fitBasisScale(DATA.rev, DATA.rows),"
+                      " fitBasisScale(DATA.rev, [DATA.rows[2]]), fitBasisScale(undefined, DATA.rows)]",
+                      {"rev": rev, "rows": rows})
+        self.assertAlmostEqual(got[0], 90 / 96, places=12)   # over the dates both have
+        self.assertEqual(got[1:], [1, 1])
+
+    def test_ratio_does_not_wait_for_the_regression(self):
+        """Price ÷ MA is used from RATIO_MIN_SESSIONS fit sessions, before the regression's 60."""
+        ser = [{"date": f"2026-10-{d:02d}", "price": 100.0 + d, "rev_ma": 2.0, "in_fit": True} for d in range(1, 26)]
+        got = js_eval(["RATIO_MIN_SESSIONS", "shareRatioStats", "valuationRatio"],
+                      "[RATIO_MIN_SESSIONS, valuationRatio(DATA, '2026-10-01'), valuationRatio(DATA.slice(0, 19), '2026-10-01'),"
+                      " valuationRatio(null, '2026-10-01')]", ser)
+        self.assertEqual(got[0], 20)
+        full, short, none = got[1:]
+        self.assertEqual(full["n"], 25)
+        self.assertAlmostEqual(full["stats"]["mean"], sum((100 + d) / 2 for d in range(1, 26)) / 25, places=9)
+        self.assertIsNone(short["stats"])
+        self.assertEqual(short["why"], "only 19 price sessions (needs 20)")
+        self.assertEqual((none["stats"], none["why"]), (None, "no share-price feed"))
+
 
 EXCEL_LAYOUT_JS = TRIANGULATION_JS + ["valuationExcelRows", "triangulationSummaryRows", "valuationExcelCells",
                                       "fmtNum", "rxSignedPct"]
