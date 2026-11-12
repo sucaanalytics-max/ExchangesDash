@@ -286,7 +286,7 @@ function parseFYQuarter(label) {
 }
 
 // The quarter's ADR on the share-price fits' own basis: their revenue
-// (SHARE_DATA.revenue_daily, at today's statutory rates whatever the Fees toggle)
+// (SHARE_DATA.revenue_daily, at today's statutory rates)
 // averaged over the quarter's trading dates it has. { adr, n }, or null when it has none.
 function fitBasisAdr(revenueDaily, dates) {
   const byDate = new Map((revenueDaily || []).map(r => [r.date, r.revenue_cr]));
@@ -425,7 +425,6 @@ async function buildValuation(ex) {
     VIEW_BUILT_FROM.nse = marketSig('nse');
     VIEW_SOURCES.valuation = [{ ex: 'bse', date: lastTradeDate(series) }, { ex: 'nse', date: lastTradeDate(nseSeries) }];
     updateSnapshotNotice();
-    updateFeeNotice();
   }
 
   const ctx = valuationContext(ex, series, nseSeries);
@@ -467,7 +466,7 @@ async function buildValuation(ex) {
   const qRows = series.filter(r => r.fy_quarter === lastRow.fy_quarter);
   const qAdr = qRows.length ? qRows.reduce((s, r) => s + (r.total_rev || 0), 0) / qRows.length : 0;
   // Regression and ratio are fitted on the share feed's revenue (today's rates), so they
-  // take the quarter's ADR on that basis; the ADR model's (qAdr) follows the Fees toggle
+  // take the quarter's ADR on that basis; the ADR model's (qAdr) is the tab's own rows
   const qFit = fitBasisAdr(SHARE_DATA?.revenue_daily, qRows.map(r => r.date));
   const qAdrFit = qFit ? qFit.adr : qAdr;
   const qFlags = rowsFlags(qRows, 'total');
@@ -734,7 +733,7 @@ async function buildValuation(ex) {
     set('regA', regFit ? fmtNum(regFit.intercept, 0) : '—'); set('regB', regFit ? fmtNum(regFit.slope, 2) : '—');
     set('ratioMean', ratio ? fmtNum(ratio.mean, 1) : '—'); set('ratioSd', ratio ? fmtNum(ratio.sd, 1) : '—');
     set('qAdrFit', fmtNum(qAdrFit, 2)); set('ratioAdr', fmtNum(ratioPath.adr, 2));
-    src('qAdrFit', qFit ? chip('data', `${qFit.n} sessions · the fits’ revenue`) : '<span class="rx-foot">not in the share feed: the Fees toggle’s ADR</span>');
+    src('qAdrFit', qFit ? chip('data', `${qFit.n} sessions · the fits’ revenue`) : '<span class="rx-foot">not in the share feed: the tab’s own ADR</span>');
     src('ratioAdr', t.adr0 != null ? rxChip('Edited', 'edit') + ` from ${qLabel} ADR ${fmtNum(t.adr0, 2)}` : `the ADR path, from ${qLabel} at today’s rates`);
     // Inputs that live in the Excel layout, echoed beside their sources
     set('qoqV', `${fmtNum(t.qoq, 1)} %`); set('bandV', `± ${fmtNum(t.band, 0)} %`);
@@ -780,9 +779,9 @@ async function buildValuation(ex) {
     if (tri.wTotal !== 100) notes.push(`Weights add to ${fmtNum(tri.wTotal, 0)} %; the average divides by the weights used.`);
     const basisGap = qFit && Math.abs(qAdr - qAdrFit) > 0.005;
     notes.push(`${qLabel} ADR is ${qRows.length} sessions to date. `
-      + (qFit ? `Regression and Ratio take it at today’s rates (₹${fmtNum(qAdrFit, 2)} Cr), the basis their fits are built on; the ADR model’s follows the Fees toggle${basisGap ? ` (₹${fmtNum(qAdr, 2)} Cr)` : ''}`
-              : 'The share feed has no revenue for it yet, so all three methods take the Fees toggle’s')
-      + `${ex === 'bse' ? '. The Excel workbook prices at today’s rates, so “At today’s rates” matches it' : ''}.`);
+      + (qFit ? `Regression and Ratio take it at today’s rates (₹${fmtNum(qAdrFit, 2)} Cr), the basis their fits are built on; the ADR model takes the tab’s own rows${basisGap ? ` (₹${fmtNum(qAdr, 2)} Cr)` : ''}`
+              : 'The share feed has no revenue for it yet, so all three methods take the tab’s own rows')
+      + `${ex === 'bse' ? '. The Excel workbook prices at today’s rates too' : ''}.`);
     if (t.d2 == null && daysToFYEnd != null) notes.push(`Discount to today: ${fmtNum(tm.d2, 1)} %, ${fmtNum(t.d1, 1)} % a year for the ${daysToFYEnd} days left to ${fy0S} end (the workbook keeps a flat ${TRIANGULATION_FLAT_D2} %).`);
     if (ex !== 'bse') notes.push('P/E, margin and other income start from this tab’s FY model; discounts and weights from the Excel BSE sheet.');
     q('triNote').innerHTML = notes.join(' ');

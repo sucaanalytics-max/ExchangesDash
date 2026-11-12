@@ -5,14 +5,14 @@
 // SHARED REPORT HELPERS
 // ========================
 
-// Revenue files for the downloadable reports: the current fee mode, with the
-// same fallback as the views. NSE/BSE are required, MCX optional.
+// Revenue files for the downloadable reports (at today's rates, as the views).
+// NSE/BSE are required, MCX optional.
 async function fetchReportRevenue(ex, required) {
   const rev = await fetchRevenueFiles(ex);
   const val = r => (r.status === 'fulfilled' ? r.value.json : null);
   if (required && !val(rev.raw)) throw rev.raw.reason;
   if (required && !val(rev.enr)) throw rev.enr.reason;
-  return { dash: val(rev.raw), enr: val(rev.enr), eff: rev.eff };
+  return { dash: val(rev.raw), enr: val(rev.enr) };
 }
 
 // Fee-basis / modelled flags of one exchange's rows, for the report tables
@@ -51,12 +51,9 @@ function reportTags(f, inline) {
 
 // One line under a report's title: the fee basis of its NSE/BSE figures and
 // what the markers mean.
-function reportFeeLine(nseEff, bseEff, mcxDash) {
+function reportFeeLine(mcxDash) {
   const parts = [];
-  const charged = [nseEff && 'NSE', bseEff && 'BSE'].filter(Boolean);
-  const today = [!nseEff && 'NSE', !bseEff && 'BSE'].filter(Boolean);
-  if (charged.length) parts.push(`${charged.join('/')} fees as charged: each trading day at the transaction fees then in force (fee register); est. = slab-era flat estimate or provisional calibrated BSE cash rate.`);
-  if (today.length) parts.push(`${today.join('/')} fees at today's rates: every trading day at today's statutory transaction fees (fee register)${FEE_MODE === 'charged' ? ' — date-effective data not generated yet' : ''}.`);
+  parts.push("NSE/BSE fees at today's rates: every trading day at today's statutory transaction fees (fee register).");
   parts.push('Expiries / exp = NSE or BSE expiry days in the period (weekly index expiry, moved to the previous trading day for a holiday).');
   parts.push('MCX: source values.');
   const mh = mcxDash?.modelled_history;
@@ -525,7 +522,7 @@ async function downloadWeeklyReport() {
         <span class="pr-title">NSE/BSE Weekly Update – Week of ${weekRange}</span>
         <span class="pr-subtitle">Generated: ${genTime}</span>
       </div>
-      <p class="pr-fee-line">${reportFeeLine(nseRev.eff, bseRev.eff, mcxDash)}</p>
+      <p class="pr-fee-line">${reportFeeLine(mcxDash)}</p>
       ${buildExchangeSection('NSE Update', nseEnrich, true, nseDash, 'nse')}
       ${buildNSEShareSection(nseShare)}
       ${buildExchangeSection('BSE Update', bseEnrich, false, bseDash, 'bse')}
@@ -797,7 +794,7 @@ async function downloadMobileReport() {
 <div style="background:#1e3a2f;color:#fff;border-radius:12px;padding:16px 18px;margin-bottom:16px">
   <div style="font-size:18px;font-weight:800;letter-spacing:-.02em;margin-bottom:4px">NSE/BSE Weekly Update</div>
   <div style="font-size:12px;color:#86efac">As of ${latestDateStr} &nbsp;·&nbsp; Generated ${genTime}</div>
-  <div style="font-size:10.5px;color:#d1fae5;margin-top:6px;line-height:1.4">${reportFeeLine(nseRev.eff, bseRev.eff, mcxDash)}</div>
+  <div style="font-size:10.5px;color:#d1fae5;margin-top:6px;line-height:1.4">${reportFeeLine(mcxDash)}</div>
 </div>
 ${body}
 <div style="text-align:center;font-size:10px;color:#9ca3af;margin-top:16px;padding-top:12px;border-top:1px solid #e5e7eb">

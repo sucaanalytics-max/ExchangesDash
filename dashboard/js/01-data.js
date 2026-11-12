@@ -132,55 +132,21 @@ function marketSig(ex) {
   return s ? `${s.enr || ''}|${s.raw || ''}` : '';
 }
 
-// ── Fee basis: as charged (date-effective) or at today's rates ───────────────
-// NSE and BSE revenue comes in two variants (CLAUDE.md, "Business rules"):
-// {ex}_{dashboard,enriched}_data.json prices every day at today's statutory
-// fees; {ex}_…_data_eff.json prices each day at the fees in force that day
-// (scripts/fee_register.py) and tags each row and period with fee_basis.
-// "As charged" (the default) loads the _eff pair; until the pipeline has
-// written it (404, or no fee_mode) the view falls back to today's rates and a
-// notice says so. MCX has no turnover to re-price: always source values.
-const FEE_MODE_STORAGE_KEY = 'feeMode_v1';
-let FEE_MODE = loadFeeMode();   // 'charged' | 'today'
-let feeModeSeq = 0;             // latest toggle; an older reload still in flight yields to it
-const MARKET_MODE = {};         // exchange → fee mode its MARKET_DATA/MARKET_RAW were fetched in
-const MARKET_EFF = {};          // exchange → true when those cached files are the _eff variant
-const EFF_MISSING_AT = {};      // exchange → ms when its _eff pair was last found missing
-
-function loadFeeMode() {
-  try { return localStorage.getItem(FEE_MODE_STORAGE_KEY) === 'today' ? 'today' : 'charged'; } catch (e) { return 'charged'; }
-}
-
-function saveFeeMode(mode) {
-  try { localStorage.setItem(FEE_MODE_STORAGE_KEY, mode); } catch (e) { /* storage blocked: not remembered */ }
-}
-
+// ── Fee basis: today's rates ─────────────────────────────────────────────────
+// NSE and BSE revenue is shown at today's statutory fees (CLAUDE.md, "Business
+// rules"): {ex}_{dashboard,enriched}_data.json price every day at the current
+// fee register, so periods differ by volume alone. The pipelines still write the
+// date-effective {ex}_…_data_eff.json pair; the dashboard no longer reads it.
+// MCX has no turnover to re-price: always source values.
 function hasFeeVariant(ex) { return ex === 'nse' || ex === 'bse'; }
 
-// The variant an exchange's files are fetched in: NSE/BSE follow the toggle, MCX never changes
-function feeModeFor(ex) { return hasFeeVariant(ex) ? FEE_MODE : 'source'; }
-
-// An exchange's dashboard + enriched files in the current fee mode, as settled
-// results ({ status, value }), plus whether they are the date-effective pair.
-// Both files come from the same variant: a half-generated _eff pair is not used.
-// A missing pair is probed again at most once per DATA_MAX_AGE_MS.
+// An exchange's dashboard + enriched files, as settled results ({ status, value }).
 async function fetchRevenueFiles(ex) {
-  const mode = feeModeFor(ex);
-  const pair = suffix => Promise.allSettled([
-    fetchDataFile(`./data/${ex}_dashboard_data${suffix}.json`),
-    fetchDataFile(`./data/${ex}_enriched_data${suffix}.json`),
+  const [raw, enr] = await Promise.allSettled([
+    fetchDataFile(`./data/${ex}_dashboard_data.json`),
+    fetchDataFile(`./data/${ex}_enriched_data.json`),
   ]);
-  if (mode === 'charged' && !(Date.now() - (EFF_MISSING_AT[ex] || 0) < DATA_MAX_AGE_MS)) {
-    const [raw, enr] = await pair('_eff');
-    const dateEffective = r => r.status === 'fulfilled' && r.value.json && r.value.json.fee_mode === 'date_effective';
-    if (dateEffective(raw) && dateEffective(enr)) {
-      delete EFF_MISSING_AT[ex];
-      return { raw, enr, eff: true, mode };
-    }
-    EFF_MISSING_AT[ex] = Date.now();
-  }
-  const [raw, enr] = await pair('');
-  return { raw, enr, eff: false, mode };
+  return { raw, enr };
 }
 
 // Fetches one exchange's dashboard, enriched and share-analysis files without
@@ -195,7 +161,7 @@ async function fetchExchangeFiles(exchange) {
   if (rev.raw.status !== 'fulfilled') throw rev.raw.reason;
   if (rev.enr.status !== 'fulfilled') throw rev.enr.reason;
   const raw = rev.raw.value, enr = rev.enr.value;
-  return { exchange, raw: raw.json, enr: enr.json, share: share ? share.json : null, sig: [raw.sig, enr.sig, share ? share.sig : ''].join('|'), checkedAt, mode: rev.mode, eff: rev.eff };
+  return { exchange, raw: raw.json, enr: enr.json, share: share ? share.json : null, sig: [raw.sig, enr.sig, share ? share.sig : ''].join('|'), checkedAt };
 }
 
 async function commitExchangeFiles(f) {
@@ -205,7 +171,7 @@ async function commitExchangeFiles(f) {
   if (Array.isArray(DATA.pnl)) DATA.pnl.sort((a, b) => quarterSortKey(a.quarter) - quarterSortKey(b.quarter));
   ENRICHED_DATA = f.enr;
   SHARE_DATA = f.share;
-  VIEW_LOADED = { exchange: f.exchange, sig: f.sig, checkedAt: f.checkedAt, mode: f.mode, eff: f.eff };
+  VIEW_LOADED = { exchange: f.exchange, sig: f.sig, checkedAt: f.checkedAt };
   if (SHARE_DATA) {
     await applyLiveStockPrice(SHARE_DATA, f.exchange);
   }
@@ -240,42 +206,28 @@ async function loadExchangeData(exchange, owns = () => true) {
 // Fills MARKET_DATA / MARKET_RAW (the cache the combined views and the BSE
 // valuation read) for the given exchanges. Resolves to the exchanges whose
 // content changed. Concurrent callers share one fetch per exchange.
-// The cache holds NSE/BSE in one fee mode at a time: a fetch is keyed by
-// exchange and mode, and one that finishes after the mode has changed is dropped.
 function preloadMarketData(exchanges = ['nse', 'bse', 'mcx']) {
   return Promise.all(exchanges.map(ex => {
-    const mode = feeModeFor(ex);
-    const key = ex + '|' + mode;
+    const key = ex;
     if (!MARKET_INFLIGHT[key]) {
       MARKET_CHECKED_AT[ex] = Date.now();
-      MARKET_INFLIGHT[key] = fetchRevenueFiles(ex).then(({ raw, enr, eff }) => {
-        if (mode !== feeModeFor(ex)) return null;  // toggled meanwhile; that mode's fetch fills the cache
+      MARKET_INFLIGHT[key] = fetchRevenueFiles(ex).then(({ raw, enr }) => {
         if (enr.status !== 'fulfilled' && raw.status !== 'fulfilled') return null;
-        const modeChanged = MARKET_MODE[ex] !== mode;
-        if (modeChanged) {  // never leave one file of the other variant behind
-          delete MARKET_DATA[ex];
-          delete MARKET_RAW[ex];
-          delete MARKET_SIG[ex];
-        }
         const before = marketSig(ex);
         const sig = MARKET_SIG[ex] || (MARKET_SIG[ex] = {});
         if (enr.status === 'fulfilled') { MARKET_DATA[ex] = enr.value.json; sig.enr = enr.value.sig; }
         if (raw.status === 'fulfilled') { MARKET_RAW[ex]  = raw.value.json; sig.raw = raw.value.sig; }
-        MARKET_MODE[ex] = mode;
-        MARKET_EFF[ex] = eff;
-        return marketSig(ex) !== before || modeChanged ? ex : null;
+        return marketSig(ex) !== before ? ex : null;
       }).finally(() => { delete MARKET_INFLIGHT[key]; });
     }
     return MARKET_INFLIGHT[key];
   })).then(changed => changed.filter(Boolean));
 }
 
-// Fetches the cached exchanges that are missing, stale, in the other fee mode
-// or already being fetched.
+// Fetches the cached exchanges that are missing, stale or already being fetched.
 function ensureFreshMarketData(exchanges) {
   const now = Date.now();
-  const due = exchanges.filter(ex => MARKET_INFLIGHT[ex + '|' + feeModeFor(ex)] || !MARKET_RAW[ex] || !MARKET_DATA[ex]
-    || MARKET_MODE[ex] !== feeModeFor(ex)
+  const due = exchanges.filter(ex => MARKET_INFLIGHT[ex] || !MARKET_RAW[ex] || !MARKET_DATA[ex]
     || !MARKET_CHECKED_AT[ex] || now - MARKET_CHECKED_AT[ex] > DATA_MAX_AGE_MS);
   return due.length ? preloadMarketData(due) : Promise.resolve([]);
 }
@@ -301,9 +253,7 @@ function checkDataFreshness() {
       viewDue ? fetchExchangeFiles(ex).catch(() => null) : null,
     ]);
     if (currentExchange !== ex) return;  // switched meanwhile; that switch loaded its own data
-    // A fetch made before a fee-mode toggle is left to the toggle's own reload
-    const fresh = files && VIEW_LOADED && files.mode === VIEW_LOADED.mode && files.mode === feeModeFor(ex)
-      && files.sig !== VIEW_LOADED.sig ? files : null;
+    const fresh = files && VIEW_LOADED && files.sig !== VIEW_LOADED.sig ? files : null;
     const cacheMoved = cached.some(e => marketSig(e) !== VIEW_BUILT_FROM[e]);
     if (fresh || cacheMoved) await rebuildCurrentView(fresh);
   })().catch(err => console.warn('Data freshness check failed:', err))
@@ -365,8 +315,8 @@ function updateSnapshotNotice() {
   el.hidden = false;
 }
 
-// ── Fee toggle, fee notice and the fee-basis definitions note ─────────────────
-const FEE_BASIS_SHORT = { charged: 'as charged', today: "at today's rates", source: 'source values' };
+// ── Fee-basis labels and the definitions note ─────────────────────────────────────────────────
+const FEE_BASIS_SHORT = { today: "at today's rates", source: 'source values' };
 const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 // "2024-10-01" → "1 Oct 2024"
@@ -382,14 +332,12 @@ function rawFor(ex) {
   return !DATA.components && VIEW_LOADED && VIEW_LOADED.exchange === ex ? DATA : MARKET_RAW[ex];
 }
 
-// What the figures shown for `ex` are priced at: 'charged', 'today' or 'source' (MCX)
+// What the figures shown for `ex` are priced at: 'today' (NSE/BSE) or 'source' (MCX)
 function feeBasisOf(ex) {
-  if (!hasFeeVariant(ex)) return 'source';
-  const eff = !DATA.components && VIEW_LOADED && VIEW_LOADED.exchange === ex ? VIEW_LOADED.eff : MARKET_EFF[ex];
-  return eff ? 'charged' : 'today';
+  return hasFeeVariant(ex) ? 'today' : 'source';
 }
 
-// Short unit label for table headers, e.g. "as charged" or "NSE/BSE as charged · MCX source values"
+// Short unit label for table headers, e.g. "at today's rates" or "NSE/BSE at today's rates · MCX source values"
 function feeUnitLabel() {
   const groups = {};
   viewExchanges().forEach(ex => { (groups[feeBasisOf(ex)] = groups[feeBasisOf(ex)] || []).push(ex.toUpperCase()); });
@@ -398,65 +346,8 @@ function feeUnitLabel() {
     : kinds.map(k => `${groups[k].join('/')} ${FEE_BASIS_SHORT[k]}`).join(' · ');
 }
 
-// NSE/BSE sources of the current view: [{ ex, eff }]. The BSE valuation also
-// reads NSE's rows (market ADR and share).
-function viewFeeSources() {
-  const tab = document.querySelector('.nav-item.active')?.dataset.tab;
-  if (tab === 'contracts') return [];   // contracts and premium are volumes: no fee basis
-  const list = viewExchanges().filter(hasFeeVariant);
-  if (currentExchange === 'bse' && tab === 'valuation' && MARKET_RAW.nse) list.push('nse');
-  return list.map(ex => ({ ex, eff: feeBasisOf(ex) === 'charged' }));
-}
-
-// "As charged" selected but the date-effective files are not there yet
-function updateFeeNotice() {
-  const el = document.getElementById('feeNotice');
-  if (!el) return;
-  if (isViewKey(currentExchange)) { el.hidden = true; el.textContent = ''; return; }
-  const sources = viewFeeSources();
-  const missing = FEE_MODE === 'charged' ? sources.filter(s => !s.eff) : [];
-  if (!missing.length) {
-    el.hidden = true;
-    el.textContent = '';
-    return;
-  }
-  const names = missing.map(s => s.ex.toUpperCase()).join(' and ');
-  el.textContent = missing.length === sources.length
-    ? 'Date-effective data not generated yet — showing today\'s rates.'
-    : `${names} date-effective data not generated yet — ${names} figures use today's rates.`;
-  el.hidden = false;
-}
-
-// Date spans of an exchange's fee rules with this basis, from its loaded
-// fee_rules: e.g. "NSE until 30 Sep 2024", "BSE options 1 Nov 2023 – 30 Sep 2024".
-function feeRuleSpans(ex, basis) {
-  const raw = rawFor(ex);
-  const rules = (raw?.fee_rules || []).filter(r => r.basis === basis);
-  if (!rules.length) return [];
-  const firstDate = raw.daily_all?.[0]?.date || '';
-  const allProducts = new Set((raw.fee_rules || []).map(r => r.product));
-  const spans = {};
-  rules.forEach(r => {
-    const s = spans[r.product] || (spans[r.product] = { from: r.effective_from, to: r.effective_to });
-    if (r.effective_from === null || (s.from !== null && r.effective_from < s.from)) s.from = r.effective_from;
-    if (r.effective_to === null || (s.to !== null && r.effective_to > s.to)) s.to = r.effective_to;
-  });
-  const groups = {};
-  Object.entries(spans).forEach(([prod, s]) => {
-    const when = s.from === null || s.from <= firstDate
-      ? (s.to ? `until ${fmtLongDate(s.to)}` : '')
-      : (s.to ? `${fmtLongDate(s.from)} – ${fmtLongDate(s.to)}` : `from ${fmtLongDate(s.from)}`);
-    (groups[when] = groups[when] || []).push(prod);
-  });
-  const names = { opt: 'options', fut: 'futures', cash: 'cash' };
-  return Object.entries(groups).map(([when, prods]) => {
-    const what = prods.length === allProducts.size ? '' : ' ' + prods.map(p => names[p] || p).join(' and ');
-    return `${ex.toUpperCase()}${what}${when ? ' ' + when : ''}`;
-  });
-}
-
-// One short note under the Revenue Summary: which fee basis the figures use,
-// the method, and what the "est." / "modelled" markers mean.
+// One short note under the Revenue Summary: the fee basis, the method, and
+// what the "modelled" marker means.
 function buildFeeNote() {
   const el = document.getElementById('feeModeNote');
   if (!el) return;
@@ -464,22 +355,12 @@ function buildFeeNote() {
   const multi = exs.length > 1;
   const names = list => list.map(e => e.toUpperCase()).join(' and ');
   const parts = [];
-  const charged = exs.filter(ex => feeBasisOf(ex) === 'charged');
   const today = exs.filter(ex => feeBasisOf(ex) === 'today');
-  if (charged.length) {
-    parts.push(`<strong>${multi ? names(charged) + ' fees' : 'Fees'} as charged:</strong> each trading day is priced at the transaction fees in force that day, from the fee register (exchange circulars${charged.includes('bse') ? '; BSE cash at per-quarter rates calibrated to BSE\'s reported cash transaction income' : ''}).`);
-    const slab = charged.flatMap(ex => feeRuleSpans(ex, 'slab_estimate'));
-    const prov = charged.flatMap(ex => feeRuleSpans(ex, 'calibrated_provisional'));
-    const est = [];
-    if (slab.length) est.push(`${flagTags({ slab: true })} marks a slab-era flat estimate of tiered fees (${slab.join('; ')})`);
-    if (prov.length) est.push(`${flagTags({ prov: true })} marks a provisional calibrated rate (${prov.join('; ')}), updated when BSE reports the quarter`);
-    if (est.length) parts.push(est.join('; ') + '.');
-  }
   if (today.length) {
     parts.push(`<strong>${multi ? names(today) + ' fees' : 'Fees'} at today's rates:</strong> every trading day is priced at today's statutory transaction fees from the fee register, so periods differ by volume alone.`);
   }
   if (exs.includes('mcx')) {
-    parts.push('MCX figures are source values (there is no turnover to re-price), so the fee setting does not change them.');
+    parts.push('MCX figures are source values (there is no turnover to re-price), so they are not re-priced at today\'s fees.');
     const mh = rawFor('mcx')?.modelled_history;
     if (mh && mh.days > 0) {
       parts.push(`${flagTags({ modelled: true })} marks MCX history ${fmtLongDate(mh.first_date)} – ${fmtLongDate(mh.last_date)}, which is modelled (scaled to reported quarters, options split derived) and left out of YoY, QoQ, segment-mix and market-share comparisons, shown as —.`);
@@ -490,7 +371,7 @@ function buildFeeNote() {
     parts.push(`<strong>Expiries</strong> counts the period's expiry days: each exchange's weekly index expiry (NSE Nifty, BSE Sensex) on the weekday then in force, moved to the previous trading day for a holiday; this week's counts once it has traded.${multi ? ' N = NSE, B = BSE; amber marks counts that differ, where the daily averages are not like for like.' : ''} Before 20 Nov 2024 both exchanges also had other weekly index expiries, not counted; BSE counts before the Sensex relaunch (15 May 2023) are notional.`);
   }
   // The live cards beside the segment tabs (buildLiveCards in 10-revenue-summary.js)
-  parts.push('<strong>Live cards</strong> show NSE and BSE total revenue booked so far today at today\'s statutory fees, from the live polls (about every 5 min, 09:15–16:00 IST), with the predicted close and the typical-path range as on the Live Predictor tab; outside market hours they show the last session, and its actual close once the evening data is in, also at today\'s fees (so for BSE under "as charged" it is below the tables\' figure by the calibrated cash rate). The revenue banner at the top shows the same figure, with the time of the poll.');
+  parts.push('<strong>Live cards</strong> show NSE and BSE total revenue booked so far today at today\'s statutory fees, from the live polls (about every 5 min, 09:15–16:00 IST), with the predicted close and the typical-path range as on the Live Predictor tab; outside market hours they show the last session, and its actual close once the evening data is in, also at today\'s fees. The revenue banner at the top shows the same figure, with the time of the poll.');
   // Muhurat / DR test sessions (scripts/trading_calendar.py): left out of every
   // average and day count, listed here with their revenue
   const special = exs.flatMap(ex => (rawFor(ex)?.special_sessions || []).map(r => ({ ex, r })));
@@ -511,93 +392,6 @@ function buildFeeNote() {
   el.hidden = !parts.length;
 }
 
-function initFeeToggle() {
-  document.querySelectorAll('#feeToggle [data-fee-mode]').forEach(btn => {
-    btn.addEventListener('click', () => setFeeMode(btn.dataset.feeMode));
-  });
-  const compact = document.getElementById('feeCompact');
-  if (compact) compact.addEventListener('click', () => setFeeMode(FEE_MODE === 'charged' ? 'today' : 'charged'));
-  updateFeeToggle();
-}
-
-function updateFeeToggle() {
-  const box = document.getElementById('feeToggle');
-  if (!box) return;
-  box.querySelectorAll('[data-fee-mode]').forEach(btn => {
-    const on = btn.dataset.feeMode === FEE_MODE;
-    btn.classList.toggle('active', on);
-    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-  });
-  const isCharged = FEE_MODE === 'charged';
-  const val = document.getElementById('feeCompactVal');
-  if (val) val.textContent = isCharged ? 'As chg' : 'Today';
-  const compact = document.getElementById('feeCompact');
-  const na = currentExchange === 'mcx';
-  const naNote = na ? ' MCX revenue is shown as source values; this setting applies to NSE and BSE.' : '';
-  if (compact) {
-    compact.setAttribute('aria-label', `Fees: ${isCharged ? 'as charged' : "at today's rates"}. Switch to ${isCharged ? "today's rates" : 'as charged'}.`);
-    compact.title = `Fees: ${isCharged ? 'as charged (each day at the fees then in force)' : "at today's rates"} — tap to switch.${naNote}`;
-  }
-  box.classList.toggle('fee-toggle--na', na);
-  box.title = na ? naNote.trim() : '';
-}
-
-async function setFeeMode(mode) {
-  if ((mode !== 'charged' && mode !== 'today') || mode === FEE_MODE) return;
-  const prev = FEE_MODE;
-  FEE_MODE = mode;
-  saveFeeMode(mode);
-  updateFeeToggle();
-  if (await reloadForFeeMode() === false && FEE_MODE === mode) {
-    // The new mode's files could not be loaded: the view still shows the old
-    // mode, so the toggle goes back to match it
-    FEE_MODE = prev;
-    saveFeeMode(prev);
-    updateFeeToggle();
-  }
-}
-
-// Reloads the current view's NSE/BSE files in the new fee mode and rebuilds it,
-// keeping the open tab and sub-tab. MCX alone has nothing to reload. A newer
-// toggle or an exchange switch made meanwhile takes over. Resolves to false
-// if the files could not be loaded (the view is left as it was).
-async function reloadForFeeMode() {
-  const seq = ++feeModeSeq;
-  const ex = currentExchange;
-  if (!viewExchanges().some(hasFeeVariant)) return;
-  const owns = () => seq === feeModeSeq && currentExchange === ex;
-  const activeTab = document.querySelector('.nav-item.active')?.dataset.tab;
-  showLoading(ex);
-  try {
-    let files = null;
-    if (COMBINED_VIEWS[ex]) {
-      await ensureFreshMarketData(COMBINED_VIEWS[ex]);
-      if (owns() && COMBINED_VIEWS[ex].some(e => MARKET_MODE[e] !== feeModeFor(e))) throw new Error('fee-mode files unavailable');
-    } else {
-      files = await fetchExchangeFiles(ex);
-    }
-    if (!owns()) return;
-    if (files) {
-      VIEW_BUILT_FROM = {};  // as loadExchangeData: views reading the cache record it again
-      await commitExchangeFiles(files);
-    } else {
-      await loadExchangeData(ex);  // combined: builds from the cache just filled
-    }
-    if (!owns()) return;
-    Object.values(charts).forEach(c => { if (c && c.destroy) c.destroy(); });
-    Object.keys(charts).forEach(k => delete charts[k]);
-    updateHeaderInfo();
-    rebuildAll();
-  } catch (err) {
-    console.warn('Fee mode reload failed:', err);
-    if (owns()) return false;
-  } finally {
-    if (owns()) hideLoading();
-  }
-  if (!owns()) return;
-  const tabBtn = activeTab && document.querySelector(`.nav-item[data-tab="${activeTab}"]`);
-  if (tabBtn) tabBtn.click();
-}
 
 // ── Build combined DATA.quarterly + DATA.monthly by summing across exchanges ─
 // Each exchange's revenue is divided by its own trading days before summing,

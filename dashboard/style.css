@@ -1884,13 +1884,11 @@ body.mode-brokers #brokerPill,
 body.mode-mtf #mtfPill { display: flex; }
 
 body.mode-brokers #exchangePill,
-body.mode-brokers #feeToggle,
 body.mode-brokers #latestRevBanner,
 body.mode-brokers #btnDownloadReport,
 body.mode-brokers #btnMobileReport,
 body.mode-brokers .nav-item--glance,
 body.mode-mtf #exchangePill,
-body.mode-mtf #feeToggle,
 body.mode-mtf #latestRevBanner,
 body.mode-mtf #btnDownloadReport,
 body.mode-mtf #btnMobileReport,
@@ -2588,91 +2586,7 @@ span.pr-neu {
 .snapshot-notice::before { content: '⚠ '; }
 .snapshot-notice[hidden] { display: none; }
 
-/* ── Fee basis: header toggle (NSE/BSE revenue as charged vs at today's
-   rates), the "est." / "modelled" markers and the definitions note ── */
-.fee-toggle {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  font-family: var(--font-display);
-}
-.fee-toggle-label {
-  margin-right: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  color: var(--color-text-muted);
-}
-.fee-opt {
-  padding: 4px 9px;
-  border: 1px solid var(--color-border-strong);
-  background: var(--color-surface);
-  color: var(--color-text-muted);
-  font-family: var(--font-display);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background var(--transition-interactive), color var(--transition-interactive);
-}
-.fee-opt + .fee-opt { border-left: none; }
-.fee-opt:first-of-type { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
-.fee-opt:last-of-type { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
-.fee-opt:hover { color: var(--color-text); }
-.fee-opt.active {
-  background: var(--color-ink);
-  border-color: var(--color-ink);
-  color: #FFFFFF;
-}
-.fee-opt:focus-visible,
-.fee-compact:focus-visible {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 1px;
-}
-/* MCX alone: the setting does not apply (MCX is source values) */
-.fee-toggle--na .fee-opt,
-.fee-toggle--na .fee-compact { opacity: 0.55; }
-
-/* Narrow headers: one button showing the current setting; tap to switch */
-.fee-compact {
-  display: none;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 40px;
-  padding: 0;
-  border: 1.5px solid var(--color-ink);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface);
-  color: var(--color-ink);
-  font-family: var(--font-display);
-  line-height: 1.1;
-  cursor: pointer;
-}
-.fee-compact-k {
-  font-size: 8px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--color-text-muted);
-}
-.fee-compact-v {
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-/* Below 1280px the header has no room for the full control */
-@media (max-width: 1280px) {
-  .fee-toggle-label,
-  .fee-opt { display: none; }
-  .fee-compact { display: flex; }
-}
-
+/* ── Fee basis: the "est." / "modelled" markers and the definitions note ── */
 /* "est." (slab-era flat estimate / provisional BSE cash rate) and
    "modelled" (MCX history before 2 Sep 2024) markers beside a value */
 .fee-est,
@@ -2791,13 +2705,10 @@ span.pr-neu {
   line-height: 1.4;
 }
 
-/* Phones: room for the fee button — the header date drops its year and the
-   pulse dot, and the fee button is the same 40×40 as REPORT / MOBILE */
+/* Phones: room in the header — the date drops its year and the pulse dot */
 @media (max-width: 640px) {
   .lu-year,
   .header-meta .live-dot { display: none; }
-  .fee-compact { width: 40px; }
-  .fee-compact-v { font-size: 9px; letter-spacing: 0; }
   .header { gap: 4px; }
   .header-left { gap: 6px; }
 }

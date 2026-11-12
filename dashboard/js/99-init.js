@@ -9,7 +9,6 @@ async function init() {
   showLoading('nse');
   initExchangeSwitcher();
   initModeSwitch();   // Exchanges | Brokers, shown once a broker view has registered
-  initFeeToggle();
   updateHeaderExchange('nse');
   buildSidebarNav('nse');
   toggleExchangeContent('nse');

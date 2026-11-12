@@ -839,10 +839,8 @@ function attachTabListeners() {
         btn.classList.remove('active');
         document.querySelector('.nav-item[data-glance]')?.classList.add('active');
       }
-      // Flag mixed snapshots / missing date-effective files for this view, then
-      // refetch anything it uses that has gone stale
+      // Flag mixed snapshots for this view, then refetch anything it uses that has gone stale
       updateSnapshotNotice();
-      updateFeeNotice();
       checkDataFreshness();
       // Close mobile nav
       document.getElementById('sidebar').classList.remove('open');

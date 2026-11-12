@@ -157,8 +157,7 @@ function typicalPathRange(revenue, at, pool) {
 
 // Whether the session `date` has its official close in the view's daily rows.
 // Live figures are then compared with that close at today's rates, the polls'
-// basis (todayRatesData), never with the view's rows: under "As charged" BSE
-// cash there is priced at the calibrated rate. Until then nothing extra loads.
+// basis (todayRatesData). Until then nothing extra loads.
 function liveCloseKnown(viewRows, date) {
   return !!date && (viewRows || []).some(r => r.date === date);
 }
@@ -236,7 +235,7 @@ async function buildLivePredictor(ex) {
   // poller's closes, at today's rates), else the quarter-to-date average
   const sameType = complete.filter(d => d.day_type === dayType && d.date !== sessDate);
   // The official close and the QTD average are read at today's rates, the
-  // polls' basis, whatever the Fees toggle; that file loads only when needed
+  // polls' basis; that file loads only when needed
   const closeKnown = liveCloseKnown(DATA.daily_all, sessDate);
   const todayData = closeKnown || sameType.length < 3 ? await todayRatesData(ex) : null;
   if (currentExchange !== ex) return;

@@ -7,12 +7,11 @@
 
 // An exchange's dashboard file at today's rates, the basis of the live polls and
 // /api/revenue: the banner's last resort, and what live figures are compared
-// with (actual close, QTD average) whatever the Fees toggle. The preloaded
-// MARKET_RAW copy serves unless it is the _eff variant, whose BSE cash is
-// priced at the calibrated rate instead.
+// with (actual close, QTD average). The preloaded MARKET_RAW copy serves when
+// there is one; otherwise the file is fetched.
 const TODAY_RATES_DATA = {};    // exchange → { json, at } at-today's-rates file
 async function todayRatesData(ex) {
-  if (MARKET_RAW[ex] && !MARKET_EFF[ex]) return MARKET_RAW[ex];
+  if (MARKET_RAW[ex]) return MARKET_RAW[ex];
   const c = TODAY_RATES_DATA[ex];
   if (c && Date.now() - c.at < DATA_MAX_AGE_MS) return c.json;
   try {
@@ -370,7 +369,7 @@ async function renderGlance() {
   const dowCard = glanceCard('Day of week · latest ₹ Cr, vs last 3', `<div class="glance-dow">${strip}</div>`);
 
   const feeLine = hasFeeVariant(ex)
-    ? (MARKET_EFF[ex] ? 'Fees as charged (rates in force each day).' : 'Fees at today\'s rates.')
+    ? 'Fees at today\'s rates.'
     : 'MCX: source values.';
 
   el.innerHTML = switcher
@@ -405,7 +404,7 @@ function rebuildAll() {
     const sources = DATA.components.map(c => ({ ex: c.exchange, date: lastTradeDate(c.daily_all) }));
     (EXCHANGE_TABS[currentExchange] || []).forEach(t => { VIEW_SOURCES[t.id] = sources; });
   }
-  const common = [updateSnapshotNotice, updateFeeNotice, updateFeeToggle, buildFeeNote, buildRevenueSummary, buildLiveCards];
+  const common = [updateSnapshotNotice, buildFeeNote, buildRevenueSummary, buildLiveCards];
   const byExchange = {
     nsebse: [() => buildMarketSharePanel(['nse', 'bse']), buildMarketShareTrend, buildContractsPremium],
     all:    [() => buildMarketSharePanel(['nse', 'bse', 'mcx']), buildContractsPremium],
