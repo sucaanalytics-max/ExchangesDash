@@ -225,8 +225,8 @@ def _xls_sheets(body):
 
 def _xls_date(v, datemode):
     """An Excel serial day, or a text date, → date."""
-    import xlrd
     if isinstance(v, float) and v > 30000:
+        import xlrd     # only for serial days, so the parser runs without xlrd on text dates
         return xlrd.xldate.xldate_as_datetime(v, datemode).date()
     return parse_day(str(v))
 
