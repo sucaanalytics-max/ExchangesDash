@@ -1,0 +1,63 @@
+name: Participants source check
+
+# Read-only: fetches a recent and an old sample of every participant-wise data
+# source (NSE / BSE F&O participant volume and OI, FII/DII cash figures, NSDL's
+# FPI reports, NSE's Market Pulse) and prints what came back
+# (scripts/participants_probe.py). Nothing is written or committed; the raw
+# replies are uploaded as the run's artifact. Runs on demand, and on a pull
+# request that changes this file or the participants scripts.
+on:
+  workflow_dispatch:
+    inputs:
+      dates:
+        description: 'Trading dates, YYYY-MM-DD, space-separated (empty = the latest NSE days and two from Oct/Nov 2023)'
+        required: false
+        default: ''
+        type: string
+  pull_request:
+    paths:
+      - '.github/workflows/participants-sources.yml'
+      - 'scripts/participants_*.py'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pdfplumber xlrd
+
+      - name: Probe the sources
+        env:
+          DATES: ${{ inputs.dates }}
+        # DATES is split on spaces on purpose: each date is its own argument
+        run: python scripts/participants_probe.py $DATES
+
+      - name: Upload raw replies
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: participants-probe
+          path: probe/
+          if-no-files-found: ignore
+          retention-days: 14
