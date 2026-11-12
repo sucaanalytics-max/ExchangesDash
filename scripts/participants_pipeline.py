@@ -499,7 +499,8 @@ def parse_nsdl(html_text):
     return out
 
 
-PULSE_TABLE = re.compile(r"^Table \d*:\s*(.+?\(%\)(?: in (\d{4}))?)\s*$")
+PULSE_TABLE = re.compile(r"^Table \d*:\s*(.+?\(%\)(?: in (?:\d{4}|FY\d{2}))?)\s*$")
+PULSE_PARSER = 3            # bump when a fix changes what an edition parses to: stored editions are re-read
 PULSE_HEADER = re.compile(r"^C\s?lient category\b")
 BARE_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 PULSE_MONTH = re.compile(r"^[A-Z][a-z]{2}-\d{2}$")   # 'Man-25' (sic, Jun 2025 edition) is kept; the report drops it
@@ -519,6 +520,7 @@ def parse_pulse_text(text):
     numbers above rows ('Cash Segment', 'Commodity Futures') names the rows under it."""
     out = {}
     lines = [clean(x) for x in text.splitlines()]
+    latest = None            # the previous table's latest month: dates a following bare 'Apr … Mar' header
     i = 0
     while i < len(lines):
         if not PULSE_HEADER.match(lines[i]):
@@ -529,25 +531,46 @@ def parse_pulse_text(text):
         if not title_m or "...." in title_m.group(1):
             i += 1
             continue
-        title, year = title_m.group(1).replace("’", "'"), title_m.group(2)
+        title = title_m.group(1).replace("’", "'")
+        # bare 'Jan … Dec' columns take the title's year ('… in 2024 (%)', '… (%) in 2025'); 'Apr … Mar'
+        # in an FY review ('… in FY25 (%)') run April of the year before to March
+        year = re.search(r"\bin (\d{4})\b", title)
+        fy = re.search(r"\bin FY(\d{2})\b", title)
         months = []
         for t in PULSE_HEADER.sub("", lines[i]).split():
             if PULSE_MONTH.match(t):
                 months.append(t)
-            elif year and t in BARE_MONTHS:
-                months.append(f"{t}-{year[2:]}")
+            elif t in BARE_MONTHS and year:
+                months.append(f"{t}-{year.group(1)[2:]}")
+            elif t in BARE_MONTHS and fy:
+                yy = int(fy.group(1)) - (1 if BARE_MONTHS.index(t) >= 3 else 0)
+                months.append(f"{t}-{yy:02d}")
+            elif t in BARE_MONTHS:
+                months.append(t)            # dated below from the table before
             else:
                 break
+        if months and not PULSE_MONTH.match(months[-1]):
+            months = _date_bare_months(months, latest)
         rows, section, pending = {}, None, None
         j = i + 1
         while j < len(lines) and not lines[j].startswith("Source:") and not PULSE_TABLE.match(lines[j]):
             line = lines[j]
+            if PULSE_HEADER.match(line):
+                # a second header inside a table (the April 2026 edition prints a bare 'Apr … Mar' header
+                # between the real one and the rows) is neither a section nor a label; a new table
+                # starts at its own title, which ends this one
+                j += 1
+                continue
             toks = line.split()
             first_num = next((k for k, t in enumerate(toks)
                               if DECIMAL.match(t) or re.match(r"^\(?-?\d", t) or t == "NA"), None)
             if months and first_num is not None:
                 label = " ".join(toks[:first_num]) or pending
                 pending = None
+                if not label and j + 1 < len(lines) and re.match(r"^[A-Za-z][A-Za-z ()-]*$", lines[j + 1]) \
+                        and not PULSE_TABLE.match(lines[j + 1]) and not lines[j + 1].startswith("Source"):
+                    label = lines[j + 1]     # the FY26 tables print each label under its numbers
+                    j += 1
                 shares = [num(t) if t != "NA" else None for t in toks[first_num:] if DECIMAL.match(t) or t == "NA"]
                 if label and len(shares) >= len(months):
                     if j + 1 < len(lines) and re.match(r"^[a-z][a-z ]*$", lines[j + 1]):
@@ -563,9 +586,35 @@ def parse_pulse_text(text):
                     section = line
             j += 1
         if rows:
-            out[title] = {"months": months, "rows": rows}
+            if title in out:                 # one title over a monthly and a full-year table (April 2026)
+                for label, vals in rows.items():
+                    out[title]["rows"].setdefault(label, {}).update(vals)
+                out[title]["months"] += [m for m in months if m not in out[title]["months"]]
+            else:
+                out[title] = {"months": months, "rows": rows}
+            dated = [m for m in months if PULSE_MONTH.match(m) and m[:3] in BARE_MONTHS]
+            if dated:                        # monthly tables lead with the latest month, annual ones end with it
+                latest = max(dated, key=lambda m: (int(m[4:]), BARE_MONTHS.index(m[:3])))
         i = j
     return out
+
+
+def _date_bare_months(months, latest):
+    """Bare month names ('Apr' … 'Mar') with no year in the title: the run ends at `latest` (the
+    previous table's latest month, e.g. 'Mar-26'), counting back across year ends. None without it."""
+    if not latest or not PULSE_MONTH.match(latest):
+        return []
+    m_end, y = BARE_MONTHS.index(latest[:3]), int(latest[4:])
+    out, idx = [], m_end
+    for name in reversed(months):
+        k = BARE_MONTHS.index(name) if name in BARE_MONTHS else None
+        if k is None:
+            return []
+        if k > idx:                          # crossed back over a January
+            y -= 1
+        idx = k
+        out.append(f"{name}-{y:02d}")
+    return list(reversed(out))
 
 
 def pulse_pages(pdf):
@@ -975,8 +1024,11 @@ def run_pulse(st, session, run, limit):
         edition = f"{cd.year}-{cd.month:02d}"
         if edition >= PULSE_FROM:
             editions.append((edition, url, clean(item.get("TITLE"))))
-    todo = [e for e in sorted(editions, reverse=True) if e[0] not in st["editions"]][:limit]
-    print(f"nse_pulse: {len(editions)} editions listed, reading {len(todo)}")
+    missing = [e for e in sorted(editions, reverse=True) if e[0] not in st["editions"]][:limit]
+    stale = [e for e in sorted(editions, reverse=True)
+             if e[0] in st["editions"] and st["editions"][e[0]].get("parser", 1) < PULSE_PARSER][:max(limit, 12)]
+    todo = missing + stale
+    print(f"nse_pulse: {len(editions)} editions listed, reading {len(missing)} new and {len(stale)} by an older parser")
     changed, errors, ok = 0, 0, 0
     for edition, url, title in todo:
         if run.out_of_time() and changed:
@@ -997,7 +1049,8 @@ def run_pulse(st, session, run, limit):
         ok += 1
         checks = pulse_checks(tables)
         st["editions"][edition] = {"edition": edition, "title": title, "url": url, "sha256": sha(pdf),
-                                   "fetched_at": run.now_iso, "tables": tables, "checks": checks}
+                                   "fetched_at": run.now_iso, "parser": PULSE_PARSER, "tables": tables,
+                                   "checks": checks}
         changed += 1
         print(f"  {edition}: {len(tables)} table(s)" + (f" — check: {'; '.join(checks)}" if checks else ""))
         run.pause(PAUSE_S)

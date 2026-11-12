@@ -296,6 +296,49 @@ class MarketPulse(unittest.TestCase):
         self.assertEqual(len(t["months"]), 12)
         self.assertEqual(t["rows"]["Foreign Investors"]["Nov-25"], 17.2)
 
+    def test_year_inside_the_title_and_fy_reviews(self):
+        jan25 = PULSE_ANNUAL.replace("NSE cash market segment (%) in 2025", "NSE cash market segment in 2024 (%)")
+        t = next(iter(p.parse_pulse_text(jan25).values()))
+        self.assertEqual((t["months"][0], t["months"][-1]), ("Jan-24", "Dec-24"))
+        fy = PULSE_ANNUAL.replace("(%) in 2025", "in FY25 (%)").replace(
+            "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", "Apr May Jun Jul Aug Sep Oct Nov Dec Jan Feb Mar")
+        t = next(iter(p.parse_pulse_text(fy).values()))
+        self.assertEqual((t["months"][0], t["months"][8], t["months"][9], t["months"][-1]),
+                         ("Apr-24", "Dec-24", "Jan-25", "Mar-25"))
+
+    def test_full_year_table_under_the_same_title_and_labels_under_numbers(self):
+        # April 2026: the monthly table, then the same title over Apr … Mar with no year; and an
+        # FY table that prints each label on the line under its numbers
+        apr26 = PULSE_2026.replace("Source: NSE EPR.\n", "") + (
+            "Table 68: Share of client participation in NSE cash market segment (%)\n"
+            "Client category Apr May Jun Jul Aug Sep Oct Nov Dec Jan Feb Mar\n"
+            "Corporates 3.6 3.8 4.1 3.3 3.6 3.7 3.6 3.5 3.7 3.6 3.5 3.9\n"
+            "Source: NSE EPR.\n"
+            "Table 84: Share of client participation in Currency Futures of NSE (%) in FY26\n"
+            "Client category Apr May Jun Jul Aug Sep Oct Nov Dec Jan Feb Mar\n"
+            "16.1 14.4 17.8 20.8 22.4 14.5 12.3 14.4 16.0 15.5 17.3 11.9\n"
+            "Corporates\n"
+            "Source: NSE EPR.\n")
+        tables = p.parse_pulse_text(apr26)
+        cash = tables["Share of client participation in NSE cash market segment (%)"]
+        self.assertEqual(cash["rows"]["Corporates"]["Aug-26"], 4.4)            # the monthly table kept
+        self.assertEqual(cash["rows"]["Corporates"]["Sep-25"], 3.7)            # Apr … Mar ending Aug-26's year
+        cur = tables["Share of client participation in Currency Futures of NSE (%) in FY26"]
+        self.assertEqual(cur["rows"]["Corporates"]["Apr-25"], 16.1)
+        self.assertEqual(cur["rows"]["Corporates"]["Mar-26"], 11.9)
+        self.assertEqual(p._date_bare_months(["Nov", "Dec", "Jan"], "Jan-26"), ["Nov-25", "Dec-25", "Jan-26"])
+        # after an annual table (Jan … Dec 2025), a year-less Jan … Dec table is 2025 too (January 2026)
+        jan26 = PULSE_ANNUAL + PULSE_ANNUAL.replace("Table 66", "Table 77").replace(
+            "NSE cash market segment (%) in 2025", "Interest Rate Futures of NSE (%)")
+        irf = p.parse_pulse_text(jan26)["Share of client participation in Interest Rate Futures of NSE (%)"]
+        self.assertEqual((irf["months"][0], irf["months"][-1]), ("Jan-25", "Dec-25"))
+
+    def test_a_second_header_inside_a_table_is_skipped(self):
+        text = PULSE_2026.replace("Source: NSE EPR.\n", "") .replace(
+            "Corporates 4.4", "Client category Apr May Jun Jul Aug Sep Oct Nov Dec Jan Feb Mar\nCorporates 4.4")
+        rows = p.parse_pulse_text(text)["Share of client participation in NSE cash market segment (%)"]["rows"]
+        self.assertEqual(list(rows)[:2], ["Corporates", "DIIs"])      # no 'Client category …' section prefix
+
     def test_checks_flag_columns_that_dont_add_up(self):
         tables = p.parse_pulse_text(PULSE_2026)
         self.assertEqual(p.pulse_checks(tables), [])
