@@ -773,7 +773,8 @@ async function setMode(mode) {
   await switchExchange(target);
 }
 
-// Header quarter / "Last Updated" for a broker or MTF view, from its meta()
+// Header quarter / "Last Updated" for a broker or MTF view, from its meta(): { quarter,
+// updated, updatedExtra (after `updated`, hidden on phones), updatedTitle }
 function updateViewHeaderInfo(view) {
   let m = {};
   try { m = (view.meta && view.meta()) || {}; } catch (err) { console.error(`${view.label} meta() failed:`, err); }
@@ -781,7 +782,8 @@ function updateViewHeaderInfo(view) {
   const span = document.getElementById('lastUpdatedSpan');
   if (quarter) quarter.textContent = m.quarter || '—';
   if (span) {
-    span.innerHTML = '<span class="lu-label">Last Updated: </span>' + escHtml(m.updated || '—');
+    span.innerHTML = '<span class="lu-label">Last Updated: </span>' + escHtml(m.updated || '—')
+      + (m.updatedExtra ? `<span class="lu-extra"> · ${escHtml(m.updatedExtra)}</span>` : '');   // hidden on phones
     span.title = m.updatedTitle || '';
   }
 }

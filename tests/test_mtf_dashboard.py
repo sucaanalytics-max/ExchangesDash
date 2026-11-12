@@ -11,7 +11,7 @@ from datetime import date, timedelta
 from helpers import DASHBOARD, NODE, js_eval
 
 HELPERS = ["MTF_MONTHS", "MTF_WEEKDAYS", "MTF_AVG6M_DAYS", "MTF_NOTES", "MTF_RANGES", "mtfQuarterOf", "mtfPeriodOf",
-           "mtfDaysAfter", "mtfMonthsBack", "mtfSeries", "mtfPointOnOrBefore", "mtfChanges", "mtfInRange",
+           "mtfDaysAfter", "mtfMonthsBack", "mtfSeries", "mtfAhead", "mtfAheadText", "rxDate", "mtfPointOnOrBefore", "mtfChanges", "mtfInRange",
            "mtfRangeIsShort", "mtfDateTick", "mtfPeriodRows", "mtfSummary", "mtfFlowRows", "mtfNotesFor", "mtfNotesBetween",
            "mtfTopRows", "MTF_BROKER_PALETTE", "MTF_MEASURE_CHIPS", "mtfBrokerPrimary", "mtfBrokerRows", "mtfBrokerStyle",
            "mtfBrokerPoints", "mtfBrokerMoves", "mtfShareText", "mtfBookText", "mtfQuarterTicks", "rxCr", "fmtNum"]
@@ -123,6 +123,17 @@ class Series(unittest.TestCase):
         self.assertEqual([(p["date"], p["value"], p["nse"], p["bse"]) for p in out["combined"]],
                          [("2026-10-29", 102.0, 98.0, 4.0), ("2026-10-30", 105.0, 100.0, 5.0)])
         self.assertEqual(out["none"], [])
+
+    def test_exchanges_past_the_combined_end(self):
+        # NSE + BSE ends on 2026-10-30; NSE runs to 2026-11-02 (its spike day doesn't count), then 2026-11-03
+        doc = dict(DOC, nse=DOC["nse"] + [{"date": "2026-11-03", "closing_cr": 101.0, "flags": []}])
+        out = js("({ ahead: mtfAhead(DATA), combined: mtfAheadText(DATA, 'combined'), nse: mtfAheadText(DATA, 'nse') })", doc)
+        self.assertEqual(out["ahead"], [{"ex": "nse", "date": "2026-11-03"}])
+        self.assertEqual(out["combined"], "NSE to 3 Nov 2026")
+        self.assertEqual(out["nse"], "")                    # only the combined view stops short
+        # the spike alone is not a later day; BSE's own days are older than the combined end
+        self.assertEqual(js("mtfAhead(DATA)", DOC), [])
+        self.assertEqual(js("mtfAhead(DATA)", dict(DOC, combined=[])), [])
 
     def test_changes(self):
         # 3 Nov vs the last session on or before 3 Oct (a Saturday: 1 Oct) and 3 Nov a year earlier

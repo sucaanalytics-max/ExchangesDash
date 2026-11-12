@@ -9,6 +9,14 @@ const MTF_DAILY_URL = './data/mtf_daily.json';
 const MTF_STOCKS_URL = './data/mtf_stocks_latest.json';
 const MTF_BROKERS_URL = './data/mtf_brokers.json';
 const MTF_MAX_AGE_MS = 15 * 60 * 1000;   // re-fetch the files when a view loads after this long
+// When each exchange's file for a reporting day appears (the daily job's fetch times,
+// Nov 2026: NSE's after 21:00 IST the next trading day; BSE's about 21:00 IST two
+// trading days on, e.g. 3 Nov on 5 Nov, 6 Nov on 11 Nov after the 10 Nov holiday)
+const MTF_PUBLISHED = {
+  nse: 'NSE publishes a day’s file late at night (IST) on the next trading day',
+  bse: 'BSE publishes a day’s file in the evening (IST) about two trading days after the day',
+};
+const MTF_PUBLISH_LAG = `${MTF_PUBLISHED.nse}; ${MTF_PUBLISHED.bse}.`;
 
 // Sidebar tabs: label and NAV_ICONS key
 const MTF_TABS = {
@@ -123,6 +131,26 @@ function mtfSeries(doc, view) {
       opening: r.opening_cr, fresh: r.fresh_cr, liquidated: r.liquidated_cr, file: r.file }));
   }
   return pts.filter(p => p.value != null && isFinite(p.value)).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
+// NSE + BSE ends on the last date both exchanges published, so it stops at the
+// exchange that publishes later (BSE's file appears about two trading days after
+// the day, NSE's on the next): the exchanges whose own series runs past it, as
+// [{ ex, date }], NSE first; empty when neither does or there is no combined day.
+function mtfAhead(doc) {
+  const comb = mtfSeries(doc, 'combined');
+  if (!comb.length) return [];
+  const end = comb[comb.length - 1].date;
+  return ['nse', 'bse'].map(ex => {
+    const s = mtfSeries(doc, ex);
+    return { ex, date: s.length ? s[s.length - 1].date : null };
+  }).filter(a => a.date && a.date > end);
+}
+
+// "NSE to 9 Nov 2026" for the NSE + BSE view when an exchange runs past it, else ''
+function mtfAheadText(doc, view) {
+  if (view !== 'combined') return '';
+  return mtfAhead(doc).map(a => `${a.ex.toUpperCase()} to ${rxDate(a.date)}`).join(', ');
 }
 
 // The last point on or before `iso`, or null
@@ -461,9 +489,11 @@ function mtfShow(tab) {
 function mtfMeta() {
   const pts = mtfSeries(MTF.doc, MTF.view);
   const last = pts.length ? pts[pts.length - 1].date : null;
+  const ahead = mtfAheadText(MTF.doc, MTF.view);
   return last
-    ? { quarter: mtfQuarterOf(last), updated: `MTF to ${fmtLongDate(last)}`,
-        updatedTitle: `Reporting date of the latest book; mtf_daily.json written ${MTF.doc.updated_at || '—'}` }
+    ? { quarter: mtfQuarterOf(last), updated: `MTF to ${fmtLongDate(last)}`, updatedExtra: ahead,
+        updatedTitle: `Reporting date of the latest book; mtf_daily.json written ${MTF.doc.updated_at || '—'}.${ahead
+          ? ` NSE + BSE ends on the last date both exchanges published (${ahead}). ${MTF_PUBLISH_LAG}` : ''}` }
     : { quarter: '—', updated: 'no MTF data' };
 }
 
@@ -617,10 +647,12 @@ function mtfBuildSummary(el) {
   const draw = () => {
     const s = mtfSummary(pts, MTF.sel);
     const first = pts[0].date;
+    const ahead = mtfAheadText(MTF.doc, view);
     const breaks = mtfNotesFor(view, 'break');
     const excluded = mtfNotesFor(view, 'excluded');
     el.innerHTML = `<div class="mtf-sum">
       <div class="mtf-sum-bar"><span><b>${def.name}</b> · as of <b>${rxDate(s.asOf)}</b> (reporting date)</span>
+        ${ahead ? `<span class="mtf-sum-ahead" title="${escHtml(MTF_PUBLISH_LAG)}">${escHtml(ahead)} · NSE + BSE ends on the last date both published</span>` : ''}
         <span>${s.fy.length} financial years · series from ${rxDate(first)}</span></div>
       <div class="xl-segment mtf-sum-panel">
         <div class="xl-seg-header">${def.name} MTF book <span class="xl-seg-unit">₹ Cr · average over reporting days</span></div>
@@ -684,7 +716,7 @@ function mtfBuildBook(el) {
   el.innerHTML = `<div class="rx">
     ${mtfKpis(view, pts)}
     ${rxPanel({ title: view === 'combined' ? 'NSE + BSE MTF book' : `${def.name} MTF book`,
-      meta: `₹ Cr by reporting date · to ${rxDate(last.date)}`,
+      meta: `₹ Cr by reporting date · to ${rxDate(last.date)}${mtfAheadText(MTF.doc, view) ? ` (${escHtml(mtfAheadText(MTF.doc, view))})` : ''}`,
       right: `${legend}${rxSeg('mtfRange', MTF_RANGES.map(r => [r[0], r[1]]), MTF.range, 'Chart range')}`,
       body: `<div class="rx-pb" style="padding-bottom:6px">${rxCanvas(`mtfBookChart-${view}`)}</div><div data-mtf="bookNotes"></div>` })}
     ${view === 'combined' ? rxPanel({ title: 'BSE share of the combined book', meta: '% of NSE + BSE, by reporting date',
@@ -781,7 +813,8 @@ function mtfAboutHTML(view) {
     <ul>
       ${exs.map(ex => `<li>${src[ex]}</li>`).join('')}
       ${view === 'combined' ? '<li><b>NSE + BSE</b>: the sum on dates both exchanges published. Many securities trade on both, so the security counts are not added.</li>' : ''}
-      <li>Each day is the <b>reporting date</b>, the trading day the book is for. Exchanges publish it the next trading day, so the latest date trails the market by a session.</li>
+      <li>Each day is the <b>reporting date</b>, the trading day the book is for. ${exs.map(ex => MTF_PUBLISHED[ex]).join('; ')}, so the latest date trails the market by ${
+        exs.includes('bse') ? 'about two sessions' : 'a session'}${view === 'combined' ? ', and NSE + BSE usually ends a session before NSE' : ''}.</li>
       <li>This is the exchanges’ disclosed MTF book across all members, not any one broker’s loan book or interest income.</li>
       ${left.length ? `<li><b>Left out</b>: ${left.join('; ')}.</li>` : ''}
     </ul>
