@@ -2,7 +2,8 @@
 """Monthly participant activity from the participants stores (no network).
 
 Reads dashboard/data/participants_<key>.json (scripts/participants_pipeline.py) and writes
-dashboard/data/participants_monthly.json: for each view below, each category's value per
+dashboard/data/participants_daily.json (each view's value per category per day, for the dashboard's
+Participants tab) and participants_monthly.json: for each view below, each category's value per
 calendar month (daily average, month-end or month sum, as the view says) and its share of the
 view's total. It prints a markdown comparison of the latest month against the month before
 and the same month of each earlier year — the job summary of the daily workflow.
@@ -24,6 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "dashboard" / "data"
 OUT_PATH = DATA_DIR / "participants_monthly.json"
+DAILY_PATH = DATA_DIR / "participants_daily.json"     # the dashboard's daily charts
 YEARS_BACK = 3
 
 
@@ -156,24 +158,34 @@ def canon(label):
     return LABEL_ALIASES.get(k, k)
 
 
-def view_series(view, doc):
-    """({category: {month: value}}, {month: days}, {category: {month: share %}}) for one view. A category
-    a source spelt differently over time is one series, named as the source names it today."""
-    per, days, names = {}, {}, {}
+def view_days(view, doc):
+    """[(date, {category: value})], one per stored day of the view's table. A category a source spelt
+    differently over time is one series, named as the source names it today."""
+    out, names = [], {}
     for rec in (doc or {}).get("days", []):
         t = find_table(rec["tables"], view["table"])
         if not t:
             continue
-        m = month_of(rec["date"])
-        days[m] = days.get(m, 0) + 1
+        vals = {}
         for label, row in t.items():
             shown = label if label == view["total_row"] else view["rows"](label)
             v = view["value"](row) if shown else None
             if v is not None:
                 key = canon(shown)
                 names[key] = shown                 # days run oldest first: the latest spelling wins
-                per.setdefault(key, {}).setdefault(m, []).append(v)
-    per = {names[k]: v for k, v in per.items()}
+                vals[key] = v
+        out.append((rec["date"], vals))
+    return [(d, {names[k]: v for k, v in vals.items()}) for d, vals in out]
+
+
+def view_series(view, doc, days_list=None):
+    """({category: {month: value}}, {month: days}, {category: {month: share %}}) for one view."""
+    per, days = {}, {}
+    for d, vals in (view_days(view, doc) if days_list is None else days_list):
+        m = month_of(d)
+        days[m] = days.get(m, 0) + 1
+        for cat, v in vals.items():
+            per.setdefault(cat, {}).setdefault(m, []).append(v)
     agg = view["agg"]
     series = {cat: {m: round(sum(v) / len(v) if agg == "mean" else sum(v) if agg == "sum" else v[-1], 2)
                     for m, v in months.items()} for cat, months in per.items()}
@@ -187,6 +199,20 @@ def view_series(view, doc):
                 if tot:
                     shares.setdefault(c, {})[m] = round(100 * v / tot, 2)
     return series, days, shares
+
+
+def daily_view(days_list, unit):
+    """{dates, series: {category: [value per date, None where missing]}}: the dashboard's daily charts.
+    Contracts are whole numbers; rupee figures keep two decimals."""
+    dates = [d for d, _ in days_list]
+    cats = []
+    for _, vals in days_list:
+        cats += [c for c in vals if c not in cats]
+    digits = 0 if unit == "contracts" else 2
+
+    def rnd(v):
+        return None if v is None else (int(round(v)) if digits == 0 else round(v, digits))
+    return {"dates": dates, "series": {c: [rnd(vals.get(c)) for _, vals in days_list] for c in cats}}
 
 
 # ── Market Pulse ───────────────────────────────────────────────
@@ -308,13 +334,17 @@ def markdown(doc, latest):
     return "\n".join(out)
 
 
-def build(now_iso):
+def build(now_iso, daily=None):
+    """The monthly document; fills `daily` (when given) with each view's daily series."""
     views = {}
     for view in VIEWS:
-        series, days, shares = view_series(view, load(view["source"]))
+        days_list = view_days(view, load(view["source"]))
+        series, days, shares = view_series(view, None, days_list)
         views[view["id"]] = {"heading": view["heading"], "source": view["source"], "aggregation": view["agg"],
-                             "unit": view["unit"], "days": dict(sorted(days.items())), "series": series,
-                             "shares": shares}
+                             "unit": view["unit"], "total_row": view["total_row"], "days": dict(sorted(days.items())),
+                             "series": series, "shares": shares}
+        if daily is not None:
+            daily[view["id"]] = daily_view(days_list, view["unit"])
     return {"updated_at": now_iso,
             "notes": ["Monthly views of the participants stores (scripts/participants_report.py). "
                       "Aggregation: mean = average per day of the month, sum = month total, last = month end.",
@@ -332,8 +362,13 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     from mtf_pipeline import write_if_changed
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    doc = build(now_iso)
+    daily = {}
+    doc = build(now_iso, daily)
     write_if_changed(OUT_PATH, doc)
+    write_if_changed(DAILY_PATH, {"updated_at": now_iso,
+                                  "notes": ["Each view's value per category per day (participants_report.py VIEWS); "
+                                            "the monthly file aggregates the same values."],
+                                  "views": daily})
     latest = argv[0] if argv else latest_month(doc)
     if not latest:
         print("No participant data yet.")

@@ -3440,3 +3440,8 @@ a.rx-link { display: inline; }
   .mtf-stocks .mtf-id { display: none; }
   .mtf-stocks td.mtf-name { min-width: 140px; }
 }
+
+/* Participants tab (js/17-participants.js): category swatch and share beside each figure */
+.pt-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 0; }
+.pt-share { display: block; font-size: 11px; color: var(--rx-muted, #62656D); }
+.pt-table td, .pt-table th { white-space: nowrap; }

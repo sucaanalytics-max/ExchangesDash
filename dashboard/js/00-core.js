@@ -519,7 +519,9 @@ const NAV_ICONS = {
 // ========================
 
 // Contracts to Premium (js/16-contracts-premium.js) is market-wide, NSE + BSE
-// combined: the same tab under every view that has NSE or BSE data (not MCX)
+// combined: the same tab under every view that has NSE or BSE data (not MCX).
+// Participants (js/17-participants.js) is under the NSE and BSE views, each with
+// its own exchange's participant data and NSDL's market-wide FPI flows
 const EXCHANGE_TABS = {
   nse: [
     { id: 'revenue',    label: 'Revenue Summary',    icon: 'revenue' },
@@ -528,6 +530,7 @@ const EXCHANGE_TABS = {
     { id: 'share',      label: 'Regression',          icon: 'share' },
     { id: 'valuation',  label: 'Valuation Model',     icon: 'advanced' },
     { id: 'contracts',  label: 'Contracts to Premium', icon: 'ratio' },
+    { id: 'participants', label: 'Participants',      icon: 'share' },
   ],
   bse: [
     { id: 'revenue',    label: 'Revenue Summary',     icon: 'revenue' },
@@ -536,6 +539,7 @@ const EXCHANGE_TABS = {
     { id: 'share',      label: 'Regression',            icon: 'share' },
     { id: 'valuation',  label: 'Valuation Model',       icon: 'advanced' },
     { id: 'contracts',  label: 'Contracts to Premium', icon: 'ratio' },
+    { id: 'participants', label: 'Participants',        icon: 'share' },
   ],
   mcx: [
     { id: 'revenue',    label: 'Revenue Summary',     icon: 'revenue' },
@@ -562,6 +566,7 @@ const TAB_TITLES = {
     share: 'Regression',
     valuation: 'Valuation Model',
     contracts: 'Contracts to Premium — NSE + BSE',
+    participants: 'Participants — FII, DII, Pro, Client (NSE + NSDL)',
   },
   bse: {
     revenue: 'Revenue Summary',
@@ -570,6 +575,7 @@ const TAB_TITLES = {
     share: 'Regression',
     valuation: 'Valuation Model',
     contracts: 'Contracts to Premium — NSE + BSE',
+    participants: 'Participants — FII, DII, Pro, Client (BSE + NSDL)',
   },
   mcx: {
     revenue: 'Revenue Summary',

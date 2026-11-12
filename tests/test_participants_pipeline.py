@@ -482,6 +482,19 @@ class Report(unittest.TestCase):
         self.assertEqual(s["Prop"]["2026-08"], 31.7)
         self.assertEqual(s["DIIs"]["2025-08"], 14.5)                 # the 2026-09 edition's year-ago column
 
+    def test_daily_view(self):
+        vol = "Participant wise Trading Volume (no. of contracts) in Equity Derivatives"
+        doc = {"days": [
+            day("2026-11-02", vol, {"FII": {"Total Long Contracts": 10.4, "Total Short Contracts": 10.0},
+                                    "TOTAL": {"Total Long Contracts": 40, "Total Short Contracts": 40}}),
+            day("2026-11-03", vol, {"TOTAL": {"Total Long Contracts": 50, "Total Short Contracts": 50}})]}
+        view = next(v for v in rpt.VIEWS if v["id"] == "nse_fo_vol")
+        days_list = rpt.view_days(view, doc)
+        self.assertEqual(rpt.daily_view(days_list, "contracts"),
+                         {"dates": ["2026-11-02", "2026-11-03"], "series": {"FII": [20, None], "TOTAL": [80, 100]}})
+        series, days, _ = rpt.view_series(view, None, days_list)        # the monthly view from the same days
+        self.assertEqual(series["TOTAL"], {"2026-11": 90.0})
+
     def test_compare_months_and_markdown(self):
         self.assertEqual(rpt.compare_months("2026-01"), ["2026-01", "2025-12", "2025-01", "2024-01", "2023-01"])
         self.assertEqual(rpt.change(110, 100, "mean"), "+10.0 %")
