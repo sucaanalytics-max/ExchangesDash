@@ -522,6 +522,111 @@ function latestWeekdaysExpiryCounts() {
   return sourcesExpiryCounts(src => WEEKDAYS.map(d => src.daily_all.filter(r => r.day === d).pop()).filter(Boolean));
 }
 
+// ── "Last 5 Days" breakdown (hover on the row, chip when a weekday repeats) ───
+// The last 5 trading rows are a plain trailing slice, so a holiday in the
+// window drops one weekday and repeats another (BSE, 4–11 Nov 2026: two
+// Wednesdays, which are pre-expiry days, and no Tuesday). Per source:
+// the 5 sessions tagged expiry / pre-expiry, the weekdays repeated or missing,
+// the holidays inside the window, and the latest row of each weekday with its
+// average (the "Mon–Fri Avg (Latest)" row's figure). `sources` defaults to the
+// view's exchanges; callers outside the view pass [{ exchange, daily_all }].
+const L5_DAY_MS = 86400000;
+const l5DayAfter = iso => new Date(Date.parse(iso + 'T00:00:00Z') + L5_DAY_MS).toISOString().slice(0, 10);
+
+function lastFiveBreakdown(segKey, sources) {
+  const field = getRevFieldObj(segKey).dField;
+  return (sources || revenueSources()).map(src => {
+    const daily = src.daily_all || [];
+    const hasExpiry = EXPIRY_RULES.some(r => r.exchange === src.exchange);
+    const exp = hasExpiry ? expiryDateSet(daily, src.exchange) : new Set();
+    const tagAt = i => {
+      const r = daily[i];
+      if (!hasExpiry) return '';
+      if (exp.has(r.date)) return 'expiry';
+      const next = daily[i + 1];
+      if (next ? exp.has(next.date) : isScheduledExpiry(src.exchange, l5DayAfter(r.date))) return 'pre-expiry';
+      return '';
+    };
+    const item = i => ({ date: daily[i].date, day: daily[i].day, value: daily[i][field] || 0, tag: tagAt(i) });
+    const start = Math.max(0, daily.length - 5);
+    const last5 = daily.slice(start).map((_, k) => item(start + k));
+    const counts = {};
+    last5.forEach(s => { counts[s.day] = (counts[s.day] || 0) + 1; });
+    const repeats = WEEKDAYS.filter(d => counts[d] > 1).map(d => ({ day: d, n: counts[d] }));
+    const missing = WEEKDAYS.filter(d => !counts[d]);
+    const holidays = [];
+    if (last5.length > 1) {
+      const have = new Set(last5.map(s => s.date));
+      for (let d = l5DayAfter(last5[0].date); d < last5[last5.length - 1].date; d = l5DayAfter(d)) {
+        const dow = new Date(d + 'T00:00:00Z').getUTCDay();
+        if (dow >= 1 && dow <= 5 && !have.has(d)) holidays.push(d);
+      }
+    }
+    const latest = WEEKDAYS.map(d => {
+      for (let i = daily.length - 1; i >= 0; i--) if (daily[i].day === d) return item(i);
+      return null;
+    }).filter(Boolean);
+    const avg = list => list.length ? list.reduce((a, s) => a + s.value, 0) / list.length : null;
+    return { exchange: src.exchange, last5, avgLast5: avg(last5), repeats, missing, holidays, latest, avgLatest: avg(latest) };
+  });
+}
+
+// "Wed 11 Nov"
+function l5Date(iso) {
+  const d = new Date(iso + 'T00:00:00Z');
+  return `${EXPIRY_DOW_NAMES[d.getUTCDay()].slice(0, 3)} ${d.getUTCDate()} ${MONTHS_SHORT[d.getUTCMonth()]}`;
+}
+
+// "Wednesday twice, no Tuesday (10 Nov holiday)", or '' when one of each
+function l5MixNote(b) {
+  if (!b.repeats.length) return '';
+  const times = n => (n === 2 ? 'twice' : `${n} times`);
+  const hol = b.holidays.map(d => l5Date(d).slice(4)).join(', ');
+  return `${b.repeats.map(r => `${r.day} ${times(r.n)}`).join(', ')}`
+    + `${b.missing.length ? `, no ${b.missing.join(' or ')}` : ''}`
+    + `${hol ? ` (${hol} holiday${b.holidays.length > 1 ? 's' : ''})` : ''}`;
+}
+
+// Plain-text tooltip for the "Last 5 Days" row: the 5 sessions and the latest Mon–Fri
+function lastFiveTitle(list) {
+  const multi = list.length > 1;
+  const sess = s => `${l5Date(s.date)} · ${fmtNum(s.value, 2)}${s.tag ? ` (${s.tag})` : ''}`;
+  const blocks = list.map(b => {
+    const pre = multi ? `${b.exchange.toUpperCase()} — ` : '';
+    const note = l5MixNote(b);
+    return [
+      `${pre}Last 5 sessions (avg ₹${fmtNum(b.avgLast5, 2)} Cr):`,
+      ...b.last5.map(s => '  ' + sess(s)),
+      ...(note ? [`  → ${note}`] : []),
+      `${pre}One of each weekday (latest Mon–Fri):`,
+      ...b.latest.map(s => '  ' + sess(s)),
+      `  → avg ₹${fmtNum(b.avgLatest, 2)} Cr`,
+    ].join('\n');
+  });
+  if (multi) {
+    const sum = list.reduce((a, b) => a + (b.avgLatest || 0), 0);
+    blocks.push(`Mon–Fri latest avg, ${list.map(b => b.exchange.toUpperCase()).join(' + ')}: ₹${fmtNum(sum, 2)} Cr`);
+  }
+  return blocks.join('\n\n');
+}
+
+// Amber chip beside the label when a weekday repeats: "2× Wed". Combined views
+// show it once when every exchange repeats the same, else per exchange ("B 2× Wed").
+function lastFiveChip(list, title) {
+  const rep = b => b.repeats.map(r => `${r.n}× ${r.day.slice(0, 3)}`).join(', ');
+  const hit = list.filter(b => b.repeats.length);
+  if (!hit.length) return '';
+  const same = hit.length === list.length && hit.every(b => rep(b) === rep(hit[0]));
+  const text = same ? rep(hit[0])
+    : hit.map(b => `${list.length > 1 ? (EXPIRY_LETTER[b.exchange] || b.exchange.toUpperCase()) + ' ' : ''}${rep(b)}`).join(' · ');
+  return `<span class="l5-mix" title="${escHtml(title)}">${text}</span>`;
+}
+
+// The "Last 5 Days" label with its tooltip
+function lastFiveLabel(title, text = 'Last 5 Days') {
+  return `<span class="l5-hover" title="${escHtml(title)}">${text}<span class="l5-i" aria-hidden="true">ⓘ</span></span>`;
+}
+
 // A % change between periods, one of which contains modelled MCX days, is not shown
 const CMP_MODELLED_SPAN = `<span class="xl-chg xl-neu cmp-na" title="${MCX_MODELLED_TITLE}">—</span>`;
 const CMP_MODELLED_TD = `<td class="wire-delta neutral cmp-na" title="${MCX_MODELLED_TITLE}">—</td>`;
@@ -753,8 +858,12 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
   const expTd = (id, html) => showExp ? `<td class="xl-exp"${id ? ` id="${id}"` : ''}>${html || ''}</td>` : '';
   const expHdr = showExp ? '<td title="Expiry days in the period: each exchange\'s weekly index expiry (N = NSE, B = BSE)"><span class="exp-hdr-long">Expiries</span><span class="exp-hdr-short">Exp</span></td>' : '';
 
+  // Hover on "Last 5 Days": its 5 sessions and the latest Mon–Fri; a chip when a weekday repeats
+  const l5List = lastFiveBreakdown(segKey);
+  const l5Title = lastFiveTitle(l5List);
+
   const wRows = [
-    `<tr class="xl-r-cur"><td>Last 5 Days</td><td>${xlValPlain(wl5.value, 2)}${flagTags(fl5)}</td><td>${chgOrNA(wl5.wow, fl5, flp5)}</td><td>${chgOrNA(wl5.wo10w, fl45)}</td>${expTd('', showExp && expiryCountHTML(tailExpiryCounts(-5)))}</tr>`,
+    `<tr class="xl-r-cur"><td>${lastFiveLabel(l5Title)}${lastFiveChip(l5List, l5Title)}</td><td>${xlValPlain(wl5.value, 2)}${flagTags(fl5)}</td><td>${chgOrNA(wl5.wow, fl5, flp5)}</td><td>${chgOrNA(wl5.wo10w, fl45)}</td>${expTd('', showExp && expiryCountHTML(tailExpiryCounts(-5)))}</tr>`,
     `<tr><td>Prev 5 Days</td><td>${xlValPlain(wp5.value, 2)}${flagTags(flp5)}</td><td></td><td></td>${expTd('', showExp && expiryCountHTML(tailExpiryCounts(-10, -5)))}</tr>`,
     `<tr><td>Last 20 Days</td><td>${xlValPlain(w20.value, 2)}${flagTags(fl20)}</td><td></td><td></td>${expTd('', showExp && expiryCountHTML(tailExpiryCounts(-20)))}</tr>`,
     `<tr><td>Last 45 Days</td><td>${xlValPlain(w50.value, 2)}${flagTags(fl45)}</td><td></td><td></td>${expTd('', showExp && expiryCountHTML(tailExpiryCounts(-45)))}</tr>`,
@@ -1309,19 +1418,23 @@ function buildMarketSharePanel(exList) {
       { lbl: refED.monthly?.previous?.label || 'Prev Month', vals: exList.map(ex => ed(ex)[key]?.monthly?.previous?.value || 0), flags: mFlags('previous', key, sk), exp: mExp('previous', key) },
       ...(m3Label ? [{ lbl: m3Label, vals: exList.map(ex => m3(ex, key)?.value || 0), flags: m3Flags(key, sk), exp: m3Exp(key) }] : []),
       { lbl: AVG_6M_LABEL,    vals: exList.map(ex => ed(ex)[key]?.monthly?.avg_6m?.value  || 0), flags: tFlags(-125, undefined, sk), exp: tExp(-125) },
-      { lbl: 'Last 5 Days',   vals: exList.map(ex => ed(ex)[key]?.weekly?.last5?.value    || 0), flags: tFlags(-5, undefined, sk), exp: tExp(-5) },
+      { lbl: 'Last 5 Days',   vals: exList.map(ex => ed(ex)[key]?.weekly?.last5?.value    || 0), flags: tFlags(-5, undefined, sk), exp: tExp(-5), l5: true },
       { lbl: 'Prev 5 Days',   vals: exList.map(ex => ed(ex)[key]?.weekly?.prev5?.value    || 0), flags: tFlags(-10, -5, sk), exp: tExp(-10, -5) },
       { lbl: 'Last 45 Days',  vals: exList.map(ex => ed(ex)[key]?.weekly?.last45?.value   || 0), flags: tFlags(-45, undefined, sk), exp: tExp(-45) },
     ];
 
-    const rows = periods.map(({ lbl, vals, cur, flags, exp }) => {
+    // "Last 5 Days": per-exchange sessions and latest Mon–Fri on hover (as the Week table)
+    const l5List = lastFiveBreakdown(sk, exList.map(ex => ({ exchange: ex, daily_all: raw(ex).daily_all || [] })));
+    const l5Title = lastFiveTitle(l5List);
+    const rows = periods.map(({ lbl, vals, cur, flags, exp, l5 }) => {
       const total = vals.reduce((a, b) => a + b, 0);
       const na = anyModelled(flags);
       const cells = exList.map((ex, i) => na
         ? `<td><span class="ms-pct cmp-na" title="${MCX_MODELLED_TITLE}">—</span></td>`
         : `<td><span class="ms-pct ${MS_META[ex].cls}">${pct(vals[i], total)}</span></td>`
       ).join('');
-      return `<tr${cur ? ' class="xl-r-cur"' : ''}><td>${lbl}${flagTags(flags)}</td>${cells}${showExp ? `<td>${exp}</td>` : ''}</tr>`;
+      const lblHTML = l5 ? lastFiveLabel(l5Title, lbl) + lastFiveChip(l5List, l5Title) : lbl;
+      return `<tr${cur ? ' class="xl-r-cur"' : ''}><td>${lblHTML}${flagTags(flags)}</td>${cells}${showExp ? `<td>${exp}</td>` : ''}</tr>`;
     }).join('');
 
     return `<div class="ms-seg${showExp ? ' ms-seg--exp' : ''}">

@@ -567,5 +567,58 @@ class RevenueSummaryMonths(unittest.TestCase):
         self.assertTrue(got)
 
 
+LAST_FIVE_JS = ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry", "computeWeekExpiryDates",
+                "EXPIRY_DATES_CACHE", "expiryDateSet", "getRevFieldObj", "WEEKDAYS", "MONTHS_SHORT", "fmtNum",
+                "L5_DAY_MS", "l5DayAfter", "lastFiveBreakdown", "l5Date", "l5MixNote", "lastFiveTitle"]
+
+
+class LastFiveDays(unittest.TestCase):
+    """The "Last 5 Days" hover: BSE, 2–11 Nov 2026, Tue 10 Nov a holiday, so the window
+    holds two Wednesdays (pre-expiry before the Thursday expiry) and no Tuesday."""
+    ROWS = [("2026-11-02", "Monday", 9.14), ("2026-11-03", "Tuesday", 9.25), ("2026-11-04", "Wednesday", 36.37),
+            ("2026-11-05", "Thursday", 53.79), ("2026-11-06", "Friday", 12.80), ("2026-11-09", "Monday", 11.06),
+            ("2026-11-11", "Wednesday", 36.63)]
+
+    def run_js(self, exchange="bse"):
+        daily = [{"date": d, "day": w, "total_rev": v, "opt_rev": v / 2} for d, w, v in self.ROWS]
+        expr = f"""(() => {{
+          const b = lastFiveBreakdown('total', [{{ exchange: '{exchange}', daily_all: DATA.daily }}]);
+          return {{ b: b[0], opt: lastFiveBreakdown('options', [{{ exchange: '{exchange}', daily_all: DATA.daily }}])[0],
+                   title: lastFiveTitle(b) }};
+        }})()"""
+        return js_eval(LAST_FIVE_JS, expr, {"daily": daily})
+
+    def test_sessions_tags_and_weekday_mix(self):
+        js = self.run_js()
+        b = js["b"]
+        self.assertEqual([s["date"] for s in b["last5"]],
+                         ["2026-11-04", "2026-11-05", "2026-11-06", "2026-11-09", "2026-11-11"])
+        # Wed 11 is the latest row: pre-expiry because Thu 12 is BSE's scheduled expiry
+        self.assertEqual([s["tag"] for s in b["last5"]], ["pre-expiry", "expiry", "", "", "pre-expiry"])
+        self.assertEqual(b["repeats"], [{"day": "Wednesday", "n": 2}])
+        self.assertEqual(b["missing"], ["Tuesday"])
+        self.assertEqual(b["holidays"], ["2026-11-10"])
+        self.assertAlmostEqual(b["avgLast5"], (36.37 + 53.79 + 12.80 + 11.06 + 36.63) / 5, places=9)
+
+    def test_latest_weekdays_average(self):
+        """One of each weekday: the latest Monday … Friday, as the "Mon–Fri Avg (Latest)" row."""
+        js = self.run_js()
+        b = js["b"]
+        self.assertEqual([s["date"] for s in b["latest"]],
+                         ["2026-11-09", "2026-11-03", "2026-11-11", "2026-11-05", "2026-11-06"])
+        self.assertAlmostEqual(b["avgLatest"], (11.06 + 9.25 + 36.63 + 53.79 + 12.80) / 5, places=9)
+        self.assertAlmostEqual(js["opt"]["avgLatest"], b["avgLatest"] / 2, places=9)   # segment field
+
+    def test_title_text(self):
+        title = self.run_js()["title"]
+        self.assertIn("Wed 11 Nov · 36.63 (pre-expiry)", title)
+        self.assertIn("Wednesday twice, no Tuesday (10 Nov holiday)", title)
+        self.assertIn("avg ₹24.71 Cr", title)
+
+    def test_no_tags_without_an_expiry_rule(self):
+        b = self.run_js("mcx")["b"]
+        self.assertEqual({s["tag"] for s in b["last5"]}, {""})
+
+
 if __name__ == "__main__":
     unittest.main()

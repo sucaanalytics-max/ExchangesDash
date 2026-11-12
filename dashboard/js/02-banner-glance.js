@@ -348,10 +348,16 @@ async function renderGlance() {
   const f5 = F.tail(-5, undefined, 'total'), fp5 = F.tail(-10, -5, 'total');
   const fqc = F.q(qc.label, 'total'), fqp = F.q(qp.label, 'total'), fq2 = F.q(q2.label, 'total');
 
+  // One of each weekday (latest Mon–Fri), and which weekday the last 5 repeat (hover elsewhere; phones need it shown)
+  const l5b = lastFiveBreakdown('total', [{ exchange: ex, daily_all: raw.daily_all || [] }])[0];
+  const l5Note = l5b.repeats.length
+    ? l5b.repeats.map(r => `${r.n}× ${r.day.slice(0, 3)}`).join(', ') + (l5b.missing.length ? `, no ${l5b.missing.map(d => d.slice(0, 3)).join('/')}` : '')
+    : '';
   const weekCard = glanceCard('Last 5 trading days', `
     <div class="glance-big">₹${fmtNum(l5.value, 1)}<span class="glance-unit"> Cr/day</span>${tg(f5)}</div>
     <div class="glance-row"><span>Previous 5 days</span><strong>₹${fmtNum(p5.value, 1)}${tg(fp5)}</strong></div>
-    <div class="glance-row"><span>Change</span>${glanceBadge(l5.wow, anyModelled(f5, fp5))}</div>`);
+    <div class="glance-row"><span>Change</span>${glanceBadge(l5.wow, anyModelled(f5, fp5))}</div>
+    <div class="glance-row"><span>Mon–Fri latest avg${l5Note ? `<span class="l5-glance-note">${l5Note}</span>` : ''}</span><strong>₹${fmtNum(l5b.avgLatest, 1)}</strong></div>`);
 
   const qtdCard = glanceCard(`Quarter to date · ${qc.label || '—'}`, `
     <div class="glance-big">₹${fmtNum(qc.value, 1)}<span class="glance-unit"> Cr/day</span>${tg(fqc)}</div>
