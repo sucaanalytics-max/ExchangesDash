@@ -25,6 +25,7 @@ on:
           - bse
           - mcx
           - mtf
+          - participants
       cron:
         description: 'Set by Vercel Cron: the schedule slot this run stands in for. Leave empty for a manual run.'
         required: false
@@ -495,6 +496,84 @@ jobs:
           echo "::error::The MTF pipeline failed (see 'Run MTF pipeline'); whatever it fetched was committed above."
           exit 1
 
+  participants-update:
+    # Participant-wise data (FII / DII / Pro / Client / Retail …) from NSE, BSE and NSDL →
+    # dashboard/data/participants_<source>.json, each source as published, and the monthly
+    # comparison participants_monthly.json (scripts/participants_report.py, also in the job
+    # summary). Every run re-reads the latest 5 trading days and backfills older ones within
+    # an 8-minute budget; a manual run with exchange 'participants' gets 75 minutes, enough
+    # to fill the 3 years from 1 Oct 2023 in one go (and asks again for days marked
+    # unavailable). Not in deploy's needs: the dashboard doesn't read these files yet, and a
+    # long backfill must not hold up the day's deploy.
+    needs: [nse-update, bse-update]
+    if: ${{ always() && (github.event_name == 'schedule' || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'participants') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    outputs:
+      new_days: ${{ steps.check_new.outputs.new_days }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run participants pipeline
+        id: run
+        continue-on-error: true
+        env:
+          PARTICIPANTS_FULL: ${{ github.event.inputs.exchange == 'participants' }}
+        run: python scripts/participants_pipeline.py
+
+      - name: Monthly report
+        continue-on-error: true
+        run: python scripts/participants_report.py
+
+      - name: Check if new data was added
+        id: check_new
+        run: |
+          NEW_DAYS=$(cat .new_participants_days_count 2>/dev/null || echo "0")
+          echo "new_days=$NEW_DAYS" >> $GITHUB_OUTPUT
+          echo "Participants new or revised days: $NEW_DAYS"
+
+      - name: Commit participants data
+        run: |
+          git config user.name "Research-Tusk"
+          git config user.email "research@tuskinvest.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git add dashboard/data/participants_*.json 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "📊 Participants update: $(date +%Y-%m-%d) — ${{ steps.check_new.outputs.new_days }} new day(s)"
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            echo "Push rejected (concurrent job likely pushed first) — retrying with rebase, attempt $i…"
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; echo "::error::Rebase conflict with origin/main"; exit 1; }
+            sleep $((RANDOM % 5 + 1))
+          done
+          echo "::error::Push still rejected after 5 attempts — data was NOT published"
+          exit 1
+
+      - name: Fail if no source could be read
+        if: steps.run.outcome == 'failure'
+        run: |
+          echo "::error::The participants pipeline failed (see 'Run participants pipeline'); whatever it fetched was committed above."
+          exit 1
+
   deploy:
     # Vercel skips the bot data commits above (dashboard/vercel-ignore-build.sh),
     # so the day's data is deployed once, by an empty "[deploy]" commit after
@@ -535,7 +614,7 @@ jobs:
           exit 1
 
   summary:
-    needs: [nse-update, bse-update, mcx-update, mtf-update, nse-share-analysis, bse-share-analysis, mcx-share-analysis, deploy]
+    needs: [nse-update, bse-update, mcx-update, mtf-update, participants-update, nse-share-analysis, bse-share-analysis, mcx-share-analysis, deploy]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -557,5 +636,6 @@ jobs:
           echo "- **BSE:** ${{ needs.bse-update.result }}, new or changed days ${{ needs.bse-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **MCX:** ${{ needs.mcx-update.result }}, new or changed days ${{ needs.mcx-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **MTF:** ${{ needs.mtf-update.result }}, new or revised days ${{ needs.mtf-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Participants:** ${{ needs.participants-update.result }}, new or revised days ${{ needs.participants-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Share analysis:** NSE ${{ needs.nse-share-analysis.result }}, BSE ${{ needs.bse-share-analysis.result }}, MCX ${{ needs.mcx-share-analysis.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Vercel deploy marker:** ${{ needs.deploy.result }}" >> $GITHUB_STEP_SUMMARY

@@ -1,19 +1,13 @@
 name: Participants source check
 
-# Read-only: fetches a recent and an old sample of every participant-wise data
-# source (NSE / BSE F&O participant volume and OI, FII/DII cash figures, NSDL's
-# FPI reports, NSE's Market Pulse) and prints what came back
-# (scripts/participants_probe.py). Nothing is written or committed; the raw
-# replies are uploaded as the run's artifact. Runs on demand, and on a pull
-# request that changes this file or the participants scripts.
+# Read-only: reads each participant-wise source's latest data (NSE / BSE F&O participant
+# volume and OI, FII derivatives statistics, NSE and BSE category-wise turnover, the FII/DII
+# figures, NSDL's FPI reports, NSE's latest Market Pulse) through the pipeline's own fetchers
+# and parsers (scripts/participants_pipeline.py --check) and prints what it found. Nothing is
+# written or committed. Runs on demand, and on a pull request that changes this file or the
+# participants scripts; fails when a source can't be read or parsed.
 on:
   workflow_dispatch:
-    inputs:
-      dates:
-        description: 'Trading dates, YYYY-MM-DD, space-separated (empty = the latest NSE days and two from Oct/Nov 2023)'
-        required: false
-        default: ''
-        type: string
   pull_request:
     paths:
       - '.github/workflows/participants-sources.yml'
@@ -23,7 +17,7 @@ permissions:
   contents: read
 
 jobs:
-  probe:
+  check:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -43,21 +37,7 @@ jobs:
           restore-keys: ${{ runner.os }}-pip-
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install pdfplumber xlrd
+        run: pip install -r requirements.txt
 
-      - name: Probe the sources
-        env:
-          DATES: ${{ inputs.dates }}
-        # DATES is split on spaces on purpose: each date is its own argument
-        run: python scripts/participants_probe.py $DATES
-
-      - name: Upload raw replies
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: participants-probe
-          path: probe/
-          if-no-files-found: ignore
-          retention-days: 14
+      - name: Read every source
+        run: python scripts/participants_pipeline.py --check

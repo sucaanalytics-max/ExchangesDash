@@ -70,6 +70,7 @@ class VercelIgnoreBuild(unittest.TestCase):
                     "📊 NSE update: 2026-11-04 — 2 new or changed day(s)",
                     "📊 MCX update: 2026-10-19 — 0 new day(s)",
                     "📊 MTF update: 2026-10-19 — 2 new day(s)",
+                    "📊 Participants update: 2026-11-12 — 14 new day(s)",
                     "📈 NSE share analysis: 2026-10-19",
                     "📈 BSE share analysis: 2026-10-19",
                     "📈 MCX share analysis: 2026-10-19",

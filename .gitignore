@@ -13,3 +13,5 @@ turnover_log.csv
 .new_mcx_days_count
 .playwright-mcp/
 .claude/*.lock
+.new_mtf_days_count
+.new_participants_days_count
