@@ -7,7 +7,7 @@ import unittest
 
 from helpers import NODE, js_eval
 
-HELPERS = ["MONTHS_SHORT", "RX", "PT_RANGES", "PT_COLOR_RULES", "PT_PALETTE", "ptColor", "ptMonthLabel",
+HELPERS = ["MONTHS_SHORT", "RX", "PT_RANGES", "PT_COLOR_RULES", "PT_PALETTE", "ptColor", "ptTint", "ptColors", "ptMonthLabel",
            "ptCompareMonths", "ptChange", "ptLatestMonth", "ptCompareRows", "ptDailyShares", "ptRangeStart",
            "ptValueOnOrBefore", "ptFmt", "ptChangeText", "ptFindCat", "rxSignedPct", "fmtNum"]
 
@@ -78,6 +78,17 @@ class Daily(unittest.TestCase):
         self.assertEqual(js("[ptColor('DIIs'), ptColor('Mutual Funds'), ptColor('Proprietary'), ptColor('CLIENT*')]"),
                          ["#176C2E", "#176C2E", "#C4621A", "#7A5BB5"])
         self.assertEqual(js("ptFindCat({Client: {}, 'FII / FPI': {}}, /^fii/i)"), "FII / FPI")
+
+    def test_chart_colours_follow_the_category(self):
+        # BSE's F&O mix lists FII fourth: it keeps FII's blue, not the fourth palette colour
+        self.assertEqual(js("ptColors(['Proprietary', 'Others', 'FII / FPI', 'Mutual Funds'])"),
+                         ["#C4621A", js("RX.grey"), "#2B5CC8", "#176C2E"])
+        # several DII parts in one chart: DII green, then lighter tints of it
+        out = js("ptColors(['Bank', 'Insurance Companies', 'Mutual Funds', 'FPI'])")
+        self.assertEqual(out[0], "#176C2E")
+        self.assertEqual(out[3], "#2B5CC8")
+        self.assertEqual(len(set(out)), 4)
+        self.assertEqual(js("ptTint('#000000', 1)"), "#333333")
 
 
 if __name__ == "__main__":

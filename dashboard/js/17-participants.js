@@ -54,6 +54,24 @@ function ptColor(cat, i = 0) {
   return hit ? hit[1] : PT_PALETTE[i % PT_PALETTE.length];
 }
 
+// A lighter tint of a #RRGGBB colour (k = 0 leaves it as is)
+function ptTint(hex, k) {
+  const f = Math.min(0.75, 0.2 * k);
+  return '#' + [1, 3, 5].map(j => Math.round(parseInt(hex.slice(j, j + 2), 16) * (1 - f) + 255 * f)
+    .toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+// Colours for the categories of one chart: each category's own (ptColor), with categories of
+// the same kind (Bank, Insurance, Mutual Funds … all DII green) in successively lighter tints
+function ptColors(cats) {
+  const seen = {};
+  return cats.map((c, i) => {
+    const base = ptColor(c, i);
+    seen[base] = (seen[base] ?? -1) + 1;
+    return ptTint(base, seen[base]);
+  });
+}
+
 // "2026-11" → "Nov 2026"
 function ptMonthLabel(m) {
   const [y, mm] = String(m).split('-');
@@ -142,11 +160,13 @@ function ptFindCat(series, re) {
   return Object.keys(series || {}).find(c => re.test(c)) || null;
 }
 
+// The monthly file is required; without the daily one (not yet written, or a failed fetch) the
+// tab shows its monthly views and asks for the daily file again next time
 async function ptLoad() {
-  if (PT_DATA.monthly && Date.now() - PT_DATA.at < PT_MAX_AGE_MS) return;
-  const [m, d] = await Promise.all([fetchDataFile(PT_MONTHLY_URL), fetchDataFile(PT_DAILY_URL)]);
+  if (PT_DATA.monthly && PT_DATA.daily && Date.now() - PT_DATA.at < PT_MAX_AGE_MS) return;
+  const [m, d] = await Promise.all([fetchDataFile(PT_MONTHLY_URL), fetchDataFile(PT_DAILY_URL).catch(() => null)]);
   PT_DATA.monthly = m.json;
-  PT_DATA.daily = d.json;
+  PT_DATA.daily = d ? d.json : null;
   PT_DATA.at = Date.now();
 }
 
@@ -187,21 +207,23 @@ async function buildParticipants(ex) {
     return;
   }
   if (seq !== ptBuildSeq || currentExchange !== ex) return;   // rebuilt or switched away while loading
-  const M = PT_DATA.monthly.views || {}, D = PT_DATA.daily.views || {};
-  const oiDaily = D[lay.fo.oi], volView = M[lay.fo.vol];
-  if (!oiDaily?.dates?.length || !volView) {
+  const M = PT_DATA.monthly.views || {}, D = PT_DATA.daily?.views || {};
+  const oiDaily = D[lay.fo.oi]?.dates?.length ? D[lay.fo.oi] : null, volView = M[lay.fo.vol];
+  const latest = ptLatestMonth(volView);
+  if (!latest) {
     el.innerHTML = `<div class="rx">${ptPanelEmpty('Participants', 'No participant data yet')}</div>`;
     return;
   }
-  const lastDate = oiDaily.dates[oiDaily.dates.length - 1];
-  const latest = ptLatestMonth(volView);
+  const lastDate = oiDaily ? oiDaily.dates[oiDaily.dates.length - 1] : null;
+  const noDaily = 'Daily figures arrive with the next participants run.';
+  if (!D.nsdl_fpi_net?.dates?.length) PT_VIEW.fpi = 'month';
 
   // ── KPIs ───────────────────────────────────────────────────
-  const oiShares = ptDailyShares(oiDaily, M[lay.fo.oi]?.total_row);
+  const oiShares = oiDaily ? ptDailyShares(oiDaily, M[lay.fo.oi]?.total_row) : {};
   const fiiOi = ptFindCat(oiShares, /^fii/i);
   const oiNow = fiiOi ? oiShares[fiiOi][oiShares[fiiOi].length - 1] : null;
-  const yearAgo = ptRangeStart(lastDate, '1y');
-  const oiThen = fiiOi ? ptValueOnOrBefore(oiDaily.dates, oiShares[fiiOi], yearAgo) : null;
+  const yearAgo = lastDate ? ptRangeStart(lastDate, '1y') : null;
+  const oiThen = fiiOi && lastDate ? ptValueOnOrBefore(oiDaily.dates, oiShares[fiiOi], yearAgo) : null;
   const fiiVol = ptFindCat(volView.shares, /^fii/i);
   const volMonths = ptCompareMonths(latest);
   const fpi = M.nsdl_fpi_net?.series?.Equity || {};
@@ -213,8 +235,8 @@ async function buildParticipants(ex) {
   const pct = v => (v == null ? '—' : `${fmtNum(v, 1)} %`);
   const crSigned = v => (v == null ? '—' : `${v >= 0 ? '+' : '−'}₹${fmtNum(Math.abs(v), 0)} Cr`);
   const kpis = rxKpis([
-    rxKpi(`FII share of ${lay.name} F&O open interest · ${escHtml(rxDate(lastDate))}`, pct(oiNow),
-      oiThen ? `${pct(oiThen.value)} a year before (${escHtml(rxDate(oiThen.date))})` : '', { accent: true }),
+    rxKpi(`FII share of ${lay.name} F&O open interest${lastDate ? ` · ${escHtml(rxDate(lastDate))}` : ''}`, pct(oiNow),
+      oiThen ? `${pct(oiThen.value)} a year before (${escHtml(rxDate(oiThen.date))})` : (lastDate ? '' : noDaily), { accent: true }),
     rxKpi(`FII share of ${lay.name} F&O contracts · ${escHtml(ptMonthLabel(latest))}`, pct(fiiVol && volView.shares[fiiVol][volMonths[0]]),
       fiiVol ? `${pct(volView.shares[fiiVol][volMonths[1]])} in ${escHtml(ptMonthLabel(volMonths[1]))} · ${pct(volView.shares[fiiVol][volMonths[2]])} a year before` : ''),
     rxKpi(`FPI net equity buying (NSDL) · ${fpiLatest ? escHtml(ptMonthLabel(fpiLatest)) : '—'}`, crSigned(fpiLatest ? fpi[fpiLatest] : null),
@@ -234,7 +256,7 @@ async function buildParticipants(ex) {
   el.innerHTML = `<div class="rx">
     <div class="rx-bar" style="position:static">
       <div class="rx-grp">${rxChip(`${lay.name} + NSDL`, 'data')} ${rxChip('Categories as each source publishes them')}</div>
-      <p class="rx-foot">Participant-wise trading data to ${escHtml(rxDate(lastDate))} · FPI flows market-wide (NSDL)</p>
+      <p class="rx-foot">Participant-wise trading data to ${lastDate ? escHtml(rxDate(lastDate)) : escHtml(ptMonthLabel(latest))} · FPI flows market-wide (NSDL)</p>
     </div>
     ${kpis}
     ${rxPanel({ title: 'Month by month', meta: 'latest month against the month before and the same month of earlier years',
@@ -242,10 +264,10 @@ async function buildParticipants(ex) {
       body: `<div class="rx-pb" data-pt="cmp"></div>` })}
     ${rxPanel({ title: `${lay.name} F&O: share by participant`, meta: '<span data-pt="fometa"></span>',
       right: `${rxSeg('ptFo', [['oi', 'Open interest'], ['vol', 'Contracts traded']], PT_VIEW.fo, 'Measure')} ${rxSeg('ptRange', PT_RANGES.map(r => [r[0], r[1]]), PT_VIEW.range, 'Chart range')}`,
-      body: `${rxCanvas('chartPtFo')}<div class="rx-pb" data-pt="folegend"></div>`,
+      body: oiDaily ? `${rxCanvas('chartPtFo')}<div class="rx-pb" data-pt="folegend"></div>` : `<div class="rx-empty"><b>${noDaily}</b></div>`,
       foot: 'Each participant\'s long + short contracts as a share of the total, by day. Contracts traded are smoothed over 10 trading days; open interest is each day\'s.' })}
     ${rxPanel({ title: 'FPI net investment in equity (NSDL)', meta: '<span data-pt="fpimeta"></span>',
-      right: rxSeg('ptFpi', [['month', 'Monthly'], ['day', 'Daily']], PT_VIEW.fpi, 'Period'),
+      right: D.nsdl_fpi_net?.dates?.length ? rxSeg('ptFpi', [['month', 'Monthly'], ['day', 'Daily']], PT_VIEW.fpi, 'Period') : '',
       body: `${rxCanvas('chartPtFpi')}`,
       foot: 'Final FPI figures from custodians\' reports (NSDL), equity via stock exchanges and primary market; ₹ Cr. The latest month is to date.' })}
     ${rxPanel({ title: escHtml(lay.mix.title), meta: escHtml(lay.mix.meta),
@@ -267,7 +289,10 @@ async function buildParticipants(ex) {
   const drawFo = () => {
     const id = PT_VIEW.fo === 'oi' ? lay.fo.oi : lay.fo.vol;
     const daily = D[id], view = M[id];
-    if (!daily) return;
+    if (!daily?.dates?.length || !lastDate) {
+      root.querySelector('[data-pt="fometa"]').textContent = 'by day';
+      return;
+    }
     const shares = ptDailyShares(daily, view?.total_row);
     const start = ptRangeStart(lastDate, PT_VIEW.range);
     const first = start ? Math.max(0, daily.dates.findIndex(d => d >= start)) : 0;
@@ -333,11 +358,12 @@ async function buildParticipants(ex) {
     if (!v) return;
     const months = Object.keys(v.days).sort().slice(-PT_MIX_MONTHS);
     const cats = Object.keys(v.series).filter(c => c !== v.total_row && months.some(m => v.series[c][m] != null));
-    root.querySelector('[data-pt="mixlegend"]').innerHTML = rxLegend(cats.map((c, i) => ({ label: escHtml(c), color: PT_PALETTE[i % PT_PALETTE.length] })));
+    const colors = ptColors(cats);
+    root.querySelector('[data-pt="mixlegend"]').innerHTML = rxLegend(cats.map((c, i) => ({ label: escHtml(c), color: colors[i] })));
     rxChart('ptMix', 'chartPtMix', 260, {
       type: 'bar',
       data: { labels: months.map(ptMonthLabel), datasets: cats.map((c, i) => ({
-        label: c, data: months.map(m => v.series[c][m] ?? null), backgroundColor: PT_PALETTE[i % PT_PALETTE.length], borderWidth: 0, stack: 'mix' })) },
+        label: c, data: months.map(m => v.series[c][m] ?? null), backgroundColor: colors[i], borderWidth: 0, stack: 'mix' })) },
       options: {
         interaction: { mode: 'index', intersect: false },
         plugins: { tooltip: { callbacks: { label: ctx => {

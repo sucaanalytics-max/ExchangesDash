@@ -503,8 +503,9 @@ jobs:
     # summary). Every run re-reads the latest 5 trading days and backfills older ones within
     # an 8-minute budget; a manual run with exchange 'participants' gets 75 minutes, enough
     # to fill the 3 years from 1 Oct 2023 in one go (and asks again for days marked
-    # unavailable). Not in deploy's needs: the dashboard doesn't read these files yet, and a
-    # long backfill must not hold up the day's deploy.
+    # unavailable). In deploy's needs, so the 15:30 UTC [deploy] commit carries the day's
+    # participants_monthly.json / participants_daily.json (the Participants tab reads them);
+    # the slot runs' 8-minute budget keeps that wait short.
     needs: [nse-update, bse-update]
     if: ${{ always() && (github.event_name == 'schedule' || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'participants') }}
     runs-on: ubuntu-latest
@@ -580,7 +581,7 @@ jobs:
     # the 15:30 UTC slot (run by Vercel Cron, or by GitHub's late fallback
     # schedule), and after every manual run. Nothing is pushed when main's head
     # is not a bot data commit (already deployed).
-    needs: [nse-update, bse-update, mcx-update, mtf-update, nse-share-analysis, bse-share-analysis, mcx-share-analysis]
+    needs: [nse-update, bse-update, mcx-update, mtf-update, participants-update, nse-share-analysis, bse-share-analysis, mcx-share-analysis]
     if: ${{ always() && ((github.event_name == 'workflow_dispatch' && inputs.cron == '') || github.event.schedule == '30 15 * * 1-5' || inputs.cron == '30 15 * * 1-5') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
