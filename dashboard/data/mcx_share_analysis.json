@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-12T10:01:42Z",
+  "updated_at": "2026-11-12T20:18:45Z",
   "ticker": "MCX.NS",
   "ma_window": 45,
   "regression_start": "2025-01-01",
@@ -69,7 +69,7 @@
   },
   "latest": {
     "date": "2026-11-12",
-    "revenue_cr": null,
+    "revenue_cr": 16.882,
     "rev_ma": 13.0482,
     "price_actual": 3624.7,
     "price_pred": 3163.32,
@@ -832,7 +832,7 @@
       "date": "2022-07-25",
       "revenue_cr": 2.016,
       "rev_ma": 2.2925,
-      "price": 271.68,
+      "price": 271.67,
       "price_pred": 887.73,
       "modelled": true
     },
@@ -2121,7 +2121,7 @@
       "revenue_cr": 2.0094,
       "rev_ma": 1.78,
       "price": 292.22,
-      "price_pred": 779.31,
+      "price_pred": 779.3,
       "modelled": true
     },
     {
@@ -3993,7 +3993,7 @@
       "revenue_cr": 2.1575,
       "rev_ma": 2.5253,
       "price": 747.08,
-      "price_pred": 936.98,
+      "price_pred": 936.97,
       "modelled": true
     },
     {
@@ -4233,7 +4233,7 @@
       "revenue_cr": 2.8245,
       "rev_ma": 2.7211,
       "price": 772.21,
-      "price_pred": 978.41,
+      "price_pred": 978.4,
       "modelled": true
     },
     {
@@ -4345,7 +4345,7 @@
       "revenue_cr": 3.2663,
       "rev_ma": 2.9795,
       "price": 746.14,
-      "price_pred": 1033.08,
+      "price_pred": 1033.07,
       "modelled": true
     },
     {
@@ -4392,7 +4392,7 @@
       "date": "2024-05-17",
       "revenue_cr": 4.1256,
       "rev_ma": 3.0889,
-      "price": 798.87,
+      "price": 798.86,
       "price_pred": 1056.22,
       "modelled": true
     },
@@ -6736,7 +6736,7 @@
       "date": "2025-07-22",
       "revenue_cr": 4.8264,
       "rev_ma": 4.9718,
-      "price": 1620.53,
+      "price": 1620.52,
       "price_pred": 1454.58,
       "modelled": false
     },
@@ -9334,7 +9334,7 @@
     },
     {
       "date": "2026-11-12",
-      "revenue_cr": null,
+      "revenue_cr": 16.882,
       "rev_ma": 13.0482,
       "price": 3624.7,
       "price_pred": 3163.32,
@@ -14863,6 +14863,10 @@
     {
       "date": "2026-11-11",
       "revenue_cr": 13.7501
+    },
+    {
+      "date": "2026-11-12",
+      "revenue_cr": 16.882
     }
   ],
   "modelled_excluded": 0

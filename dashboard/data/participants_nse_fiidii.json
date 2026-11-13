@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-12T10:01:49Z",
+ "updated_at": "2026-11-12T12:31:54Z",
  "source": {
   "key": "nse_fiidii",
   "name": "NSE - FII/FPI & DII trading activity (provisional)",
@@ -7,6 +7,7 @@
  },
  "notes": ["Provisional, compiled by the exchanges from trading members' reports on the trading day."],
  "days": [
-  {"date": "2026-11-11", "tables": {"NSE, BSE and MSEI": {"fields": ["Buy Value (₹ Cr)", "Sell Value (₹ Cr)", "Net Value (₹ Cr)"], "rows": {"DII": [19704.39, 28138.92, -8434.53], "FII/FPI": [30087.21, 17523.88, 12563.33]}}, "NSE": {"fields": ["Buy Value (₹ Cr)", "Sell Value (₹ Cr)", "Net Value (₹ Cr)"], "rows": {"DII": [18437.28, 25425.5, -6988.22], "FII/FPI": [27749.07, 16851.35, 10897.72]}}}, "fetched_at": "2026-11-12T10:01:49Z", "parser": 1}
+  {"date": "2026-11-11", "tables": {"NSE, BSE and MSEI": {"fields": ["Buy Value (₹ Cr)", "Sell Value (₹ Cr)", "Net Value (₹ Cr)"], "rows": {"DII": [19704.39, 28138.92, -8434.53], "FII/FPI": [30087.21, 17523.88, 12563.33]}}, "NSE": {"fields": ["Buy Value (₹ Cr)", "Sell Value (₹ Cr)", "Net Value (₹ Cr)"], "rows": {"DII": [18437.28, 25425.5, -6988.22], "FII/FPI": [27749.07, 16851.35, 10897.72]}}}, "fetched_at": "2026-11-12T10:01:49Z", "parser": 1},
+  {"date": "2026-11-12", "tables": {"NSE, BSE and MSEI": {"fields": ["Buy Value (₹ Cr)", "Sell Value (₹ Cr)", "Net Value (₹ Cr)"], "rows": {"DII": [15855.13, 22186.3, -6331.17], "FII/FPI": [20273.32, 12442.72, 7830.6]}}, "NSE": {"fields": ["Buy Value (₹ Cr)", "Sell Value (₹ Cr)", "Net Value (₹ Cr)"], "rows": {"DII": [14381.18, 20156.27, -5775.09], "FII/FPI": [19166.56, 12020.39, 7146.17]}}}, "fetched_at": "2026-11-12T12:31:54Z", "parser": 1}
  ]
 }

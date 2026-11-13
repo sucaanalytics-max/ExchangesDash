@@ -1,12 +1,13 @@
 {
- "updated_at": "2026-11-12T07:29:06Z",
+ "updated_at": "2026-11-13T00:32:45Z",
  "note": "Readings of figures brokers keep updating on their web pages (scripts/broker_mtf_register.py LIVE_FEEDS), one per weekday page date (a later run that day replaces it), written by scripts/mtf_pipeline.py on each MTF run; mtf_brokers.json lists them under basis 'live'.",
  "readings": {
   "groww": [
    {"date": "2026-11-09", "book_cr": 3958.0, "quote": "Our Metrics as of 09 Nov 2026 … MTF Net Book ₹39.58 Bn … MTF Net Book, MF Assets and Stock Assets are platform-level figures based on the latest available data.", "url": "https://groww.in/investor-relations", "fetched_at": "2026-11-09T15:31:33Z"},
    {"date": "2026-11-10", "book_cr": 3978.0, "quote": "Our Metrics as of 10 Nov 2026 … MTF Net Book ₹39.78 Bn … MTF Net Book, MF Assets and Stock Assets are platform-level figures based on the latest available data.", "url": "https://groww.in/investor-relations", "fetched_at": "2026-11-09T23:50:04Z"},
    {"date": "2026-11-11", "book_cr": 3914.0, "quote": "Our Metrics as of 11 Nov 2026 … MTF Net Book ₹39.14 Bn … MTF Net Book, MF Assets and Stock Assets are platform-level figures based on the latest available data.", "url": "https://groww.in/investor-relations", "fetched_at": "2026-11-11T12:31:53Z"},
-   {"date": "2026-11-12", "book_cr": 3936.0, "quote": "Our Metrics as of 12 Nov 2026 … MTF Net Book ₹39.36 Bn … MTF Net Book, MF Assets and Stock Assets are platform-level figures based on the latest available data.", "url": "https://groww.in/investor-relations", "fetched_at": "2026-11-12T07:29:06Z"}
+   {"date": "2026-11-12", "book_cr": 3953.0, "quote": "Our Metrics as of 12 Nov 2026 … MTF Net Book ₹39.53 Bn … MTF Net Book, MF Assets and Stock Assets are platform-level figures based on the latest available data.", "url": "https://groww.in/investor-relations", "fetched_at": "2026-11-12T12:31:49Z"},
+   {"date": "2026-11-13", "book_cr": 4015.0, "quote": "Our Metrics as of 13 Nov 2026 … MTF Net Book ₹40.15 Bn … MTF Net Book, MF Assets and Stock Assets are platform-level figures based on the latest available data.", "url": "https://groww.in/investor-relations", "fetched_at": "2026-11-13T00:32:45Z"}
   ]
  }
 }
