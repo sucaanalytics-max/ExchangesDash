@@ -181,8 +181,15 @@
 }
 .brk-pat-inputs .rx-in { background: var(--rx-xl-key); border-color: var(--rx-xl-key-rule); color: var(--rx-xl-fill-ink); }
 /* the build-up's two growth inputs, broking and MTF (AB, 13 Nov 2026) */
-.brk-pat .rx-xl .brk-pat-build .rx-xl-key-in .rx-num-in { width: 64px; }
+/* .rx-xl and .brk-pat-build are on the same <table> (review on #91) */
+.brk-pat .rx-xl.brk-pat-build .rx-xl-key-in .rx-num-in { width: 64px; }
 .brk-pat-build .brk-pat-note { font-size: 11.5px; color: var(--rx-muted); font-weight: 400; white-space: nowrap; }
+@media (max-width: 640px) {
+  /* a phone keeps both growth inputs in view: the "(x % a yr)" notes go under them, narrower inputs and figures */
+  .brk-pat .rx-xl.brk-pat-build .rx-xl-key-in .rx-num-in { width: 48px; }
+  .rx-table.rx-xl.brk-pat-build .rx-xl-key-in .brk-pat-note { display: block; }
+  .rx-table.rx-xl.brk-pat-build td, .rx-table.rx-xl.brk-pat-build th { font-size: 12px; }
+}
 .brk-pat-inputs .rx-in.is-edited { border-color: #D9A54A; }
 
 /* Valuation: the method weights as inputs (js/34-brokers-valuation.js, brkValWeightInputs) */

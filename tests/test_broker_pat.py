@@ -58,6 +58,20 @@ class EngineVectors(unittest.TestCase):
             self.assertTrue(moving)
             self.assertEqual(moving - set(got[0]), set(), broker)
 
+    def test_groww_finance_floor(self):
+        # k_finance_base (engine, 14 Nov 2026): Groww's finance cost never falls below its latest filed quarter, and
+        # FY28 is 4 × Q4 FY27 plus new borrowing, not below 4 × the floor; a run without the row keeps the old rule
+        doc = vectors("GROWW")
+        base = next(r["value"] for r in doc["rows"] if r["line"] == "k_finance_base")
+        for out in recompute_cases(doc):
+            for q in ("Q3 FY 2027", "Q4 FY 2027"):
+                self.assertGreaterEqual(out[f"{q}|finance|"], base - 1e-9)
+            self.assertGreaterEqual(out["FY 2028|finance|"], 4 * base - 1e-9)
+        old = dict(doc, rows=[r for r in doc["rows"] if r["line"] != "k_finance_base"])
+        got = recompute_cases(old)[0]
+        self.assertLess(got["Q3 FY 2027|finance|"], base)          # the shrinking MTF book repays it, as before
+        self.assertNotIn("k_finance_base", {r["line"] for r in vectors("ANGELONE")["rows"]})
+
     def test_top_block_sums_to_total_income(self):
         for broker in BROKERS:
             out = recompute_cases(vectors(broker))[2]       # a case off the defaults
@@ -86,9 +100,11 @@ class EngineVectors(unittest.TestCase):
 
     def test_mtf_growth_leaves_broking_alone(self):
         doc = vectors("GROWW")
-        names = [c["name"] for c in doc["cases"]]
-        out = recompute_cases(doc)
-        base, mtf = out[names.index("defaults")], out[names.index("gm 12.7%")]
+        cases, out = doc["cases"], recompute_cases(doc)
+        d = next(i for i, c in enumerate(cases) if c["name"] == "defaults")
+        # a case at the default broking rate with faster MTF growth than the default
+        m = next(i for i, c in enumerate(cases) if c["g"] == cases[d]["g"] and c["gm"] > cases[d]["gm"] + 0.01)
+        base, mtf = out[d], out[m]
         for k in ("FY 2028|broking|", "FY 2028|adr_broking|", "Q4 FY 2027|broking|"):
             self.assertAlmostEqual(base[k], mtf[k], places=9)
         self.assertGreater(mtf["FY 2028|mtf|"], base["FY 2028|mtf|"] + 100)

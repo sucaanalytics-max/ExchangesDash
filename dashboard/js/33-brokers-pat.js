@@ -118,6 +118,9 @@ function patRecompute(kit, g, pe, disc, today, gm) {
   const newBorrowing = (book, prevBook, retained) => { const growth = book - prevBook; return growth <= 0 ? growth : Math.max(growth - retained, 0); };
   const b0 = I.k_adr_broking0, m0 = I.k_adr_mtf0, c0 = I.k_adr_cash0, y = I.k_mtf_yield;
   const rate = I.k_funding_rate, ret = I.k_retention, tax = I.k_tax;
+  // Groww's finance floor (k_finance_base, 14 Nov 2026): the latest filed quarter's finance cost, which a shrinking
+  // MTF book doesn't repay; a run published without it lets the cost fall to 0 (the earlier rule)
+  const base = I.k_finance_base;
   let prev = { finance: I.k_prev_finance, mtf_book: I.k_prev_mtf_book, pat: I.k_prev_pat, broking: I.k_prev_broking, float: I.k_prev_float };
   const Q = {};
   kit.proj.forEach(q => {
@@ -130,7 +133,7 @@ function patRecompute(kit, g, pe, disc, today, gm) {
     BRK_PAT_FIXED_Q[b].forEach(k => { L[k] = P[q][k]; });
     L.total_income = sum(L, REV);
     L.mtf_book = L.mtf / (y / 4);
-    L.finance = Math.max(prev.finance + rate / 4 * newBorrowing(L.mtf_book, prev.mtf_book, ret * prev.pat), 0);
+    L.finance = Math.max(prev.finance + rate / 4 * newBorrowing(L.mtf_book, prev.mtf_book, ret * prev.pat), base ?? 0);
     if (b === 'ANGELONE') L.fees_commission = I.k_fee_ratio * L.broking;
     else L.other_expenses = I.k_oexp_ratio * L.broking;
     L.total_costs = sum(L, COST);
@@ -164,7 +167,9 @@ function patRecompute(kit, g, pe, disc, today, gm) {
   F2.other = F1.other;
   F2.total_income = sum(F2, REV);
   F2.mtf_book = F2.mtf / y;
-  F2.finance = Math.max(F1.finance + rate * newBorrowing(F2.mtf_book, F1.mtf_book, ret * F1.pat), 0);
+  const nb28 = newBorrowing(F2.mtf_book, F1.mtf_book, ret * F1.pat);
+  F2.finance = base != null ? Math.max(4 * qv(kit.fy1q[3], 'finance') + rate * nb28, 4 * base)   // Q4 run-rate × 4
+    : Math.max(F1.finance + rate * nb28, 0);
   if (b === 'ANGELONE') F2.fees_commission = I.k_fee_ratio * F2.broking;
   else F2.other_expenses = I.k_oexp_ratio * F2.broking;
   BRK_PAT_FIXED_FY2[b].forEach(k => { F2[k] = P[kit.fy2][k]; });
@@ -397,7 +402,7 @@ function brkPatPredictor(el, pat, summary, kit) {
         <button type="button" class="rx-btn" data-pat-reset>Reset to published</button>
         <p class="rx-foot brk-pat-state" data-pat-state role="status" aria-live="polite"></p>
       </aside></div>`,
-    foot: `Operating revenue = ${escHtml(s2)} Avg ADR × trading days, the same figure as broking + MTF in the 3-year P&L. Total costs follow the P&L's cost build-up (finance cost on the MTF book, fees or other expenses as a share of broking). Upside is the target today vs the close.`,
+    foot: `Operating revenue = ${escHtml(s2)} Avg ADR × trading days, the same figure as broking + MTF in the 3-year P&L. Total costs follow the P&L's cost build-up (finance cost on the MTF book${BRK_BROKER.id === 'GROWW' ? ', not below the latest filed quarter' : ''}, fees or other expenses as a share of broking). Upside is the target today vs the close.`,
   });
 
   // ── (c), (d) P&L tables ──
