@@ -72,7 +72,7 @@ class PredictorMirrorsPipeline(unittest.TestCase):
         self.assertAlmostEqual(js["eps"], (txn + 472.16) * 0.5 / 40.73, places=6)
 
 
-VALUATION_JS = ["valuationNum", "VALUATION_EXCHANGES", "VALUATION_METHODS", "VALUATION_EDITABLE", "VALUATION_STORAGE_KEY",
+VALUATION_JS = ["valuationNum", "valuationIsoDate", "VALUATION_EXCHANGES", "VALUATION_METHODS", "VALUATION_EDITABLE", "VALUATION_STORAGE_KEY",
                 "VALUATION_INPUTS_FALLBACK", "valuationDefaultsFrom", "valuationSameInput", "valuationInputOk", "readValuationOverrides",
                 "valuationInputsFor", "setValuationOverride", "valuationAdrPath", "valuationAdrModel",
                 "valuationRegression", "valuationRatio", "valuationTriangulate", "valuationModel"]
@@ -252,7 +252,10 @@ class ValuationInputs(unittest.TestCase):
         self.assertEqual({k: v for k, v in f.items() if k != "notes"}, fallback)
         self.assertEqual(parsed["fy"], 2028)
         self.assertEqual(parsed["ex"]["bse"], {"adr": 24, "g": 5, "pe0": 40, "pe1": 45, "pe2": 50, "w0": 45, "w1": 10,
-                                               "w2": 45, "oi": 2363.6982, "margin": 51, "days": 247, "d1": 18, "d2": 9})
+                                               "w2": 45, "from": "2025-01-01", "oi": 2363.6982, "margin": 51, "days": 247,
+                                               "d1": 18, "d2": 9})
+        # Regression data from: BSE 1 Jan 2025, MCX 1 Nov 2024, NSE all data
+        self.assertEqual([parsed["ex"][ex]["from"] for ex in ("bse", "mcx", "nse")], ["2025-01-01", "2024-11-01", None])
         self.assertEqual((parsed["ex"]["mcx"]["oi"], parsed["ex"]["nse"]["oi"]), (466.5895, 6532.68))   # ₹467 / 6,533 Cr
         self.assertIsNone(parsed["ex"]["nse"]["adr"])
         for ex, w in parsed["ex"].items():
@@ -264,9 +267,13 @@ class ValuationInputs(unittest.TestCase):
         broken = json.loads(json.dumps(f))
         broken["exchanges"]["mcx"]["fixed"]["sessions"] = "258"
         no_ex = {k: v for k, v in f.items() if k != "exchanges"}
-        got = js_eval(VALUATION_JS, "[valuationDefaultsFrom(DATA[0]), valuationDefaultsFrom(DATA[1]), valuationDefaultsFrom(null)]",
-                      [broken, no_ex])
-        self.assertEqual(got, [None, None, None])
+        bad_date = json.loads(json.dumps(f))
+        bad_date["exchanges"]["bse"]["editable"]["regression_from"] = "2025-02-30"
+        num_date = json.loads(json.dumps(f))
+        num_date["exchanges"]["mcx"]["editable"]["regression_from"] = 20250101   # a number, not a date
+        got = js_eval(VALUATION_JS, "[valuationDefaultsFrom(DATA[0]), valuationDefaultsFrom(DATA[1]), valuationDefaultsFrom(DATA[2]),"
+                                    " valuationDefaultsFrom(DATA[3]), valuationDefaultsFrom(null)]", [broken, no_ex, bad_date, num_date])
+        self.assertEqual(got, [None, None, None, None, None])
 
     def test_saved_edits_override_the_defaults(self):
         expr = """(() => {
@@ -342,11 +349,14 @@ class ValuationData(unittest.TestCase):
                  "min_days_required": 60, "regression_start": "2026-09-24", "ticker": "NSE.BO",
                  "latest": {"date": "2026-10-30", "price_actual": 2000.0}}
         names = SHARE_FIT_JS + VALUATION_JS + ["parseFYQuarter", "SEG_PRODUCT", "NO_FLAGS", "periodFlags", "mergeFlags",
-                                               "rowsFlags", "valuationContextFor"]
+                                               "rowsFlags", "valuationFitFields", "valuationContextFor"]
         got = js_eval(names, "[valuationContextFor({ daily_all: DATA.rows.slice().reverse() }, DATA.share),"
-                             " valuationContextFor({ daily_all: DATA.rows }, null), valuationContextFor({ daily_all: [] }, null)]",
+                             " valuationContextFor({ daily_all: DATA.rows }, null), valuationContextFor({ daily_all: [] }, null),"
+                             " valuationFitFields(DATA.share, '2026-10-01').win.fromIgnored]",
                       {"rows": rows, "share": share})
-        c, no_share, empty = got
+        c, no_share, empty, ignored = got
+        # A data-from date set while the share file is collecting is reported, not dropped silently
+        self.assertEqual((c["win"]["fromIgnored"], ignored), ("", "collecting"))
         self.assertEqual((c["start"], c["qN"], c["lastDate"]), ({"q": 3, "fy": 2027}, 30, "2026-10-30"))
         self.assertAlmostEqual(c["qAdr"], sum(20 + d for d in range(1, 31)) / 30, places=9)
         self.assertAlmostEqual(c["adr45"], (15 * 10 + sum(20 + d for d in range(1, 31))) / 45, places=9)
@@ -373,6 +383,177 @@ class ValuationData(unittest.TestCase):
         self.assertEqual((c["d1"][1], c["d2"][1]), ("÷ 1.18", "÷ 1.09"))
         self.assertEqual(c["now"], ["3,663", "4,120", "4,578"])
 
+
+
+def _share_file(ex):
+    return json.loads((ROOT / "dashboard" / "data" / f"{ex}_share_analysis.json").read_text())
+
+
+def _ols(xs, ys):
+    n = len(xs)
+    xm, ym = sum(xs) / n, sum(ys) / n
+    sxy = sum((x - xm) * (y - ym) for x, y in zip(xs, ys))
+    sxx = sum((x - xm) ** 2 for x in xs)
+    slope = sxy / sxx
+    return slope, ym - slope * xm
+
+
+def _excel_window(share, frm, w=45):
+    """The workbook's data set from `frm`, worked out independently: revenue and prices from
+    `frm`, the w-session MA over that revenue only, each close paired with the MA up to the
+    previous revenue session, sessions whose MA includes modelled revenue left out."""
+    rev = [r for r in share["revenue_daily"] if r["date"] >= frm]
+    pts = []
+    for p in share["series"]:
+        if p["date"] < frm:
+            continue
+        idx = sum(1 for r in rev if r["date"] < p["date"]) - 1
+        if idx < w - 1:
+            continue
+        window = rev[idx - w + 1:idx + 1]
+        if any(r.get("modelled") for r in window):
+            continue
+        pts.append((p["date"], sum(r["revenue_cr"] for r in window) / w, p["price"]))
+    return pts
+
+
+VALUATION_FIT_JS = SHARE_FIT_JS + VALUATION_JS + ["valuationFitFields", "valuationFitted", "rxDate", "fmtNum",
+                                                  "valuationWindowText", "valuationWindowNote"]
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class ValuationDataFrom(unittest.TestCase):
+    """The valuation's regression re-fitted from each exchange's "Regression data from" date, as the
+    workbook does: the data set starts on that date and the 45 DMA is built only from it."""
+
+    @staticmethod
+    def synthetic():
+        # 200 calendar days of revenue: the first 60 at a level far from the rest, so an MA that
+        # reached back before `from` would differ; prices follow the MA with a deterministic wobble
+        import datetime
+        d0 = datetime.date(2025, 1, 1)
+        dates = [(d0 + datetime.timedelta(days=i)).isoformat() for i in range(200)]
+        rev = [{"date": d, "revenue_cr": (50.0 if i < 60 else 10 + 0.08 * i + (i % 7) * 0.3)} for i, d in enumerate(dates)]
+        series, mas = [], []
+        for i, d in enumerate(dates):
+            if i < 45:
+                continue
+            ma = sum(r["revenue_cr"] for r in rev[i - 45:i]) / 45
+            series.append({"date": d, "price": round(300 + 120 * ma + ((i * 37) % 11 - 5) * 8, 2)})
+        return {"ticker": "TEST.NS", "ma_window": 45, "regression_start": "2025-01-01", "regression": {"slope": 1},
+                "revenue_daily": rev, "series": series, "latest": {"date": dates[-1], "price_actual": series[-1]["price"]}}
+
+    def test_from_restricts_the_ma_to_the_data_set(self):
+        share = self.synthetic()
+        frm = "2025-03-02"   # day 60: the level change
+        got = js_eval(VALUATION_FIT_JS, "[valuationFitFields(DATA, '2025-03-02'), valuationFitFields(DATA, null)]", share)
+        f, pub = got
+        pts = _excel_window(share, frm)
+        rev = [r["date"] for r in share["revenue_daily"] if r["date"] >= frm]
+        # First point: the close after the 45th session from `from` (previous-session pairing)
+        self.assertEqual(f["win"]["firstPoint"], pts[0][0])
+        self.assertEqual(pts[0][0], rev[45])
+        self.assertEqual((f["win"]["from"], f["win"]["fitStart"], f["win"]["n"]), (frm, frm, len(pts)))
+        slope, intercept = _ols([x for _, x, _ in pts], [y for _, _, y in pts])
+        self.assertIsNotNone(f["fit"], f["fitWhy"])
+        self.assertEqual(f["fit"]["n"], len(pts))
+        self.assertAlmostEqual(f["fit"]["slope"], slope, places=6)
+        self.assertAlmostEqual(f["fit"]["intercept"], intercept, places=6)
+        se = (sum((y - intercept - slope * x) ** 2 for _, x, y in pts) / (len(pts) - 2)) ** 0.5
+        self.assertAlmostEqual(f["fit"]["se"], se, places=6)
+        ratios = [y / x for _, x, y in pts]
+        mean = sum(ratios) / len(ratios)
+        self.assertAlmostEqual(f["ratio"]["mean"], mean, places=9)
+        self.assertAlmostEqual(f["ratio"]["sd"], (sum((r - mean) ** 2 for r in ratios) / len(ratios)) ** 0.5, places=9)
+        # The published path (MA over every revenue day) is a different fit with more sessions
+        self.assertGreater(pub["win"]["n"], f["win"]["n"])
+        self.assertNotAlmostEqual(pub["fit"]["slope"], f["fit"]["slope"], places=3)
+        self.assertEqual((f["win"]["pubStart"], f["win"]["pubN"]), ("2025-01-01", pub["win"]["n"]))
+
+    def test_null_is_the_published_fit(self):
+        share = self.synthetic()
+        expr = """(() => {
+          const m = computeShareModel(DATA, 45);
+          const se = shareResidualSE(m.series, m.reg, DATA.regression_start);
+          const c = { share: DATA };
+          return { f: valuationFitFields(DATA, null), same: valuationFitted(c, null) === c,
+                   want: { intercept: m.reg.intercept, slope: m.reg.slope, se: se.se, n: se.n, r2: m.reg.r_squared },
+                   ratio: shareRatioStats(m.series, DATA.regression_start) };
+        })()"""
+        got = js_eval(VALUATION_FIT_JS, expr, share)
+        self.assertEqual(got["f"]["fit"], got["want"])
+        self.assertEqual(got["f"]["ratio"], got["ratio"])
+        self.assertEqual((got["f"]["win"]["from"], got["f"]["win"]["fitStart"]), (None, "2025-01-01"))
+        self.assertTrue(got["same"])
+
+    def test_gate_still_decides(self):
+        # From late in the file: too few sessions for a fair value, so Regression has none and says why
+        share = self.synthetic()
+        got = js_eval(VALUATION_FIT_JS, "[valuationFitFields(DATA, '2025-05-01'), valuationFitFields(DATA, '2025-07-10')]", share)
+        short, none = got
+        self.assertIsNone(short["fit"])
+        self.assertIn("observations (needs 60)", short["fitWhy"])
+        self.assertIsNotNone(short["ratio"])
+        self.assertIsNone(none["fit"])
+        self.assertIsNone(none["ratio"])
+        self.assertIn("fewer than 10 sessions", none["fitWhy"])
+
+    def test_real_files(self):
+        """BSE from 1 Jan 2025: first point 5 Mar 2025 (419 sessions on the file of 13 Nov 2026);
+        MCX from 1 Nov 2024: early Jan 2025, none modelled; MCX from Jun 2024 leaves modelled MAs out."""
+        bse, mcx = _share_file("bse"), _share_file("mcx")
+        expr = """(() => {
+          const pick = f => ({ fit: f.fit, why: f.fitWhy, win: f.win, ratio: f.ratio, text: valuationWindowText(f.win), note: valuationWindowNote(f.win) });
+          return [pick(valuationFitFields(DATA.bse, '2025-01-01')), pick(valuationFitFields(DATA.mcx, '2024-11-01')),
+                  pick(valuationFitFields(DATA.mcx, '2024-06-01'))];
+        })()"""
+        b, m, early = js_eval(VALUATION_FIT_JS, expr, {"bse": bse, "mcx": mcx})
+        pts = _excel_window(bse, "2025-01-01")
+        self.assertEqual(b["win"]["firstPoint"], "2025-03-05")
+        self.assertEqual(b["win"]["n"], len(pts))
+        if bse["latest"]["date"] == "2026-11-13":
+            self.assertEqual(b["win"]["n"], 419)
+        self.assertEqual(b["text"], f"data from 1 Jan 2025 · first point 5 Mar 2025 · {len(pts)} sessions")
+        if b["fit"]:
+            slope, intercept = _ols([x for _, x, _ in pts], [y for _, _, y in pts])
+            self.assertAlmostEqual(b["fit"]["slope"], slope, places=6)
+            self.assertAlmostEqual(b["fit"]["intercept"], intercept, places=4)
+        self.assertTrue("2025-01-01" <= m["win"]["firstPoint"] <= "2025-01-10", m["win"]["firstPoint"])
+        self.assertEqual((m["win"]["n"], m["win"]["modelledOut"], m["note"]), (len(_excel_window(mcx, "2024-11-01")), 0, ""))
+        # Modelled MCX revenue (before 2 Sep 2024) stays out of the fit, and the note says so
+        pts_e = _excel_window(mcx, "2024-06-01")
+        self.assertEqual(early["win"]["n"], len(pts_e))
+        self.assertGreater(early["win"]["modelledOut"], 0)
+        self.assertEqual(early["win"]["modelledTo"], "2024-08-30")
+        self.assertIn("modelled revenue", early["note"])
+        self.assertGreater(early["win"]["firstPoint"], "2024-09-01")
+
+    def test_date_input_validation(self):
+        expr = """[
+          ['2025-01-01', null, '2026-11-13', '2027-01-01', '2025-02-30', '2025-1-1', 'garbage', 20250101, '', undefined,
+           '0002-01-01', '0202-01-01', '1899-12-31']   // years part typed into a date input
+            .map(x => valuationInputOk('from', x, '2026-11-13')),
+          valuationInputOk('from', '2027-01-01'),
+          valuationInputsFor(DATA.d, DATA.o, 'bse', '2026-11-13'), valuationInputsFor(DATA.d, DATA.o, 'mcx', '2026-11-13'),
+          valuationInputsFor(DATA.d, DATA.o, 'nse', '2026-11-13'),
+        ]"""
+        defaults = {"ex": {ex: {"adr": None, "g": 5, "pe0": 40, "pe1": 45, "pe2": 50, "w0": 45, "w1": 10, "w2": 45, "from": f}
+                           for ex, f in (("bse", "2025-01-01"), ("mcx", "2024-11-01"), ("nse", None))}}
+        saved = {"bse": {"from": "2025-02-30"}, "mcx": {"from": "2024-06-03"}, "nse": {"from": "2027-01-01"}}
+        ok, no_latest, bse, mcx, nse = js_eval(VALUATION_JS, expr, {"d": defaults, "o": saved})
+        self.assertEqual(ok, [True, True, True, False, False, False, False, False, False, False, False, False, False])
+        self.assertTrue(no_latest)
+        self.assertEqual((bse["v"]["from"], bse["edited"]), ("2025-01-01", []))   # not a date: ignored
+        self.assertEqual((mcx["v"]["from"], mcx["edited"]), ("2024-06-03", ["from"]))
+        self.assertEqual((nse["v"]["from"], nse["edited"]), (None, []))            # after the latest data: ignored
+        # Clearing a date is an edit (all data); typing the default back removes it
+        got = js_eval(VALUATION_JS, """(() => {
+          const o = setValuationOverride({}, DATA, 'bse', 'from', null);
+          return [o, setValuationOverride(o, DATA, 'bse', 'from', '2025-01-01'), valuationInputsFor(DATA, o, 'bse')];
+        })()""", defaults)
+        self.assertEqual(got[0], {"bse": {"from": None}})
+        self.assertEqual(got[1], {})
+        self.assertEqual((got[2]["v"]["from"], got[2]["edited"]), (None, ["from"]))
 
 def _day(eod, revs, preds=None):
     cps = {}

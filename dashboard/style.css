@@ -3325,12 +3325,17 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
 .rx-table.rx-vi td.rx-vi-in .rx-in.is-edited { border-color: #D9A54A; box-shadow: inset 3px 0 0 #D9A54A; }
 .rx-table.rx-vi td.rx-vi-in .rx-in::placeholder { color: var(--rx-muted); }
 .rx-vi-strip .rx-kpi-s { line-height: 1.5; }
+/* Regression data-from date: the browser's date picker, themed with the page */
+.rx-table.rx-vi .rx-date-in { width: 136px; text-align: left; font-size: 12.5px; color-scheme: light; }
+:root:not([data-theme="light"]) .rx-table.rx-vi .rx-date-in { color-scheme: dark; }
 @media (max-width: 640px) {
   .rx-table.rx-vi td, .rx-table.rx-vi th { padding-left: 5px; padding-right: 5px; }
   .rx-table.rx-vi th.rx-vi-ex { min-width: 0; }
   .rx-vi-exact { flex-direction: column; align-items: flex-end; gap: 2px; }
   .rx-scroll .rx-table.rx-vi td.rx-vi-lab { min-width: 104px; max-width: 116px; }
   .rx-table.rx-vi .rx-num-in { width: 58px; }
+  .rx-table.rx-vi .rx-date-in { width: 100px; padding-left: 3px; padding-right: 3px; font-size: 12px; }
+  .rx-table.rx-vi .rx-date-in::-webkit-calendar-picker-indicator { margin-left: 2px; padding: 0; }
   .rx-vi-note { font-size: 11px; }
   .rx-vi-sub { display: block; }
 }

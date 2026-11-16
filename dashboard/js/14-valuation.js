@@ -80,9 +80,14 @@ function safeHttpUrl(u) {
 // ========================
 // Per exchange, two triangulated targets for today, Bear / Base / Bull, each the
 // weighted average of three methods:
-//   Regression: intercept + slope × ADR on the published 45-session fit (the
-//     Regression tab's); Bear / Bull ∓ that fit's standard error of estimate.
+//   Regression: intercept + slope × ADR on a 45-session fit; Bear / Bull ∓ that
+//     fit's standard error of estimate.
 //   Ratio Analysis: price ÷ 45-session revenue MA over the fit window, mean ∓ 1σ, × ADR.
+// Both are fitted on the data from each exchange's "Regression data from" date, as the
+// workbook does: revenue and prices start on that date, so the 45 DMA is built only from
+// revenue on or after it and the first point is the close after its 45th session (blank:
+// the published fit the Regression tab shows, MA over every revenue day). The date moves
+// the valuation only, not the Regression tab, the banner or the share files.
 //   ADR model: the current quarter's ADR to date grown QoQ to Q4 of the next FY,
 //     that FY's four-quarter average × sessions + other income → × PAT margin ÷
 //     shares → EPS × P/E → next-FY-end target, ÷ (1 + 18 %) to this FY's end and
@@ -102,15 +107,15 @@ const VALUATION_INPUTS_FALLBACK = {
   discount_to_today_pct: 9,
   exchanges: {
     bse: {
-      editable: { adr_estimate_cr: 24, qoq_growth_pct: 5, pe: { bear: 40, base: 45, bull: 50 }, weights_pct: { regression: 45, ratio: 10, adr_model: 45 } },
+      editable: { adr_estimate_cr: 24, qoq_growth_pct: 5, pe: { bear: 40, base: 45, bull: 50 }, weights_pct: { regression: 45, ratio: 10, adr_model: 45 }, regression_from: '2025-01-01' },
       fixed: { other_income_cr: 2363.6982, pat_margin_pct: 51, sessions: 247 },
     },
     mcx: {
-      editable: { adr_estimate_cr: 14, qoq_growth_pct: 7, pe: { bear: 41, base: 46, bull: 51 }, weights_pct: { regression: 20, ratio: 40, adr_model: 40 } },
+      editable: { adr_estimate_cr: 14, qoq_growth_pct: 7, pe: { bear: 41, base: 46, bull: 51 }, weights_pct: { regression: 20, ratio: 40, adr_model: 40 }, regression_from: '2024-11-01' },
       fixed: { other_income_cr: 466.5895, pat_margin_pct: 57, sessions: 258 },
     },
     nse: {
-      editable: { adr_estimate_cr: null, qoq_growth_pct: 5, pe: { bear: 42, base: 47, bull: 52 }, weights_pct: { regression: 0, ratio: 0, adr_model: 100 } },
+      editable: { adr_estimate_cr: null, qoq_growth_pct: 5, pe: { bear: 42, base: 47, bull: 52 }, weights_pct: { regression: 0, ratio: 0, adr_model: 100 }, regression_from: null },
       fixed: { other_income_cr: 6532.68, pat_margin_pct: 58, sessions: 247 },
     },
   },
@@ -120,18 +125,25 @@ const VALUATION_INPUTS_FALLBACK = {
 const VALUATION_EXCHANGES = ['bse', 'mcx', 'nse'];
 // Row keys and labels of the 3 × 3 tables, in the order of the weights w0 / w1 / w2
 const VALUATION_METHODS = [['reg', 'Regression'], ['ratio', 'Ratio Analysis'], ['adr', 'ADR model']];
-// The inputs the Valuation Inputs tab edits; the rest (oi, margin, days, d1, d2) are fixed
-const VALUATION_EDITABLE = ['adr', 'g', 'pe0', 'pe1', 'pe2', 'w0', 'w1', 'w2'];
+// The inputs the Valuation Inputs tab edits; the rest (oi, margin, days, d1, d2) are fixed.
+// from: the "Regression data from" date (ISO, null = all the share file's data).
+const VALUATION_EDITABLE = ['adr', 'g', 'pe0', 'pe1', 'pe2', 'w0', 'w1', 'w2', 'from'];
 const VALUATION_INPUT_LABELS = {
   adr: 'ADR estimate', g: 'QoQ ADR growth', pe0: 'P/E bear', pe1: 'P/E base', pe2: 'P/E bull',
-  w0: 'Regression weight', w1: 'Ratio weight', w2: 'ADR model weight',
+  w0: 'Regression weight', w1: 'Ratio weight', w2: 'ADR model weight', from: 'Regression data from',
 };
 const VALUATION_STORAGE_KEY = 'valuation_inputs_v1';
 
 const valuationNum = x => typeof x === 'number' && isFinite(x);
+// A real calendar date written YYYY-MM-DD, from 1900 on (a year being typed into a date
+// input passes through 0002, 0020, 0202 …, which are not saved)
+function valuationIsoDate(x) {
+  const m = typeof x === 'string' && /^(\d{4})-(\d{2})-(\d{2})$/.exec(x);
+  return !!m && +m[1] >= 1900 && new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).toISOString().slice(0, 10) === x;
+}
 
-// valuation_inputs.json → { fy, ex: { bse: { adr, g, pe0, pe1, pe2, w0, w1, w2, oi, margin, days, d1, d2 }, … } }
-// (adr null = use the 45-session ADR); null when any value is missing or not a number
+// valuation_inputs.json → { fy, ex: { bse: { adr, g, pe0, pe1, pe2, w0, w1, w2, from, oi, margin, days, d1, d2 }, … } }
+// (adr null = use the 45-session ADR; from null = all data); null when any value is missing or not a number
 function valuationDefaultsFrom(json) {
   if (!json || !json.exchanges || !valuationNum(json.fy) || !valuationNum(json.discount_to_fy_end_pct) || !valuationNum(json.discount_to_today_pct)) return null;
   const out = {};
@@ -139,11 +151,11 @@ function valuationDefaultsFrom(json) {
     const e = json.exchanges[ex] || {}, ed = e.editable || {}, fx = e.fixed || {}, pe = ed.pe || {}, w = ed.weights_pct || {};
     const v = {
       adr: ed.adr_estimate_cr ?? null, g: ed.qoq_growth_pct, pe0: pe.bear, pe1: pe.base, pe2: pe.bull,
-      w0: w.regression, w1: w.ratio, w2: w.adr_model,
+      w0: w.regression, w1: w.ratio, w2: w.adr_model, from: ed.regression_from ?? null,
       oi: fx.other_income_cr, margin: fx.pat_margin_pct, days: fx.sessions,
       d1: json.discount_to_fy_end_pct, d2: json.discount_to_today_pct,
     };
-    if (!Object.entries(v).every(([k, x]) => valuationNum(x) || (k === 'adr' && x === null))) return null;
+    if (!Object.entries(v).every(([k, x]) => (k === 'from' ? valuationInputOk(k, x) : valuationNum(x) || (k === 'adr' && x === null)))) return null;
     out[ex] = v;
   }
   return { fy: json.fy, ex: out };
@@ -179,12 +191,14 @@ function writeValuationOverrides(o) {
   try { localStorage.setItem(VALUATION_STORAGE_KEY, JSON.stringify(o)); } catch (e) { /* storage blocked: not remembered */ }
 }
 
-const valuationSameInput = (a, b) => (a === null || b === null) ? a === b : Math.abs(a - b) < 1e-9;
+const valuationSameInput = (a, b) => (a === null || b === null || typeof a === 'string' || typeof b === 'string') ? a === b : Math.abs(a - b) < 1e-9;
 
 // A usable value for an editable input: a blank (null) or positive ADR estimate, a P/E above
-// zero, a weight of zero or more, QoQ growth above −100 %
-function valuationInputOk(k, x) {
+// zero, a weight of zero or more, QoQ growth above −100 %, a blank (null) data-from date or
+// a real YYYY-MM-DD date not after `latest` (the latest data date, when known)
+function valuationInputOk(k, x, latest) {
   if (k === 'adr') return x === null || (valuationNum(x) && x > 0);
+  if (k === 'from') return x === null || (valuationIsoDate(x) && !(latest && x > latest));
   if (!valuationNum(x)) return false;
   if (k[0] === 'p') return x > 0;
   if (k[0] === 'w') return x >= 0;
@@ -192,14 +206,15 @@ function valuationInputOk(k, x) {
 }
 
 // The inputs in use for one exchange: { v: defaults with this browser's edits on top,
-// edited: the keys that differ from the defaults }. Unusable saved values are ignored.
-function valuationInputsFor(defaults, overrides, ex) {
+// edited: the keys that differ from the defaults }. Unusable saved values are ignored
+// (latest: the latest data date, which a data-from date may not pass).
+function valuationInputsFor(defaults, overrides, ex, latest) {
   const d = defaults.ex[ex], o = (overrides && overrides[ex]) || {};
   const v = { ...d }, edited = [];
   VALUATION_EDITABLE.forEach(k => {
     if (!(k in o)) return;
     const x = o[k];
-    if (!valuationInputOk(k, x)) return;
+    if (!valuationInputOk(k, x, latest)) return;
     if (valuationSameInput(x, d[k])) return;
     v[k] = x;
     edited.push(k);
@@ -207,8 +222,8 @@ function valuationInputsFor(defaults, overrides, ex) {
   return { v, edited };
 }
 
-// Overrides with one exchange's input set to `value` (null = a blank ADR estimate); a value
-// equal to the default removes the edit
+// Overrides with one exchange's input set to `value` (null = a blank ADR estimate or
+// data-from date); a value equal to the default removes the edit
 function setValuationOverride(overrides, defaults, ex, key, value) {
   const out = { ...overrides, [ex]: { ...(overrides[ex] || {}) } };
   if (valuationSameInput(value, defaults.ex[ex][key])) delete out[ex][key];
@@ -299,10 +314,60 @@ function valuationModel(c, v, shares) {
   return { path, adrModel, dma: tri(c.adr45), est: tri(v.adr ?? c.adr45), estIsDma: v.adr == null };
 }
 
+// The regression and ratio the valuation uses, fitted on the share file's data from `from`
+// (ISO date; null = the published fit, as the Regression tab shows it). With a date, the
+// data set starts there as in the workbook: revenue and prices before it are dropped, so
+// the 45-session MA is built only from revenue on or after `from` (none for its first 44
+// sessions) and the fit starts at `from`; computeShareModel still leaves out sessions whose
+// MA includes modelled revenue (MCX before 2 Sep 2024). The fit is used only when the
+// Regression tab's gate passes for that window; the ratio once there is a fit window.
+// Returns { fit, fitWhy, ratio, ratioWhy, win }: win describes the window (data-from date,
+// fit start, first point, sessions in the fit, sessions left out as modelled) and the
+// published fit's start and size for comparison.
+function valuationFitFields(share, from) {
+  const noModel = !share ? 'no share-price file'
+    : share.status === 'collecting' ? `${share.n_days} of ${share.min_days_required} sessions collected since listing` : 'no share-price fit';
+  const canFit = !!share && !!share.regression && share.status !== 'collecting';
+  const w = (share && share.ma_window) || 45;
+  const published = canFit ? computeShareModel(share, w) : null;
+  // A data-from date needs the daily revenue (files from before Phase 5 have none)
+  const useFrom = !!from && canFit && !!share.revenue_daily;
+  const model = !useFrom ? published : computeShareModel({
+    ...share, regression_start: from,
+    revenue_daily: share.revenue_daily.filter(r => r.date >= from),
+    series: (share.series || []).filter(r => r.date >= from),
+  }, w);
+  const regStart = useFrom ? from : (share && share.regression_start) || null;
+  const supported = !!model && (model.meth ? model.meth.fair_value_supported : !useFrom && share.latest?.price_pred != null);
+  const se = supported ? shareResidualSE(model.series, model.reg, regStart) : null;
+  const ratio = model ? shareRatioStats(model.series, regStart) : null;
+  const inFit = r => (r.in_fit === undefined ? r.date >= regStart : r.in_fit);
+  const fitRows = model ? model.series.filter(inFit) : [];
+  const modelledOut = model ? model.series.filter(r => r.date >= regStart && !inFit(r)).length : 0;
+  const modelled = ((share && share.revenue_daily) || []).filter(r => r.modelled).map(r => r.date);
+  const pubRows = published ? published.series.filter(r => (r.in_fit === undefined ? r.date >= share.regression_start : r.in_fit)) : [];
+  return {
+    fit: se ? { intercept: model.reg.intercept, slope: model.reg.slope, se: se.se, n: se.n, r2: model.reg.r_squared } : null,
+    fitWhy: !model ? (canFit && useFrom ? `fewer than 10 sessions with a full ${w}-session MA from ${rxDate(from)}` : noModel)
+      : !supported ? `fit withheld: ${(model.meth?.gate_reasons || ['not significant']).join('; ')}`
+      : !se ? 'too few sessions in the fit' : '',
+    ratio, ratioWhy: !model ? (canFit && useFrom ? `fewer than 10 sessions with a full ${w}-session MA from ${rxDate(from)}` : noModel) : !ratio ? 'no price ÷ MA history' : '',
+    win: {
+      from: useFrom ? from : null, maWindow: w,
+      // Why a data-from date is not applied ('' when it is, or none is set)
+      fromIgnored: !from || useFrom ? '' : canFit ? 'no daily revenue' : share && share.status === 'collecting' ? 'collecting' : 'no fit',
+      fitStart: regStart, firstPoint: fitRows.length ? fitRows[0].date : null, n: fitRows.length,
+      modelledOut, modelledTo: modelledOut && modelled.length ? modelled[modelled.length - 1] : null,
+      pubStart: (share && share.regression_start) || null, pubN: pubRows.length,
+    },
+  };
+}
+
 // What the model reads from an exchange's daily rows (at today's rates) and its share file:
 // the latest quarter's ADR to date, the last 45 sessions' ADR, the published 45-session fit
 // with its standard error (only when the Regression tab publishes a fair value) and the
 // price ÷ MA ratio (once the fit is past collecting); CMP. null without daily rows.
+// valuationFitted re-fits it from a data-from date.
 function valuationContextFor(raw, share) {
   const rows = ((raw && raw.daily_all) || []).filter(r => valuationNum(r.total_rev)).slice().sort((a, b) => a.date.localeCompare(b.date));
   const last = rows[rows.length - 1];
@@ -310,24 +375,25 @@ function valuationContextFor(raw, share) {
   if (!start) return null;
   const qRows = rows.filter(r => r.fy_quarter === last.fy_quarter), r45 = rows.slice(-45);
   const mean = rs => rs.reduce((s, r) => s + r.total_rev, 0) / rs.length;
-  const model = share && share.regression && share.status !== 'collecting' ? computeShareModel(share, share.ma_window || 45) : null;
-  const supported = !!model && (model.meth ? model.meth.fair_value_supported : share.latest?.price_pred != null);
-  const se = supported ? shareResidualSE(model.series, model.reg, share.regression_start) : null;
   const lat = (share && share.latest) || {};
-  const noModel = !share ? 'no share-price file'
-    : share.status === 'collecting' ? `${share.n_days} of ${share.min_days_required} sessions collected since listing` : 'no share-price fit';
-  const ratio = model ? shareRatioStats(model.series, share.regression_start) : null;
+  const rev = (share && share.revenue_daily) || [];
   return {
     start, qLabel: last.fy_quarter, qAdr: mean(qRows), qN: qRows.length, adr45: mean(r45), n45: r45.length, lastDate: last.date,
     flags: mergeFlags([rowsFlags(qRows, 'total'), rowsFlags(r45, 'total')]),
-    fit: se ? { intercept: model.reg.intercept, slope: model.reg.slope, se: se.se, n: se.n, r2: model.reg.r_squared } : null,
-    fitWhy: !model ? noModel
-      : !supported ? `fit withheld: ${(model.meth?.gate_reasons || ['not significant']).join('; ')}`
-      : !se ? 'too few sessions in the fit' : '',
-    ratio, ratioWhy: !model ? noModel : !ratio ? 'no price ÷ MA history' : '',
+    ...valuationFitFields(share, null),
     fitStart: (share && share.regression_start) || null, ticker: (share && share.ticker) || '',
+    dataFirst: rev.length ? rev[0].date : null,
     cmp: lat.price_actual ?? null, cmpLive: !!lat.is_live, cmpDate: lat.date || null,
+    share: share || null,
   };
+}
+
+// The context with its regression and ratio fitted on the data from `from` (the exchange's
+// "Regression data from" input; null = the published fit). Kept per date on the context.
+function valuationFitted(c, from) {
+  if (!c || !from || !c.share) return c;
+  const memo = c._fitted || (c._fitted = {});
+  return memo[from] || (memo[from] = { ...c, ...valuationFitFields(c.share, from), _fitted: null });
 }
 
 // ── Data for any exchange, whichever is on show ─────────────────────────────
@@ -379,6 +445,24 @@ function valuationCmpWhen(c) {
 
 function valuationUpHTML(x, cmp, digits = 1) {
   return x == null || !cmp ? '—' : `<span class="${x / cmp - 1 >= 0 ? 'rx-up' : 'rx-dn'}">${rxSignedPct(x / cmp - 1, digits)}</span>`;
+}
+
+// The fit window in words: "data from 1 Jan 2025 · first point 5 Mar 2025 · 419 sessions",
+// or for the published fit "all data · fit from 1 Mar 2025 · first point … · … sessions"
+function valuationWindowText(win) {
+  const head = win.from ? `data from ${rxDate(win.from)}` : `all data · fit from ${rxDate(win.fitStart)}`;
+  return win.n ? `${head} · first point ${rxDate(win.firstPoint)} · ${fmtNum(win.n, 0)} sessions` : head;
+}
+
+// What the window leaves out: sessions whose MA includes modelled revenue, or a data-from
+// date the share file cannot apply; '' when nothing
+function valuationWindowNote(win) {
+  const notes = [];
+  if (win.modelledOut) notes.push(`${fmtNum(win.modelledOut, 0)} sessions left out: their ${win.maWindow}-session MA includes modelled revenue (to ${rxDate(win.modelledTo)}).`);
+  if (win.fromIgnored === 'no daily revenue') notes.push('The share file has no daily revenue, so the data-from date is not applied: the published fit is used.');
+  else if (win.fromIgnored === 'collecting') notes.push('Still collecting sessions since listing: the data-from date applies once the fit is published.');
+  else if (win.fromIgnored) notes.push('The share file has no fit, so the data-from date is not applied.');
+  return notes.join(' ');
 }
 
 // Why a triangulation's average leaves methods out, or rescales the weights
@@ -485,8 +569,9 @@ function valuationExcelTable(m, v, cmp) {
     <thead><tr><th scope="col" class="rx-xl-lab rx-xl-t">CMP ${rxRupee(cmp)}</th>${heads}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
-function valuationTabHTML(ex, defaults, c, analysts, open) {
-  const { v, edited } = valuationInputsFor(defaults, readValuationOverrides(), ex);
+function valuationTabHTML(ex, defaults, c0, analysts, open) {
+  const { v, edited } = valuationInputsFor(defaults, readValuationOverrides(), ex, c0.lastDate);
+  const c = valuationFitted(c0, v.from);   // regression and ratio on the data from the chosen date
   const shares = SHARES_OUTSTANDING_CR[ex].value;
   const m = valuationModel(c, v, shares);
   const fy1 = valuationFYShort(m.path.fy), qShort = `Q${c.start.q} ${valuationFYShort(c.start.fy)}`;
@@ -507,7 +592,7 @@ function valuationTabHTML(ex, defaults, c, analysts, open) {
   </div>`;
 
   // Workings: the ADR model block, the ADR path, the regression and ratio figures
-  const fit = c.fit, ratio = c.ratio;
+  const fit = c.fit, ratio = c.ratio, win = c.win, winNote = valuationWindowNote(win);
   const pathRows = m.path.path.map((p, i) => `<tr><td>${p.label}${i === 0 ? ` · to date${flagTags(c.flags)}` : ''}</td><td>${adrTxt(p.adr)}</td><td class="rx-src">${i === 0 ? `${c.qN} sessions` : `× ${fmtNum(1 + v.g / 100, 2)}`}</td></tr>`).join('');
   const regAt = (label, adr) => {
     const r = valuationRegression(fit, adr), k = valuationRatio(ratio, adr);
@@ -529,10 +614,10 @@ function valuationTabHTML(ex, defaults, c, analysts, open) {
             <tr class="rx-sub"><td>${fy1} average</td><td>${adrTxt(m.path.adr)}</td><td class="rx-src">mean of its four quarters</td></tr>
           </tbody></table></div>
         <p class="rx-foot rx-val-p">${qShort} ADR to date, grown ${fmtNum(v.g, 1)} % a quarter (${fmtPct(Math.pow(1 + v.g / 100, 4) - 1)} a year).</p>
-        <h3 class="rx-lbl rx-val-h3">Regression and ratio · published 45-session fit</h3>
+        <h3 class="rx-lbl rx-val-h3">Regression and ratio · ${win.from ? `${win.maWindow}-session fit, data from ${rxDate(win.from)}` : `published ${win.maWindow}-session fit`}</h3>
         <div class="rx-scroll"><table class="rx-table rx-wrap-lab">
           <tbody>
-            <tr><td>Fit</td><td class="rx-wrap">${fit ? `${escHtml(c.ticker)} · price = ₹${fmtNum(fit.intercept, 1)} + ${fmtNum(fit.slope, 2)} × ADR · R² ${fmtNum(fit.r2, 2)} · ${fit.n} sessions since ${rxDate(c.fitStart)}` : `<span class="rx-foot">${escHtml(c.fitWhy)}</span>`}</td></tr>
+            <tr><td>Fit</td><td class="rx-wrap">${fit ? `${escHtml(c.ticker)} · price = ₹${fmtNum(fit.intercept, 1)} + ${fmtNum(fit.slope, 2)} × ADR · R² ${fmtNum(fit.r2, 2)}<br>` : `<span class="rx-foot">${escHtml(c.fitWhy)}</span><br>`}${valuationWindowText(win)}${winNote ? `<br><span class="rx-foot">${escHtml(winNote)}</span>` : ''}${win.from ? `<br><span class="rx-foot">Published fit (Regression tab): from ${rxDate(win.pubStart)}, ${fmtNum(win.pubN, 0)} sessions, MA over all revenue</span>` : ''}</td></tr>
             <tr><td>Standard error of estimate</td><td class="rx-wrap">${fit ? `₹${fmtNum(fit.se, 0)}: Bear / Bull = base ∓ ₹${fmtNum(fit.se, 0)}, the same as moving ADR by ∓ ${fmtNum(fit.se / fit.slope, 2)} Cr` : '—'}</td></tr>
             <tr><td>Price ÷ revenue MA</td><td class="rx-wrap">${ratio ? `mean ${fmtNum(ratio.mean, 1)}×, σ ${fmtNum(ratio.sd, 1)}×: Bear / Base / Bull = (mean − σ / mean / mean + σ) × ADR` : `<span class="rx-foot">${escHtml(c.ratioWhy)}</span>`}</td></tr>
           </tbody></table></div>
