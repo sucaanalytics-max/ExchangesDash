@@ -93,6 +93,486 @@
       "futures_revenue": 1.48,
       "predicted_eod": 71.9,
       "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T11:30:27",
+      "elapsed_minutes": 135,
+      "total_revenue": 30.14,
+      "cash_revenue": 3.06,
+      "options_revenue": 25.56,
+      "futures_revenue": 1.53,
+      "predicted_eod": 71.39,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T11:35:29",
+      "elapsed_minutes": 140,
+      "total_revenue": 30.81,
+      "cash_revenue": 3.12,
+      "options_revenue": 26.12,
+      "futures_revenue": 1.57,
+      "predicted_eod": 70.93,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T11:40:28",
+      "elapsed_minutes": 145,
+      "total_revenue": 31.37,
+      "cash_revenue": 3.18,
+      "options_revenue": 26.59,
+      "futures_revenue": 1.6,
+      "predicted_eod": 70.25,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T11:45:35",
+      "elapsed_minutes": 150,
+      "total_revenue": 31.79,
+      "cash_revenue": 3.24,
+      "options_revenue": 26.92,
+      "futures_revenue": 1.63,
+      "predicted_eod": 69.3,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T11:50:29",
+      "elapsed_minutes": 155,
+      "total_revenue": 32.46,
+      "cash_revenue": 3.31,
+      "options_revenue": 27.49,
+      "futures_revenue": 1.66,
+      "predicted_eod": 68.94,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T11:55:23",
+      "elapsed_minutes": 160,
+      "total_revenue": 32.85,
+      "cash_revenue": 3.35,
+      "options_revenue": 27.8,
+      "futures_revenue": 1.7,
+      "predicted_eod": 68.01,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T12:00:27",
+      "elapsed_minutes": 165,
+      "total_revenue": 33.56,
+      "cash_revenue": 3.42,
+      "options_revenue": 28.41,
+      "futures_revenue": 1.73,
+      "predicted_eod": 67.77,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T12:05:34",
+      "elapsed_minutes": 170,
+      "total_revenue": 34.35,
+      "cash_revenue": 3.48,
+      "options_revenue": 29.1,
+      "futures_revenue": 1.76,
+      "predicted_eod": 67.86,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T12:10:47",
+      "elapsed_minutes": 175,
+      "total_revenue": 35.41,
+      "cash_revenue": 3.56,
+      "options_revenue": 30.05,
+      "futures_revenue": 1.8,
+      "predicted_eod": 68.46,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T12:15:28",
+      "elapsed_minutes": 180,
+      "total_revenue": 36.67,
+      "cash_revenue": 3.62,
+      "options_revenue": 31.21,
+      "futures_revenue": 1.84,
+      "predicted_eod": 69.41,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T12:20:30",
+      "elapsed_minutes": 185,
+      "total_revenue": 37.49,
+      "cash_revenue": 3.69,
+      "options_revenue": 31.92,
+      "futures_revenue": 1.88,
+      "predicted_eod": 69.52,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T12:25:22",
+      "elapsed_minutes": 190,
+      "total_revenue": 38.31,
+      "cash_revenue": 3.75,
+      "options_revenue": 32.63,
+      "futures_revenue": 1.92,
+      "predicted_eod": 69.61,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T12:30:30",
+      "elapsed_minutes": 195,
+      "total_revenue": 38.78,
+      "cash_revenue": 3.8,
+      "options_revenue": 33.03,
+      "futures_revenue": 1.94,
+      "predicted_eod": 69.08,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T12:35:27",
+      "elapsed_minutes": 200,
+      "total_revenue": 39.36,
+      "cash_revenue": 3.86,
+      "options_revenue": 33.54,
+      "futures_revenue": 1.97,
+      "predicted_eod": 68.77,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T12:40:28",
+      "elapsed_minutes": 205,
+      "total_revenue": 39.87,
+      "cash_revenue": 3.91,
+      "options_revenue": 33.95,
+      "futures_revenue": 2.01,
+      "predicted_eod": 68.34,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T12:45:35",
+      "elapsed_minutes": 210,
+      "total_revenue": 40.4,
+      "cash_revenue": 3.98,
+      "options_revenue": 34.38,
+      "futures_revenue": 2.04,
+      "predicted_eod": 67.96,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T12:50:30",
+      "elapsed_minutes": 215,
+      "total_revenue": 40.81,
+      "cash_revenue": 4.02,
+      "options_revenue": 34.72,
+      "futures_revenue": 2.07,
+      "predicted_eod": 67.4,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T12:55:23",
+      "elapsed_minutes": 220,
+      "total_revenue": 41.25,
+      "cash_revenue": 4.09,
+      "options_revenue": 35.07,
+      "futures_revenue": 2.09,
+      "predicted_eod": 66.91,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T13:00:34",
+      "elapsed_minutes": 225,
+      "total_revenue": 41.72,
+      "cash_revenue": 4.15,
+      "options_revenue": 35.46,
+      "futures_revenue": 2.12,
+      "predicted_eod": 66.49,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T13:05:29",
+      "elapsed_minutes": 230,
+      "total_revenue": 42.29,
+      "cash_revenue": 4.22,
+      "options_revenue": 35.92,
+      "futures_revenue": 2.15,
+      "predicted_eod": 66.25,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T13:10:28",
+      "elapsed_minutes": 235,
+      "total_revenue": 42.74,
+      "cash_revenue": 4.27,
+      "options_revenue": 36.29,
+      "futures_revenue": 2.17,
+      "predicted_eod": 65.84,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T13:15:26",
+      "elapsed_minutes": 240,
+      "total_revenue": 43.09,
+      "cash_revenue": 4.33,
+      "options_revenue": 36.57,
+      "futures_revenue": 2.2,
+      "predicted_eod": 65.29,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T13:20:33",
+      "elapsed_minutes": 245,
+      "total_revenue": 43.57,
+      "cash_revenue": 4.38,
+      "options_revenue": 36.97,
+      "futures_revenue": 2.23,
+      "predicted_eod": 64.95,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T13:25:25",
+      "elapsed_minutes": 250,
+      "total_revenue": 43.95,
+      "cash_revenue": 4.42,
+      "options_revenue": 37.28,
+      "futures_revenue": 2.25,
+      "predicted_eod": 64.48,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T13:30:34",
+      "elapsed_minutes": 255,
+      "total_revenue": 44.48,
+      "cash_revenue": 4.48,
+      "options_revenue": 37.72,
+      "futures_revenue": 2.28,
+      "predicted_eod": 64.24,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T13:35:27",
+      "elapsed_minutes": 260,
+      "total_revenue": 45.13,
+      "cash_revenue": 4.54,
+      "options_revenue": 38.28,
+      "futures_revenue": 2.31,
+      "predicted_eod": 64.17,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T13:40:35",
+      "elapsed_minutes": 265,
+      "total_revenue": 45.79,
+      "cash_revenue": 4.6,
+      "options_revenue": 38.86,
+      "futures_revenue": 2.34,
+      "predicted_eod": 64.12,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T13:45:30",
+      "elapsed_minutes": 270,
+      "total_revenue": 46.42,
+      "cash_revenue": 4.66,
+      "options_revenue": 39.39,
+      "futures_revenue": 2.37,
+      "predicted_eod": 64.03,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T13:50:34",
+      "elapsed_minutes": 275,
+      "total_revenue": 47.02,
+      "cash_revenue": 4.72,
+      "options_revenue": 39.9,
+      "futures_revenue": 2.41,
+      "predicted_eod": 63.91,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T13:55:24",
+      "elapsed_minutes": 280,
+      "total_revenue": 47.93,
+      "cash_revenue": 4.78,
+      "options_revenue": 40.71,
+      "futures_revenue": 2.45,
+      "predicted_eod": 64.2,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T14:00:29",
+      "elapsed_minutes": 285,
+      "total_revenue": 48.83,
+      "cash_revenue": 4.83,
+      "options_revenue": 41.51,
+      "futures_revenue": 2.48,
+      "predicted_eod": 64.47,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T14:05:31",
+      "elapsed_minutes": 290,
+      "total_revenue": 50.37,
+      "cash_revenue": 4.92,
+      "options_revenue": 42.91,
+      "futures_revenue": 2.54,
+      "predicted_eod": 65.61,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T14:10:30",
+      "elapsed_minutes": 295,
+      "total_revenue": 51.19,
+      "cash_revenue": 4.98,
+      "options_revenue": 43.63,
+      "futures_revenue": 2.58,
+      "predicted_eod": 65.79,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T14:15:36",
+      "elapsed_minutes": 300,
+      "total_revenue": 51.9,
+      "cash_revenue": 5.04,
+      "options_revenue": 44.24,
+      "futures_revenue": 2.61,
+      "predicted_eod": 65.83,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T14:20:28",
+      "elapsed_minutes": 305,
+      "total_revenue": 52.49,
+      "cash_revenue": 5.09,
+      "options_revenue": 44.76,
+      "futures_revenue": 2.64,
+      "predicted_eod": 65.72,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T14:25:25",
+      "elapsed_minutes": 310,
+      "total_revenue": 53.17,
+      "cash_revenue": 5.15,
+      "options_revenue": 45.35,
+      "futures_revenue": 2.67,
+      "predicted_eod": 65.72,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T14:30:28",
+      "elapsed_minutes": 315,
+      "total_revenue": 53.82,
+      "cash_revenue": 5.21,
+      "options_revenue": 45.89,
+      "futures_revenue": 2.71,
+      "predicted_eod": 65.69,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T14:35:28",
+      "elapsed_minutes": 320,
+      "total_revenue": 54.61,
+      "cash_revenue": 5.29,
+      "options_revenue": 46.56,
+      "futures_revenue": 2.76,
+      "predicted_eod": 65.83,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T14:40:30",
+      "elapsed_minutes": 325,
+      "total_revenue": 55.35,
+      "cash_revenue": 5.36,
+      "options_revenue": 47.19,
+      "futures_revenue": 2.8,
+      "predicted_eod": 65.9,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T14:45:32",
+      "elapsed_minutes": 330,
+      "total_revenue": 56.13,
+      "cash_revenue": 5.43,
+      "options_revenue": 47.86,
+      "futures_revenue": 2.84,
+      "predicted_eod": 66.02,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T14:50:34",
+      "elapsed_minutes": 335,
+      "total_revenue": 56.7,
+      "cash_revenue": 5.53,
+      "options_revenue": 48.29,
+      "futures_revenue": 2.88,
+      "predicted_eod": 65.89,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T14:55:30",
+      "elapsed_minutes": 340,
+      "total_revenue": 57.45,
+      "cash_revenue": 5.65,
+      "options_revenue": 48.87,
+      "futures_revenue": 2.93,
+      "predicted_eod": 65.97,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T15:00:27",
+      "elapsed_minutes": 345,
+      "total_revenue": 58.09,
+      "cash_revenue": 5.76,
+      "options_revenue": 49.35,
+      "futures_revenue": 2.98,
+      "predicted_eod": 65.92,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T15:05:24",
+      "elapsed_minutes": 350,
+      "total_revenue": 58.6,
+      "cash_revenue": 5.88,
+      "options_revenue": 49.7,
+      "futures_revenue": 3.02,
+      "predicted_eod": 65.76,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T15:10:25",
+      "elapsed_minutes": 355,
+      "total_revenue": 59.58,
+      "cash_revenue": 6.09,
+      "options_revenue": 50.39,
+      "futures_revenue": 3.1,
+      "predicted_eod": 66.13,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T15:15:29",
+      "elapsed_minutes": 360,
+      "total_revenue": 60.23,
+      "cash_revenue": 6.27,
+      "options_revenue": 50.81,
+      "futures_revenue": 3.15,
+      "predicted_eod": 66.12,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T15:20:31",
+      "elapsed_minutes": 365,
+      "total_revenue": 60.81,
+      "cash_revenue": 6.34,
+      "options_revenue": 51.27,
+      "futures_revenue": 3.19,
+      "predicted_eod": 66.04,
+      "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-16T15:25:33",
+      "elapsed_minutes": 370,
+      "total_revenue": 61.29,
+      "cash_revenue": 6.38,
+      "options_revenue": 51.7,
+      "futures_revenue": 3.22,
+      "predicted_eod": 65.85,
+      "pred_method": "historical/pre_expiry/wd0"
     }
   ]
 }

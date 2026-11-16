@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-13T07:00:39Z",
+ "updated_at": "2026-11-16T06:56:05Z",
  "source": {
   "key": "nse_fo_cat",
   "name": "NSE F&O - Category-Wise Turnover",
@@ -779,7 +779,8 @@
   {"date": "2026-11-08", "tables": {"Client Category Wise Turnover": {"fields": ["Buy Value in Rs.Crores", "Sell Value in Rs.Crores"], "rows": {"Mutual Funds": [1822.57, 329.88], "AIF": [63.94, 104.9], "Insurance Companies": [0.0, 0.0], "PMS": [6.75, 1.61], "FPI": [2208.22, 2594.83], "Retail": [18644.95, 18899.5], "Others": [23224.68, 24040.39]}}}, "fetched_at": "2026-11-12T10:01:49Z", "parser": 1, "sha256": "c60222e907a9da7d04c7b511c777ebb446b32925435d6f35a33a04dc6057825b"},
   {"date": "2026-11-09", "tables": {"Client Category Wise Turnover": {"fields": ["Buy Value in Rs.Crores", "Sell Value in Rs.Crores"], "rows": {"Mutual Funds": [8473.19, 6880.53], "AIF": [438.34, 488.5], "Insurance Companies": [0.0, 0.0], "PMS": [90.9, 81.27], "FPI": [30277.6, 31505.28], "Retail": [76341.0, 74822.41], "Others": [96242.84, 98085.88]}}}, "fetched_at": "2026-11-12T10:01:49Z", "parser": 1, "sha256": "01cecc8e3245c8214fa06e6e64c978198d00bdf2fe88f6f38f6429336eaaa969"},
   {"date": "2026-11-11", "tables": {"Client Category Wise Turnover": {"fields": ["Buy Value in Rs.Crores", "Sell Value in Rs.Crores"], "rows": {"Mutual Funds": [9902.98, 8314.89], "AIF": [589.62, 687.74], "Insurance Companies": [0.0, 0.0], "PMS": [413.28, 413.17], "FPI": [37236.8, 34197.49], "Retail": [67630.16, 69288.41], "Others": [87598.51, 90469.64]}}}, "fetched_at": "2026-11-12T10:01:49Z", "parser": 1, "sha256": "b31002d8113c544c403db64aaad57b236af2b4bf661208a9c9cd41f2100ceadd"},
-  {"date": "2026-11-12", "tables": {"Client Category Wise Turnover": {"fields": ["Buy Value in Rs.Crores", "Sell Value in Rs.Crores"], "rows": {"Mutual Funds": [9149.77, 7154.99], "AIF": [406.19, 711.89], "Insurance Companies": [0.25, 0.0], "PMS": [121.48, 116.55], "FPI": [29437.24, 26073.45], "Retail": [46746.47, 47277.56], "Others": [61720.55, 66247.51]}}}, "fetched_at": "2026-11-13T07:00:39Z", "parser": 1, "sha256": "0ec6f9248e215d7eb92605aeeb4a3274af5f893235028f9db53f59e938720cdb"}
+  {"date": "2026-11-12", "tables": {"Client Category Wise Turnover": {"fields": ["Buy Value in Rs.Crores", "Sell Value in Rs.Crores"], "rows": {"Mutual Funds": [9149.77, 7154.99], "AIF": [406.19, 711.89], "Insurance Companies": [0.25, 0.0], "PMS": [121.48, 116.55], "FPI": [29437.24, 26073.45], "Retail": [46746.47, 47277.56], "Others": [61720.55, 66247.51]}}}, "fetched_at": "2026-11-13T07:00:39Z", "parser": 1, "sha256": "0ec6f9248e215d7eb92605aeeb4a3274af5f893235028f9db53f59e938720cdb"},
+  {"date": "2026-11-13", "tables": {"Client Category Wise Turnover": {"fields": ["Buy Value in Rs.Crores", "Sell Value in Rs.Crores"], "rows": {"Mutual Funds": [6429.71, 6074.49], "AIF": [410.07, 709.71], "Insurance Companies": [0.0, 0.22], "PMS": [183.21, 207.47], "FPI": [25607.98, 28257.04], "Retail": [59269.91, 56999.95], "Others": [70314.9, 69966.89]}}}, "fetched_at": "2026-11-16T06:56:05Z", "parser": 1, "sha256": "a7a132d3bcd1e586e1fdb435a1f0e260d189e2103d55d43acf61398ec15257da"}
  ],
  "unavailable": {
   "2026-01-23": "unreadable file: XLRDError: Excel xlsx file; not supported"
