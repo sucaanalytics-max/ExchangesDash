@@ -16,7 +16,7 @@
 const CP_MA_WINDOW = 20;   // trading days in the chart's rolling ratio
 const CP_RANGES = [['6m', '6 M', 6], ['1y', '1 Y', 12], ['2y', '2 Y', 24], ['all', 'All', null]];
 const CP_EXP_COLOR = '#D39A6E';   // RX.above: expiry-day dots, as on Brokers → F&O vs Exchanges
-const CP_VIEW = { range: '1y' };
+const CP_VIEW = { range: '1y', expRange: '1y', expMetric: 'contracts' };
 let cpBuildSeq = 0;   // latest build; an older one still loading yields to it
 
 // One row per date on which both exchanges traded options (contracts and premium
@@ -140,6 +140,172 @@ function cpRangeStart(lastDate, range) {
   return d.toISOString().slice(0, 10);
 }
 
+// ========================
+// EXPIRY DAYS VS OTHER DAYS — per exchange, each weekly benchmark expiry
+// (expiryDateSet: Nifty on NSE, Sensex on BSE, moved back for a holiday)
+// against that exchange's other trading days. The expiry multiple is the
+// average expiry day ÷ the average other day, for contracts and for premium:
+// it nets out the market's overall level (volatility, sentiment), so it shows
+// what a rule that bites near the expiry close does to expiry-day trading.
+//
+// Expiring F&O contracts settle on a price SEBI sets by date: the cash market's
+// VWAP over the last 30 minutes, then the closing auction session's (CAS) price
+// from 3 Aug 2026 (circular of 16 Jan 2026), then the 30-minute VWAP again from
+// 7 Dec 2026 (circular of 15 Oct 2026; CAS stays, 3:30–3:40 pm, cash only).
+// ========================
+
+const CP_SETTLEMENT_SWITCHES = [
+  { date: '2026-08-03', label: 'CAS settlement starts' },
+  { date: '2026-12-07', label: 'VWAP settlement again' },
+];
+// Both exchanges' expiry weekdays as of today (NSE Tuesday, BSE Thursday) start here
+const CP_EXPIRY_WEEKDAYS_FROM = '2025-09-01';
+// Trading days in the table's "last N days" rows, and weeks in the chart's rolling multiple
+const CP_EXP_WINDOW = 40;
+const CP_EXP_ROLL_WEEKS = 4;
+const CP_EXP_EXCHANGES = [
+  { ex: 'nse', name: 'NSE', color: RX.model },
+  { ex: 'bse', name: 'BSE', color: RX.rev },
+];
+
+// One exchange's option days: { date, contracts, premium, expiry }. NSE: index +
+// stock options; BSE: its contract total (F&O, futures negligible) and options
+// premium. Days without both contracts and premium are left out.
+function expirySplitDaily(rows, exchange, expirySet) {
+  return (rows || []).map(r => {
+    const contracts = exchange === 'nse' ? (r.io_contracts || 0) + (r.so_contracts || 0) : r.total_contracts || 0;
+    const premium = exchange === 'nse' ? (r.io_premium || 0) + (r.so_premium || 0) : r.options_premium_turnover || 0;
+    return { date: r.date, contracts, premium, expiry: expirySet.has(r.date) };
+  }).filter(d => d.contracts > 0 && d.premium > 0).sort((a, b) => a.date.localeCompare(b.date));
+}
+
+// Averages of expiry and other days among `days`, and their multiples (null
+// without days of either kind)
+function expirySplitStats(days) {
+  const sum = (L, k) => L.reduce((a, d) => a + d[k], 0);
+  const e = days.filter(d => d.expiry), o = days.filter(d => !d.expiry);
+  const avg = (L, k) => L.length ? sum(L, k) / L.length : null;
+  const expC = avg(e, 'contracts'), othC = avg(o, 'contracts'), expP = avg(e, 'premium'), othP = avg(o, 'premium');
+  return { expDays: e.length, othDays: o.length, expC, othC, expP, othP,
+    cMult: expC != null && othC ? expC / othC : null, pMult: expP != null && othP ? expP / othP : null,
+    from: days.length ? days[0].date : null, to: days.length ? days[days.length - 1].date : null };
+}
+
+// The table's windows: since today's expiry weekdays until CAS, the last N days
+// before CAS, CAS settlement, VWAP again, and the last N days. `chg` is each
+// row's contracts multiple against the last N days before CAS.
+function expirySplitPeriods(days, win = CP_EXP_WINDOW) {
+  const [cas, vwap] = CP_SETTLEMENT_SWITCHES.map(s => s.date);
+  const between = (from, to) => days.filter(d => (!from || d.date >= from) && (!to || d.date < to));
+  const preCas = between(null, cas);
+  const rows = [
+    { key: 'pre', label: `Before CAS, from ${rxDate(CP_EXPIRY_WEEKDAYS_FROM)}`, ...expirySplitStats(between(CP_EXPIRY_WEEKDAYS_FROM, cas)) },
+    { key: 'preN', label: `Last ${win} days before CAS`, ...expirySplitStats(preCas.slice(-win)) },
+    { key: 'cas', label: 'CAS settlement', ...expirySplitStats(between(cas, vwap)) },
+    { key: 'vwap', label: `VWAP again, from ${rxDate(vwap)}`, ...expirySplitStats(between(vwap, null)) },
+    { key: 'lastN', label: `Last ${win} days`, ...expirySplitStats(days.slice(-win)) },
+  ];
+  const base = rows[1].cMult;
+  rows.forEach(r => { r.chg = r.key !== 'preN' && base && r.cMult != null ? (r.cMult - base) / base : null; });
+  return rows;
+}
+
+// Monday of an ISO date's week
+function cpWeekStart(iso) {
+  const d = new Date(iso + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() - (d.getUTCDay() + 6) % 7);
+  return d.toISOString().slice(0, 10);
+}
+
+// Weekly expiry multiples over the last `weeks` weeks that held an expiry day:
+// [{ week, expiryDate, cMult, pMult }], each the window's average expiry day ÷
+// its average other day; null until `weeks` weeks are in or without other days.
+function expiryWeeklyMultiples(days, weeks = CP_EXP_ROLL_WEEKS) {
+  const byWeek = new Map();
+  days.forEach(d => {
+    const w = cpWeekStart(d.date);
+    if (!byWeek.has(w)) byWeek.set(w, { week: w, expiryDate: null, e: { n: 0, c: 0, p: 0 }, o: { n: 0, c: 0, p: 0 } });
+    const b = byWeek.get(w), s = d.expiry ? b.e : b.o;
+    if (d.expiry) b.expiryDate = d.date;
+    s.n++; s.c += d.contracts; s.p += d.premium;
+  });
+  const list = [...byWeek.values()].filter(b => b.e.n).sort((a, b) => a.week.localeCompare(b.week));
+  return list.map((b, i) => {
+    if (i < weeks - 1) return { week: b.week, expiryDate: b.expiryDate, cMult: null, pMult: null };
+    const win = list.slice(i - weeks + 1, i + 1);
+    const t = k => win.reduce((a, w) => ({ n: a.n + w[k].n, c: a.c + w[k].c, p: a.p + w[k].p }), { n: 0, c: 0, p: 0 });
+    const e = t('e'), o = t('o');
+    return { week: b.week, expiryDate: b.expiryDate,
+      cMult: o.n && o.c ? (e.c / e.n) / (o.c / o.n) : null, pMult: o.n && o.p ? (e.p / e.n) / (o.p / o.n) : null };
+  });
+}
+
+function cpMultText(v) { return v == null || !isFinite(v) ? '—' : fmtNum(v, 2) + '×'; }
+
+function cpExpiryTableHTML(byEx) {
+  const body = byEx.map(({ name, rows }) => `<tbody>
+      <tr><th scope="rowgroup" colspan="9" class="rx-l">${name}</th></tr>
+      ${rows.map(r => {
+        const has = r.expDays && r.othDays;
+        const span = r.from ? ` title="${escHtml(rxDate(r.from) + ' to ' + rxDate(r.to))}"` : '';
+        const tag = r.key === 'vwap' && !r.from ? ` ${rxChip('no days yet')}` : r.key === 'preN' ? ` ${rxChip('baseline')}` : '';
+        return `<tr${r.key === 'lastN' ? ' class="rx-sub"' : ''}>
+          <td${span}>${escHtml(r.label)}${tag}</td>
+          <td>${r.from ? `${r.expDays} / ${r.othDays}` : '—'}</td>
+          <td>${r.expDays ? cpContractsCr(r.expC) : '—'}</td>
+          <td>${r.othDays ? cpContractsCr(r.othC) : '—'}</td>
+          <td class="rx-hl">${has ? cpMultText(r.cMult) : '—'}</td>
+          <td>${rxSignedPct(r.chg)}</td>
+          <td>${r.expDays ? fmtNum(r.expP, 0) : '—'}</td>
+          <td>${r.othDays ? fmtNum(r.othP, 0) : '—'}</td>
+          <td>${has ? cpMultText(r.pMult) : '—'}</td>
+        </tr>`;
+      }).join('')}
+    </tbody>`).join('');
+  return `<div class="rx-scroll"><table class="rx-table">
+    <thead><tr><th scope="col" rowspan="2">Window</th>
+      <th scope="col" rowspan="2" title="Expiry days / other trading days">Days</th>
+      <th scope="colgroup" colspan="4" title="Option contracts on the average day, crore">Contracts, Cr</th>
+      <th scope="colgroup" colspan="3" title="Option premium on the average day, ₹ Cr">Premium, ₹ Cr</th></tr>
+      <tr><th scope="col" title="Option contracts on the average expiry day, crore">Expiry day</th>
+      <th scope="col" title="Option contracts on the average other day, crore">Other day</th>
+      <th scope="col" class="rx-hl" title="Average expiry-day contracts ÷ average other-day contracts">Multiple</th>
+      <th scope="col" title="This row's contracts multiple against the last ${CP_EXP_WINDOW} days before CAS">vs baseline</th>
+      <th scope="col" title="Option premium on the average expiry day, ₹ Cr">Expiry day</th>
+      <th scope="col" title="Option premium on the average other day, ₹ Cr">Other day</th>
+      <th scope="col" title="Average expiry-day premium ÷ average other-day premium">Multiple</th></tr></thead>
+    ${body}
+  </table></div>`;
+}
+
+function cpExpiryHowHTML() {
+  return rxHow('How this is measured', `
+    <p>For each exchange, its <b>expiry days</b> are its weekly benchmark expiries (Nifty on NSE, Sensex on BSE: the weekday in force, moved to the previous trading day of the same week for a holiday), as Revenue Summary counts them; every other trading day is an <b>other day</b>. The <b>multiple</b> is the average expiry day ÷ the average other day, for contracts and for premium. Comparing the two kinds of day on the same exchange over the same weeks nets out the market's overall level (volatility, sentiment), so the multiple moves with what happens near the expiry close.</p>
+    <ul>
+      <li>Expiring F&amp;O contracts settled on the cash market's 30-minute VWAP until 31 Jul 2026, on the closing auction (CAS) price from 3 Aug 2026 (SEBI circular of 16 Jan 2026), and settle on the 30-minute VWAP again from 7 Dec 2026 (circular of 15 Oct 2026; the auction stays as a 3:30–3:40 pm cash session, and expiring index options stop at 3:30 pm).</li>
+      <li>The baseline is the last ${CP_EXP_WINDOW} trading days before CAS. The longer pre-CAS row starts on ${rxDate(CP_EXPIRY_WEEKDAYS_FROM)}, when today's expiry weekdays (NSE Tuesday, BSE Thursday) began.</li>
+      <li>A contracts multiple that rises while the premium multiple does not means the added expiry-day trading is in cheap, near-expiry options: more contracts and orders (what brokers charge on) for little premium (what exchanges bill).</li>
+      <li>The chart's lines are the multiple over the last ${CP_EXP_ROLL_WEEKS} weeks with an expiry, one point per week. Month-end expiries are larger, so single weeks are noisy.</li>
+      <li>NSE counts index and stock options; BSE's count is its F&amp;O total, whose futures are negligible. Muhurat and DR-test sessions are left out.</li>
+    </ul>`);
+}
+
+// Dashed vertical lines at given category-axis labels (the settlement switches)
+const CP_SWITCH_LINE = {
+  id: 'cpSwitchLine',
+  afterDatasetsDraw(chart, args, opts) {
+    const x = chart.scales.x, area = chart.chartArea, ctx = chart.ctx;
+    ((opts && opts.indices) || []).forEach(i => {
+      if (!x || i == null || i < x.min || i > x.max) return;
+      const px = x.getPixelForValue(i);
+      ctx.save();
+      ctx.strokeStyle = RX.grey; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(px, area.top); ctx.lineTo(px, area.bottom); ctx.stroke();
+      ctx.restore();
+    });
+  },
+};
+
 function cpRatioText(v) { return v == null || !isFinite(v) ? '—' : fmtNum(v, 0); }
 function cpContractsCr(v) { return v == null || !isFinite(v) ? '—' : fmtNum(v / 1e7, 2); }
 
@@ -212,6 +378,9 @@ async function buildContractsPremium() {
   // Expiry days: each exchange's weekly benchmark expiry (Nifty, Sensex), as Revenue Summary counts them
   const exp = new Set([...expiryDateSet(nseRaw.daily_all, 'nse'), ...expiryDateSet(bseRaw.daily_all, 'bse')]);
 
+  const expDaily = CP_EXP_EXCHANGES.map(e => ({ ...e, days: expirySplitDaily(rawFor(e.ex).daily_all, e.ex, expiryDateSet(rawFor(e.ex).daily_all, e.ex)) }));
+  const expByEx = expDaily.map(e => ({ name: e.name, rows: expirySplitPeriods(e.days) }));
+
   const leftOut = excluded.length
     ? `<span title="${escHtml(`Dates without options contracts and premium on both exchanges, ${rxDate(excluded[0].date)} to ${rxDate(excluded[excluded.length - 1].date)}`)}">${rxChip(`${excluded.length} day${excluded.length === 1 ? '' : 's'} left out`, 'warn')}</span>` : '';
   const kpis = rxKpis([
@@ -237,6 +406,14 @@ async function buildContractsPremium() {
       body: cpPeriodTableHTML(groups),
       foot: 'Contracts in crore (10 million); premium in ₹ Cr. % chg: the current period of each kind against that row, (current − row) ÷ row; for the trading-day rows, the last 5 days against each. Hover a period for its dates.',
       how: cpHowHTML(excluded) })}
+    ${rxPanel({ title: 'Expiry days vs other days', meta: '<span data-cp="expMeta"></span>',
+      right: `${rxSeg('cpExpMetric', [['contracts', 'Contracts'], ['premium', 'Premium']], CP_VIEW.expMetric, 'Chart measure')} ${rxSeg('cpExpRange', CP_RANGES.map(r => [r[0], r[1]]), CP_VIEW.expRange, 'Chart range')}`,
+      body: `${rxCanvas('chartExpiryMultiple')}<div class="rx-pb" data-cp="expLegend"></div>`,
+      foot: `Average expiry day ÷ average other day on the same exchange, over the last ${CP_EXP_ROLL_WEEKS} weeks with an expiry. Dashed lines: ${CP_SETTLEMENT_SWITCHES.map(s => `${escHtml(rxDate(s.date))}, ${escHtml(s.label)}`).join('; ')}.` })}
+    ${rxPanel({ title: 'Expiry-day multiple by settlement window', meta: 'per exchange · average expiry day ÷ average other day',
+      body: cpExpiryTableHTML(expByEx),
+      foot: `Contracts in crore (10 million); premium in ₹ Cr. vs baseline: the row's contracts multiple against the last ${CP_EXP_WINDOW} trading days before CAS. Hover a window for its dates.`,
+      how: cpExpiryHowHTML() })}
   </div>`;
   const root = el.firstElementChild;
 
@@ -271,7 +448,45 @@ async function buildContractsPremium() {
     { label: `${CP_MA_WINDOW}-day ratio`, color: RX.model, kind: 'line' },
     { label: 'Expiry day (NSE or BSE)', color: CP_EXP_COLOR }, { label: 'Other day', color: RX.light },
   ]);
+  // Expiry multiple chart: one point per week (its Monday), NSE and BSE aligned by week
+  const weekly = expDaily.map(e => ({ ...e, mult: new Map(expiryWeeklyMultiples(e.days).map(w => [w.week, w])) }));
+  const allWeeks = [...new Set(weekly.flatMap(e => [...e.mult.keys()]))].sort();
+  const drawExp = () => {
+    const start = cpRangeStart(last.date, CP_VIEW.expRange);
+    const weeks = allWeeks.filter(w => !start || w >= start);
+    const key = CP_VIEW.expMetric === 'premium' ? 'pMult' : 'cMult';
+    const meta = root.querySelector('[data-cp="expMeta"]');
+    if (meta) meta.textContent = weeks.length ? `weeks of ${rxDate(weeks[0])} to ${rxDate(weeks[weeks.length - 1])} · ${CP_VIEW.expMetric}` : '';
+    const switchIdx = CP_SETTLEMENT_SWITCHES.map(s => { const i = weeks.findIndex(w => w >= cpWeekStart(s.date)); return i > 0 ? i : null; });
+    rxChart('cpExpiry', 'chartExpiryMultiple', 260, {
+      type: 'line',
+      data: { labels: weeks.map(fmtChartDate), datasets: weekly.map(e => ({
+        label: e.name, data: weeks.map(w => (e.mult.get(w) || {})[key] ?? null),
+        borderColor: e.color, backgroundColor: e.color, borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0, spanGaps: true })) },
+      plugins: [CP_SWITCH_LINE],
+      options: {
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          cpSwitchLine: { indices: switchIdx },
+          tooltip: { callbacks: {
+            title: items => `Week of ${rxDate(weeks[items[0].dataIndex])}`,
+            label: ctx => { const w = weekly[ctx.datasetIndex].mult.get(weeks[ctx.dataIndex]);
+              return ` ${ctx.dataset.label}: ${cpMultText(ctx.raw)}${w && w.expiryDate ? ` · expiry ${rxDate(w.expiryDate)}` : ''}`; } } } },
+        scales: {
+          x: { grid: { display: false }, afterBuildTicks: brkMonthTicks(weeks, 7), ticks: { maxTicksLimit: 7, maxRotation: 0, autoSkip: true } },
+          y: { grace: '6%', title: { display: true, text: `Expiry day ÷ other day, ${CP_VIEW.expMetric}` }, ticks: { includeBounds: false, callback: v => fmtNum(v, 1) + '×' } },
+        },
+      },
+    });
+  };
+  root.querySelector('[data-cp="expLegend"]').innerHTML = rxLegend([
+    ...weekly.map(e => ({ label: `${e.name} (${e.ex === 'nse' ? 'Nifty' : 'Sensex'} expiry)`, color: e.color, kind: 'line' })),
+    { label: 'Settlement rule changes', color: RX.grey, kind: 'dash' },
+  ]);
   draw();
+  drawExp();
   rxOnSeg(root, 'cpRange', v => { CP_VIEW.range = v; draw(); });
-  RX_TAB_REFRESH.contracts = draw;
+  rxOnSeg(root, 'cpExpRange', v => { CP_VIEW.expRange = v; drawExp(); });
+  rxOnSeg(root, 'cpExpMetric', v => { CP_VIEW.expMetric = v; drawExp(); });
+  RX_TAB_REFRESH.contracts = () => { draw(); drawExp(); };
 }

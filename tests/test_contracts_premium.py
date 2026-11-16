@@ -207,5 +207,79 @@ class Rolling(unittest.TestCase):
         self.assertAlmostEqual(out[3], 700 / 3)
 
 
+
+EXP_JS = ["rxDate", "CP_SETTLEMENT_SWITCHES", "CP_EXPIRY_WEEKDAYS_FROM", "CP_EXP_WINDOW", "CP_EXP_ROLL_WEEKS",
+          "expirySplitDaily", "expirySplitStats", "expirySplitPeriods", "cpWeekStart", "expiryWeeklyMultiples"]
+
+
+def exp_days(dates, expiry_weekday, exp_c=400.0, oth_c=100.0, exp_p=15.0, oth_p=10.0):
+    """Split days as expirySplitDaily returns them: expiry on one weekday (0 = Monday)."""
+    out = []
+    for d in dates:
+        e = dt.date.fromisoformat(d).weekday() == expiry_weekday
+        out.append({"date": d, "contracts": exp_c if e else oth_c, "premium": exp_p if e else oth_p, "expiry": e})
+    return out
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class ExpirySplit(unittest.TestCase):
+    def test_daily_uses_each_exchanges_option_fields_and_expiry_set(self):
+        nse = [nse_row("2026-11-10", 300, 20, 9.0, 1.0), nse_row("2026-11-11", 100, 10, 4.0, 1.0),
+               {"date": "2026-11-12", **labels("2026-11-12")}]   # no options data: left out
+        bse = [bse_row("2026-11-12", 500, 20.0), bse_row("2026-11-11", 50, 0)]
+        out = js_eval(EXP_JS, "[expirySplitDaily(DATA.nse, 'nse', new Set(['2026-11-10'])),"
+                              " expirySplitDaily(DATA.bse, 'bse', new Set(['2026-11-12']))]", {"nse": nse, "bse": bse})
+        self.assertEqual(out[0], [{"date": "2026-11-10", "contracts": 320, "premium": 10.0, "expiry": True},
+                                  {"date": "2026-11-11", "contracts": 110, "premium": 5.0, "expiry": False}])
+        self.assertEqual(out[1], [{"date": "2026-11-12", "contracts": 500, "premium": 20.0, "expiry": True}])
+
+    def test_stats_are_average_expiry_day_over_average_other_day(self):
+        days = [{"date": "2026-11-10", "contracts": 400, "premium": 12, "expiry": True},
+                {"date": "2026-11-11", "contracts": 100, "premium": 10, "expiry": False},
+                {"date": "2026-11-12", "contracts": 300, "premium": 6, "expiry": False},
+                {"date": "2026-11-17", "contracts": 600, "premium": 18, "expiry": True}]
+        s = js_eval(EXP_JS, "expirySplitStats(DATA)", days)
+        self.assertEqual((s["expDays"], s["othDays"]), (2, 2))
+        self.assertAlmostEqual(s["cMult"], 500 / 200)
+        self.assertAlmostEqual(s["pMult"], 15 / 8)
+        none = js_eval(EXP_JS, "expirySplitStats(DATA)", days[1:3])
+        self.assertIsNone(none["cMult"])
+
+    def test_periods_split_at_the_settlement_switches(self):
+        # Expiry multiple 4× before 3 Aug 2026, 3× under CAS, 5× from 7 Dec 2026 (NSE: Tuesday expiry)
+        days = (exp_days(weekdays("2025-09-01", "2026-07-31"), 1)
+                + exp_days(weekdays("2026-08-03", "2026-12-04"), 1, exp_c=300.0)
+                + exp_days(weekdays("2026-12-07", "2027-01-29"), 1, exp_c=500.0))
+        rows = {r["key"]: r for r in js_eval(EXP_JS, "expirySplitPeriods(DATA)", days)}
+        self.assertEqual(rows["pre"]["from"], "2025-09-01")
+        self.assertEqual(rows["pre"]["to"], "2026-07-31")
+        self.assertAlmostEqual(rows["pre"]["cMult"], 4.0)
+        self.assertEqual((rows["preN"]["expDays"] + rows["preN"]["othDays"], rows["preN"]["to"]), (40, "2026-07-31"))
+        self.assertIsNone(rows["preN"]["chg"])
+        self.assertEqual((rows["cas"]["from"], rows["cas"]["to"]), ("2026-08-03", "2026-12-04"))
+        self.assertAlmostEqual(rows["cas"]["cMult"], 3.0)
+        self.assertAlmostEqual(rows["cas"]["chg"], -0.25)
+        self.assertEqual(rows["vwap"]["from"], "2026-12-07")
+        self.assertAlmostEqual(rows["vwap"]["chg"], 0.25)
+        self.assertAlmostEqual(rows["cas"]["pMult"], 1.5)
+
+    def test_vwap_row_is_empty_before_7_december(self):
+        days = exp_days(weekdays("2026-06-01", "2026-11-11"), 1)
+        rows = {r["key"]: r for r in js_eval(EXP_JS, "expirySplitPeriods(DATA)", days)}
+        self.assertEqual((rows["vwap"]["expDays"], rows["vwap"]["othDays"], rows["vwap"]["from"]), (0, 0, None))
+        self.assertIsNone(rows["vwap"]["cMult"])
+
+    def test_weekly_multiples_roll_over_weeks_with_an_expiry(self):
+        # Four plain weeks (4×), then a week whose expiry is 8× the other days
+        days = exp_days(weekdays("2026-10-05", "2026-10-30"), 3) + exp_days(weekdays("2026-11-02", "2026-11-06"), 3, exp_c=800.0)
+        w = js_eval(EXP_JS, "expiryWeeklyMultiples(DATA, 4)", days)
+        self.assertEqual([x["week"] for x in w], ["2026-10-05", "2026-10-12", "2026-10-19", "2026-10-26", "2026-11-02"])
+        self.assertEqual(w[-1]["expiryDate"], "2026-11-05")
+        self.assertEqual([x["cMult"] for x in w[:3]], [None, None, None])
+        self.assertAlmostEqual(w[3]["cMult"], 4.0)
+        self.assertAlmostEqual(w[4]["cMult"], (400 * 3 + 800) / 4 / 100)
+        self.assertEqual(js_eval(EXP_JS, "cpWeekStart('2026-11-08')"), "2026-11-02")   # Sunday → its Monday
+
+
 if __name__ == "__main__":
     unittest.main()
