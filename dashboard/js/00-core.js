@@ -511,6 +511,7 @@ const NAV_ICONS = {
   prediction: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>',
   advanced: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>',
   share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>',
+  inputs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>',
   ratio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="6" r="1.5"/><line x1="5" y1="12" x2="19" y2="12"/><circle cx="12" cy="18" r="1.5"/></svg>',
 };
 
@@ -522,6 +523,8 @@ const NAV_ICONS = {
 // combined: the same tab under every view that has NSE or BSE data (not MCX).
 // Participants (js/17-participants.js) is under the NSE and BSE views, each with
 // its own exchange's participant data and NSDL's market-wide FPI flows
+// Valuation Inputs (js/18-valuation-inputs.js) is the same table of BSE, MCX and
+// NSE inputs under each of their views, beside Valuation Model
 const EXCHANGE_TABS = {
   nse: [
     { id: 'revenue',    label: 'Revenue Summary',    icon: 'revenue' },
@@ -529,6 +532,7 @@ const EXCHANGE_TABS = {
     { id: 'intraday',   label: 'Live Predictor',      icon: 'temporal' },
     { id: 'share',      label: 'Regression',          icon: 'share' },
     { id: 'valuation',  label: 'Valuation Model',     icon: 'advanced' },
+    { id: 'valinputs',  label: 'Valuation Inputs',    icon: 'inputs' },
     { id: 'contracts',  label: 'Contracts to Premium', icon: 'ratio' },
     { id: 'participants', label: 'Participants',      icon: 'share' },
   ],
@@ -538,6 +542,7 @@ const EXCHANGE_TABS = {
     { id: 'intraday',   label: 'Live Predictor',       icon: 'temporal' },
     { id: 'share',      label: 'Regression',            icon: 'share' },
     { id: 'valuation',  label: 'Valuation Model',       icon: 'advanced' },
+    { id: 'valinputs',  label: 'Valuation Inputs',      icon: 'inputs' },
     { id: 'contracts',  label: 'Contracts to Premium', icon: 'ratio' },
     { id: 'participants', label: 'Participants',        icon: 'share' },
   ],
@@ -546,6 +551,7 @@ const EXCHANGE_TABS = {
     { id: 'prediction', label: 'Revenue Predictor',    icon: 'prediction' },
     { id: 'share',      label: 'Regression',            icon: 'share' },
     { id: 'valuation',  label: 'Valuation Model',       icon: 'advanced' },
+    { id: 'valinputs',  label: 'Valuation Inputs',      icon: 'inputs' },
   ],
   all: [
     { id: 'revenue',    label: 'Revenue Summary',     icon: 'revenue' },
@@ -565,6 +571,7 @@ const TAB_TITLES = {
     intraday: 'Live Predictor',
     share: 'Regression',
     valuation: 'Valuation Model',
+    valinputs: 'Valuation Inputs — BSE, MCX and NSE',
     contracts: 'Contracts to Premium — NSE + BSE',
     participants: 'Participants — FII, DII, Pro, Client (NSE + NSDL)',
   },
@@ -574,6 +581,7 @@ const TAB_TITLES = {
     intraday: 'Live Predictor',
     share: 'Regression',
     valuation: 'Valuation Model',
+    valinputs: 'Valuation Inputs — BSE, MCX and NSE',
     contracts: 'Contracts to Premium — NSE + BSE',
     participants: 'Participants — FII, DII, Pro, Client (BSE + NSDL)',
   },
@@ -582,6 +590,7 @@ const TAB_TITLES = {
     prediction: 'Revenue Predictor',
     share: 'Regression',
     valuation: 'Valuation Model',
+    valinputs: 'Valuation Inputs — BSE, MCX and NSE',
   },
   all: {
     revenue: 'Combined Revenue — NSE + BSE + MCX',

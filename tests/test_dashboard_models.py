@@ -1,18 +1,19 @@
 """Calculation helpers behind the redesigned dashboard tabs (dashboard/js), run in Node.
 
 The Revenue Predictor's NSE path must reproduce scripts/nse_pipeline.py's ratio
-model, BSE's valuation must keep the Excel "Annual Predictor" formulas, and the
-Live tab's archive scoring must read the history file as live_common writes it."""
+model, the valuation tabs must reproduce the Excel workbook's Valuation Inputs
+sheet, and the Live tab's archive scoring must read the history file as
+live_common writes it."""
 
 import json
+import subprocess
 import unittest
 
-from helpers import NODE, ROOT, js_eval
+from helpers import NODE, ROOT, js_eval, js_source
 
 import nse_pipeline as nse
 
 PREDICTOR_JS = ["PREDICTOR_SEGMENTS", "predictorScenario"]
-VALUATION_JS = ["valuationScenario", "valuationFromAdr"]
 LIVE_JS = ["INTRADAY_CHECKPOINTS", "SESSION_MINUTES", "dayFractionAt", "quantile", "revenueAt",
            "liveModelError", "shareOfDayError"]
 LIVE_CARD_JS = LIVE_JS + ["liveDefaultType", "liveDayPool", "typicalPathRange", "liveCardModel",
@@ -71,243 +72,306 @@ class PredictorMirrorsPipeline(unittest.TestCase):
         self.assertAlmostEqual(js["eps"], (txn + 472.16) * 0.5 / 40.73, places=6)
 
 
-@unittest.skipUnless(NODE, "node not installed")
-class ValuationModel(unittest.TestCase):
-    CTX = {"elapsed": 136, "revToDate": 2525.0, "adr45": 17.39, "mkt": {"total45": 65.14, "share20": 0.265}}
-    BSE = {"src": "mkt", "days": 247, "oiMode": "fixed", "oi": 2055.39, "margin": 52, "shares": 40.73, "disc": 18}
-
-    def scenario(self, v, g, pe, cmp=3363):
-        return js_eval(VALUATION_JS, f"valuationScenario(DATA.ctx, DATA.v, {g}, {pe}, {cmp})", {"ctx": self.CTX, "v": v})
-
-    def test_bse_matches_excel_annual_predictor(self):
-        for g, pe in ((-5, 40), (0, 45), (5, 50)):
-            with self.subTest(g=g, pe=pe):
-                js = self.scenario(self.BSE, g, pe)
-                adr = (2525.0 + 65.14 * (1 + g / 100) * 0.265 * (247 - 136)) / 247   # Excel Method 2
-                eps = (adr * 247 + 2055.39) * 0.52 / 40.73
-                self.assertAlmostEqual(js["adr"], adr, places=9)
-                self.assertAlmostEqual(js["fwd"], eps * pe, places=6)
-                self.assertAlmostEqual(js["now"], eps * pe / 1.18, places=6)
-                self.assertAlmostEqual(js["upNow"], eps * pe / 1.18 / 3363 - 1, places=9)
-
-    def test_fy_projection_uses_trailing_average(self):
-        js = self.scenario({**self.BSE, "src": "proj"}, 0, 45)
-        self.assertAlmostEqual(js["adr"], (2525.0 + 17.39 * 111) / 247, places=9)
-
-    def test_other_income_as_share_of_total(self):
-        v = {**self.BSE, "oiMode": "pct", "oi": 30}
-        js = js_eval(VALUATION_JS, "valuationFromAdr(50, DATA.v, 35, null)", {"v": v})
-        self.assertAlmostEqual(js["oi"] / js["total"], 0.30, places=9)
-        self.assertIsNone(js["upFwd"])   # no CMP, no upside
-
-    def test_saved_inputs_carry_over(self):
-        expr = """(() => {
-          const store = {
-            'quickValuation_bse_v1': JSON.stringify({ patMarginPct: 50, otherIncomeCr: 2100, peBear: 38, peBase: 44, peBull: 52 }),
-            'bseValuationAssumptions_v1': JSON.stringify({ adrGrowthBearPct: -8, discountPct: 15, sharesOutstandingCr: 40.6 }),
-          };
-          globalThis.localStorage = { getItem: k => (k in store ? store[k] : null) };
-          const migrated = loadValuationInputs('bse');
-          store['valuation_bse_v2'] = JSON.stringify({ pe1: 47 });
-          return { migrated, saved: loadValuationInputs('bse') };
-        })()"""
-        js = js_eval(["SHARES_OUTSTANDING_CR", "VALUATION_DEFAULTS", "valuationStorageKey", "loadValuationInputs"], expr)
-        m = js["migrated"]
-        self.assertEqual((m["margin"], m["oi"], m["pe0"], m["pe1"], m["pe2"]), (50, 2100, 38, 44, 52))
-        self.assertEqual((m["g0"], m["g1"], m["disc"], m["shares"]), (-8, 0, 15, 40.6))
-        # Once saved under the new key, only that is read (plus defaults)
-        self.assertEqual((js["saved"]["pe1"], js["saved"]["margin"], js["saved"]["disc"]), (47, 52, 18))
+VALUATION_JS = ["valuationNum", "VALUATION_EXCHANGES", "VALUATION_METHODS", "VALUATION_EDITABLE", "VALUATION_STORAGE_KEY",
+                "VALUATION_INPUTS_FALLBACK", "valuationDefaultsFrom", "valuationSameInput", "valuationInputOk", "readValuationOverrides",
+                "valuationInputsFor", "setValuationOverride", "valuationAdrPath", "valuationAdrModel",
+                "valuationRegression", "valuationRatio", "valuationTriangulate", "valuationModel"]
+SHARE_FIT_JS = ["computeRollingMA", "SHARE_GATE", "shareOlsStats", "shareHoldout", "shareGateReasons", "shareFitFrom",
+                "computeShareModel", "shareRatioStats", "shareResidualSE"]
 
 
-TRIANGULATION_JS = ["TRIANGULATION_DEFAULTS", "TRIANGULATION_FLAT_D2", "discountToToday", "fitBasisAdr",
-                    "triangulationAdrPath", "triangulationModel"]
+def js_eval_async(names, body, data=None):
+    """Like js_eval, for an async function body (`return` its result)."""
+    code = "\n".join(js_source(n) for n in names)
+    script = (f"const DATA = {json.dumps(data)};\n{code}\n"
+              f"(async () => {{ {body} }})().then(r => process.stdout.write(JSON.stringify(r)));")
+    out = subprocess.run([NODE, "-"], input=script, capture_output=True, text=True)
+    if out.returncode:
+        raise RuntimeError(out.stderr)
+    return json.loads(out.stdout)
+
+
+def _valuation_inputs_file():
+    return json.loads((ROOT / "dashboard" / "data" / "valuation_inputs.json").read_text())
 
 
 @unittest.skipUnless(NODE, "node not installed")
-class TriangulatedTarget(unittest.TestCase):
-    """The Excel "BSE" sheet's Summary table (D87:F90), from its own inputs (workbook of 27 Oct 2026)."""
+class ValuationGoldenNumbers(unittest.TestCase):
+    """The workbook's Valuation Inputs sheet on 16 Nov 2026 (20261027_Exchanges_Dashboard.xlsx), through the
+    functions both valuation tabs use. Only the regression's Bear / Bull differ from the workbook (its ±10 % /
+    ±15 % of ADR became ∓ the fit's standard error), so those are checked against the SE, not the sheet."""
 
-    FIT = {"intercept": 956.0770419049786, "slope": 133.43199031771962}   # D15, E15
-    RATIO = {"mean": 211.41937623512064, "sd": 33.72028359630432}        # 'BSE Reg'!K7, P7
-    Q3_ADR = 22.484593545454544                                          # D28
+    # Per exchange: the data context (current quarter Q3 FY27) and the workbook's share count
+    CTX = {
+        "bse": {"start": {"q": 3, "fy": 2027}, "qAdr": 24.04403842241379, "adr45": 21.209128133333333,
+                "fit": {"intercept": 1021.435, "slope": 129.8708, "se": 300.0},
+                "ratio": {"mean": 207.7025, "sd": 32.5025}, "shares": 40.7884},
+        "mcx": {"start": {"q": 3, "fy": 2027}, "qAdr": 12.990660073806458, "adr45": 13.250145474008885,
+                "fit": {"intercept": 409.2378, "slope": 211.1479, "se": 250.0},
+                "ratio": {"mean": 269.5959, "sd": 40.8922}, "shares": 25.4514},
+        "nse": {"start": {"q": 3, "fy": 2027}, "qAdr": 65.17492719186208, "adr45": 59.4777,
+                "fit": None, "ratio": None, "shares": 247.5},
+    }
 
-    def model(self, t_over=None, **kw):
-        args = {"regAdr": 22, "reg": self.FIT, "ratio": self.RATIO, "shares": 40.78841, **kw}
+    def model(self, ex, overrides=None):
         expr = """(() => {
-          const path = triangulationAdrPath({ q: 3, fy: 2027 }, DATA.q3, 2);
-          const t = { ...TRIANGULATION_DEFAULTS.bse, oi: 2055.3897222222213, d2: 9, ...DATA.t };   // Q26 unrounded; D79
-          return { path, m: triangulationModel(t, { adrFY: path.adr, ...DATA.args }) };
+          const d = valuationDefaultsFrom(VALUATION_INPUTS_FALLBACK);
+          const { v } = valuationInputsFor(d, DATA.o, DATA.ex);
+          return { v, m: valuationModel(DATA.c, v, DATA.c.shares) };
         })()"""
-        return js_eval(TRIANGULATION_JS, expr, {"q3": self.Q3_ADR, "t": t_over or {}, "args": args})
+        return js_eval(VALUATION_JS, expr, {"ex": ex, "c": self.CTX[ex], "o": overrides or {}})
 
-    def test_adr_path_to_fy28(self):
-        p = self.model()["path"]
-        self.assertEqual([q["label"] for q in p["path"]], ["Q3 FY27", "Q4 FY27", "Q1 FY28", "Q2 FY28", "Q3 FY28", "Q4 FY28"])
-        self.assertAlmostEqual(p["adr"], 24.104164232823766, places=9)   # D34
+    def close(self, got, want, delta=0.01):
+        for i, (g, w) in enumerate(zip(got, want)):
+            with self.subTest(i=i):
+                self.assertAlmostEqual(g, w, delta=delta)
 
-    def test_matches_excel_summary(self):
-        js = self.model()["m"]
-        expected = {
-            "reg": (3598.030450195827, 3891.58082889481, 4185.131207593793),    # D87:F87
-            "ratio": (3330.1882389906646, 3962.1267040681896, 4594.065169145715),  # D24:F24
-            "adr": (3234.25211375682, 3638.533627976423, 4042.815142196026),    # D82:F82
-            "avg": (3345.3822311381596, 3818.5802985968076, 4291.778366055455),  # D90:F90
-        }
-        got = {"reg": js["reg"], "ratio": js["ratio"]["now"], "adr": js["adr"]["now"], "avg": js["avg"]}
-        for k, vals in expected.items():
-            for i, x in enumerate(vals):
-                with self.subTest(method=k, scenario=i):
-                    self.assertAlmostEqual(got[k][i], x, places=6)
-        self.assertAlmostEqual(js["adr"]["oi"], 2363.6981805555542, places=6)   # D70
-        self.assertAlmostEqual(js["adr"]["fwd"][1], 4679.881952303275, places=6)   # E75
+    def test_bse(self):
+        r = self.model("bse")
+        m = r["m"]
+        self.close([p["adr"] for p in m["path"]["path"]], [24.04403842, 25.2462, 26.5086, 27.8340, 29.2257, 30.6870], 0.0001)
+        self.assertEqual([p["label"] for p in m["path"]["path"]], ["Q3 FY27", "Q4 FY27", "Q1 FY28", "Q2 FY28", "Q3 FY28", "Q4 FY28"])
+        a = m["adrModel"]
+        self.assertAlmostEqual(a["adrFY"], 28.5637935609276, places=9)
+        self.assertAlmostEqual(a["total"], 9418.9552, delta=0.0001)
+        self.assertAlmostEqual(a["eps"], 117.7704, delta=0.0001)
+        self.close(a["fwd"], [4710.82, 5299.67, 5888.52])
+        self.close(a["now"], [3662.584193770785, 4120.407217992134, 4578.230242213482])
+        # Estimate 24: the sheet's rows C29:F31 (regression base only)
+        est = m["est"]
+        self.assertEqual(est["adr"], 24)
+        self.assertAlmostEqual(est["vals"]["reg"][1], 4138.333464120598, delta=0.01)
+        self.close(est["vals"]["ratio"], [4204.800373273975, 4984.860064430118, 5764.91975558626])
+        self.close(est["vals"]["adr"], a["now"], 1e-9)
+        self.assertAlmostEqual(est["avg"][1], 4214.9193133937415, delta=0.01)   # E32
+        # 45 DMA 21.2091
+        dma = m["dma"]
+        self.assertAlmostEqual(dma["vals"]["reg"][1], 3775.88, delta=0.01)
+        self.close(dma["vals"]["ratio"], [3715.84, 4405.19, 5094.54])
+        self.assertAlmostEqual(dma["avg"][1], 3993.8485000809187, delta=0.01)   # E33
+        self.assertEqual(dma["used"], ["reg", "ratio", "adr"])
+        self.assertEqual((dma["dropped"], dma["wTotal"]), ([], 100))
 
-    def test_withheld_fit_drops_out_of_the_average(self):
-        js = self.model(reg=None)["m"]
-        self.assertIsNone(js["reg"])
-        self.assertEqual(js["used"], ["ratio", "adr"])
-        self.assertAlmostEqual(js["avg"][1], (3962.1267040681896 + 3638.533627976423) / 2, places=6)
+    def test_mcx(self):
+        m = self.model("mcx")["m"]
+        a = m["adrModel"]
+        self.assertAlmostEqual(a["adrFY"], 16.508825517190388, places=9)
+        self.assertAlmostEqual(a["oi"], 291.2605 + 175.329, places=9)
+        self.close(a["now"], [3373.803705375013, 3785.2431816402586, 4196.682657905504])
+        self.assertAlmostEqual(m["est"]["vals"]["reg"][1], 3365.3088401338523, delta=0.01)
+        self.close(m["est"]["vals"]["ratio"], [3201.8517549597004, 3774.343242046283, 4346.8347291328655])
+        self.assertAlmostEqual(m["est"]["avg"][1], 3696.8963375013877, delta=0.01)   # E39
+        self.assertAlmostEqual(m["dma"]["vals"]["reg"][1], 3206.98, delta=0.01)
+        self.close(m["dma"]["vals"]["ratio"], [3030.36, 3572.19, 4114.01])
+        self.assertAlmostEqual(m["dma"]["avg"][1], 3584.3671954182473, delta=0.01)   # E40
 
-    def test_other_income_as_share_of_total(self):
-        js = self.model({"oiMode": "pct", "oi": 30})["m"]
-        self.assertAlmostEqual(js["adr"]["oi"] / js["adr"]["total"], 0.30, places=9)
+    def test_nse_is_the_adr_model_alone(self):
+        r = self.model("nse")
+        m, v = r["m"], r["v"]
+        a = m["adrModel"]
+        self.assertIsNone(v["adr"])   # the sheet's "n/a": the estimate model takes the 45 DMA
+        self.assertTrue(m["estIsDma"])
+        self.assertEqual(m["est"]["adr"], self.CTX["nse"]["adr45"])
+        self.assertAlmostEqual(a["adrFY"], 77.42639289419103, places=9)
+        self.assertAlmostEqual(a["total"], 25656.999044865184, delta=0.001)
+        self.assertAlmostEqual(a["eps"], 60.125492711199215, delta=1e-6)
+        self.close(a["now"], [1963.3577156510391, 2197.0907770380677, 2430.8238384250967])
+        for t in (m["dma"], m["est"]):
+            self.assertEqual((t["used"], t["dropped"]), (["adr"], []))   # weights 0 / 0 / 100: nothing rescaled
+            self.close(t["avg"], a["now"], 1e-9)
 
-    def test_ratio_takes_its_own_adr_and_the_adr_model_keeps_the_toggles(self):
-        """The ratio is fitted on today's-rates revenue, so it takes the next-FY ADR on that basis;
-        the ADR model keeps the one that follows the Fees toggle (BSE, 9 Nov 2026: 24.42 date-effective,
-        23.91 at today's rates)."""
-        expr = """(() => {
-          const t = { ...TRIANGULATION_DEFAULTS.bse, oi: 2055.3897222222213, d2: 9 };
-          const fit = triangulationAdrPath({ q: 3, fy: 2027 }, 23.905, 2).adr;
-          const eff = triangulationAdrPath({ q: 3, fy: 2027 }, 24.417, 2).adr;
-          const a = { regAdr: 23.905, reg: DATA.fit, ratio: DATA.ratio, shares: 40.78841 };
-          return { fit, eff, both: triangulationModel(t, { ...a, adrFY: eff, ratioAdrFY: fit }),
-                   effOnly: triangulationModel(t, { ...a, adrFY: eff }), fitOnly: triangulationModel(t, { ...a, adrFY: fit }) };
-        })()"""
-        js = js_eval(TRIANGULATION_JS, expr, {"fit": self.FIT, "ratio": self.RATIO})
-        both, eff_only, fit_only = js["both"], js["effOnly"], js["fitOnly"]
-        self.assertAlmostEqual(both["ratio"]["adrFY"], js["fit"], places=9)
+    def test_regression_bear_bull_are_the_standard_error(self):
+        m = self.model("bse")["m"]
+        fit = self.CTX["bse"]["fit"]
+        for t in (m["dma"], m["est"]):
+            reg = t["vals"]["reg"]
+            base = fit["intercept"] + fit["slope"] * t["adr"]
+            self.close(reg, [base - 300, base, base + 300], 1e-9)
+            # the same as moving the ADR by ∓ SE ÷ slope
+            self.assertAlmostEqual(reg[2], fit["intercept"] + fit["slope"] * (t["adr"] + 300 / fit["slope"]), places=6)
+
+    def test_edits_move_only_their_methods(self):
+        """The ADR estimate moves Regression and Ratio in the estimate model only; QoQ growth and P/E the ADR model."""
+        base = self.model("bse")["m"]
+        est = self.model("bse", {"bse": {"adr": 26}})["m"]
+        self.assertEqual(est["dma"], base["dma"])
+        self.assertEqual(est["adrModel"], base["adrModel"])
+        self.assertAlmostEqual(est["est"]["vals"]["reg"][1], 1021.435 + 129.8708 * 26, places=6)
+        grown = self.model("bse", {"bse": {"g": 6, "pe1": 50}})["m"]
+        self.assertGreater(grown["adrModel"]["adrFY"], base["adrModel"]["adrFY"])
+        self.assertAlmostEqual(grown["adrModel"]["fwd"][1], grown["adrModel"]["eps"] * 50, places=6)
+        self.assertEqual(grown["dma"]["vals"]["reg"], base["dma"]["vals"]["reg"])
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class ValuationWeights(unittest.TestCase):
+    VALS = {"reg": [3000, 3500, 4000], "ratio": [3800, 4400, 5000], "adr": [3600, 4100, 4600]}
+
+    def tri(self, vals, w):
+        return js_eval(VALUATION_JS, "valuationTriangulate(DATA.vals, DATA.w)", {"vals": vals, "w": w})
+
+    def test_weighted_average(self):
+        t = self.tri(self.VALS, [45, 10, 45])
+        self.assertAlmostEqual(t["avg"][1], 0.45 * 3500 + 0.10 * 4400 + 0.45 * 4100, places=9)
+        self.assertEqual((t["wUsed"], t["wTotal"], t["dropped"]), (100, 100, []))
+
+    def test_missing_method_is_dropped_and_weights_rescaled(self):
+        t = self.tri({**self.VALS, "reg": None}, [45, 10, 45])
+        self.assertEqual((t["used"], t["dropped"], t["wUsed"]), (["ratio", "adr"], ["reg"], 55))
         for i in range(3):
-            self.assertAlmostEqual(both["ratio"]["now"][i], fit_only["ratio"]["now"][i], places=6)
-            self.assertAlmostEqual(both["adr"]["now"][i], eff_only["adr"]["now"][i], places=6)
-        self.assertAlmostEqual(eff_only["ratio"]["adrFY"], js["eff"], places=9)   # without it: the ADR model's
+            self.assertAlmostEqual(t["avg"][i], (10 * self.VALS["ratio"][i] + 45 * self.VALS["adr"][i]) / 55, places=9)
+        self.assertAlmostEqual(t["share"]["adr"], 45 / 55, places=9)
+        # A zero-weighted method without a value is not "dropped": nothing to rescale
+        nse = self.tri({"reg": None, "ratio": None, "adr": self.VALS["adr"]}, [0, 0, 100])
+        self.assertEqual((nse["dropped"], nse["avg"]), ([], self.VALS["adr"]))
+        self.assertIsNone(self.tri({"reg": None, "ratio": None, "adr": None}, [45, 10, 45])["avg"])
 
-    def test_discount_to_today_follows_the_date(self):
-        """d1's annual rate for the part of the FY left, instead of the workbook's flat 9 %."""
-        got = js_eval(TRIANGULATION_JS, """[
-          discountToToday(18, '2026-11-09', '2027-03-31'), discountToToday(18, '2026-03-31', '2027-03-31'),
-          discountToToday(18, '2027-03-31', '2027-03-31'), discountToToday(18, '2027-04-02', '2027-03-31'),
-          discountToToday(12, '2026-09-30', '2027-03-31'), discountToToday(18, null, '2027-03-31'),
-          ['bse', 'nse', 'mcx'].map(ex => TRIANGULATION_DEFAULTS[ex].d2), TRIANGULATION_FLAT_D2]""")
-        self.assertAlmostEqual(got[0], (1.18 ** (142 / 365) - 1) * 100, places=9)   # 9 Nov 2026: 142 days, 6.65 %
-        self.assertAlmostEqual(got[0], 6.65, places=2)
-        self.assertAlmostEqual(got[1], 18.0, places=9)    # a whole year left: the full rate
-        self.assertEqual(got[2], 0)                        # on the FY's last day
-        self.assertEqual(got[3], 0)                        # after it, never negative
-        self.assertAlmostEqual(got[4], (1.12 ** (182 / 365) - 1) * 100, places=9)   # follows an edited d1
-        self.assertIsNone(got[5])
-        self.assertEqual(got[6], [None, None, None])        # dated by default; a typed value overrides
-        self.assertEqual(got[7], 9)
+    def test_weights_not_adding_to_100_are_used_as_entered(self):
+        # Σ weight × value, as the workbook's SUMPRODUCT: no silent rescaling
+        t = self.tri(self.VALS, [40, 10, 40])
+        self.assertEqual(t["wTotal"], 90)
+        self.assertAlmostEqual(t["avg"][1], (40 * 3500 + 10 * 4400 + 40 * 4100) / 100, places=9)
 
-    def test_differences_from_the_fy_model(self):
-        """The next-FY block keeps its own margin, P/E and other income, as the workbook does; the tab
-        lists where they differ from the current-FY model and can copy them over."""
-        got = js_eval(TRIANGULATION_JS + ["VALUATION_DEFAULTS", "TRIANGULATION_SHARED", "triangulationVsFyModel"], """(() => {
-          const d = ex => triangulationVsFyModel(TRIANGULATION_DEFAULTS[ex], VALUATION_DEFAULTS[ex]);
-          const t = { ...TRIANGULATION_DEFAULTS.bse, pe2: 55, oi: 2100 };
-          const matched = { ...t };
-          triangulationVsFyModel(t, VALUATION_DEFAULTS.bse).forEach(g => g.keys.forEach(k => { matched[k] = VALUATION_DEFAULTS.bse[k]; }));
-          return { bse: d('bse'), nse: d('nse'), mcx: d('mcx'), edited: triangulationVsFyModel(t, VALUATION_DEFAULTS.bse),
-                   modes: triangulationVsFyModel({ ...t, oiMode: 'pct' }, VALUATION_DEFAULTS.bse).map(g => g.label),
-                   after: triangulationVsFyModel(matched, VALUATION_DEFAULTS.bse) };
-        })()""")
-        # BSE: the workbook's 51 % here against 52 % in the FY model; P/E and FY27 other income agree
-        self.assertEqual([(g["label"], g["fy1"], g["fy0"]) for g in got["bse"]], [("PAT margin", [51], [52])])
-        self.assertEqual(got["nse"], [])   # NSE and MCX start from their FY model's own values
-        self.assertEqual(got["mcx"], [])
-        self.assertEqual([(g["label"], g["fy1"], g["fy0"]) for g in got["edited"]],
-                         [("PAT margin", [51], [52]), ("P/E", [40, 45, 55], [40, 45, 50]), ("other income", [2100], [2055.39])])
-        self.assertEqual(got["modes"], ["PAT margin", "P/E"])   # other income in different units: not compared
-        self.assertEqual(got["after"], [])                       # copying the differing keys over matches
-
-    def test_fit_basis_adr(self):
-        rev = [{"date": "2026-11-04", "revenue_cr": 36.3687}, {"date": "2026-11-05", "revenue_cr": 53.7859},
-               {"date": "2026-11-06", "revenue_cr": 12.7992}, {"date": "2026-11-08", "revenue_cr": 1.0}]
-        got = js_eval(TRIANGULATION_JS, "[fitBasisAdr(DATA, ['2026-11-04', '2026-11-05', '2026-11-06']),"
-                                        " fitBasisAdr(DATA, ['2026-11-05', '2026-11-09']),"
-                                        " fitBasisAdr(DATA, ['2026-11-09']), fitBasisAdr(undefined, ['2026-11-04'])]", rev)
-        self.assertAlmostEqual(got[0]["adr"], (36.3687 + 53.7859 + 12.7992) / 3, places=9)
-        self.assertEqual(got[0]["n"], 3)
-        self.assertEqual(got[1], {"adr": 53.7859, "n": 1})   # a day the feed lacks is left out
-        self.assertIsNone(got[2])
-        self.assertIsNone(got[3])
-
-
-EXCEL_LAYOUT_JS = TRIANGULATION_JS + ["valuationExcelRows", "triangulationSummaryRows", "valuationExcelCells",
-                                      "fmtNum", "rxSignedPct"]
+    def test_unusable_inputs_are_ignored(self):
+        defaults = {"ex": {"bse": {"adr": 24, "g": 5, "pe0": 40, "pe1": 45, "pe2": 50, "w0": 45, "w1": 10, "w2": 45}}}
+        bad = {"bse": {"adr": -3, "g": -100, "pe0": 0, "pe1": -45, "w0": -5, "w1": "x", "w2": 60}}
+        got = js_eval(VALUATION_JS, "valuationInputsFor(DATA.d, DATA.o, 'bse')", {"d": defaults, "o": bad})
+        self.assertEqual(got["edited"], ["w2"])
+        self.assertEqual(got["v"]["w2"], 60)
+        self.assertEqual((got["v"]["adr"], got["v"]["g"], got["v"]["pe0"], got["v"]["w0"]), (24, 5, 40, 45))
 
 
 @unittest.skipUnless(NODE, "node not installed")
-class ExcelValuationLayout(unittest.TestCase):
-    """The workbook's Bear / Base / Bull block and Summary at the top of the Valuation tab."""
+class ValuationInputs(unittest.TestCase):
+    """Shared defaults (dashboard/data/valuation_inputs.json, else the built-in copy) under this browser's edits."""
 
-    def test_row_order_and_labels(self):
-        js = js_eval(EXCEL_LAYOUT_JS, "[valuationExcelRows(2028, 'fixed'), valuationExcelRows(2028, 'pct'),"
-                                      " triangulationSummaryRows(DATA[0]), triangulationSummaryRows(DATA[1])]",
-                     [{"w0": 20, "w1": 40, "w2": 40}, {"w0": 30, "w1": 30, "w2": 30}])
-        fixed, pct, weighted, equal = js
-        self.assertEqual([r["label"] for r in fixed],
-                         ["ADR FY 28", "Other Income", "Total Income", "PAT Margin", "EPS", "PE", "Price Target FY 28",
-                          "Upside", "Discount %", "Target Price FY 27", "Discount %", "Target Price Current"])
-        self.assertEqual([r["block"] for r in fixed], [0] * 8 + [1, 1, 2, 2])
-        self.assertEqual([r.get("gut") for r in fixed[:2]], ["qoq", "oiG"])
-        self.assertEqual(pct[1]["gut"], "oi")   # NSE: other income as a % of total income
-        self.assertEqual({r["key"]: r.get("tint") for r in fixed if r.get("tint")}, {"pe": "green", "up": "peach"})
-        self.assertEqual([r["key"] for r in fixed if r.get("bold")], ["adrFY", "fwd", "mid", "now"])
-        self.assertEqual([r.get("input") for r in fixed if r.get("input")],
-                         [["pe0", "pe1", "pe2"], [None, "d1", None], [None, "d2", None]])
-        self.assertEqual([r["label"] for r in weighted], ["Regression", "Ratio Analysis", "ADR", "Weighted average"])
-        self.assertEqual(equal[3]["label"], "Average")
-        self.assertEqual([r.get("w") for r in weighted], ["w0", "w1", "w2", None])
-        self.assertEqual(weighted[0]["gut"], "band")
+    def test_file_matches_the_built_in_copy(self):
+        f = _valuation_inputs_file()
+        js = js_eval(VALUATION_JS, "[VALUATION_INPUTS_FALLBACK, valuationDefaultsFrom(DATA)]", f)
+        fallback, parsed = js
+        self.assertEqual({k: v for k, v in f.items() if k != "notes"}, fallback)
+        self.assertEqual(parsed["fy"], 2028)
+        self.assertEqual(parsed["ex"]["bse"], {"adr": 24, "g": 5, "pe0": 40, "pe1": 45, "pe2": 50, "w0": 45, "w1": 10,
+                                               "w2": 45, "oi": 2363.6982, "margin": 51, "days": 247, "d1": 18, "d2": 9})
+        self.assertEqual((parsed["ex"]["mcx"]["oi"], parsed["ex"]["nse"]["oi"]), (466.5895, 6532.68))   # ₹467 / 6,533 Cr
+        self.assertIsNone(parsed["ex"]["nse"]["adr"])
+        for ex, w in parsed["ex"].items():
+            with self.subTest(ex=ex):
+                self.assertEqual(w["w0"] + w["w1"] + w["w2"], 100)
 
-    def test_figures_match_the_workbook(self):
-        # ADR 25.11 (25.1145 unrounded: exactly 25.11 gives 8,566), other income 2,055.39 × 1.15 = 2,364,
-        # 247 sessions, 51 % margin, 40.79 Cr shares, PE 40 / 45 / 50, discounts 18 % then 9 %
-        adr, cmp = 25.1145, 3500
+    def test_unusable_file_is_rejected(self):
+        f = _valuation_inputs_file()
+        broken = json.loads(json.dumps(f))
+        broken["exchanges"]["mcx"]["fixed"]["sessions"] = "258"
+        no_ex = {k: v for k, v in f.items() if k != "exchanges"}
+        got = js_eval(VALUATION_JS, "[valuationDefaultsFrom(DATA[0]), valuationDefaultsFrom(DATA[1]), valuationDefaultsFrom(null)]",
+                      [broken, no_ex])
+        self.assertEqual(got, [None, None, None])
+
+    def test_saved_edits_override_the_defaults(self):
         expr = """(() => {
-          const t = { ...TRIANGULATION_DEFAULTS.bse, d2: 9, w0: 1, w1: 1, w2: 1 };   // the workbook's flat 9 %
-          // Regression flat at 3,544; ratio bear set so its today value is 3,408
-          const k = 3408 * 1.18 * 1.09 / DATA.adr;
-          const tri = triangulationModel(t, { adrFY: DATA.adr, regAdr: 22, reg: { intercept: 3544, slope: 0 },
-                                              ratio: { mean: k + 10, sd: 10 }, shares: 40.79 });
-          return { cells: valuationExcelCells(tri, t, DATA.cmp), avg: triangulationSummaryRows(t)[3].label };
+          const store = { valuation_inputs_v1: JSON.stringify({
+            bse: { pe1: 48, adr: null, w0: 'x', days: 300 },    // a bad value and a fixed key are ignored
+            mcx: { g: 7, adr: -3 },                              // equal to the default; a non-positive ADR
+          }) };
+          globalThis.localStorage = { getItem: k => (k in store ? store[k] : null) };
+          const d = valuationDefaultsFrom(VALUATION_INPUTS_FALLBACK);
+          const o = readValuationOverrides();
+          const out = { bse: valuationInputsFor(d, o, 'bse'), mcx: valuationInputsFor(d, o, 'mcx'), nse: valuationInputsFor(d, o, 'nse') };
+          // Typing the default back removes the edit; a new value adds one
+          const o2 = setValuationOverride(setValuationOverride(o, d, 'bse', 'pe1', 45), d, 'nse', 'adr', 70);
+          store.valuation_inputs_v1 = '{not json';
+          const unreadable = readValuationOverrides();
+          globalThis.localStorage = { getItem() { throw new Error('blocked'); } };
+          return { ...out, o2, unreadable, blocked: readValuationOverrides() };
         })()"""
-        js = js_eval(EXCEL_LAYOUT_JS, expr, {"adr": adr, "cmp": cmp})
-        c = js["cells"]
-        self.assertEqual(c["adrFY"], ["25.1"] * 3)
-        self.assertEqual(c["oi"], ["2,364"] * 3)
-        self.assertEqual(c["total"], ["8,567"] * 3)
-        self.assertEqual(c["margin"], ["51 %"] * 3)
-        self.assertEqual(c["eps"], ["107"] * 3)
-        self.assertEqual(c["fwd"], ["4,285", "4,820", "5,356"])
-        self.assertEqual(c["up"], ["+22 %", "+38 %", "+53 %"])   # vs CMP 3,500
-        self.assertEqual((c["d1"], c["d2"]), (["18.0 %"] * 3, ["9.0 %"] * 3))
-        self.assertEqual(c["mid"], ["3,631", "4,085", "4,539"])
-        self.assertEqual(c["now"], ["3,331", "3,748", "4,164"])
-        self.assertEqual((c["reg"][0], c["ratio"][0], c["adr"][0]), ("3,544", "3,408", "3,331"))
-        self.assertEqual(c["avg"][0], "3,428")
-        self.assertEqual(js["avg"], "Average")
+        got = js_eval(VALUATION_JS, expr)
+        bse, mcx, nse = got["bse"], got["mcx"], got["nse"]
+        self.assertEqual((bse["v"]["pe1"], bse["v"]["adr"], bse["v"]["w0"], bse["v"]["days"]), (48, None, 45, 247))
+        self.assertEqual(bse["edited"], ["adr", "pe1"])
+        self.assertEqual((mcx["v"]["g"], mcx["v"]["adr"], mcx["edited"]), (7, 14, []))
+        self.assertEqual(nse["edited"], [])
+        self.assertEqual(got["o2"]["bse"], {"adr": None, "w0": "x", "days": 300})
+        self.assertEqual(got["o2"]["nse"], {"adr": 70})
+        self.assertEqual((got["unreadable"], got["blocked"]), ({}, {}))
 
-    def test_missing_methods_show_a_dash(self):
+    def test_defaults_fall_back_when_the_file_fails(self):
+        names = VALUATION_JS + ["loadValuationDefaults"]
+        body = """
+          globalThis.VALUATION_DEFAULTS_CACHE = null;   // a `let` in the dashboard
+          const out = {};
+          globalThis.fetchDataFile = async () => { throw new Error('./data/valuation_inputs.json: HTTP 404'); };
+          out.failed = await loadValuationDefaults();
+          globalThis.fetchDataFile = async () => ({ json: { fy: 2028 } });
+          out.bad = await loadValuationDefaults();
+          globalThis.fetchDataFile = async () => ({ json: DATA });
+          out.ok = await loadValuationDefaults();
+          globalThis.fetchDataFile = async () => { throw new Error('not fetched again'); };
+          out.cached = await loadValuationDefaults();
+          return out;"""
+        got = js_eval_async(names, body, _valuation_inputs_file())
+        self.assertEqual(got["failed"]["fallback"], "./data/valuation_inputs.json: HTTP 404")
+        self.assertEqual(got["failed"]["ex"]["bse"]["pe1"], 45)   # the built-in copy
+        self.assertEqual(got["bad"]["fallback"], "a value is missing or not a number")
+        self.assertIsNone(got["ok"]["fallback"])
+        self.assertEqual(got["ok"]["ex"], got["failed"]["ex"])
+        self.assertEqual(got["cached"], got["ok"])   # a loaded file is kept; a failure is retried
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class ValuationData(unittest.TestCase):
+    """What the model reads from the daily rows and the share file."""
+
+    def test_residual_standard_error(self):
+        rows = [{"date": f"2026-01-{d:02d}", "rev_ma": x, "price": p, "in_fit": f}
+                for d, x, p, f in ((5, 10, 1100, False), (6, 10, 1010, True), (7, 20, 1190, True),
+                                   (8, 30, 1420, True), (9, 40, 1580, True), (12, 50, 1500, False))]
+        fit = {"intercept": 1000.0, "slope": 15.0}
+        got = js_eval(SHARE_FIT_JS, "[shareResidualSE(DATA.r, DATA.f, '2026-01-01'), shareResidualSE(DATA.r.slice(0, 3), DATA.f),"
+                                    " shareResidualSE(DATA.r, null)]", {"r": rows, "f": fit})
+        resid = [1010 - 1150, 1190 - 1300, 1420 - 1450, 1580 - 1600]   # in-fit rows only
+        self.assertAlmostEqual(got[0]["se"], (sum(e * e for e in resid) / (4 - 2)) ** 0.5, places=9)
+        self.assertEqual(got[0]["n"], 4)
+        self.assertIsNone(got[1])   # two fit rows: no standard error
+        self.assertIsNone(got[2])
+
+    def test_context_from_the_daily_rows(self):
+        rows = [{"date": f"2026-09-{d:02d}", "fy_quarter": "Q2 FY 2027", "total_rev": 10.0} for d in range(1, 21)]
+        rows += [{"date": f"2026-10-{d:02d}", "fy_quarter": "Q3 FY 2027", "total_rev": 20.0 + d} for d in range(1, 31)]
+        share = {"regression": {"slope": 1, "intercept": 1}, "status": "collecting", "n_days": 35,
+                 "min_days_required": 60, "regression_start": "2026-09-24", "ticker": "NSE.BO",
+                 "latest": {"date": "2026-10-30", "price_actual": 2000.0}}
+        names = SHARE_FIT_JS + VALUATION_JS + ["parseFYQuarter", "SEG_PRODUCT", "NO_FLAGS", "periodFlags", "mergeFlags",
+                                               "rowsFlags", "valuationContextFor"]
+        got = js_eval(names, "[valuationContextFor({ daily_all: DATA.rows.slice().reverse() }, DATA.share),"
+                             " valuationContextFor({ daily_all: DATA.rows }, null), valuationContextFor({ daily_all: [] }, null)]",
+                      {"rows": rows, "share": share})
+        c, no_share, empty = got
+        self.assertEqual((c["start"], c["qN"], c["lastDate"]), ({"q": 3, "fy": 2027}, 30, "2026-10-30"))
+        self.assertAlmostEqual(c["qAdr"], sum(20 + d for d in range(1, 31)) / 30, places=9)
+        self.assertAlmostEqual(c["adr45"], (15 * 10 + sum(20 + d for d in range(1, 31))) / 45, places=9)
+        self.assertEqual((c["fit"], c["ratio"], c["cmp"]), (None, None, 2000.0))
+        self.assertEqual((c["fitWhy"], c["ratioWhy"]), ("35 of 60 sessions collected since listing",) * 2)
+        self.assertEqual((no_share["fitWhy"], no_share["ratioWhy"]), ("no share-price file",) * 2)
+        self.assertIsNone(empty)
+
+    def test_excel_block_cells(self):
         expr = """(() => {
-          const t = { ...TRIANGULATION_DEFAULTS.nse, d2: 9 };
-          const tri = triangulationModel(t, { adrFY: 400, regAdr: 380, reg: null, ratio: null, shares: null });
-          return valuationExcelCells(tri, t, null);
+          const d = valuationDefaultsFrom(VALUATION_INPUTS_FALLBACK).ex.bse;
+          const a = valuationAdrModel(d, 28.5637935609276, 40.7884);
+          return { rows: valuationExcelRows(2028, d.d1, d.d2).map(r => r.label), cells: valuationExcelCells(a, d, 3920) };
         })()"""
-        c = js_eval(EXCEL_LAYOUT_JS, expr)
-        for k in ("reg", "ratio", "adr", "avg", "eps", "fwd", "up", "now"):
-            with self.subTest(row=k):
-                self.assertEqual(c[k], ["—"] * 3)
+        got = js_eval(VALUATION_JS + ["fmtNum", "rxSignedPct", "valuationExcelRows", "valuationExcelCells"], expr)
+        self.assertEqual(got["rows"], ["ADR FY 28", "Other Income", "Total Income", "PAT Margin", "EPS", "PE",
+                                       "Price Target FY 28", "Upside", "Discount 18 %", "Target Price FY 27",
+                                       "Discount 9 %", "Target Price Current"])
+        c = got["cells"]
+        self.assertEqual((c["adrFY"][0], c["oi"][0], c["total"][0], c["margin"][0], c["eps"][0]),
+                         ("28.56", "2,364", "9,419", "51 %", "117.77"))
+        self.assertEqual(c["fwd"], ["4,711", "5,300", "5,889"])
+        self.assertEqual(c["up"], ["+20 %", "+35 %", "+50 %"])   # FY28 targets vs CMP 3,920
+        self.assertEqual((c["d1"][1], c["d2"][1]), ("÷ 1.18", "÷ 1.09"))
+        self.assertEqual(c["now"], ["3,663", "4,120", "4,578"])
 
 
 def _day(eod, revs, preds=None):

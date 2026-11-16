@@ -263,6 +263,16 @@ function shareRatioStats(series, regStart) {
   return { mean, sd };
 }
 
+// Standard error of estimate (₹) of a fit `reg` ({ slope, intercept }) over the
+// rows it was fitted on: √(Σ residual² ÷ (n − 2)); { se, n }, or null below 3 rows
+function shareResidualSE(series, reg, regStart) {
+  if (!reg) return null;
+  const fit = series.filter(r => (r.in_fit === undefined ? r.date >= regStart : r.in_fit) && r.rev_ma != null && r.price != null);
+  if (fit.length < 3) return null;
+  const ss = fit.reduce((s, r) => s + (r.price - (reg.intercept + reg.slope * r.rev_ma)) ** 2, 0);
+  return { se: Math.sqrt(ss / (fit.length - 2)), n: fit.length };
+}
+
 function shareChecksHTML(d) {
   const m = d.meth;
   if (!m) return rxAlert('This share file predates the significance checks (Newey-West t, Durbin-Watson, holdout), so none are shown.', 'info');

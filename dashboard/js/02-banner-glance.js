@@ -414,11 +414,11 @@ function rebuildAll() {
   const byExchange = {
     nsebse: [() => buildMarketSharePanel(['nse', 'bse']), buildMarketShareTrend, buildContractsPremium],
     all:    [() => buildMarketSharePanel(['nse', 'bse', 'mcx']), buildContractsPremium],
-    nse:    [() => buildRevenuePredictor('nse'), () => buildValuation('nse'), () => buildShareAnalysis('nse'),
+    nse:    [() => buildRevenuePredictor('nse'), () => buildValuation('nse'), buildValuationInputs, () => buildShareAnalysis('nse'),
              () => buildLivePredictor('nse'), buildContractsPremium, () => buildParticipants('nse')],
-    bse:    [() => buildRevenuePredictor('bse'), () => buildShareAnalysis('bse'), () => buildValuation('bse'),
+    bse:    [() => buildRevenuePredictor('bse'), () => buildShareAnalysis('bse'), () => buildValuation('bse'), buildValuationInputs,
              () => buildLivePredictor('bse'), buildContractsPremium, () => buildParticipants('bse')],
-    mcx:    [() => buildRevenuePredictor('mcx'), () => buildShareAnalysis('mcx'), () => buildValuation('mcx')],
+    mcx:    [() => buildRevenuePredictor('mcx'), () => buildShareAnalysis('mcx'), () => buildValuation('mcx'), buildValuationInputs],
   };
   runSections(common.concat(byExchange[currentExchange] || []));
 }

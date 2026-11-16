@@ -180,7 +180,7 @@
       </div>
     </section>
 
-    <!-- TAB: NSE / BSE / MCX Valuation Model (BSE mirrors Excel "BSE" sheet, 7-part layout) -->
+    <!-- TAB: NSE / BSE / MCX Valuation Model: the two triangulations (js/14-valuation.js) -->
     <section class="tab-content" id="tab-valuation">
       <div id="nseValuationContent" style="display:none">
         <div class="chart-panel" style="text-align:center;padding:40px;color:var(--color-text-muted)">
@@ -197,6 +197,11 @@
           <div style="font-size:14px;font-weight:600;margin-bottom:8px">Loading valuation model…</div>
         </div>
       </div>
+    </section>
+
+    <!-- TAB: Valuation Inputs, BSE + MCX + NSE in one table, the same under every NSE / BSE / MCX view (js/18-valuation-inputs.js) -->
+    <section class="tab-content" id="tab-valinputs">
+      <div id="valuationInputsContent"></div>
     </section>
 
     <!-- TAB: NSE vs BSE Market Share Trend -->
@@ -238,6 +243,7 @@
 <script src="./js/15-live-predictor.js"></script>
 <script src="./js/16-contracts-premium.js"></script>
 <script src="./js/17-participants.js"></script>
+<script src="./js/18-valuation-inputs.js"></script>
 <script src="./js/20-reports.js"></script>
 <script src="./js/30-brokers.js"></script>
 <script src="./js/31-brokers-price.js"></script>
