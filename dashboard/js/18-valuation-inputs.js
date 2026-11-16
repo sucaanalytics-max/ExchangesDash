@@ -64,7 +64,7 @@ function valuationInputsCell(key, d, v, m) {
     case 'gA': return fmtPct(Math.pow(1 + v.g / 100, 4) - 1);
     case 'wSum': {
       const s = v.w0 + v.w1 + v.w2;
-      return Math.abs(s - 100) < 1e-9 ? valuationPct(s) : `<span class="rx-dn" title="The average divides by the weights used">${valuationPct(s)} ✕</span>`;
+      return Math.abs(s - 100) < 1e-9 ? valuationPct(s) : `<span class="rx-dn" title="The weights do not add to 100 %: the average divides by the weights of the methods with a value">${valuationPct(s)} ✕</span>`;
     }
     case 'oi': return fmtNum(v.oi, 0);
     case 'margin': return `${fmtNum(v.margin, 0)} %`;
@@ -119,10 +119,22 @@ function buildValuationInputs() {
   };
 }
 
+let VALUATION_INPUTS_SEQ = 0;   // latest Inputs tab render; an older one still loading yields to it
+
 async function renderValuationInputs(el) {
-  const shownEx = currentExchange;
+  const seq = ++VALUATION_INPUTS_SEQ, shownEx = currentExchange;
+  // Exchanges not on show come from the shared cache: fetch any that are stale, and record
+  // what this render read so the freshness check rebuilds the view when they move on
+  const cached = VALUATION_EXCHANGES.filter(ex => !valuationOnShow(ex));
+  await ensureFreshMarketData(cached);
+  if (seq !== VALUATION_INPUTS_SEQ || currentExchange !== shownEx) return;
   const [defaults, ...list] = await Promise.all([loadValuationDefaults(), ...VALUATION_EXCHANGES.map(valuationExchange)]);
-  if (currentExchange !== shownEx) return;
+  if (seq !== VALUATION_INPUTS_SEQ || currentExchange !== shownEx) return;   // rebuilt or switched away while loading
+  if (defaults.error) {
+    el.innerHTML = valuationDefaultsMissing(defaults);
+    return;
+  }
+  cached.filter(ex => MARKET_RAW[ex]).forEach(ex => { VIEW_BUILT_FROM[ex] = marketSig(ex); });
   const byEx = Object.fromEntries(list.map(d => [d.ex, d]));
   // Mixed snapshots: the notice under the header names each exchange's latest date
   VIEW_SOURCES.valinputs = list.filter(d => d.c).map(d => ({ ex: d.ex, date: d.c.lastDate }));
@@ -163,7 +175,7 @@ async function renderValuationInputs(el) {
         <li><strong>ADR model</strong> (both triangulations): the current quarter’s ADR to date, grown by QoQ growth each quarter to Q4 of the next FY; that FY’s average × sessions + other income → × PAT margin ÷ shares = EPS; × P/E Bear / Base / Bull, then discounted to this FY’s end and to today.</li>
         <li><strong>Regression</strong>: a + b × ADR, fitted as the workbook does on the data from the <em>Regression data from</em> date: revenue and prices start there, so the 45 DMA is built only from revenue on or after it and the first point is the close after its 45th session (MCX sessions whose MA includes modelled revenue, before 2 Sep 2024, stay out). Blank: the published fit, MA over all revenue. Bear / Bull are base ∓ its standard error of estimate; with fewer than 60 sessions, a slope that is not positive or significant, or a MA that moved under 10 %, it has no value.</li>
         <li><strong>Ratio Analysis</strong>: price ÷ 45-session revenue MA over the same fit window, (mean ∓ σ) × ADR.</li>
-        <li><strong>Triangulated · 45 DMA</strong> feeds Regression and Ratio the last 45 sessions’ ADR; <strong>Triangulated · ADR estimate</strong> feeds them the ADR estimate above. Each is Σ weight × target; a method without a value (no fit yet) drops out and the others’ weights are rescaled.</li></ul>`) })}
+        <li><strong>Triangulated · 45 DMA</strong> feeds Regression and Ratio the last 45 sessions’ ADR; <strong>Triangulated · ADR estimate</strong> feeds them the ADR estimate above. Each is Σ weight × target ÷ Σ weight over the methods with a value, so a method without one (no fit yet) drops out without moving the average’s scale.</li></ul>`) })}
   </div>`;
 
   const q = sel => el.querySelector(sel);
@@ -206,7 +218,10 @@ async function renderValuationInputs(el) {
     if (key === 'from') {
       if (i.validity && i.validity.badInput) return;   // a date half typed: wait for the rest
       value = text === '' ? null : text;                 // blank: all data
-    } else value = text === '' && key === 'adr' ? null : parseFloat(text);   // blank ADR: the 45 DMA
+    } else {
+      if (text === '') return;   // cleared to retype, or not a number yet: decided when the field is left
+      value = parseFloat(text);
+    }
     if (!valuationInputOk(key, value, byEx[ex].c && byEx[ex].c.lastDate)) return;
     overrides = setValuationOverride(overrides, defaults, ex, key, value);
     writeValuationOverrides(overrides);
@@ -221,7 +236,15 @@ async function renderValuationInputs(el) {
   };
   const onChange = e => {
     const i = e.target.closest && e.target.closest('input[data-vi]');
-    if (i && i.type !== 'date') showInUse(i);
+    if (!i || i.type === 'date') return;
+    const [ex, key] = i.dataset.vi.split(':');
+    // An ADR box left empty means the 45 DMA (an unparseable entry also reads as empty: revert it)
+    if (key === 'adr' && i.value.trim() === '' && !(i.validity && i.validity.badInput)) {
+      overrides = setValuationOverride(overrides, defaults, ex, key, null);
+      writeValuationOverrides(overrides);
+      update();
+    }
+    showInUse(i);
   };
   const onFocusOut = e => {
     const i = e.target.closest && e.target.closest('input[data-vi]');
@@ -248,7 +271,8 @@ async function renderValuationInputs(el) {
     el.removeEventListener('click', onClick);
     el.removeEventListener('focusout', onFocusOut);
   };
-  // Shown again: pick up edits saved meanwhile (another browser tab)
-  RX_TAB_REFRESH.valinputs = () => { overrides = readValuationOverrides(); update(); };
+  // Shown again: render afresh, picking up newer data for every exchange (each loader keeps
+  // its cache for DATA_MAX_AGE_MS) and edits saved meanwhile in another browser tab
+  RX_TAB_REFRESH.valinputs = () => renderValuationInputs(el).catch(err => console.error('Valuation inputs failed:', err));
   update();
 }

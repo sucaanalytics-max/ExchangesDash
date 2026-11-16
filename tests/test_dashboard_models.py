@@ -73,7 +73,7 @@ class PredictorMirrorsPipeline(unittest.TestCase):
 
 
 VALUATION_JS = ["valuationNum", "valuationIsoDate", "VALUATION_EXCHANGES", "VALUATION_METHODS", "VALUATION_EDITABLE", "VALUATION_STORAGE_KEY",
-                "VALUATION_INPUTS_FALLBACK", "valuationDefaultsFrom", "valuationSameInput", "valuationInputOk", "readValuationOverrides",
+                "valuationDefaultsFrom", "valuationSameInput", "valuationInputOk", "readValuationOverrides",
                 "valuationInputsFor", "setValuationOverride", "valuationAdrPath", "valuationAdrModel",
                 "valuationRegression", "valuationRatio", "valuationTriangulate", "valuationModel"]
 SHARE_FIT_JS = ["computeRollingMA", "SHARE_GATE", "shareOlsStats", "shareHoldout", "shareGateReasons", "shareFitFrom",
@@ -115,11 +115,11 @@ class ValuationGoldenNumbers(unittest.TestCase):
 
     def model(self, ex, overrides=None):
         expr = """(() => {
-          const d = valuationDefaultsFrom(VALUATION_INPUTS_FALLBACK);
+          const d = valuationDefaultsFrom(DATA.file);
           const { v } = valuationInputsFor(d, DATA.o, DATA.ex);
           return { v, m: valuationModel(DATA.c, v, DATA.c.shares) };
         })()"""
-        return js_eval(VALUATION_JS, expr, {"ex": ex, "c": self.CTX[ex], "o": overrides or {}})
+        return js_eval(VALUATION_JS, expr, {"ex": ex, "c": self.CTX[ex], "o": overrides or {}, "file": _valuation_inputs_file()})
 
     def close(self, got, want, delta=0.01):
         for i, (g, w) in enumerate(zip(got, want)):
@@ -220,17 +220,21 @@ class ValuationWeights(unittest.TestCase):
         self.assertEqual((t["used"], t["dropped"], t["wUsed"]), (["ratio", "adr"], ["reg"], 55))
         for i in range(3):
             self.assertAlmostEqual(t["avg"][i], (10 * self.VALS["ratio"][i] + 45 * self.VALS["adr"][i]) / 55, places=9)
-        self.assertAlmostEqual(t["share"]["adr"], 45 / 55, places=9)
         # A zero-weighted method without a value is not "dropped": nothing to rescale
         nse = self.tri({"reg": None, "ratio": None, "adr": self.VALS["adr"]}, [0, 0, 100])
         self.assertEqual((nse["dropped"], nse["avg"]), ([], self.VALS["adr"]))
         self.assertIsNone(self.tri({"reg": None, "ratio": None, "adr": None}, [45, 10, 45])["avg"])
 
-    def test_weights_not_adding_to_100_are_used_as_entered(self):
-        # Σ weight × value, as the workbook's SUMPRODUCT: no silent rescaling
+    def test_weights_not_adding_to_100_are_rescaled(self):
+        # One rule: Σ weight × value ÷ Σ weight over the methods with a value, so weights of
+        # 40/10/40 give the same scale as 44.4/11.1/44.4, and a method dropping out later
+        # does not move the scale either
         t = self.tri(self.VALS, [40, 10, 40])
-        self.assertEqual(t["wTotal"], 90)
-        self.assertAlmostEqual(t["avg"][1], (40 * 3500 + 10 * 4400 + 40 * 4100) / 100, places=9)
+        self.assertEqual((t["wTotal"], t["wUsed"]), (90, 90))
+        self.assertAlmostEqual(t["avg"][1], (40 * 3500 + 10 * 4400 + 40 * 4100) / 90, places=9)
+        dropped = self.tri({**self.VALS, "reg": None}, [40, 10, 40])
+        self.assertAlmostEqual(dropped["avg"][1], (10 * 4400 + 40 * 4100) / 50, places=9)
+        self.assertNotIn("share", t)
 
     def test_unusable_inputs_are_ignored(self):
         defaults = {"ex": {"bse": {"adr": 24, "g": 5, "pe0": 40, "pe1": 45, "pe2": 50, "w0": 45, "w1": 10, "w2": 45}}}
@@ -243,13 +247,10 @@ class ValuationWeights(unittest.TestCase):
 
 @unittest.skipUnless(NODE, "node not installed")
 class ValuationInputs(unittest.TestCase):
-    """Shared defaults (dashboard/data/valuation_inputs.json, else the built-in copy) under this browser's edits."""
+    """Shared defaults (dashboard/data/valuation_inputs.json, the only copy) under this browser's edits."""
 
-    def test_file_matches_the_built_in_copy(self):
-        f = _valuation_inputs_file()
-        js = js_eval(VALUATION_JS, "[VALUATION_INPUTS_FALLBACK, valuationDefaultsFrom(DATA)]", f)
-        fallback, parsed = js
-        self.assertEqual({k: v for k, v in f.items() if k != "notes"}, fallback)
+    def test_file_parses(self):
+        parsed = js_eval(VALUATION_JS, "valuationDefaultsFrom(DATA)", _valuation_inputs_file())
         self.assertEqual(parsed["fy"], 2028)
         self.assertEqual(parsed["ex"]["bse"], {"adr": 24, "g": 5, "pe0": 40, "pe1": 45, "pe2": 50, "w0": 45, "w1": 10,
                                                "w2": 45, "from": "2025-01-01", "oi": 2363.6982, "margin": 51, "days": 247,
@@ -282,7 +283,7 @@ class ValuationInputs(unittest.TestCase):
             mcx: { g: 7, adr: -3 },                              // equal to the default; a non-positive ADR
           }) };
           globalThis.localStorage = { getItem: k => (k in store ? store[k] : null) };
-          const d = valuationDefaultsFrom(VALUATION_INPUTS_FALLBACK);
+          const d = valuationDefaultsFrom(DATA.file);
           const o = readValuationOverrides();
           const out = { bse: valuationInputsFor(d, o, 'bse'), mcx: valuationInputsFor(d, o, 'mcx'), nse: valuationInputsFor(d, o, 'nse') };
           // Typing the default back removes the edit; a new value adds one
@@ -292,7 +293,7 @@ class ValuationInputs(unittest.TestCase):
           globalThis.localStorage = { getItem() { throw new Error('blocked'); } };
           return { ...out, o2, unreadable, blocked: readValuationOverrides() };
         })()"""
-        got = js_eval(VALUATION_JS, expr)
+        got = js_eval(VALUATION_JS, expr, {"file": _valuation_inputs_file()})
         bse, mcx, nse = got["bse"], got["mcx"], got["nse"]
         self.assertEqual((bse["v"]["pe1"], bse["v"]["adr"], bse["v"]["w0"], bse["v"]["days"]), (48, None, 45, 247))
         self.assertEqual(bse["edited"], ["adr", "pe1"])
@@ -302,7 +303,7 @@ class ValuationInputs(unittest.TestCase):
         self.assertEqual(got["o2"]["nse"], {"adr": 70})
         self.assertEqual((got["unreadable"], got["blocked"]), ({}, {}))
 
-    def test_defaults_fall_back_when_the_file_fails(self):
+    def test_defaults_report_a_failed_file(self):
         names = VALUATION_JS + ["loadValuationDefaults"]
         body = """
           globalThis.VALUATION_DEFAULTS_CACHE = null;   // a `let` in the dashboard
@@ -317,11 +318,10 @@ class ValuationInputs(unittest.TestCase):
           out.cached = await loadValuationDefaults();
           return out;"""
         got = js_eval_async(names, body, _valuation_inputs_file())
-        self.assertEqual(got["failed"]["fallback"], "./data/valuation_inputs.json: HTTP 404")
-        self.assertEqual(got["failed"]["ex"]["bse"]["pe1"], 45)   # the built-in copy
-        self.assertEqual(got["bad"]["fallback"], "a value is missing or not a number")
-        self.assertIsNone(got["ok"]["fallback"])
-        self.assertEqual(got["ok"]["ex"], got["failed"]["ex"])
+        self.assertEqual(got["failed"], {"error": "./data/valuation_inputs.json: HTTP 404"})   # no built-in copy
+        self.assertEqual(got["bad"], {"error": "a value is missing or not a number"})
+        self.assertIsNone(got["ok"]["error"])
+        self.assertEqual(got["ok"]["ex"]["bse"]["pe1"], 45)
         self.assertEqual(got["cached"], got["ok"])   # a loaded file is kept; a failure is retried
 
 
@@ -367,11 +367,11 @@ class ValuationData(unittest.TestCase):
 
     def test_excel_block_cells(self):
         expr = """(() => {
-          const d = valuationDefaultsFrom(VALUATION_INPUTS_FALLBACK).ex.bse;
+          const d = valuationDefaultsFrom(DATA.file).ex.bse;
           const a = valuationAdrModel(d, 28.5637935609276, 40.7884);
           return { rows: valuationExcelRows(2028, d.d1, d.d2).map(r => r.label), cells: valuationExcelCells(a, d, 3920) };
         })()"""
-        got = js_eval(VALUATION_JS + ["fmtNum", "rxSignedPct", "valuationExcelRows", "valuationExcelCells"], expr)
+        got = js_eval(VALUATION_JS + ["fmtNum", "rxSignedPct", "valuationExcelRows", "valuationExcelCells"], expr, {"file": _valuation_inputs_file()})
         self.assertEqual(got["rows"], ["ADR FY 28", "Other Income", "Total Income", "PAT Margin", "EPS", "PE",
                                        "Price Target FY 28", "Upside", "Discount 18 %", "Target Price FY 27",
                                        "Discount 9 %", "Target Price Current"])
@@ -434,7 +434,7 @@ class ValuationDataFrom(unittest.TestCase):
         d0 = datetime.date(2025, 1, 1)
         dates = [(d0 + datetime.timedelta(days=i)).isoformat() for i in range(200)]
         rev = [{"date": d, "revenue_cr": (50.0 if i < 60 else 10 + 0.08 * i + (i % 7) * 0.3)} for i, d in enumerate(dates)]
-        series, mas = [], []
+        series = []
         for i, d in enumerate(dates):
             if i < 45:
                 continue

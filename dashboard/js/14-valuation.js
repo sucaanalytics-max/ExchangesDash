@@ -97,29 +97,9 @@ function safeHttpUrl(u) {
 // (blank = the 45-session ADR). The ADR model row is the same in both. Every ADR
 // is at today's rates, the basis the fits are built on (the whole dashboard is).
 // Inputs: the shared defaults in dashboard/data/valuation_inputs.json (hand-edited;
-// VALUATION_INPUTS_FALLBACK below if it fails to load), with this browser's edits
-// from the Valuation Inputs tab (js/18-valuation-inputs.js) on top.
+// without it the tabs say so and show no targets), with this browser's edits from
+// the Valuation Inputs tab (js/18-valuation-inputs.js) on top.
 
-// The same values as dashboard/data/valuation_inputs.json (tests check they match)
-const VALUATION_INPUTS_FALLBACK = {
-  fy: 2028,
-  discount_to_fy_end_pct: 18,
-  discount_to_today_pct: 9,
-  exchanges: {
-    bse: {
-      editable: { adr_estimate_cr: 24, qoq_growth_pct: 5, pe: { bear: 40, base: 45, bull: 50 }, weights_pct: { regression: 45, ratio: 10, adr_model: 45 }, regression_from: '2025-01-01' },
-      fixed: { other_income_cr: 2363.6982, pat_margin_pct: 51, sessions: 247 },
-    },
-    mcx: {
-      editable: { adr_estimate_cr: 14, qoq_growth_pct: 7, pe: { bear: 41, base: 46, bull: 51 }, weights_pct: { regression: 20, ratio: 40, adr_model: 40 }, regression_from: '2024-11-01' },
-      fixed: { other_income_cr: 466.5895, pat_margin_pct: 57, sessions: 258 },
-    },
-    nse: {
-      editable: { adr_estimate_cr: null, qoq_growth_pct: 5, pe: { bear: 42, base: 47, bull: 52 }, weights_pct: { regression: 0, ratio: 0, adr_model: 100 }, regression_from: null },
-      fixed: { other_income_cr: 6532.68, pat_margin_pct: 58, sessions: 247 },
-    },
-  },
-};
 
 // The workbook's column order
 const VALUATION_EXCHANGES = ['bse', 'mcx', 'nse'];
@@ -163,20 +143,22 @@ function valuationDefaultsFrom(json) {
 
 let VALUATION_DEFAULTS_CACHE = null;
 
-// The shared defaults: { fy, ex, fallback }. fallback is null when valuation_inputs.json
-// loaded, else why it did not (the hard-coded copy is used, and a failed load is retried
-// on the next call).
+// The shared defaults: { fy, ex, error: null }, or { error } saying why
+// valuation_inputs.json did not load (a failed load is retried on the next call)
 async function loadValuationDefaults() {
   if (VALUATION_DEFAULTS_CACHE) return VALUATION_DEFAULTS_CACHE;
-  let why;
   try {
     const d = valuationDefaultsFrom((await fetchDataFile('./data/valuation_inputs.json')).json);
-    if (d) return (VALUATION_DEFAULTS_CACHE = { ...d, fallback: null });
-    why = 'a value is missing or not a number';
+    if (d) return (VALUATION_DEFAULTS_CACHE = { ...d, error: null });
+    return { error: 'a value is missing or not a number' };
   } catch (e) {
-    why = (e && e.message) || 'not loaded';
+    return { error: (e && e.message) || 'not loaded' };
   }
-  return { ...valuationDefaultsFrom(VALUATION_INPUTS_FALLBACK), fallback: why };
+}
+
+// The alert both tabs show without the shared defaults
+function valuationDefaultsMissing(defaults) {
+  return `<div class="rx">${rxAlert(`<strong>Valuation inputs not loaded</strong> (dashboard/data/valuation_inputs.json: ${escHtml(defaults.error)}), so there are no targets. Reload the page to try again.`)}</div>`;
 }
 
 // This browser's edits, { bse: { pe1: 48, adr: null }, … }: only the keys typed over
@@ -283,20 +265,18 @@ function valuationRatio(ratio, adr) {
 }
 
 // Weighted average per scenario. vals: { reg, ratio, adr }, each [bear, base, bull] or null;
-// w: weights in %, [regression, ratio, ADR model]. Σ weight × value as the workbook's
-// SUMPRODUCT does, so weights that do not add to 100 % are used as entered (and flagged);
-// a method without a value drops out and the others' weights are rescaled to 100 %.
+// w: weights in %, [regression, ratio, ADR model]. One rule throughout: Σ weight × value ÷
+// Σ weight over the methods that have a value. With weights adding to 100 % and every method
+// present that is the workbook's SUMPRODUCT; a method without a value drops out, and weights
+// that do not add to 100 % are flagged, without either moving the average's scale.
 function valuationTriangulate(vals, w) {
   const methods = VALUATION_METHODS.map(([k], i) => ({ k, w: w[i], vals: vals[k] }));
   const used = methods.filter(m => m.vals && m.w > 0);
-  const dropped = methods.filter(m => !m.vals && m.w > 0).map(m => m.k);
   const wUsed = used.reduce((s, m) => s + m.w, 0);
-  const div = dropped.length ? wUsed : 100;
   return {
-    avg: wUsed > 0 ? [0, 1, 2].map(i => used.reduce((s, m) => s + m.w * m.vals[i], 0) / div) : null,
+    avg: wUsed > 0 ? [0, 1, 2].map(i => used.reduce((s, m) => s + m.w * m.vals[i], 0) / wUsed) : null,
     used: used.map(m => m.k),
-    dropped,
-    share: Object.fromEntries(used.map(m => [m.k, m.w / div])),
+    dropped: methods.filter(m => !m.vals && m.w > 0).map(m => m.k),
     wUsed, wTotal: w.reduce((s, x) => s + x, 0),
   };
 }
@@ -397,25 +377,14 @@ function valuationFitted(c, from) {
 }
 
 // ── Data for any exchange, whichever is on show ─────────────────────────────
-const VALUATION_SHARE_CACHE = {};   // exchange → { json, at }: share files of exchanges not on show
-
 function valuationOnShow(ex) {
   return !!VIEW_LOADED && VIEW_LOADED.exchange === ex && !!DATA && !DATA.components;
 }
 
-// The exchange's share file, with the live quote applied to its CMP; null if it fails to load
-async function valuationShareData(ex) {
-  if (valuationOnShow(ex)) return SHARE_DATA;
-  const c = VALUATION_SHARE_CACHE[ex];
-  if (c && Date.now() - c.at < DATA_MAX_AGE_MS) return c.json;
-  try {
-    const json = (await fetchDataFile(`./data/${ex}_share_analysis.json`)).json;
-    await applyLiveStockPrice(json, ex);
-    VALUATION_SHARE_CACHE[ex] = { json, at: Date.now() };
-    return json;
-  } catch (e) {
-    return null;
-  }
+// The exchange's share file with the live quote applied to its CMP (the glance view's
+// loader and cache for an exchange not on show); null if it fails to load
+function valuationShareData(ex) {
+  return valuationOnShow(ex) ? Promise.resolve(SHARE_DATA) : glanceShare(ex);
 }
 
 // { ex, c: valuationContextFor's result or null, error } for one exchange
@@ -430,10 +399,9 @@ const valuationFYShort = fy => `FY${String(fy).slice(-2)}`;
 // A weight or other whole-number percentage, with a decimal only when it has one
 const valuationPct = x => `${fmtNum(x, Number.isInteger(x) ? 0 : 1)} %`;
 
-// Warnings about the defaults: the fallback copy in use, or fixed inputs for another year
+// Warning about the defaults: fixed inputs for another year
 function valuationDefaultsNotes(defaults, c) {
   const notes = [];
-  if (defaults.fallback) notes.push(rxAlert(`<strong>Shared defaults not loaded</strong> (dashboard/data/valuation_inputs.json: ${escHtml(defaults.fallback)}). Using the copy built into the dashboard, the workbook's values of 16 Nov 2026.`));
   if (c && c.start.fy + 1 !== defaults.fy) notes.push(rxAlert(`<strong>Fixed inputs are for ${valuationFYShort(defaults.fy)}</strong>, but the ADR path now runs to ${valuationFYShort(c.start.fy + 1)}: update other income, PAT margin and sessions in dashboard/data/valuation_inputs.json.`));
   return notes.join('');
 }
@@ -472,9 +440,7 @@ function valuationTriNote(t, c) {
   const notes = t.dropped.map(k => `${names[k]} has no value (${escHtml(why[k])}), so its weight is shared by the others.`);
   const unweighted = VALUATION_METHODS.map(([k]) => k).filter(k => !t.vals[k] && !t.dropped.includes(k));
   if (unweighted.length) notes.push(`${unweighted.map(k => `${names[k]}: ${escHtml(why[k])}`).join('; ')} (weight 0).`);
-  if (Math.abs(t.wTotal - 100) > 1e-9) notes.push(t.dropped.length
-    ? `The weights entered add to ${valuationPct(t.wTotal)}.`
-    : `Weights add to ${valuationPct(t.wTotal)}, not 100 %; the average uses them as entered.`);
+  if (Math.abs(t.wTotal - 100) > 1e-9) notes.push(`The weights entered add to ${valuationPct(t.wTotal)}, not 100 %; the average divides by the weights of the methods with a value.`);
   if (!t.used.length) notes.push('No method with a weight has a value.');
   return notes.join(' ');
 }
@@ -583,7 +549,7 @@ function valuationTabHTML(ex, defaults, c0, analysts, open) {
   const triPanel = (t, title, meta, aria) => rxPanel({
     cls: 'rx-col-half', title, meta,
     body: `<div class="rx-pb rx-scroll">${valuationTriTable(t, v, cmp, aria)}</div>`,
-    foot: valuationTriNote(t, c) || `Weighted average = Σ weight × target over the methods with a value.`,
+    foot: valuationTriNote(t, c) || `Weighted average = Σ weight × target ÷ Σ weight, over the methods with a value.`,
   });
   const tris = `<div class="rx-row">
     ${triPanel(m.dma, `Triangulated · 45 DMA (ADR ${adrTxt(c.adr45)})`, `last ${c.n45} sessions${flagTags(c.flags)}`, '45 DMA triangulation')}
@@ -661,13 +627,20 @@ function valuationTabHTML(ex, defaults, c0, analysts, open) {
   </div>`;
 }
 
+let VALUATION_BUILD_SEQ = 0;   // latest Valuation tab build; an older one still loading yields to it
+
 async function buildValuation(ex) {
   const el = document.getElementById(`${ex}ValuationContent`);
   if (!el) return;
+  const seq = ++VALUATION_BUILD_SEQ;
   const [defaults, data, analysts] = await Promise.all([
     loadValuationDefaults(), valuationExchange(ex), ex === 'bse' ? loadBSEAnalystTargets() : [],
   ]);
-  if (currentExchange !== ex) return;  // switched away while loading
+  if (seq !== VALUATION_BUILD_SEQ || currentExchange !== ex) return;  // rebuilt or switched away while loading
+  if (defaults.error) {
+    el.innerHTML = valuationDefaultsMissing(defaults);
+    return;
+  }
   if (!data.c) {
     el.innerHTML = `<div class="rx">${rxAlert(`<strong>No valuation:</strong> ${escHtml(data.error || 'no data')}.`)}</div>`;
     return;
