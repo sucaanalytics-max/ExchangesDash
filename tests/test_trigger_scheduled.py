@@ -79,6 +79,14 @@ class TriggerScheduled(unittest.TestCase):
                 self.assertEqual(r["calls"], [{"workflow": "exchange-update.yml", "ref": "main",
                                                "inputs": {"exchange": "all", "cron": cron}}])
 
+    def test_mcx_morning_slot_dispatches_mcx_only(self):
+        r = self.call(schedule="45 1 * * 2-6")
+        self.assertEqual(r["status"], 200)
+        self.assertEqual(r["calls"], [{"workflow": "exchange-update.yml", "ref": "main",
+                                       "inputs": {"exchange": "mcx", "cron": "45 1 * * 2-6"}}])
+        r = self.call("Bearer external-secret", query={"job": "exchange-update-0145-mcx"})
+        self.assertEqual(r["calls"][0]["inputs"], {"exchange": "mcx", "cron": "45 1 * * 2-6"})
+
     def test_mirror_slots_dispatch_a_copy(self):
         for cron in ("2 15 * * 1-5", "32 23 * * 1-5"):
             with self.subTest(cron=cron):
@@ -155,6 +163,24 @@ class DailyUpdateSlotRuns(unittest.TestCase):
         cond = re.search(r"^    if: (.*)$", job_block(self.text, "deploy"), re.M).group(1)
         self.assertIn("github.event.schedule == '30 15 * * 1-5'", cond)
         self.assertIn("inputs.cron == '30 15 * * 1-5'", cond)
+
+    def test_mcx_slot_fallback_runs_mcx_only(self):
+        """GitHub's own run of the 01:45 UTC slot carries no inputs, so the other
+        exchanges' jobs must skip it by its schedule; the MCX job must not."""
+        skip = "(github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6')"
+        for job in ("nse-update", "bse-update", "mtf-update", "participants-update"):
+            with self.subTest(job=job):
+                cond = re.search(r"^    if: (.*)$", job_block(self.text, job), re.M).group(1)
+                self.assertIn(skip, cond)
+        cond = re.search(r"^    if: (.*)$", job_block(self.text, "mcx-update"), re.M).group(1)
+        self.assertNotIn("45 1", cond)
+        self.assertIn("github.event_name == 'schedule'", cond)
+
+    def test_a_skipped_jobs_empty_new_days_counts_as_none(self):
+        """A job skipped by the MCX-only slot has an empty new_days output, and
+        '' != '0' is true: every job-level check must default it to '0'."""
+        self.assertNotRegex(self.text, r"needs\.[\w-]+\.outputs\.new_days != '0'")
+        self.assertEqual(self.text.count("outputs.new_days || '0') != '0'"), 5)
 
     def test_slot_reaches_shell_only_through_env(self):
         for line in self.text.splitlines():

@@ -15,7 +15,9 @@
  * - exchange-update.yml gets the slot as its `cron` input. A dispatched run
  *   then behaves like the scheduled run it replaces, not like a manual run:
  *   share analyses only on new days, and the deploy marker only after the
- *   15:30 slot.
+ *   15:30 slot. The 01:45 UTC slot (07:15 IST, Tue–Sat) runs MCX only: it
+ *   publishes the previous session's total_contracts, which mcx-vercel writes
+ *   to mcx_commodity_daily at about 06:30–07:00 IST, after the 00:30 slot.
  * - brokers-mirror.yml copies at 15:02 and again at 23:32 UTC. The brokers
  *   engine's own "14:17 UTC" job hits the same GitHub delay, and has published
  *   as late as 22:49 UTC.
@@ -40,10 +42,11 @@ const GITHUB_API = `https://api.github.com/repos/${REPO}/actions/workflows`;
 // that schedule (UTC). The exchange-update and brokers-mirror keys equal those
 // workflows' own `schedule:` crons; tests/test_trigger_scheduled.py checks that
 // all three lists match.
-const EXCHANGE = (cron, job) => ({ job, workflow: 'exchange-update.yml', inputs: { exchange: 'all', cron } });
+const EXCHANGE = (cron, job, exchange = 'all') => ({ job, workflow: 'exchange-update.yml', inputs: { exchange, cron } });
 const MIRROR = (job) => ({ job, workflow: 'brokers-mirror.yml', inputs: { mode: 'mirror' } });
 const SLOTS = {
   '30 0 * * 1-5':  EXCHANGE('30 0 * * 1-5', 'exchange-update-0030'),
+  '45 1 * * 2-6':  EXCHANGE('45 1 * * 2-6', 'exchange-update-0145-mcx', 'mcx'),
   '30 12 * * 1-5': EXCHANGE('30 12 * * 1-5', 'exchange-update-1230'),
   '30 15 * * 1-5': EXCHANGE('30 15 * * 1-5', 'exchange-update-1530'),
   '2 15 * * 1-5':  MIRROR('brokers-mirror-1502'),
