@@ -16,6 +16,10 @@ on:
     - cron: '30 12 * * 1-5'
     # 9:00 PM IST = 15:30 UTC — late retry in case MCX Supabase data arrives after 6 PM run
     - cron: '30 15 * * 1-5'
+    # 12:45 AM IST Tue–Sat = 19:15 UTC Mon–Fri — MTF only, and deploys: NSE posts a
+    # day's margin trading file (mrg_trading_DDMMYY.zip) at 18:26–18:27 UTC on the
+    # next trading day, after the 15:30 slot. Other jobs skip this slot.
+    - cron: '15 19 * * 1-5'
   workflow_dispatch:
     inputs:
       exchange:
@@ -46,7 +50,7 @@ concurrency:
 
 jobs:
   nse-update:
-    if: ${{ (github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6') || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'nse' }}
+    if: ${{ (github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6' && github.event.schedule != '15 19 * * 1-5') || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'nse' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -114,7 +118,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [nse-update]
-    if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6') || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'bse') }}
+    if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6' && github.event.schedule != '15 19 * * 1-5') || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'bse') }}
     outputs:
       new_days: ${{ steps.check_new.outputs.new_days }}
 
@@ -180,7 +184,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [bse-update]
-    if: ${{ always() && (github.event_name == 'schedule' || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'mcx') }}
+    if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule != '15 19 * * 1-5') || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'mcx') }}
     outputs:
       new_days: ${{ steps.check_new.outputs.new_days }}
 
@@ -511,7 +515,7 @@ jobs:
     # participants_monthly.json / participants_daily.json (the Participants tab reads them);
     # the slot runs' 8-minute budget keeps that wait short.
     needs: [nse-update, bse-update]
-    if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6') || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'participants') }}
+    if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6' && github.event.schedule != '15 19 * * 1-5') || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'participants') }}
     runs-on: ubuntu-latest
     timeout-minutes: 100
     outputs:
@@ -581,12 +585,12 @@ jobs:
 
   deploy:
     # Vercel skips the bot data commits above (dashboard/vercel-ignore-build.sh),
-    # so the day's data is deployed once, by an empty "[deploy]" commit after
-    # the 15:30 UTC slot (run by Vercel Cron, or by GitHub's late fallback
-    # schedule), and after every manual run. Nothing is pushed when main's head
+    # so the day's data is deployed by an empty "[deploy]" commit after the
+    # 15:30 UTC slot and the MTF-only 19:15 UTC slot (run by Vercel Cron, or by
+    # GitHub's late fallback schedule), and after every manual run. Nothing is pushed when main's head
     # is not a bot data commit (already deployed).
     needs: [nse-update, bse-update, mcx-update, mtf-update, participants-update, nse-share-analysis, bse-share-analysis, mcx-share-analysis]
-    if: ${{ always() && ((github.event_name == 'workflow_dispatch' && inputs.cron == '') || github.event.schedule == '30 15 * * 1-5' || inputs.cron == '30 15 * * 1-5') }}
+    if: ${{ always() && ((github.event_name == 'workflow_dispatch' && inputs.cron == '') || github.event.schedule == '30 15 * * 1-5' || inputs.cron == '30 15 * * 1-5' || github.event.schedule == '15 19 * * 1-5' || inputs.cron == '15 19 * * 1-5') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
 

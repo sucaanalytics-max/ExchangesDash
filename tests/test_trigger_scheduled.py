@@ -87,6 +87,14 @@ class TriggerScheduled(unittest.TestCase):
         r = self.call("Bearer external-secret", query={"job": "exchange-update-0145-mcx"})
         self.assertEqual(r["calls"][0]["inputs"], {"exchange": "mcx", "cron": "45 1 * * 2-6"})
 
+    def test_mtf_night_slot_dispatches_mtf_only(self):
+        r = self.call(schedule="15 19 * * 1-5")
+        self.assertEqual(r["status"], 200)
+        self.assertEqual(r["calls"], [{"workflow": "exchange-update.yml", "ref": "main",
+                                       "inputs": {"exchange": "mtf", "cron": "15 19 * * 1-5"}}])
+        r = self.call("Bearer external-secret", query={"job": "exchange-update-1915-mtf"})
+        self.assertEqual(r["calls"][0]["inputs"], {"exchange": "mtf", "cron": "15 19 * * 1-5"})
+
     def test_mirror_slots_dispatch_a_copy(self):
         for cron in ("2 15 * * 1-5", "32 23 * * 1-5"):
             with self.subTest(cron=cron):
@@ -159,21 +167,35 @@ class DailyUpdateSlotRuns(unittest.TestCase):
         # MCX commit, Excel sync, three share analyses, deploy (NSE/BSE commit whatever changed)
         self.assertEqual(self.text.count(manual), 6)
 
-    def test_the_1530_slot_deploys_whichever_way_it_ran(self):
+    def test_the_1530_and_mtf_slots_deploy_whichever_way_they_ran(self):
         cond = re.search(r"^    if: (.*)$", job_block(self.text, "deploy"), re.M).group(1)
-        self.assertIn("github.event.schedule == '30 15 * * 1-5'", cond)
-        self.assertIn("inputs.cron == '30 15 * * 1-5'", cond)
+        for cron in ("30 15 * * 1-5", "15 19 * * 1-5"):
+            with self.subTest(cron=cron):
+                self.assertIn(f"github.event.schedule == '{cron}'", cond)
+                self.assertIn(f"inputs.cron == '{cron}'", cond)
 
     def test_mcx_slot_fallback_runs_mcx_only(self):
         """GitHub's own run of the 01:45 UTC slot carries no inputs, so the other
         exchanges' jobs must skip it by its schedule; the MCX job must not."""
-        skip = "(github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6')"
+        skip = "(github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6'"
         for job in ("nse-update", "bse-update", "mtf-update", "participants-update"):
             with self.subTest(job=job):
                 cond = re.search(r"^    if: (.*)$", job_block(self.text, job), re.M).group(1)
                 self.assertIn(skip, cond)
         cond = re.search(r"^    if: (.*)$", job_block(self.text, "mcx-update"), re.M).group(1)
         self.assertNotIn("45 1", cond)
+        self.assertIn("github.event_name == 'schedule'", cond)
+
+    def test_mtf_slot_fallback_runs_mtf_only(self):
+        """Likewise GitHub's own run of the 19:15 UTC slot: every job but MTF (and
+        the deploy that follows it) must skip it by its schedule."""
+        skip = "github.event.schedule != '15 19 * * 1-5'"
+        for job in ("nse-update", "bse-update", "mcx-update", "participants-update"):
+            with self.subTest(job=job):
+                cond = re.search(r"^    if: (.*)$", job_block(self.text, job), re.M).group(1)
+                self.assertIn(skip, cond)
+        cond = re.search(r"^    if: (.*)$", job_block(self.text, "mtf-update"), re.M).group(1)
+        self.assertNotIn("15 19", cond)
         self.assertIn("github.event_name == 'schedule'", cond)
 
     def test_a_skipped_jobs_empty_new_days_counts_as_none(self):
