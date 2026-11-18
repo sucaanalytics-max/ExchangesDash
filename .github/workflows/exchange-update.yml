@@ -34,6 +34,7 @@ on:
           - mcx
           - mtf
           - participants
+          - nse-commodity
       cron:
         description: 'Set by Vercel Cron: the schedule slot this run stands in for. Leave empty for a manual run.'
         required: false
@@ -184,9 +185,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [bse-update]
-    if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule != '15 19 * * 1-5') || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'mcx') }}
+    if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule != '15 19 * * 1-5') || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'mcx' || github.event.inputs.exchange == 'nse-commodity') }}
     outputs:
       new_days: ${{ steps.check_new.outputs.new_days }}
+      com_days: ${{ steps.check_com.outputs.com_days }}
 
     steps:
       - name: Checkout repository
@@ -221,15 +223,37 @@ jobs:
           echo "new_days=$NEW_DAYS" >> $GITHUB_OUTPUT
           echo "MCX new or changed days: $NEW_DAYS"
 
+      # NSE's commodity bhavcopy against MCX's per-commodity rows (the MCX view's
+      # Competition tab). After the MCX pipeline, which has just written the
+      # commodity trading days it reads; the 01:45 UTC slot carries the day MCX's
+      # per-commodity rows landed. A failure here never holds back MCX's own data.
+      - name: Run NSE commodity pipeline
+        id: nse_com
+        continue-on-error: true
+        env:
+          MCX_SUPABASE_KEY: ${{ secrets.MCX_SUPABASE_KEY }}
+          EVENT: ${{ github.event_name }}
+          SLOT: ${{ github.event.schedule || inputs.cron }}
+        run: python scripts/nse_commodity_pipeline.py
+
+      - name: Check NSE commodity changes
+        id: check_com
+        run: |
+          COM_DAYS=$(cat .new_nse_com_days_count 2>/dev/null || echo "0")
+          echo "com_days=$COM_DAYS" >> $GITHUB_OUTPUT
+          echo "NSE commodity new or changed days: $COM_DAYS"
+          if [ "${{ steps.nse_com.outcome }}" = "failure" ]; then echo "::warning::NSE commodity pipeline failed; MCX data still published"; fi
+
       - name: Commit MCX data
         # Manual runs always publish, so a code fix can regenerate the JSON without a new trading day
-        if: steps.check_new.outputs.new_days != '0' || (github.event_name == 'workflow_dispatch' && inputs.cron == '')
+        if: steps.check_new.outputs.new_days != '0' || steps.check_com.outputs.com_days != '0' || (github.event_name == 'workflow_dispatch' && inputs.cron == '')
         run: |
           git config user.name "Research-Tusk"
           git config user.email "research@tuskinvest.com"
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
           git add data/mcx_dashboard_data.json data/mcx_enriched_data.json dashboard/data/mcx_dashboard_data.json dashboard/data/mcx_enriched_data.json
-          git diff --cached --quiet || git commit -m "📊 MCX update: $(date +%Y-%m-%d) — ${{ steps.check_new.outputs.new_days }} new or changed day(s)"
+          if [ -f dashboard/data/nse_commodity_daily.json ]; then git add dashboard/data/nse_commodity_daily.json; fi
+          git diff --cached --quiet || git commit -m "📊 MCX update: $(date +%Y-%m-%d) — ${{ steps.check_new.outputs.new_days }} new or changed day(s), NSE commodity ${{ steps.check_com.outputs.com_days }}"
           for i in 1 2 3 4 5; do
             git push && exit 0
             echo "Push rejected (concurrent job likely pushed first) — retrying with rebase, attempt $i…"
@@ -644,6 +668,7 @@ jobs:
           echo "- **NSE:** ${{ needs.nse-update.result }}, new or changed days ${{ needs.nse-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **BSE:** ${{ needs.bse-update.result }}, new or changed days ${{ needs.bse-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **MCX:** ${{ needs.mcx-update.result }}, new or changed days ${{ needs.mcx-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **NSE commodity:** new or changed days ${{ needs.mcx-update.outputs.com_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **MTF:** ${{ needs.mtf-update.result }}, new or revised days ${{ needs.mtf-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Participants:** ${{ needs.participants-update.result }}, new or revised days ${{ needs.participants-update.outputs.new_days || '0' }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Share analysis:** NSE ${{ needs.nse-share-analysis.result }}, BSE ${{ needs.bse-share-analysis.result }}, MCX ${{ needs.mcx-share-analysis.result }}" >> $GITHUB_STEP_SUMMARY

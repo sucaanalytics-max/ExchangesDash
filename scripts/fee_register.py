@@ -9,6 +9,11 @@ of a trade. Revenue = 2 × rate × single-counted turnover, applied to
   fut  → notional turnover   (NSE if_turnover + sf_turnover; BSE futures_turnover)
   opt  → premium turnover    (NSE io_premium + so_premium; BSE options_premium_turnover)
   cash → traded value        (cash_traded_value)
+NSE's commodity derivatives segment has its own products, priced only by
+scripts/nse_commodity_pipeline.py (never part of NSE's equity total_rev):
+  com_fut      → futures traded value (notional), every commodity but electricity
+  com_fut_elec → monthly electricity futures traded value (waived at launch)
+  com_opt      → options premium (options on futures and on goods)
 The IPFT (Investor Protection Fund Trust) contribution is a separate levy and is
 excluded.
 
@@ -28,7 +33,7 @@ basis:
                  take_rates.py (the at-today's-rates files, live pollers,
                  /api/revenue) always uses the statutory rate.
 
-Each rule: exchange, product (fut | opt | cash), effective_from / effective_to
+Each rule: exchange, product (fut | opt | cash | com_*), effective_from / effective_to
 (inclusive 'YYYY-MM-DD', None = open-ended), rate_per_cr_per_side, basis,
 source (circular or results document), note. Statutory rules (flat |
 slab_estimate) form one contiguous, non-overlapping chain per (exchange,
@@ -64,6 +69,16 @@ def _bse(product, frm, to, rate, basis, notice, note=""):
             "source": f"BSE notice {notice}: " + _BSE_NOTICE.format(notice), "note": note}
 
 
+def _nse_com(product, frm, to, rate, circular, note=""):
+    return {"exchange": "NSE", "product": product, "effective_from": frm, "effective_to": to,
+            "rate_per_cr_per_side": rate, "basis": "flat",
+            "source": f"NSE circular NSE/FA/{circular}: " + _NSE_CIRC.format(circular),
+            "note": note}
+
+
+_COM_START_NOTE = ("From 1 Apr 2024 (superseding NSE/FA/59164, whose rates are not recorded: "
+                   "the commodity series starts 2 Sep 2024).")
+
 _SLAB_NOTE = ("Turnover slabs: no single exact rate; flat estimate of the blended "
               "charge, labelled as an estimate.")
 
@@ -80,6 +95,19 @@ STATUTORY_RULES = [
     *_nse_era("2026-03-01", None, 307, 183, 3553, "flat", "73061",
               "Circular dated 27-Feb-2026: 306.99 / 182.99 / 3552.99 plus ₹0.01 IPFT, "
               "kept at the rounded 307 / 183 / 3553 used since 2026-08-07."),
+
+    # ── NSE commodity derivatives (scripts/nse_commodity_pipeline.py only) ──
+    _nse_com("com_fut", None, None, 10, "61380",
+             "Futures on traded value. " + _COM_START_NOTE),
+    _nse_com("com_opt", None, None, 100, "61380",
+             "Options on premium value. " + _COM_START_NOTE),
+    _nse_com("com_fut_elec", None, "2025-07-13", 10, "61380",
+             "Monthly electricity futures launched 14 Jul 2025; no trades before."),
+    _nse_com("com_fut_elec", "2025-07-14", "2025-12-31", 0, "69100",
+             "Circular dated 11-Jul-2025: no transaction charges from launch to 31 Dec 2025."),
+    _nse_com("com_fut_elec", "2026-01-01", None, 10, "61380",
+             "Waiver over; NSE's circular list to 18 Nov 2026 shows no extension, so the "
+             "segment's futures rate applies."),
 
     # ── BSE equity derivatives (options on premium; futures nil) ──
     {"exchange": "BSE", "product": "fut", "effective_from": None, "effective_to": None,
@@ -214,12 +242,17 @@ def rule(exchange, product, d):
 
 def rate(exchange, product, d):
     """(two-sided fraction of turnover, basis) for `exchange` ('NSE' | 'BSE'),
-    `product` ('fut' | 'opt' | 'cash') on date `d` (date or 'YYYY-MM-DD')."""
+    `product` ('fut' | 'opt' | 'cash', or an NSE COM_PRODUCTS entry) on date `d`
+    (date or 'YYYY-MM-DD')."""
     r = rule(exchange, product, d)
     return fraction(r["rate_per_cr_per_side"]), r["basis"]
 
 
 PRODUCTS = ("fut", "opt", "cash")
+# NSE commodity segment. Kept out of PRODUCTS on purpose: day_rates() loops over
+# PRODUCTS for both exchanges (BSE has no commodity rules) and NSE's *_eff files
+# carry fee_basis_by_product for the equity products only.
+COM_PRODUCTS = ("com_fut", "com_fut_elec", "com_opt")
 
 
 def day_rates(exchange, d):
@@ -307,7 +340,7 @@ def validate():
     for r in RULES:
         if r["basis"] not in _BASIS_RANK:
             bad.append(f"{r['exchange']} {r['product']} {r['effective_from']}: unknown basis {r['basis']!r}")
-        if r["product"] not in ("fut", "opt", "cash"):
+        if r["product"] not in PRODUCTS + COM_PRODUCTS:
             bad.append(f"{r['exchange']}: unknown product {r['product']!r}")
         if (r["effective_from"] and r["effective_to"]
                 and r["effective_from"] > r["effective_to"]):

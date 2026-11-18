@@ -552,6 +552,7 @@ const EXCHANGE_TABS = {
     { id: 'share',      label: 'Regression',            icon: 'share' },
     { id: 'valuation',  label: 'Valuation Model',       icon: 'advanced' },
     { id: 'valinputs',  label: 'Valuation Inputs',      icon: 'inputs' },
+    { id: 'competition', label: 'Competition',          icon: 'share' },
   ],
   all: [
     { id: 'revenue',    label: 'Revenue Summary',     icon: 'revenue' },
@@ -591,6 +592,7 @@ const TAB_TITLES = {
     share: 'Regression',
     valuation: 'Valuation Model',
     valinputs: 'Valuation Inputs — BSE, MCX and NSE',
+    competition: 'Competition — NSE against MCX in commodity derivatives',
   },
   all: {
     revenue: 'Combined Revenue — NSE + BSE + MCX',

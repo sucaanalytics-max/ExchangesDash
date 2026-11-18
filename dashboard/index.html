@@ -138,6 +138,8 @@
       <div class="sub-content" id="subtab-rev-cash"></div>
       <!-- Fee basis in use, method, and what "modelled" means -->
       <p class="fee-note" id="feeModeNote" hidden></p>
+      <!-- NSE view only: NSE's commodity charges, a memo kept out of every total (buildNseCommodityMemo in js/19-mcx-competition.js) -->
+      <p class="fee-note" id="nseCommodityMemo" hidden></p>
     </section>
 
     <!-- TAB: Revenue Predictor (buildRevenuePredictor in js/12-revenue-predictor.js fills the current exchange's block) -->
@@ -226,6 +228,11 @@
       <div id="participantsContent"></div>
     </section>
 
+    <!-- TAB: Competition, NSE's share of commodity derivatives against MCX, under the MCX view (js/19-mcx-competition.js) -->
+    <section class="tab-content" id="tab-competition">
+      <div id="competitionContent"></div>
+    </section>
+
   </main>
 </div>
 
@@ -244,6 +251,7 @@
 <script src="./js/16-contracts-premium.js"></script>
 <script src="./js/17-participants.js"></script>
 <script src="./js/18-valuation-inputs.js"></script>
+<script src="./js/19-mcx-competition.js"></script>
 <script src="./js/20-reports.js"></script>
 <script src="./js/30-brokers.js"></script>
 <script src="./js/31-brokers-price.js"></script>

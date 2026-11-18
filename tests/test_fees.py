@@ -30,3 +30,18 @@ class FeeRegister(unittest.TestCase):
         self.assertEqual(tr.NSE_TR_OPT, fr.current_statutory_rate("NSE", "opt"))
         self.assertEqual(tr.BSE_TR_CASH, fr.current_statutory_rate("BSE", "cash"))
         self.assertAlmostEqual(fr.fraction(183), 0.0000366)   # 0.00183 % per side, two sides
+
+    def test_nse_commodity_rates(self):
+        # NSE/FA/61380: ₹10/Cr futures traded value, ₹100/Cr options premium, per side
+        self.assertEqual(fr.rate("NSE", "com_fut", "2024-09-02"), (fr.fraction(10), "flat"))
+        self.assertEqual(fr.rate("NSE", "com_opt", "2026-11-17"), (fr.fraction(100), "flat"))
+        # NSE/FA/69100: electricity futures free from launch to 31 Dec 2025
+        self.assertEqual(fr.rate("NSE", "com_fut_elec", "2025-07-14")[0], 0)
+        self.assertEqual(fr.rate("NSE", "com_fut_elec", "2025-12-31")[0], 0)
+        self.assertEqual(fr.rate("NSE", "com_fut_elec", "2026-01-01")[0], fr.fraction(10))
+        self.assertEqual(tr.NSE_TR_COM_OPT, fr.fraction(100))
+
+    def test_commodity_products_stay_out_of_day_rates(self):
+        # day_rates() serves NSE's and BSE's equity pipelines; BSE has no commodity rules
+        self.assertEqual(set(fr.day_rates("NSE", "2026-01-02")), {"fut", "opt", "cash"})
+        self.assertEqual(set(fr.day_rates("BSE", "2026-01-02")), {"fut", "opt", "cash"})

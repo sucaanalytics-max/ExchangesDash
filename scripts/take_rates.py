@@ -23,6 +23,12 @@ NSE_TR_FUT  = _today("NSE", "fut")
 NSE_TR_OPT  = _today("NSE", "opt")
 NSE_TR_CASH = _today("NSE", "cash")
 
+# NSE commodity derivatives — used only by nse_commodity_pipeline.py, so not
+# in dashboard/api/revenue.js or check_take_rates.py's EXPECTED
+NSE_TR_COM_FUT      = _today("NSE", "com_fut")
+NSE_TR_COM_FUT_ELEC = _today("NSE", "com_fut_elec")
+NSE_TR_COM_OPT      = _today("NSE", "com_opt")
+
 # BSE — no futures fee
 BSE_TR_FUT  = _today("BSE", "fut")
 BSE_TR_OPT  = _today("BSE", "opt")

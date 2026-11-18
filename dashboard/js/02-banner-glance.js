@@ -410,7 +410,8 @@ function rebuildAll() {
     const sources = DATA.components.map(c => ({ ex: c.exchange, date: lastTradeDate(c.daily_all) }));
     (EXCHANGE_TABS[currentExchange] || []).forEach(t => { VIEW_SOURCES[t.id] = sources; });
   }
-  const common = [updateSnapshotNotice, buildFeeNote, buildRevenueSummary, buildLiveCards];
+  // buildNseCommodityMemo hides itself outside the NSE view
+  const common = [updateSnapshotNotice, buildFeeNote, buildRevenueSummary, buildLiveCards, buildNseCommodityMemo];
   const byExchange = {
     nsebse: [() => buildMarketSharePanel(['nse', 'bse']), buildMarketShareTrend, buildContractsPremium],
     all:    [() => buildMarketSharePanel(['nse', 'bse', 'mcx']), buildContractsPremium],
@@ -418,7 +419,8 @@ function rebuildAll() {
              () => buildLivePredictor('nse'), buildContractsPremium, () => buildParticipants('nse')],
     bse:    [() => buildRevenuePredictor('bse'), () => buildShareAnalysis('bse'), () => buildValuation('bse'), buildValuationInputs,
              () => buildLivePredictor('bse'), buildContractsPremium, () => buildParticipants('bse')],
-    mcx:    [() => buildRevenuePredictor('mcx'), () => buildShareAnalysis('mcx'), () => buildValuation('mcx'), buildValuationInputs],
+    mcx:    [() => buildRevenuePredictor('mcx'), () => buildShareAnalysis('mcx'), () => buildValuation('mcx'), buildValuationInputs,
+             buildMcxCompetition],
   };
   runSections(common.concat(byExchange[currentExchange] || []));
 }

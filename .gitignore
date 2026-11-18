@@ -11,6 +11,7 @@ turnover_log.csv
 .vercel
 .env*
 .new_mcx_days_count
+.new_nse_com_days_count
 .playwright-mcp/
 .claude/*.lock
 .new_mtf_days_count
