@@ -10,13 +10,19 @@
 const CC_URL = './data/nse_commodity_daily.json';
 const CC_MAX_AGE_MS = 15 * 60 * 1000;   // re-fetch when the tab is built after this long
 const CC_DATA = { doc: null, at: 0 };
-const CC_VIEW = { win: '20d', und: 'all', metric: 'prem', range: '1y' };
+const CC_VIEW = { win: '20d', und: 'all', metric: 'prem', range: '1y', top: 'prem', topMonth: null };   // topMonth null = the latest
 const CC_WINDOWS = [['day', 'Latest day'], ['20d', '20 sessions'], ['mtd', 'Month'], ['qtd', 'Quarter'], ['fytd', 'FY']];
 const CC_METRICS = [['prem', 'Options premium'], ['onot', 'Options notional'], ['fut', 'Futures notional']];
 const CC_METRIC_TEXT = { prem: 'options premium', onot: 'options notional', fut: 'futures notional' };
 const CC_RANGES = [['6m', '6 M', 6], ['1y', '1 Y', 12], ['all', 'All', null]];
 const CC_CHART_UNDS = ['all', 'natgas', 'crude', 'gold', 'silver', 'electricity'];
 const CC_ROLL = 20;                     // sessions in the rolling share line
+// Top commodities by month: MCX's top five and every underlying NSE competes in, each with a
+// fixed colour (validated for colour-blind separation), the rest as Others
+const CC_TOP_UNDS = ['crude', 'gold', 'natgas', 'silver', 'copper', 'electricity'];
+const CC_TOP_COLORS = { crude: '#2a78d6', gold: '#eb6834', natgas: '#1baf7a', silver: '#eda100',
+  copper: '#e87ba4', electricity: '#6250d6', others: '#9A9DA4' };
+const CC_TOP_METRICS = [['prem', 'Options premium'], ['rev', 'Transaction revenue'], ['con', 'Contracts']];
 let ccBuildSeq = 0;
 
 async function ccLoad() {
@@ -151,6 +157,95 @@ function ccMonthTicks(dates, max) {
   return scale => { scale.ticks = scale.ticks.filter(t => keep.has(t.value)); };
 }
 
+// One underlying's value in a monthly period, for the top-commodities view: options premium
+// (₹ Cr), transaction revenue (₹ Cr, p.ru) or contracts (futures + options); 'others' sums every
+// underlying outside CC_TOP_UNDS, 'all' every underlying. null when unknown.
+function ccTopVal(p, side, und, metric) {
+  const cells = p[side] || {};
+  const keys = und === 'all' ? Object.keys(metric === 'rev' ? (p.ru?.[side] || {}) : cells)
+    : und === 'others' ? Object.keys(metric === 'rev' ? (p.ru?.[side] || {}) : cells).filter(k => !CC_TOP_UNDS.includes(k))
+    : [und];
+  let t = 0;
+  for (const k of keys) {
+    let v;
+    if (metric === 'rev') {
+      if (!p.ru || !p.ru[side]) return null;
+      v = p.ru[side][k] || 0;
+    } else if (metric === 'con') {
+      const c = cells[k] || {};
+      v = (c.f ? c.f[0] : 0) + (c.o ? c.o[0] : 0);
+    } else {
+      const c = cells[k] || {};
+      v = c.o ? c.o[2] : 0;
+    }
+    if (v == null) return null;
+    t += v;
+  }
+  return t;
+}
+
+// Sessions behind a period's figure: revenue counts only the days it could be split for
+function ccTopDays(p, side, metric) {
+  return metric === 'rev' ? (p.ru_days?.[side] ?? 0) : p.days;
+}
+
+// Per-session value in display units
+function ccTopPer(p, side, und, metric) {
+  const v = ccTopVal(p, side, und, metric), n = ccTopDays(p, side, metric);
+  return v == null || !n ? null : v / n;
+}
+
+// Display unit for a chart whose largest stacked bar is `max` (per session, ₹ Cr or contracts)
+function ccTopUnit(metric, max) {
+  if (metric === 'con') return { k: 1e-5, axis: 'lakh contracts a session', fmt: v => `${ccCr(v)} lakh` };
+  if (max < 1) return { k: 100, axis: '₹ lakh a session', fmt: v => `₹${ccCr(v)} lakh` };
+  return { k: 1, axis: '₹ Cr a session', fmt: v => `₹${ccCr(v)} Cr` };
+}
+
+// Rank of `und` among every underlying an exchange traded in the period (1 = largest); null if none
+function ccTopRank(p, side, und, metric) {
+  const keys = Object.keys(metric === 'rev' ? (p.ru?.[side] || {}) : (p[side] || {}));
+  const vals = keys.map(k => [k, ccTopVal(p, side, k, metric) || 0]).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+  const i = vals.findIndex(([k]) => k === und);
+  return i < 0 ? null : i + 1;
+}
+
+function ccTopTableHTML(doc, months, idx, metric) {
+  const p = months[idx], prev = months[idx - 1];
+  const money = metric !== 'con';
+  const tot = side => ccTopPer(p, side, 'all', metric);
+  const allM = tot('mcx'), allN = tot('nse');
+  const unitM = ccTopUnit(metric, allM || 0), unitN = ccTopUnit(metric, allN || 0);
+  const share = (q, und) => {
+    if (!q || !money) return null;
+    const n = ccTopVal(q, 'nse', und, metric), m = ccTopVal(q, 'mcx', und, metric);
+    return n == null || m == null || n + m <= 0 ? null : n / (n + m);
+  };
+  const rank = r => (r == null ? '—' : r <= 5 ? `<b>#${r}</b>` : `#${r}`);
+  const row = (und, label, cls = '') => {
+    const m = ccTopPer(p, 'mcx', und, metric), n = ccTopPer(p, 'nse', und, metric);
+    const solo = und !== 'all' && und !== 'others';
+    const s = share(p, und);
+    return `<tr${cls ? ` class="${cls}"` : ''}>
+      <td class="rx-l"><i class="cc-sw" style="background:${CC_TOP_COLORS[und] || 'transparent'}"></i>${escHtml(label)}</td>
+      <td>${m == null ? '—' : unitM.fmt(m * unitM.k)}</td><td>${m == null || !allM ? '—' : ccPct(m / allM)}</td><td>${solo ? rank(ccTopRank(p, 'mcx', und, metric)) : ''}</td>
+      <td>${n == null ? '—' : unitN.fmt(n * unitN.k)}</td><td>${n == null || !allN ? '—' : ccPct(n / allN)}</td><td>${solo ? rank(ccTopRank(p, 'nse', und, metric)) : ''}</td>
+      ${money ? `<td class="rx-hl">${ccPct(s)}</td>${ccPp(s, prev && s != null ? share(prev, und) : null)}` : ''}
+    </tr>`;
+  };
+  const body = CC_TOP_UNDS.map(k => row(k, ccLabel(doc, k))).join('') + row('others', 'Others') + row('all', 'All commodities', 'rx-sub');
+  return `<div class="rx-scroll"><table class="rx-table">
+    <thead>
+      <tr><th scope="col" class="rx-l" rowspan="2">Underlying</th>
+        <th scope="colgroup" colspan="3">MCX</th><th scope="colgroup" colspan="3">NSE</th>
+        ${money ? '<th scope="col" rowspan="2" class="rx-hl">NSE share</th><th scope="col" rowspan="2">vs month before</th>' : ''}</tr>
+      <tr><th scope="col">A session</th><th scope="col" title="Share of the exchange's own total">Mix</th><th scope="col" title="Rank among every underlying the exchange traded">Rank</th>
+        <th scope="col">A session</th><th scope="col" title="Share of the exchange's own total">Mix</th><th scope="col" title="Rank among every underlying the exchange traded">Rank</th></tr>
+    </thead>
+    <tbody>${body}</tbody>
+  </table></div>`;
+}
+
 function ccPanelEmpty(msg) {
   return rxPanel({ title: 'Competition', body: `<div class="rx-empty"><b>${msg}</b></div>` });
 }
@@ -235,6 +330,20 @@ async function buildMcxCompetition() {
       foot: 'NSE\'s crude and natural-gas options expire a day before MCX\'s, and most of its options volume comes on its own expiry day and the day before, so the daily share spikes once a month; the 20-session line evens that out. '
         + (doc.notes || []).map(n => `${rxDate(n.date)}: ${escHtml(n.label)}.`).join(' ') })}
     ${rxPanel({ title: 'NSE share by month', meta: '<span data-cc="monmeta"></span>', body: rxCanvas('chartCcMonthly') })}
+    ${rxPanel({ title: 'Top commodities by month, MCX and NSE', meta: '<span data-cc="topmeta"></span>',
+      right: rxSeg('ccTop', CC_TOP_METRICS, CC_VIEW.top, 'Measure'),
+      body: `${rxLegend(CC_TOP_UNDS.map(k => ({ label: escHtml(ccLabel(doc, k)), color: CC_TOP_COLORS[k] })).concat([{ label: 'Others', color: CC_TOP_COLORS.others }]))}
+        <div class="cc-top-grid">
+          <div><h3 class="cc-top-h">MCX <span class="rx-meta" data-cc="topunitM"></span></h3>${rxCanvas('chartCcTopMcx')}</div>
+          <div><h3 class="cc-top-h">NSE <span class="rx-meta" data-cc="topunitN"></span></h3>${rxCanvas('chartCcTopNse')}</div>
+        </div>
+        <h3 class="cc-top-h" style="margin-top:16px" data-cc="toptitle"></h3>
+        <div data-cc="toptable"></div>`,
+      foot: 'Averages per session in each month (the latest month is to date), over sessions with both exchanges\' figures; each chart has its own scale, since NSE\'s volumes are a small fraction of MCX\'s. '
+        + 'Click a month to show it in the table. Rank is among every underlying the exchange traded that month (top five in bold); mix is the share of the exchange\'s own total. '
+        + 'Transaction revenue is at today\'s rates: NSE\'s priced on its commodity charges (above); MCX\'s is its reported futures and options transaction revenue for each day, split across underlyings by their share of futures notional and options premium. '
+        + 'Contracts are each exchange\'s own count (futures and options), not comparable across exchanges, as contract sizes differ, so they carry no NSE share. '
+        + 'Others: MCX\'s zinc, aluminium, lead, nickel, steel, agri and indices; NSE\'s Brent crude.' })}
     ${rxPanel({ title: 'NSE commodity transaction charges (memo)',
       meta: `FY ${ccFy(days[days.length - 1].date)} to date: ₹${fmtNum(revFy * 100, 1)} lakh at today's rates`,
       body: rxCanvas('chartCcRev'),
@@ -358,13 +467,78 @@ async function buildMcxCompetition() {
     });
   };
 
-  const drawCharts = () => { drawDaily(); drawMonthly(); drawRev(); };
+  const drawTop = () => {
+    const metric = CC_VIEW.top;
+    const months = (doc.monthly || []).filter(p => p.days > 0);
+    const metricText = CC_TOP_METRICS.find(m => m[0] === metric)[1].toLowerCase();
+    if (!months.length) return;
+    if (metric === 'rev' && !months.some(p => p.ru)) {
+      q('topmeta').textContent = 'Revenue per underlying arrives with the next data update';
+      q('toptable').innerHTML = '';
+      ['ccTopMcx', 'ccTopNse'].forEach(k => { if (charts[k]) { charts[k].destroy(); delete charts[k]; } });
+      return;
+    }
+    let idx = months.findIndex(p => p.month === CC_VIEW.topMonth);
+    if (idx < 0) idx = months.length - 1;
+    const series = CC_TOP_UNDS.concat(['others']);   // crude, the largest, at the base of each bar
+    const draw = (side, key, canvas, unitEl) => {
+      const per = months.map(p => ccTopPer(p, side, 'all', metric) || 0);
+      const unit = ccTopUnit(metric, Math.max(0, ...per));
+      q(unitEl).textContent = unit.axis;
+      const sets = series.map(und => ({
+        label: und === 'others' ? 'Others' : ccLabel(doc, und),
+        und,
+        data: months.map(p => { const v = ccTopPer(p, side, und, metric); return v == null ? null : v * unit.k; }),
+        backgroundColor: CC_TOP_COLORS[und], borderColor: '#FFFFFF', borderWidth: { top: 1 }, borderSkipped: 'bottom',
+        stack: 's',
+      })).filter(ds => ds.data.some(v => v));
+      rxChart(key, canvas, 240, {
+        type: 'bar',
+        data: { labels: months.map(p => ccMonthLabel(p.month)), datasets: sets },
+        options: {
+          interaction: { mode: 'index', intersect: false },
+          onClick: (evt, els, chart) => {
+            const hit = chart.getElementsAtEventForMode(evt, 'index', { intersect: false }, false)[0];
+            if (!hit) return;
+            CC_VIEW.topMonth = months[hit.index].month;
+            drawTop();
+          },
+          plugins: { tooltip: {
+            itemSort: (a, b) => (b.raw || 0) - (a.raw || 0),
+            filter: item => item.raw > 0,
+            callbacks: {
+              label: ctx => {
+                const total = per[ctx.dataIndex] * unit.k;
+                return ` ${ctx.dataset.label}: ${unit.fmt(ctx.raw)}${total ? ` · ${ccPct(ctx.raw / total)}` : ''}`;
+              },
+              footer: items => {
+                const p = months[items[0].dataIndex];
+                return `All: ${unit.fmt(per[items[0].dataIndex] * unit.k)} a session · ${ccTopDays(p, side, metric)} sessions`;
+              },
+            } } },
+          scales: {
+            x: { stacked: true, grid: { display: false }, ticks: { maxTicksLimit: 9, maxRotation: 0, autoSkip: true } },
+            y: { stacked: true, min: 0, ticks: { callback: v => (v === 0 ? '0' : fmtNum(v, v >= 10 ? 0 : v >= 1 ? 1 : 2)) } },
+          },
+        },
+      });
+    };
+    draw('mcx', 'ccTopMcx', 'chartCcTopMcx', 'topunitM');
+    draw('nse', 'ccTopNse', 'chartCcTopNse', 'topunitN');
+    const p = months[idx];
+    q('topmeta').textContent = `${metricText} · ${ccMonthLabel(months[0].month)} to ${ccMonthLabel(months[months.length - 1].month)}`;
+    q('toptitle').textContent = `${ccMonthLabel(p.month)}${idx === months.length - 1 ? ' to date' : ''}, ${metricText}${idx > 0 && metric !== 'con' ? ` · NSE share against ${ccMonthLabel(months[idx - 1].month)}` : ''}`;
+    q('toptable').innerHTML = ccTopTableHTML(doc, months, idx, metric);
+  };
+
+  const drawCharts = () => { drawDaily(); drawMonthly(); drawTop(); drawRev(); };
   drawTable();
   drawCharts();
   rxOnSeg(root, 'ccWin', v => { CC_VIEW.win = v; drawTable(); });
   rxOnSeg(root, 'ccUnd', v => { CC_VIEW.und = v; drawDaily(); drawMonthly(); });
   rxOnSeg(root, 'ccMetric', v => { CC_VIEW.metric = v; drawDaily(); drawMonthly(); });
   rxOnSeg(root, 'ccRange', v => { CC_VIEW.range = v; drawDaily(); });
+  rxOnSeg(root, 'ccTop', v => { CC_VIEW.top = v; drawTop(); });
   RX_TAB_REFRESH.competition = drawCharts;
 }
 

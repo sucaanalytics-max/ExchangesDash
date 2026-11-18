@@ -3464,3 +3464,12 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
 .pt-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 0; }
 .pt-share { display: block; font-size: 11px; color: var(--rx-muted, #62656D); }
 .pt-table td, .pt-table th { white-space: nowrap; }
+
+/* MCX Competition tab: top commodities by month (19-mcx-competition.js) */
+.cc-top-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 8px; }
+.cc-top-h { font-size: 13px; font-weight: 600; margin: 0 0 6px; color: var(--rx-ink, #16181D); }
+.cc-top-h .rx-meta { font-weight: 400; margin-left: 6px; }
+.cc-sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+@media (max-width: 640px) {
+  .cc-top-grid { grid-template-columns: minmax(0, 1fr); }
+}

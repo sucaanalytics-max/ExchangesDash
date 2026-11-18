@@ -137,6 +137,28 @@ class Revenue(unittest.TestCase):
     def test_unknown_premium_counts_zero(self):
         self.assertEqual(com.revenue({"gold": {"o": [3, 0.3, None]}}), 0)
 
+    def test_revenue_by_underlying_adds_up_to_the_total(self):
+        nse = {"crude": {"f": [237, 18.9543], "o": [18177, 1525.5914, 63.7014]},
+               "electricity": {"f": [82, 1.3716]}}
+        ru = com.revenue_by_underlying(nse)
+        self.assertAlmostEqual(ru["electricity"], 1.3716 * fr.fraction(10))
+        self.assertAlmostEqual(round(sum(ru.values()), 6), com.revenue(nse))
+
+    def test_mcx_split_by_futures_notional_and_options_premium(self):
+        mcx = {"crude": {"f": [10, 300.0], "o": [100, 9000.0, 60.0]},
+               "gold": {"f": [10, 700.0], "o": [100, 9000.0, 40.0]}, "agri": {"f": [1, 0.0]}}
+        ru = com.mcx_revenue_by_underlying(mcx, 2.0, 10.0)
+        self.assertAlmostEqual(ru["crude"], 2.0 * 0.3 + 10.0 * 0.6)
+        self.assertAlmostEqual(ru["gold"], 2.0 * 0.7 + 10.0 * 0.4)
+        self.assertEqual(ru["agri"], 0)
+        self.assertAlmostEqual(sum(ru.values()), 12.0)
+
+    def test_mcx_split_needs_rows_revenue_and_something_to_split_over(self):
+        self.assertIsNone(com.mcx_revenue_by_underlying(None, 1.0, 1.0))
+        self.assertIsNone(com.mcx_revenue_by_underlying({"crude": {"f": [1, 5.0]}}, None, 1.0))
+        # 2026-06-23: option rows with premium 0 against reported options revenue
+        self.assertIsNone(com.mcx_revenue_by_underlying({"crude": {"f": [1, 5.0], "o": [9, 90.0, 0.0]}}, 1.0, 6.15))
+
 
 class Periods(unittest.TestCase):
     def test_sums_only_days_with_both_exchanges_and_no_special_sessions(self):
@@ -155,6 +177,16 @@ class Periods(unittest.TestCase):
         quarters = com.periods(daily, "quarter")
         self.assertEqual([(q["quarter"], q["days"]) for q in quarters], [("Q3 FY 2027", 2)])
         self.assertEqual(quarters[0]["mcx"]["crude"]["o"], [2000, 18000.0, 198.0])
+
+    def test_revenue_per_underlying_sums_over_days_that_have_it(self):
+        day = lambda d, mcx_ru: {"date": d, "nse": {"crude": {"o": [1, 10.0, 1.0]}},
+                                 "mcx": {"crude": {"o": [9, 90.0, 9.0]}}, "rev": [0.01, 0.01],
+                                 "ru": {"nse": {"crude": 0.01}, "mcx": mcx_ru}}
+        m = com.periods([day("2026-06-22", {"crude": 1.5}), day("2026-06-23", None),
+                         day("2026-06-24", {"crude": 2.5, "gold": 1.0})], "month")[0]
+        self.assertEqual(m["days"], 3)
+        self.assertEqual(m["ru_days"], {"nse": 3, "mcx": 2})
+        self.assertEqual(m["ru"], {"nse": {"crude": 0.03}, "mcx": {"crude": 4.0, "gold": 1.0}})
 
     def test_none_propagates(self):
         acc = {}
@@ -202,7 +234,8 @@ class MainRun(unittest.TestCase):
         com.MCX_DATES_PATH = self.tmp / "mcx_dashboard_data.json"
         com.NEW_DAYS_FILE = self.tmp / ".count"
         com.MCX_DATES_PATH.write_text(json.dumps({"daily_all": [
-            {"date": "2026-11-05"}, {"date": "2026-11-16"}, {"date": "2026-11-17"}]}))
+            {"date": "2026-11-05"}, {"date": "2026-11-16", "fut_rev": 0.0, "opt_rev": 0.5},
+            {"date": "2026-11-17"}]}))
         import mcx_pipeline
         self.mcx_key = mcx_pipeline.MCX_SUPABASE_KEY
         mcx_pipeline.MCX_SUPABASE_KEY = "test"
@@ -243,6 +276,10 @@ class MainRun(unittest.TestCase):
         self.assertEqual(doc["unavailable"], {"2026-11-05": "not posted (HTTP 404)"})   # MCX traded, NSE never posted
         self.assertEqual(doc["daily"][1]["mcx"]["natgas"]["o"], [100, 1000.0, 20.0])
         self.assertEqual(doc["monthly"][0]["days"], 2)
+        self.assertEqual(doc["daily"][0]["ru"]["mcx"], {"natgas": 0.5})   # MCX's reported revenue, split
+        self.assertIsNone(doc["daily"][1]["ru"]["mcx"])                    # no reported revenue that day
+        self.assertAlmostEqual(sum(doc["daily"][1]["ru"]["nse"].values()), doc["daily"][1]["rev"][0], places=5)
+        self.assertEqual(doc["monthly"][0]["ru_days"], {"nse": 2, "mcx": 1})
         self.assertEqual(com.NEW_DAYS_FILE.read_text(), "3")
 
         # Next run: MCX's 17 Nov rows are gone (not landed): that day publishes mcx null

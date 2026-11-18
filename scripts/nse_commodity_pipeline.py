@@ -38,6 +38,14 @@ Both are 2 × rate per side × turnover (futures on notional, options on
 premium). Neither is added to NSE's equity total_rev: NSE's commodity revenue
 is about ₹0.001–0.01 Cr a day.
 
+Revenue per underlying (`ru`, ₹ Cr at today's rates), for the Competition
+tab's top-commodities view: NSE's from fee_register as above; MCX's is its own
+reported futures and options revenue for the day (mcx_dashboard_data.json,
+fut_rev / opt_rev, written by mcx_pipeline.py from mcx-vercel) split across
+underlyings by their share of that day's futures notional and options premium.
+MCX's reported revenue is a flat rate on both (no MCX rate is kept here), so
+the split is the same as pricing each underlying.
+
 Runs in exchange-update.yml's mcx-update job, after mcx_pipeline.py. Each run
 re-reads the last RECENT_DAYS dates and backfills up to BACKFILL_PER_RUN older
 ones (MANUAL_BACKFILL on a manual run, which also retries days marked
@@ -295,21 +303,61 @@ def _fut_product(und):
     return "com_fut_elec" if und == "electricity" else "com_fut"
 
 
-def revenue(nse, d=None):
-    """NSE's commodity transaction-charge revenue (₹ Cr) for one day's compact
-    aggregates: at today's rates, or at the rules in force on `d`. Futures are
-    charged on notional, options on premium (an unknown premium counts as 0 and
-    is listed in the day's checks)."""
+def revenue_by_underlying(nse, d=None):
+    """NSE's commodity transaction-charge revenue (₹ Cr) per underlying for one
+    day's compact aggregates: at today's rates, or at the rules in force on `d`.
+    Futures are charged on notional, options on premium (an unknown premium
+    counts as 0 and is listed in the day's checks)."""
     today = {"com_fut": take_rates.NSE_TR_COM_FUT, "com_fut_elec": take_rates.NSE_TR_COM_FUT_ELEC,
              "com_opt": take_rates.NSE_TR_COM_OPT}
-    total = 0.0
+    out = {}
     for und, cells in nse.items():
+        total = 0.0
         for inst, c in cells.items():
             prod = _fut_product(und) if inst == "f" else "com_opt"
             base = c[1] if inst == "f" else (c[2] or 0.0)
             rate = fee_register.rate("NSE", prod, d)[0] if d else today[prod]
             total += base * rate
-    return round(total, 6)
+        out[und] = total
+    return out
+
+
+def revenue(nse, d=None):
+    """NSE's commodity transaction-charge revenue (₹ Cr) for one day, all
+    underlyings (see revenue_by_underlying)."""
+    return round(sum(revenue_by_underlying(nse, d).values()), 6)
+
+
+def mcx_revenue_by_underlying(mcx, fut_rev, opt_rev):
+    """MCX's reported revenue for one day (₹ Cr, futures and options) split
+    across underlyings by their share of the day's futures notional and options
+    premium. None when MCX's rows or its reported revenue are missing, or when
+    revenue has nothing to split over (2026-06-23: every MCX option row has
+    premium 0, against ₹6.15 Cr of reported options revenue)."""
+    if not mcx or fut_rev is None or opt_rev is None:
+        return None
+    fut = {u: c["f"][1] for u, c in mcx.items() if "f" in c}
+    prem = {u: (c["o"][2] or 0.0) for u, c in mcx.items() if "o" in c}
+    tf, tp = sum(fut.values()), sum(prem.values())
+    if (fut_rev and not tf) or (opt_rev and not tp):
+        return None
+    out = {}
+    for u in mcx:
+        v = (fut_rev * fut.get(u, 0.0) / tf if tf else 0.0) + (opt_rev * prem.get(u, 0.0) / tp if tp else 0.0)
+        out[u] = round(v, 6)
+    return out
+
+
+def mcx_reported_revenue(path=None):
+    """MCX's reported futures and options revenue per date (₹ Cr, at today's
+    rates) from mcx_dashboard_data.json, special sessions included."""
+    try:
+        doc = json.loads(Path(path or MCX_DATES_PATH).read_text())
+    except (OSError, ValueError) as e:
+        print(f"WARNING: no MCX revenue for the per-underlying split ({e})")
+        return {}
+    rows = doc.get("daily_all", []) + doc.get("special_sessions", [])
+    return {r["date"]: (r.get("fut_rev"), r.get("opt_rev")) for r in rows if "date" in r}
 
 
 def totals(by_und):
@@ -353,21 +401,32 @@ def quarter_sort_key(label):
 
 def periods(daily, key):
     """Monthly or quarterly sums over regular days that have both exchanges'
-    figures (`days`), so every share in a period has a real MCX denominator."""
+    figures (`days`), so every share in a period has a real MCX denominator.
+    `ru` sums each side's revenue per underlying over the `ru_days` of those
+    days that have it (a day MCX's revenue can't be split for is left out)."""
     out = {}
     for r in daily:
         if r.get("session") or r.get("mcx") is None:
             continue
         label = r["date"][:7] if key == "month" else fy_quarter_label(r["date"])
-        p = out.setdefault(label, {key: label, "days": 0, "nse": {}, "mcx": {}, "rev": [0.0, 0.0]})
+        p = out.setdefault(label, {key: label, "days": 0, "nse": {}, "mcx": {}, "rev": [0.0, 0.0],
+                                   "ru": {"nse": {}, "mcx": {}}, "ru_days": {"nse": 0, "mcx": 0}})
         p["days"] += 1
         _add(p["nse"], r["nse"])
         _add(p["mcx"], r["mcx"])
         p["rev"] = [p["rev"][0] + r["rev"][0], p["rev"][1] + r["rev"][1]]
+        ru = r.get("ru") or {}
+        for side in ("nse", "mcx"):
+            if ru.get(side) is None:   # left out; ru_days counts the days that are in
+                continue
+            p["ru_days"][side] += 1
+            for u, v in ru[side].items():
+                p["ru"][side][u] = p["ru"][side].get(u, 0.0) + v
     rows = []
     for p in out.values():
         p["nse"], p["mcx"] = _round_tree(p["nse"]), _round_tree(p["mcx"])
         p["rev"] = [round(x, 6) for x in p["rev"]]
+        p["ru"] = {s: {u: round(x, 6) for u, x in sorted(v.items())} for s, v in p["ru"].items()}
         rows.append(p)
     if key == "month":
         return sorted(rows, key=lambda p: p["month"])
@@ -465,15 +524,24 @@ def run_nse(session, store, unavailable, dates, mcx_dates, backfill, now_iso, to
     return changed, errors
 
 
-def build_doc(store, unavailable, mcx, unmapped_mcx, updated_at):
+def build_doc(store, unavailable, mcx, unmapped_mcx, updated_at, mcx_rev=None):
     """The published file. Each daily row: date, nse and mcx in compact form
     (mcx null until MCX's rows land), rev = [₹ Cr at today's rates, at the rule
-    then in force], and session / checks / parser when they apply."""
+    then in force], ru = revenue per underlying at today's rates for each side
+    (mcx null until both MCX's rows and its reported revenue are in), and
+    session / checks / parser when they apply. `mcx_rev`: {date: (fut_rev,
+    opt_rev)}, read from mcx_dashboard_data.json when not given."""
+    if mcx_rev is None:
+        mcx_rev = mcx_reported_revenue()
     daily = []
     for key in sorted(store):
         rec = store[key]
         nse = rec["nse"]
-        row = {"date": key, "nse": nse, "mcx": mcx.get(key), "rev": [revenue(nse), revenue(nse, key)]}
+        m = mcx.get(key)
+        fr, orv = mcx_rev.get(key, (None, None))
+        row = {"date": key, "nse": nse, "mcx": m, "rev": [revenue(nse), revenue(nse, key)],
+               "ru": {"nse": {u: round(v, 6) for u, v in sorted(revenue_by_underlying(nse).items())},
+                      "mcx": mcx_revenue_by_underlying(m, fr, orv)}}
         s = trading_calendar.special_session("mcx", key)
         if s:
             row["session"], row["session_note"] = s["type"], s["note"]
@@ -486,7 +554,11 @@ def build_doc(store, unavailable, mcx, unmapped_mcx, updated_at):
         "updated_at": updated_at,
         "format": {"f": "futures [contracts, notional ₹ Cr]",
                    "o": "options [contracts, notional ₹ Cr, premium ₹ Cr]",
-                   "rev": "NSE commodity transaction charges, ₹ Cr [at today's rates, at the rule then in force]"},
+                   "rev": "NSE commodity transaction charges, ₹ Cr [at today's rates, at the rule then in force]",
+                   "ru": "transaction revenue per underlying, ₹ Cr at today's rates: {nse, mcx}; NSE's priced "
+                         "from fee_register, MCX's = its reported futures / options revenue for the day split "
+                         "by each underlying's share of futures notional / options premium; in periods, summed "
+                         "over ru_days"},
         "source": {
             "nse": "NSE commodity bhavcopy (UDiFF): " + NSE_URL.format(ymd="YYYYMMDD"),
             "mcx": "MCX bhavcopy per commodity (Supabase mcx_commodity_daily)",
