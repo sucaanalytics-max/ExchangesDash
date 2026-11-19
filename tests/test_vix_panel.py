@@ -307,6 +307,12 @@ class VixTicker(unittest.TestCase):
         m = ticker({**LIVE_VIX, "stale_since": "2026-11-19T06:10:00Z"}, [], now="2026-11-19T06:12:00Z")
         self.assertEqual((m["kind"], m["last"], m["change"], m["pctChange"]), ("stale", 15.52, 0.62, 4.16))
         self.assertEqual(m["when"], "2026-11-19T06:00:00Z")
+        # outside market hours or on a later day the held value is an earlier session's
+        # last reading, as the live cards treat their polls: a close, not a delay
+        flagged = {**LIVE_VIX, "stale_since": "2026-11-19T06:10:00Z"}
+        self.assertEqual(ticker(flagged, [], now="2026-11-19T11:00:00Z")["kind"], "close")   # 16:30 IST
+        self.assertEqual(ticker(flagged, [], now="2026-11-21T06:00:00Z")["kind"], "close")   # Saturday
+        self.assertEqual(ticker(flagged, [], now="2026-11-20T06:00:00Z")["kind"], "close")   # next session, no read yet
 
     def test_ticker_live_and_close(self):
         # 11:30 IST on a Thursday, polled 2 min ago: live

@@ -212,10 +212,12 @@ function vixWeeklyRows(nseRows, totalByDate, weeks = 8) {
 // ========================
 
 // What the ticker shows: { kind, last, change, pctChange, when, source, age }.
-// From the poll's india_vix: 'stale' when the poller flagged its last read failed
-// (stale_since) or, in market hours (Mon–Fri 09:15–16:00 IST), when the read is
-// from today but older than LIVE_STALE_MINUTES; 'live' when it is fresh in market
-// hours; else 'close' (the last reading of a finished session). `when` is the
+// From the poll's india_vix, as the live cards read their polls (liveStatus): in
+// market hours (Mon–Fri 09:15–16:00 IST) a read from today is 'live' when fresh
+// and 'stale' when older than LIVE_STALE_MINUTES or flagged failed (stale_since);
+// anything else, stale_since or not, is 'close' (the last reading of an earlier
+// or finished session, so a failed Friday poll does not say "delayed" all
+// weekend). `when` is the
 // poll's as_of (UTC). Without a reading, or when NSE's daily rows hold a newer
 // close, it is the latest positive vix in nseRows: kind 'close', `when` its date,
 // change against the close before it. pctChange is in percent (4.16 = 4.16 %),
@@ -232,8 +234,8 @@ function vixTickerModel(liveVix, nseRows, now = Date.now()) {
     const open = wd >= 1 && wd <= 5 && mins >= 555 && mins < 960;
     const age = isFinite(t) ? Math.round((now - t) / 60000) : null;
     const today = isFinite(t) && istDate(t) === istDate(now);
-    const kind = liveVix.stale_since ? 'stale'
-      : open && today ? (age != null && age <= LIVE_STALE_MINUTES ? 'live' : 'stale') : 'close';
+    const fresh = !liveVix.stale_since && age != null && age <= LIVE_STALE_MINUTES;
+    const kind = open && today ? (fresh ? 'live' : 'stale') : 'close';
     const num = v => (v == null || !isFinite(Number(v)) ? null : Number(v));
     return { kind, last: liveLast, change: num(liveVix.change), pctChange: num(liveVix.pct_change),
              when: liveVix.as_of || null, source: liveVix.source || null, age };
@@ -323,7 +325,7 @@ function vixFitChip(ex, p) {
   if (!p) return rxChip(`${name}: no data`, 'warn');
   if (!p.fit) return rxChip(`${name}: no fit (${p.n} days, needs 60)`, 'warn');
   const f = p.fit;
-  return `<span title="${escHtml(`${name}: elasticity of revenue to VIX, ${f.n} days since ${rxDate(VIX_FIT_FROM)}. R² ${fmtNum(f.r2, 2)} with weekday dummies, ${fmtNum(f.r2Dow, 2)} with the dummies alone; the VIX term adds ${fmtNum(f.r2Vix, 2)}.`)}">${rxChip(`${name} β ${fmtNum(f.beta, 2)} · n ${f.n} · R² (VIX) ${fmtNum(f.r2Vix, 2)}`, 'data')}</span>`;
+  return `<span class="vix-fit" title="${escHtml(`${name}: elasticity of revenue to VIX, ${f.n} days since ${rxDate(VIX_FIT_FROM)}. R² ${fmtNum(f.r2, 2)} with weekday dummies, ${fmtNum(f.r2Dow, 2)} with the dummies alone; the VIX term adds ${fmtNum(f.r2Vix, 2)}.`)}">${rxChip(`${name} β ${fmtNum(f.beta, 2)} · n ${f.n} · R² (VIX) ${fmtNum(f.r2Vix, 2)}`, 'data')}</span>`;
 }
 
 function vixSensitivityHTML(model, ticker) {
@@ -338,12 +340,12 @@ function vixSensitivityHTML(model, ticker) {
     const label = r.kind === 'today' ? `${fmtNum(r.vix, 2)} <span class="vix-tag">${todayTag}</span>`
       : r.kind === 'base' ? `${fmtNum(r.vix, 2)} <span class="vix-tag">45-day avg (base)</span>` : fmtNum(r.vix, 0);
     return `<tr${cls ? ` class="${cls}"` : ''}${r.outside ? ' title="Outside the VIX range of the fit sample: the projection extrapolates"' : ''}>
-      <td>${label}</td><td>${r.kind === 'base' ? '—' : rxSignedPct(r.pctVsBase)}</td>
+      <td>${label}</td><td class="vix-pv">${r.kind === 'base' ? '—' : rxSignedPct(r.pctVsBase)}</td>
       ${VIX_EXCHANGES.map(ex => `<td>${cr(r.adr[ex])}</td>`).join('')}
       <td class="rx-strong">${cr(r.total)}</td><td>${r.kind === 'base' ? '—' : rxSignedPct(r.totalPct)}</td></tr>`;
   }).join('');
   return `<div class="rx-scroll"><table class="rx-table vix-sens">
-    <thead><tr><th>VIX</th><th>% vs 45-day avg VIX</th><th>NSE</th><th>BSE</th><th>MCX</th><th>Total ₹ Cr/day</th><th>Total %</th></tr></thead>
+    <thead><tr><th>VIX</th><th class="vix-pv">% vs 45-day avg VIX</th><th>NSE</th><th>BSE</th><th>MCX</th><th>Total <span class="vix-unit">₹ Cr/day</span></th><th>Total %</th></tr></thead>
     <tbody>${body}</tbody></table></div>`;
 }
 
@@ -353,12 +355,12 @@ function vixWeeklyHTML(weekly) {
   const pts = x => (x == null ? '—' : `${x >= 0 ? '+' : '−'}${fmtNum(Math.abs(x), 2)}`);
   const cls = x => (x == null ? '' : x >= 0 ? ' class="rx-up"' : ' class="rx-dn"');
   const body = weekly.map(w => `<tr${w.inProgress ? ' class="vix-wip"' : ''}>
-      <td>${escHtml(w.label)}${w.inProgress ? ` ${rxChip('in progress')}` : ''}</td><td>${w.sessions}</td>
+      <td>${escHtml(w.label)}${w.inProgress ? ` ${rxChip('in progress')}` : ''}</td><td class="vix-nar">${w.sessions}</td>
       <td>${v(w.avgVix)}</td><td>${v(w.closeVix)}</td>
-      <td${cls(w.chgPts)}>${pts(w.chgPts)}</td><td${cls(w.chgPct)}>${rxSignedPct(w.chgPct)}</td>
+      <td class="vix-nar${w.chgPts == null ? '' : w.chgPts >= 0 ? ' rx-up' : ' rx-dn'}">${pts(w.chgPts)}</td><td${cls(w.chgPct)}>${rxSignedPct(w.chgPct)}</td>
       <td class="rx-strong">${v(w.totalAdr)}</td><td${cls(w.totalPct)}>${rxSignedPct(w.totalPct)}</td></tr>`).join('');
   return `<div class="rx-scroll"><table class="rx-table vix-weekly">
-    <thead><tr><th>Week</th><th>Sessions</th><th>Avg VIX</th><th>Week-end VIX</th><th>WoW pts</th><th>WoW %</th><th>Total ADR ₹ Cr</th><th>ADR WoW %</th></tr></thead>
+    <thead><tr><th>Week</th><th class="vix-nar">Sessions</th><th>Avg VIX</th><th>Week-end VIX</th><th class="vix-nar">WoW pts</th><th>VIX WoW %</th><th>Total ADR <span class="vix-unit">₹ Cr</span></th><th>ADR WoW %</th></tr></thead>
     <tbody>${body}</tbody></table></div>`;
 }
 
