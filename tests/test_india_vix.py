@@ -81,5 +81,71 @@ class IndiaVix(unittest.TestCase):
         self.assertIsNone(vix["pct_change"])
 
 
+class ApplyVix(unittest.TestCase):
+    DATES = [f"2026-11-{d:02d}" for d in range(1, 16)]
+
+    def rows(self):
+        out = []
+        for i, d in enumerate(self.DATES):
+            v = 0 if i < 3 else (15.52 if i >= 13 else 14.0 + i / 100)
+            out.append({"date": d, "vix": v})
+        return out
+
+    def fetch_map(self, bad=None):
+        m = {d: 11.0 for d in self.DATES}
+        m[self.DATES[14]] = 16.1
+        return m
+
+    def test_fills_zeros_and_rechecks_last_ten(self):
+        import nse_pipeline as nse
+        rows = self.rows()
+        old = [r["vix"] for r in rows]
+        calls = []
+
+        def fetch(a, b):
+            calls.append((a, b))
+            return self.fetch_map()
+
+        changed = nse.apply_vix(rows, fetch=fetch)
+        self.assertEqual(calls, [(self.DATES[0], self.DATES[14])])
+        for i in range(0, 3):
+            self.assertEqual(rows[i]["vix"], 11.0)
+        for i in (3, 4):
+            self.assertEqual(rows[i]["vix"], old[i])
+        for i in range(5, 14):
+            self.assertEqual(rows[i]["vix"], 11.0)
+        self.assertEqual(rows[14]["vix"], 16.1)
+        self.assertEqual(changed, self.DATES[0:3] + self.DATES[5:15])
+
+    def test_empty_fetch_changes_nothing(self):
+        import nse_pipeline as nse
+        rows = self.rows()
+        before = [dict(r) for r in rows]
+        self.assertEqual(nse.apply_vix(rows, fetch=lambda a, b: {}), [])
+        self.assertEqual(rows, before)
+
+    def test_missing_date_keeps_value(self):
+        import nse_pipeline as nse
+        rows = self.rows()
+        m = self.fetch_map()
+        del m[self.DATES[7]]
+        nse.apply_vix(rows, fetch=lambda a, b: m)
+        self.assertEqual(rows[7]["vix"], 14.0 + 7 / 100)
+
+    def test_never_writes_zero_over_value(self):
+        import nse_pipeline as nse
+        rows = self.rows()
+        m = self.fetch_map()
+        m[self.DATES[8]] = 0
+        nse.apply_vix(rows, fetch=lambda a, b: m)
+        self.assertEqual(rows[8]["vix"], 14.0 + 8 / 100)
+
+    def test_no_fetch_when_all_recent_match(self):
+        import nse_pipeline as nse
+        rows = [{"date": d, "vix": 12.0} for d in self.DATES]
+        m = {d: 12.0 for d in self.DATES}
+        self.assertEqual(nse.apply_vix(rows, fetch=lambda a, b: m), [])
+
+
 if __name__ == "__main__":
     unittest.main()

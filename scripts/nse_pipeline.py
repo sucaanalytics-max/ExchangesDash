@@ -72,6 +72,43 @@ def fetch_indiavix_map(start_date, end_date):
         return {}
 
 
+def apply_vix(all_daily, fetch=None, refresh_last=10):
+    """Fill India VIX on rows missing it and re-check the last `refresh_last`
+    rows (trading days), whose yfinance value can be the previous day's close.
+    Older non-zero rows are never touched, and 0 never overwrites a value.
+    `fetch` defaults to fetch_indiavix_map, looked up at call time.
+    Returns the changed dates in date order."""
+    if fetch is None:
+        fetch = fetch_indiavix_map
+    if not all_daily:
+        return []
+    recent = all_daily[-refresh_last:] if refresh_last > 0 else []
+    recent_dates = {r["date"] for r in recent}
+    zero = [r["date"] for r in all_daily if not float(r.get("vix", 0) or 0)]
+    starts = zero[:1] + [recent[0]["date"]] if recent else zero[:1]
+    if not starts:
+        print("All records already have VIX data")
+        return []
+    vix_start, vix_end = min(starts), all_daily[-1]["date"]
+    print(f"Fetching VIX for {len(zero)} records missing it and the last "
+          f"{len(recent)} days ({vix_start} to {vix_end})")
+    vix_map = fetch(vix_start, vix_end)
+    if not vix_map:
+        return []
+    changed = []
+    for rec in all_daily:
+        new = float(vix_map.get(rec["date"], 0) or 0)
+        if new <= 0:
+            continue
+        old = float(rec.get("vix", 0) or 0)
+        if old == 0 or (rec["date"] in recent_dates and abs(new - old) > 0.005):
+            rec["vix"] = vix_map[rec["date"]]
+            changed.append(rec["date"])
+    filled = sum(1 for r in all_daily if float(r.get("vix", 0) or 0) > 0)
+    print(f"VIX applied: {len(changed)} changed; {filled}/{len(all_daily)} records now have VIX data")
+    return changed
+
+
 # ═══════════════════════════════════════════════════════════════
 # SECTION 1: NSE DATA FETCHER (curl_cffi with Chrome impersonation)
 # ═══════════════════════════════════════════════════════════════
@@ -1307,21 +1344,9 @@ def main():
 
     print(f"Total daily records: {len(all_daily)}")
 
-    # Apply VIX to any records that are missing it (vix == 0)
-    missing_vix = [d for d in all_daily if not float(d.get("vix", 0) or 0)]
-    if missing_vix:
-        vix_start = missing_vix[0]["date"]
-        vix_end   = missing_vix[-1]["date"]
-        print(f"Fetching VIX for {len(missing_vix)} records missing it ({vix_start} to {vix_end})")
-        vix_map = fetch_indiavix_map(vix_start, vix_end)
-        if vix_map:
-            for rec in all_daily:
-                if not float(rec.get("vix", 0) or 0):
-                    rec["vix"] = vix_map.get(rec["date"], 0)
-            filled = sum(1 for r in all_daily if float(r.get("vix", 0) or 0) > 0)
-            print(f"VIX applied: {filled}/{len(all_daily)} records now have VIX data")
-    else:
-        print("All records already have VIX data")
+    # Fill missing VIX and re-check the last 10 days (yfinance sometimes returns
+    # the previous day's close)
+    apply_vix(all_daily)
 
     # Steps 5-6: Recompute aggregates and enriched data (at today's rates)
     out = build_outputs(all_daily, pnl, pnl_fy, cost_ratios)
