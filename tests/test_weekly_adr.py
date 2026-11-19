@@ -278,7 +278,24 @@ class WeeklyAdrTableTest(unittest.TestCase):
         self.assertAlmostEqual(hol["cells"]["mcx"]["pct"], 0.2)
         self.assertAlmostEqual(hol["total"]["avg"], 75.5)
         self.assertAlmostEqual(hol["total"]["alt"], 73.6)
-        self.assertAlmostEqual(hol["total"]["pct"], (58 - 75.5) / 75.5)
+        self.assertEqual(ref["total"]["excl"], ["bse"])  # row 1's Total is NSE + MCX only
+        self.assertEqual(hol["total"]["excl"], [])
+        self.assertIsNone(hol["total"]["pct"])  # different exchanges: no Total % change
+
+    def test_total_pct_same_exchanges(self):
+        bse = rows({**full_week("2026-09-28", (6, 8, 30, 52, 4)), **full_week("2026-10-05", (5, 5, 5, 5, 5))})
+        for mode, nse_avg in (("actual", 50.5), ("normalised", 48.6)):
+            ref, hol = js_eval(ADR_JS, "weeklyAdrTable({nse: weeklyAdrWeeks(DATA.n, 'nse'), bse: weeklyAdrWeeks(DATA.b, 'bse'),"
+                                       " mcx: weeklyAdrWeeks(DATA.m, 'mcx')}, ['2026-10-05', '2026-09-28'], DATA.mode)",
+                               {"n": NSE, "b": bse, "m": MCX, "mode": mode})
+            self.assertEqual(ref["total"]["excl"], [])
+            self.assertAlmostEqual(ref["total"]["avg"], 52 + 5 + 6)
+            self.assertAlmostEqual(hol["total"]["pct"], (63 - (nse_avg + 25)) / (nse_avg + 25))
+
+    def test_total_pct_both_missing_same_exchange(self):
+        ref, other = self.table(["2026-10-05", "2026-10-05"], "actual")
+        self.assertEqual(other["total"]["excl"], ["bse"])
+        self.assertAlmostEqual(other["total"]["pct"], 0)
 
     def test_normalised(self):
         _, hol = self.table(["2026-10-05", "2026-09-28"], "normalised")
@@ -289,7 +306,7 @@ class WeeklyAdrTableTest(unittest.TestCase):
         self.assertAlmostEqual(nse["pct"], (52 - 48.6) / 48.6)
         self.assertAlmostEqual(hol["total"]["avg"], 73.6)
         self.assertAlmostEqual(hol["total"]["alt"], 75.5)
-        self.assertAlmostEqual(hol["total"]["pct"], (58 - 73.6) / 73.6)
+        self.assertIsNone(hol["total"]["pct"])  # row 1 has no BSE
 
     def test_holiday_in_row_one(self):
         ref, other = self.table(["2026-09-28", "2026-10-05"], "normalised")

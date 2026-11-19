@@ -133,11 +133,12 @@ function weeklyAdrHolidayText(missing) {
 // The panel's rows for the chosen weeks (row 1 first) under `mode`. Each is
 // { week, holiday (any exchange's week is a holiday week), cells: { ex: null or
 // { avg, total, sessions, normalised, alt, missing, inProgress, pct } }, total:
-// { avg, total, alt, pct } }. alt is the other mode's average where the week has
+// { avg, total, alt, pct, excl (exchanges with no such week, left out of Total) } }. alt is the other mode's average where the week has
 // a normalised figure: the normalised one under Actual, the actual one under
 // Normalised (else null). pct (rows 2–3 only) is row 1's average against this
 // row's, (row 1 − this) ÷ this, as in the month table above; null on row 1 or
-// when either side is missing.
+// when either side is missing. Total's pct is null unless both rows' Totals are
+// made of the same exchanges.
 function weeklyAdrTable(byEx, weeks, mode) {
   const other = mode === 'normalised' ? 'actual' : 'normalised';
   const rows = weeks.map(week => {
@@ -153,7 +154,8 @@ function weeklyAdrTable(byEx, weeks, mode) {
       cells[ex] = { ...c, alt, missing: w.missing, inProgress: r.inProgress[ex], pct: null };
     });
     return { week, cells, holiday: WEEKLY_ADR_EXCHANGES.some(ex => r.holiday[ex]),
-             total: { ...r.total, alt: anyNorm ? weeklyAdrRow(byEx, week, other).total.avg : null, pct: null } };
+             total: { ...r.total, alt: anyNorm ? weeklyAdrRow(byEx, week, other).total.avg : null, pct: null,
+                      excl: WEEKLY_ADR_EXCHANGES.filter(ex => !cells[ex]) } };
   });
   const pct = (ref, cur) => (ref == null || cur == null || !cur ? null : (ref - cur) / cur);
   const first = rows[0];
@@ -161,7 +163,7 @@ function weeklyAdrTable(byEx, weeks, mode) {
     WEEKLY_ADR_EXCHANGES.forEach(ex => {
       if (row.cells[ex]) row.cells[ex].pct = pct(first.cells[ex] && first.cells[ex].avg, row.cells[ex].avg);
     });
-    row.total.pct = pct(first.total.avg, row.total.avg);
+    if (row.total.excl.join() === first.total.excl.join()) row.total.pct = pct(first.total.avg, row.total.avg);
   });
   return rows;
 }
@@ -215,6 +217,7 @@ function weeklyAdrCellHTML(c, mode, rowNum) {
 function weeklyAdrTotalHTML(t, mode, rowNum) {
   if (t.avg == null) return '<td class="wadr-c wadr-tot"><span class="wadr-v">—</span></td>';
   const lines = [`<span class="wadr-v">${fmtNum(t.avg, 2)}</span>`, `<span class="wadr-s">₹${fmtNum(t.total, 1)} Cr</span>`];
+  if (t.excl.length) lines.push(`<span class="wadr-excl" title="No such week in ${t.excl.map(e => e.toUpperCase()).join(' or ')}'s data: Total leaves it out, and its % change is shown only against a Total of the same exchanges">excl. ${t.excl.map(e => e.toUpperCase()).join(', ')}</span>`);
   if (t.alt != null) lines.push(`<span class="wadr-alt">${mode === 'normalised' ? 'actual' : 'normalised'} ${fmtNum(t.alt, 2)}</span>`);
   if (rowNum > 0) lines.push(`<span class="wadr-pct${t.pct == null ? '' : t.pct >= 0 ? ' rx-up' : ' rx-dn'}">${rxSignedPct(t.pct)}</span>`);
   return `<td class="wadr-c wadr-tot">${lines.join('')}</td>`;
@@ -264,7 +267,7 @@ function renderWeeklyAdrPanel(el) {
     body: `<div class="rx-scroll"><table class="rx-table wadr">
       <thead><tr><th>Week</th><th>NSE</th><th>BSE</th><th>MCX</th><th>Total</th></tr></thead>
       <tbody>${body}</tbody></table></div>`,
-    foot: `Rows 2 and 3 show % change from that week to row 1's week. Amber: a holiday week (complete, fewer than 5 sessions). ${mode === 'normalised'
+    foot: `Rows 2 and 3 show % change from that week to row 1's week; a Total that leaves an exchange out (no such week in its data) has no % change unless row 1's leaves out the same. Amber: a holiday week (complete, fewer than 5 sessions). ${mode === 'normalised'
       ? 'NSE and BSE holiday weeks show their normalised 5-day average; MCX is never normalised.'
       : 'Actual averages; holiday weeks also show their normalised 5-day average (MCX is never normalised).'}${behind.length
       ? ` ${behind.map(ex => `${ex.toUpperCase()} to ${escHtml(rxDate(last[ex]))}`).join(', ')}.` : ''}`,

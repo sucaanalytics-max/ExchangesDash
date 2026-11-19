@@ -3564,6 +3564,7 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
 .wadr-v--norm { font-style: italic; }
 .wadr-s, .wadr-alt { font-size: 11px; color: var(--rx-muted); }
 .wadr-alt { font-style: italic; }
+.wadr-excl { font-size: 11px; font-weight: 600; color: var(--rx-warn); }
 .wadr-pct { font-size: 12px; font-weight: 600; margin-top: 2px; }
 .rx-table.wadr tr.wadr-hol td,
 .rx-table.wadr tbody tr.wadr-hol:hover td { background: var(--wadr-hol-bg); }
