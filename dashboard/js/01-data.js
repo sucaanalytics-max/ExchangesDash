@@ -338,9 +338,12 @@ function feeBasisOf(ex) {
 }
 
 // Short unit label for table headers, e.g. "at today's rates" or "NSE/BSE at today's rates · MCX source values"
-function feeUnitLabel() {
+function feeUnitLabel() { return feeUnitLabelFor(viewExchanges()); }
+
+// The same label for a given list of exchanges (cross-exchange panels show NSE, BSE and MCX in every view)
+function feeUnitLabelFor(exs) {
   const groups = {};
-  viewExchanges().forEach(ex => { (groups[feeBasisOf(ex)] = groups[feeBasisOf(ex)] || []).push(ex.toUpperCase()); });
+  exs.forEach(ex => { (groups[feeBasisOf(ex)] = groups[feeBasisOf(ex)] || []).push(ex.toUpperCase()); });
   const kinds = Object.keys(groups);
   return kinds.length === 1 ? FEE_BASIS_SHORT[kinds[0]]
     : kinds.map(k => `${groups[k].join('/')} ${FEE_BASIS_SHORT[k]}`).join(' · ');

@@ -2,7 +2,7 @@
 // index.html loads dashboard/js/*.js in name order as classic scripts sharing one global scope.
 
 // ========================
-// WEEK-ON-WEEK ADR — NSE, BSE, MCX and Total on total revenue at today's rates,
+// WEEK-ON-WEEK ADR — NSE, BSE, MCX and Total on total revenue (NSE/BSE at today's rates, MCX source values),
 // whatever the exchange switcher shows. Weeks are Monday-keyed (cpWeekStart).
 // A holiday week is a complete week (its Friday on or before the exchange's last
 // data date) with fewer than 5 sessions; the current week is "in progress" and
@@ -232,7 +232,7 @@ function weeklyAdrPairNow(exchange) {
 
 function weeklyAdrHowHTML() {
   return rxHow('How this is worked out', `<ul>
-    <li><b>Weeks:</b> Monday to Sunday, from each exchange's daily rows; each cell is the average revenue per session that week (₹ Cr/day, total revenue at today's statutory rates for NSE and BSE, MCX as reported, fut + opt), with the week's revenue and session count below. Total adds the three exchanges' averages. Muhurat and DR-test sessions are not counted; full weekend sessions (Budget days) are.</li>
+    <li><b>Weeks:</b> Monday to Sunday, from each exchange's daily rows; each cell is the average revenue per session that week (₹ Cr/day, total revenue at today's statutory rates for NSE and BSE; MCX as reported, fut + opt, source values not re-priced), with the week's revenue and session count below. Total adds the three exchanges' averages. Muhurat and DR-test sessions are not counted; full weekend sessions (Budget days) are.</li>
     <li><b>Holiday week:</b> a complete week (its Friday on or before that exchange's latest day) with fewer than 5 sessions, shaded amber and with the missing weekdays named. The current week is "in progress" until its Friday is in, and is never normalised; BSE's file often runs a day behind NSE's, so its count can differ.</li>
     <li><b>Expiry pair:</b> the week's weekly expiry day, moved to the previous session when it falls on a holiday, plus the session before it in the same week. The expiry weekday follows the rule in force that week: NSE ${escHtml(weeklyAdrRulesText('nse'))}; BSE ${escHtml(weeklyAdrRulesText('bse'))}. Today that makes the pair NSE ${weeklyAdrPairNow('nse')} and BSE ${weeklyAdrPairNow('bse')}.</li>
     <li><b>Normalised:</b> NSE and BSE weeks with other than 5 sessions are rebuilt as a 5-day week: normalised total = expiry-pair revenue + (average of the week's other sessions) × (5 − pair sessions), and the normalised average is that total ÷ 5. With no session outside the pair there is no normalised figure. Under <i>Actual</i> the normalised figure is shown below the actual one; under <i>Normalised</i> it replaces it (and the % changes use it) and the actual figure is shown below.</li>
@@ -262,7 +262,7 @@ function renderWeeklyAdrPanel(el) {
   const behind = dates.filter(ex => last[ex] < newest);
   el.innerHTML = rxPanel({
     title: 'Week-on-week average daily revenue',
-    meta: `₹ Cr per session at today's rates · NSE, BSE, MCX and Total${newest ? ` · to ${escHtml(rxDate(newest))}` : ''}`,
+    meta: `₹ Cr per session · ${feeUnitLabelFor(WEEKLY_ADR_EXCHANGES)} · NSE, BSE, MCX and Total${newest ? ` · to ${escHtml(rxDate(newest))}` : ''}`,
     right: rxSeg('wadrMode', [['actual', 'Actual'], ['normalised', 'Normalised']], mode, 'Holiday weeks: actual or normalised'),
     body: `<div class="rx-scroll"><table class="rx-table wadr">
       <thead><tr><th>Week</th><th>NSE</th><th>BSE</th><th>MCX</th><th>Total</th></tr></thead>

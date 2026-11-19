@@ -238,6 +238,13 @@ class VixWeekly(unittest.TestCase):
         self.assertEqual(rows[2]["totalAdr"], 62)        # 60..64
         self.assertEqual(rows[1]["totalAdr"], 67)        # 65..69, not the Saturday's 999
         self.assertEqual(rows[0]["totalAdr"], 70.5)
+
+    def test_week_end_vix_is_the_last_session(self):
+        # the week's last session has no VIX yet: blank, not an earlier day's close
+        rows = self.rows(extra=[{"date": "2026-11-18", "total_rev": 50, "vix": 0}])
+        self.assertEqual(rows[0]["sessions"], 3)
+        self.assertIsNone(rows[0]["closeVix"])
+        self.assertEqual(rows[0]["avgVix"], 16.25)   # the average still uses the days that have VIX
         self.assertAlmostEqual(rows[1]["totalPct"], 67 / 62 - 1, places=12)
         self.assertIsNone(rows[2]["chgPts"])
         self.assertIsNone(rows[2]["chgPct"])
@@ -328,6 +335,19 @@ class VixTicker(unittest.TestCase):
         m = ticker({**LIVE_VIX, "as_of": "2026-11-17T10:55:00Z"},
                    [{"date": "2026-11-17", "vix": 15}, {"date": "2026-11-18", "vix": 16.1}], now="2026-11-19T04:00:00Z")
         self.assertEqual((m["kind"], m["last"], m["when"]), ("close", 16.1, "2026-11-18"))
+
+    def test_ticker_daily_close_wins_after_session(self):
+        # last poll at 14:00 IST on 19 Nov; the evening pipeline has added 19 Nov's close
+        poll = {**LIVE_VIX, "as_of": "2026-11-19T08:30:00Z"}
+        daily = [{"date": "2026-11-18", "vix": 15.0}, {"date": "2026-11-19", "vix": 16.2}]
+        m = ticker(poll, daily, now="2026-11-19T15:00:00Z")    # 20:30 IST
+        self.assertEqual((m["kind"], m["last"], m["when"], m["source"]), ("close", 16.2, "2026-11-19", "daily"))
+        self.assertAlmostEqual(m["change"], 1.2, places=9)
+        # during the session the poll still wins over a same-date daily row
+        self.assertEqual(ticker({**poll, "as_of": "2026-11-19T08:58:00Z"}, daily, now="2026-11-19T09:00:00Z")["kind"], "live")
+        # after the close with no daily row for that date yet, the poll is the last close
+        m = ticker(poll, daily[:1], now="2026-11-19T15:00:00Z")
+        self.assertEqual((m["kind"], m["last"], m["source"]), ("close", 15.52, "nse"))
 
     def test_ticker_preopen(self):
         # 09:00 IST on a Thursday, read at 08:58 IST (the poller starts at 08:55): pre-open, not "last close"
@@ -436,3 +456,12 @@ class VixPanelLiveTick(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class VixFeeBasisLabel(unittest.TestCase):
+    def test_cross_exchange_label_names_mcx_source_values(self):
+        names = ["FEE_BASIS_SHORT", "hasFeeVariant", "feeBasisOf", "feeUnitLabelFor"]
+        self.assertEqual(js_eval(names, "feeUnitLabelFor(['nse', 'bse', 'mcx'])"),
+                         "NSE/BSE at today's rates · MCX source values")
+        self.assertEqual(js_eval(names, "feeUnitLabelFor(['nse', 'bse'])"), "at today's rates")
