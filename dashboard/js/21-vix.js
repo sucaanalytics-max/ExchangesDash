@@ -5,11 +5,15 @@
 // VIX → ADR SENSITIVITY and WEEK-ON-WEEK VIX — NSE, BSE, MCX and Total on
 // total revenue (NSE/BSE at today's rates, MCX source values), whatever the exchange switcher shows.
 // Elasticity β per exchange, by OLS on daily rows since VIX_FIT_FROM:
-//   ln(rev_t / MA45_{t-1}) = a + weekday dummies + β · ln(VIX_t / VIXMA45_{t-1})
+//   ln(rev_t / MA45_{t-1}) = a + weekday dummies [+ expiry-day + pre-expiry-day
+//                            dummies, NSE and BSE] + β · ln(VIX_t / VIXMA45_{t-1})
 // MA45 is the mean revenue of the previous 45 sessions, VIXMA45 the mean VIX of
-// those of them that have one; the weekday dummies absorb expiry-day
-// concentration. VIX is NSE's daily_all[].vix, joined by date for BSE and MCX
-// (MCX days with no NSE session are left out). MCX modelled rows are dropped.
+// those of them that have one. The expiry and pre-expiry dummies (expiryDateSet /
+// preExpiryDateSet, 10-revenue-summary.js) absorb expiry-day concentration,
+// which the weekday dummies cannot across the 1 Sep 2025 expiry-weekday switch;
+// MCX has no expiry rule, so weekday dummies only. VIX is NSE's
+// daily_all[].vix, joined by date for BSE and MCX (MCX days with no NSE
+// session are left out). MCX modelled rows are dropped.
 // Projection: ADR(V) = ADR45 × (V / VIX45)^β, ADR45 being each exchange's mean
 // revenue over its last 45 sessions and VIX45 NSE's mean VIX over its last 45.
 // ========================
@@ -28,14 +32,18 @@ function vixByDate(nseRows) {
   return out;
 }
 
-// Fit points [{ date, y, x, dow }] from one exchange's daily_all (date order).
-// Modelled rows are dropped first. A point needs a date ≥ `from`, a full 45-row
-// window before it, VIX on its own date and revenue > 0. y uses the window's mean
-// revenue, x the mean VIX of the window rows that have one (MCX trades some NSE
-// holidays, which have none). dow is 0–4 for Mon–Fri; a weekend session takes
-// Friday's dummy.
-function vixFitSample(rows, vixMap, from = VIX_FIT_FROM) {
+// Fit points [{ date, y, x, dow, exp, pre }] from one exchange's daily_all (date
+// order). Modelled rows are dropped first. A point needs a date ≥ `from`, a full
+// 45-row window before it, VIX on its own date and revenue > 0. y uses the
+// window's mean revenue, x the mean VIX of the window rows that have one (MCX
+// trades some NSE holidays, which have none). dow is 0–4 for Mon–Fri; a weekend
+// session takes Friday's dummy. exp / pre are 1 on the exchange's expiry and
+// pre-expiry sessions (always 0 without an `exchange` with expiry rules).
+function vixFitSample(rows, vixMap, from = VIX_FIT_FROM, exchange = null) {
   const days = (rows || []).filter(r => r && !r.modelled);
+  const hasExpiry = !!exchange && EXPIRY_RULES.some(r => r.exchange === exchange);
+  const expSet = hasExpiry ? expiryDateSet(rows, exchange) : null;
+  const preSet = hasExpiry ? preExpiryDateSet(rows, exchange) : null;
   const out = [];
   days.forEach((r, i) => {
     const v = vixMap[r.date];
@@ -51,7 +59,8 @@ function vixFitSample(rows, vixMap, from = VIX_FIT_FROM) {
     if (!(revMA > 0) || !(vixMA > 0)) return;
     const wd = new Date(r.date + 'T00:00:00Z').getUTCDay();
     out.push({ date: r.date, y: Math.log(r.total_rev / revMA), x: Math.log(v / vixMA),
-               dow: wd >= 1 && wd <= 5 ? wd - 1 : 4 });
+               dow: wd >= 1 && wd <= 5 ? wd - 1 : 4,
+               exp: expSet && expSet.has(r.date) ? 1 : 0, pre: preSet && preSet.has(r.date) ? 1 : 0 });
   });
   return out;
 }
@@ -89,18 +98,33 @@ function vixOLS(X, y) {
   return b;
 }
 
-// { beta, r2, r2Dow, r2Vix, n } of y ~ 1 + dummies(dow 1..4) + x; r2Dow is the
-// R² of the dummies alone, so r2Vix is the VIX term's own contribution. A
-// weekday with no point gets no dummy. null below 60 points or if singular.
+// { beta, r2, r2Dow, r2Vix, n, dummies, bExpiry, bPre } of
+// y ~ 1 + dummies(dow 1..4, exp, pre) + x; r2Dow is the R² of the dummies alone
+// (weekday and expiry), so r2Vix is the VIX term's own contribution. A dummy
+// that is all zero, or collinear with the ones before it (an expiry dummy that
+// coincides with a weekday's over the sample), is left out; `dummies` names
+// those kept, bExpiry / bPre are the expiry / pre-expiry coefficients (null when
+// left out). null below 60 points or if singular.
 function vixFit(sample) {
   const n = (sample || []).length;
   if (n < 60) return null;
-  const dows = [1, 2, 3, 4].filter(d => sample.some(p => p.dow === d));
   const y = sample.map(p => p.y);
-  const Xd = sample.map(p => [1, ...dows.map(d => (p.dow === d ? 1 : 0))]);
+  const cands = [1, 2, 3, 4].map(d => ({ name: `dow${d}`, col: p => (p.dow === d ? 1 : 0) }))
+    .concat([{ name: 'exp', col: p => p.exp || 0 }, { name: 'pre', col: p => p.pre || 0 }]);
+  let Xd = sample.map(() => [1]);
+  const dummies = [];
+  cands.forEach(c => {
+    const v = sample.map(c.col);
+    if (!v.some(Boolean)) return;
+    const X = Xd.map((row, i) => [...row, v[i]]);
+    if (!vixOLS(X, y)) return;
+    Xd = X;
+    dummies.push(c.name);
+  });
   const Xf = sample.map((p, i) => [...Xd[i], p.x]);
   const bf = vixOLS(Xf, y), bd = vixOLS(Xd, y);
   if (!bf || !bd) return null;
+  const coef = name => (dummies.includes(name) ? bf[1 + dummies.indexOf(name)] : null);
   const yMean = y.reduce((s, v) => s + v, 0) / n;
   const sst = y.reduce((s, v) => s + (v - yMean) ** 2, 0);
   const r2 = (X, b) => {
@@ -109,7 +133,8 @@ function vixFit(sample) {
     return 1 - ssr / sst;
   };
   const r2Full = r2(Xf, bf), r2Dow = r2(Xd, bd);
-  return { beta: bf[bf.length - 1], r2: r2Full, r2Dow, r2Vix: r2Full - r2Dow, n };
+  return { beta: bf[bf.length - 1], r2: r2Full, r2Dow, r2Vix: r2Full - r2Dow, n,
+           dummies, bExpiry: coef('exp'), bPre: coef('pre') };
 }
 
 // ADR45: mean total_rev of the last n non-modelled rows (null without rows).
@@ -130,8 +155,9 @@ function vixMean(nseRows, n = VIX_MA) {
 // { vix, kind, pctVsBase, adr: {nse, bse, mcx}, total, totalPct, outside }, the
 // percentages as fractions: pctVsBase vs VIX45, totalPct vs the summed ADR45 of
 // the exchanges in Total. An exchange with a null beta (no fit) has adr null and
-// stays out of Total. `outside`: the vix is outside range = {min, max}, the
-// VIX range of the fit sample.
+// stays out of Total. `outside`: the row's VIX ÷ VIX45 is outside range =
+// {min, max}, the range of VIX ÷ VIXMA45 (exp x) over the fit sample, as the
+// model is fitted on that ratio, not on VIX levels.
 function vixSensitivityRows(perEx, vix45, todayVix, range) {
   if (!(vix45 > 0)) return [];
   const today = todayVix > 0 ? todayVix : null;
@@ -152,7 +178,7 @@ function vixSensitivityRows(perEx, vix45, todayVix, range) {
     const total = inTotal.length ? inTotal.reduce((s, ex) => s + adr[ex], 0) : null;
     return { vix: p.vix, kind: p.kind, pctVsBase: ratio - 1, adr, total,
              totalPct: total != null && baseTotal > 0 ? total / baseTotal - 1 : null,
-             outside: p.vix < lo || p.vix > hi };
+             outside: ratio < lo - 1e-12 || ratio > hi + 1e-12 };
   });
 }
 
@@ -163,8 +189,10 @@ function vixSensitivityRows(perEx, vix45, todayVix, range) {
 // NSE sessions. Changes (fractions for %) are against the next-older week in the
 // data, so the oldest row shown has them too unless no older week exists (one
 // extra week is built for that, then dropped). inProgress marks the week of the
-// latest NSE date while that date is before the week's Friday.
-function vixWeeklyRows(nseRows, totalByDate, weeks = 8) {
+// latest NSE date while a weekday after that date in the week has not yet passed
+// (the IST date of `now` is on or before it), so a week whose Friday is a holiday
+// is complete once the Friday is over, not when the next week's data lands.
+function vixWeeklyRows(nseRows, totalByDate, weeks = 8, now = Date.now()) {
   const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const dm = iso => [Number(iso.slice(8, 10)), MON[Number(iso.slice(5, 7)) - 1]];
   const label = (a, b) => {
@@ -186,13 +214,14 @@ function vixWeeklyRows(nseRows, totalByDate, weeks = 8) {
   const fri = new Date(latestWeek + 'T00:00:00Z');
   fri.setUTCDate(fri.getUTCDate() + 4);
   const latestFriday = fri.toISOString().slice(0, 10);
+  const istToday = new Date(now + 330 * 60000).toISOString().slice(0, 10);
   const stats = [...byWeek.keys()].sort().reverse().slice(0, weeks + 1).map(w => {
     const ds = byWeek.get(w);
     const vix = ds.map(r => r.vix).filter(v => v > 0);
     const tot = ds.map(r => (totalByDate ? totalByDate[r.date] : undefined)).filter(Number.isFinite);
     return { week: w, label: label(ds[0].date, ds[ds.length - 1].date), sessions: ds.length,
              avgVix: mean(vix), closeVix: ds[ds.length - 1].vix > 0 ? ds[ds.length - 1].vix : null, totalAdr: mean(tot),
-             inProgress: w === latestWeek && latest < latestFriday };
+             inProgress: w === latestWeek && latest < latestFriday && istToday <= latestFriday };
   });
   return stats.map((s, i) => {
     const o = stats[i + 1];
@@ -211,19 +240,23 @@ function vixWeeklyRows(nseRows, totalByDate, weeks = 8) {
 // (LIVE_CARD_CACHE.nse.hourly.india_vix), so it adds no fetch.
 // ========================
 
-// What the ticker shows: { kind, last, change, pctChange, when, source, age }.
-// From the poll's india_vix, as the live cards read their polls (liveStatus): in
-// market hours (Mon–Fri 09:15–16:00 IST) a read from today is 'live' when fresh
-// and 'stale' when older than LIVE_STALE_MINUTES or flagged failed (stale_since);
-// a read from today taken before 09:15 IST while it is still before 09:15 (the
-// poller starts at 08:55, in the pre-open) is 'preopen';
-// anything else, stale_since or not, is 'close' (the last reading of an earlier
-// or finished session, so a failed Friday poll does not say "delayed" all
-// weekend). `when` is the
-// poll's as_of (UTC). Without a reading, or when NSE's daily rows hold a newer
-// close, it is the latest positive vix in nseRows: kind 'close', `when` its date,
-// change against the close before it. pctChange is in percent (4.16 = 4.16 %),
-// as the poller writes it. null when there is no VIX at all.
+// What the ticker shows: { kind, last, change, pctChange, when, tradeDate, source, age }.
+// From the poll's india_vix, as the live cards read their polls (liveStatus),
+// keyed on the exchange's trade date (india_vix.trade_date, NSE's Capital Market
+// trade date; files written before it existed fall back to the IST date of
+// as_of): in market hours (Mon–Fri 09:15–16:00 IST) a read taken today whose
+// trade date is today is 'live' when fresh and 'stale' when older than
+// LIVE_STALE_MINUTES or flagged failed (stale_since); such a read taken before
+// 09:15 IST while it is still before 09:15 (the poller starts at 08:55, in the
+// pre-open) is 'preopen'; anything else, stale_since or not, is 'close' (the
+// last reading of an earlier or finished session, so a failed Friday poll does
+// not say "delayed" all weekend, and on a weekday NSE holiday, whose trade date
+// is the previous session's, the poll's value is that session's close). `when`
+// is the poll's as_of (UTC). Without a reading, or when NSE's daily rows hold a
+// close for the reading's trade date (once it is a close) or a later one, it is
+// the latest positive vix in nseRows: kind 'close', `when` its date, change
+// against the close before it. pctChange is in percent (4.16 = 4.16 %), as the
+// poller writes it. null when there is no VIX at all.
 function vixTickerModel(liveVix, nseRows, now = Date.now()) {
   const daily = (nseRows || []).filter(r => r && r.vix > 0);
   const lastRow = daily.length ? daily[daily.length - 1] : null;
@@ -235,21 +268,24 @@ function vixTickerModel(liveVix, nseRows, now = Date.now()) {
   const weekday = wd >= 1 && wd <= 5;
   const open = weekday && mins >= 555 && mins < 960;
   const age = isFinite(t) ? Math.round((now - t) / 60000) : null;
-  const today = isFinite(t) && istDate(t) === istDate(now);
+  const td = liveVix && /^\d{4}-\d{2}-\d{2}$/.test(liveVix.trade_date || '') ? liveVix.trade_date : null;
+  const readDate = td || (isFinite(t) ? istDate(t) : null);
+  const today = isFinite(t) && istDate(t) === istDate(now) && readDate === istDate(now);
   const fresh = liveVix && !liveVix.stale_since && age != null && age <= LIVE_STALE_MINUTES;
   const kind = open && today ? (fresh ? 'live' : 'stale') : weekday && today && mins < 555 ? 'preopen' : 'close';
-  // Once the live reading's session is over, NSE's daily close for that date (or a
-  // later one) is the official figure and wins over the last intraday poll
-  const dailyWins = lastRow && isFinite(t) && (istDate(t) < lastRow.date || (istDate(t) === lastRow.date && kind === 'close'));
+  // Once the live reading's session is over, NSE's daily close for its trade date
+  // (or a later one) is the official figure and wins over the last intraday poll
+  const dailyWins = lastRow && isFinite(t) && (readDate < lastRow.date || (readDate === lastRow.date && kind === 'close'));
   if (liveLast > 0 && !dailyWins) {
     const num = v => (v == null || !isFinite(Number(v)) ? null : Number(v));
     return { kind, last: liveLast, change: num(liveVix.change), pctChange: num(liveVix.pct_change),
-             when: liveVix.as_of || null, source: liveVix.source || null, age };
+             when: liveVix.as_of || null, tradeDate: readDate, source: liveVix.source || null, age };
   }
   if (!lastRow) return null;
   const prev = daily.length > 1 ? daily[daily.length - 2].vix : null;
   return { kind: 'close', last: lastRow.vix, change: prev ? lastRow.vix - prev : null,
-           pctChange: prev ? (lastRow.vix / prev - 1) * 100 : null, when: lastRow.date, source: 'daily', age: null };
+           pctChange: prev ? (lastRow.vix / prev - 1) * 100 : null, when: lastRow.date, tradeDate: lastRow.date,
+           source: 'daily', age: null };
 }
 
 // "HH:MM" IST of a UTC timestamp, and its IST date
@@ -268,7 +304,7 @@ function vixTickerHTML(m) {
   const pill = m.kind === 'live' ? `<span class="lvc-pill lvc-pill--live"><i></i>Live ${at.time}</span>`
     : m.kind === 'stale' ? `<span class="lvc-pill lvc-pill--stale" title="Last read ${escHtml(fmtTradeDate(at.date, true))} ${at.time} IST"><i></i>Delayed${m.age != null ? ` · ${m.age} min` : ''}</span>`
       : m.kind === 'preopen' ? `<span class="lvc-pill" title="Read in the pre-open, before trading starts at 09:15 IST"><i></i>Pre-open ${at.time}</span>`
-      : `<span class="lvc-pill"><i></i>Last close · ${escHtml(fmtTradeDate(at.date, true))}</span>`;
+      : `<span class="lvc-pill"><i></i>Last close · ${escHtml(fmtTradeDate(m.tradeDate || at.date, true))}</span>`;
   const up = m.change != null && m.change >= 0;
   const chg = m.change == null ? ''
     : `<span class="vix-chg ${up ? 'vix-chg--up' : 'vix-chg--dn'}">${up ? '▲' : '▼'}${fmtNum(Math.abs(m.change), 2)}${m.pctChange != null ? ` (${fmtNum(Math.abs(m.pctChange), 2)} %)` : ''}</span>`;
@@ -289,15 +325,17 @@ function vixTickerNow() {
 // ========================
 // VIX PANEL — the sensitivity and week-on-week VIX tables in #vixPanel, below
 // the Revenue Summary sub-tabs. The same in every exchange view: NSE, BSE and
-// MCX are loaded whatever the switcher shows (the shown exchange is DATA, the
-// others come from the shared cache, as on Contracts to Premium).
+// MCX are loaded whatever the switcher shows (loadCrossExchangeRows: the shown
+// exchange is DATA, the others come from the shared cache; the panel re-draws
+// itself when those change, see CROSS_PANELS in 01-data.js).
 // ========================
 const VIX_EXCHANGES = ['nse', 'bse', 'mcx'];
 let vixBuildSeq = 0;      // latest build; an older one still loading yields to it
 let VIX_PANEL = null;     // { model, today } the panel was last drawn from (today: vixTodayKey)
 
-// Fits, bases, the fit sample's VIX range and the weekly rows from each
-// exchange's daily_all (null where an exchange is missing).
+// Fits, bases, the fit samples' range of VIX ÷ VIXMA45 (exp x, over every
+// exchange's sample) and the weekly rows from each exchange's daily_all (null
+// where an exchange is missing).
 function vixPanelModel(rowsByEx) {
   const nse = rowsByEx.nse || [];
   const vmap = vixByDate(nse);
@@ -306,24 +344,26 @@ function vixPanelModel(rowsByEx) {
   VIX_EXCHANGES.forEach(ex => {
     const rows = rowsByEx[ex];
     if (!rows || !rows.length) { perEx[ex] = null; return; }
-    const sample = vixFitSample(rows, vmap);
-    sample.forEach(p => { const v = vmap[p.date]; if (v < min) min = v; if (v > max) max = v; });
+    const sample = vixFitSample(rows, vmap, VIX_FIT_FROM, ex);
+    sample.forEach(p => { const v = Math.exp(p.x); if (v < min) min = v; if (v > max) max = v; });
     const fit = vixFit(sample);
     const actual = rows.filter(r => r && !r.modelled);
     perEx[ex] = { adr: vixBase(rows), beta: fit ? fit.beta : null, fit, n: sample.length,
                   lastDate: actual.length ? actual[actual.length - 1].date : null };
   });
   // Total by date over days every exchange has reached, so one exchange's later
-  // file does not drop the others out of the newest day
-  const have = VIX_EXCHANGES.filter(ex => perEx[ex]);
-  const upTo = have.map(ex => perEx[ex].lastDate).filter(Boolean).sort()[0] || '';
-  const totalByDate = {};
-  have.forEach(ex => rowsByEx[ex].forEach(r => {
+  // file does not drop the others out of the newest day. Total ADR needs all
+  // three: with an exchange missing (its file failed to load) it is left blank
+  // rather than shown understated under the "NSE + BSE + MCX" label.
+  const missing = VIX_EXCHANGES.filter(ex => !perEx[ex]);
+  const upTo = missing.length ? '' : VIX_EXCHANGES.map(ex => perEx[ex].lastDate).filter(Boolean).sort()[0] || '';
+  const totalByDate = missing.length ? null : {};
+  if (totalByDate) VIX_EXCHANGES.forEach(ex => rowsByEx[ex].forEach(r => {
     if (!r || r.modelled || !(r.date <= upTo)) return;
     totalByDate[r.date] = (totalByDate[r.date] || 0) + (Number(r.total_rev) || 0);
   }));
   return { perEx, vix45: vixMean(nse), range: min <= max ? { min, max } : null,
-           weekly: vixWeeklyRows(nse, totalByDate), upTo,
+           weekly: vixWeeklyRows(nse, totalByDate), upTo, missing,
            nseLast: nse.length ? nse[nse.length - 1].date : null };
 }
 
@@ -332,7 +372,7 @@ function vixFitChip(ex, p) {
   if (!p) return rxChip(`${name}: no data`, 'warn');
   if (!p.fit) return rxChip(`${name}: no fit (${p.n} days, needs 60)`, 'warn');
   const f = p.fit;
-  return `<span class="vix-fit" title="${escHtml(`${name}: elasticity of revenue to VIX, ${f.n} days since ${rxDate(VIX_FIT_FROM)}. R² ${fmtNum(f.r2, 2)} with weekday dummies, ${fmtNum(f.r2Dow, 2)} with the dummies alone; the VIX term adds ${fmtNum(f.r2Vix, 2)}.`)}">${rxChip(`${name} β ${fmtNum(f.beta, 2)} · n ${f.n} · R² (VIX) ${fmtNum(f.r2Vix, 2)}`, 'data')}</span>`;
+  return `<span class="vix-fit" title="${escHtml(`${name}: elasticity of revenue to VIX, ${f.n} days since ${rxDate(VIX_FIT_FROM)}. R² ${fmtNum(f.r2, 2)} with ${f.bExpiry != null ? 'weekday, expiry-day and pre-expiry-day' : 'weekday'} dummies, ${fmtNum(f.r2Dow, 2)} with the dummies alone; the VIX term adds ${fmtNum(f.r2Vix, 2)}.`)}">${rxChip(`${name} β ${fmtNum(f.beta, 2)} · n ${f.n} · R² (VIX) ${fmtNum(f.r2Vix, 2)}`, 'data')}</span>`;
 }
 
 // The sensitivity table's <tbody> rows ('' when NSE's rows hold no VIX)
@@ -348,7 +388,7 @@ function vixSensitivityBodyHTML(model, ticker) {
     const cls = [r.kind === 'today' ? 'vix-today' : r.kind === 'base' ? 'vix-base' : '', r.outside ? 'vix-outside' : ''].filter(Boolean).join(' ');
     const label = r.kind === 'today' ? `${fmtNum(r.vix, 2)} <span class="vix-tag">${todayTag}</span>`
       : r.kind === 'base' ? `${fmtNum(r.vix, 2)} <span class="vix-tag">45-day avg (base)</span>` : fmtNum(r.vix, 0);
-    return `<tr${cls ? ` class="${cls}"` : ''}${r.outside ? ' title="Outside the VIX range of the fit sample: the projection extrapolates"' : ''}>
+    return `<tr${cls ? ` class="${cls}"` : ''}${r.outside ? ' title="VIX ÷ VIX45 is outside the range of VIX ÷ its 45-session mean in the fit sample: the projection extrapolates"' : ''}>
       <td>${label}</td><td class="vix-pv">${r.kind === 'base' ? '—' : rxSignedPct(r.pctVsBase)}</td>
       ${VIX_EXCHANGES.map(ex => `<td>${cr(r.adr[ex])}</td>`).join('')}
       <td class="rx-strong">${cr(r.total)}</td><td>${r.kind === 'base' ? '—' : rxSignedPct(r.totalPct)}</td></tr>`;
@@ -384,8 +424,8 @@ function vixHowHTML(model) {
     <li><b>Short term:</b> each row is the average daily revenue to expect over the next few weeks if India VIX holds at that level, scaled from the last 45 sessions: ADR(V) = ADR45 × (V ÷ VIX45)<sup>β</sup>. ADR45 is each exchange's mean daily revenue over its last 45 sessions; VIX45 is NSE's mean VIX over its last 45.</li>
     <li><b>Why VIX moves revenue:</b> options are billed on premium, and premiums rise with volatility, so a higher VIX lifts options revenue (and trading activity with it).</li>
     <li><b>MCX:</b> trades commodities, so India VIX (Nifty volatility) explains little of it: its β is small and its R² (VIX) near zero.</li>
-    <li><b>Fit:</b> per exchange by least squares on daily rows from ${rxDate(VIX_FIT_FROM)} (after SEBI's F&amp;O curbs): ln(revenue ÷ previous 45-session mean) on weekday dummies (expiry-day concentration) and ln(VIX ÷ previous 45-session mean VIX). β is the elasticity; R² (VIX) is what the VIX term adds over the weekday dummies alone. VIX is NSE's daily close, joined by date; BSE and MCX days with no NSE session are left out, and MCX's modelled rows (before 2 Sep 2024) are never used.</li>
-    <li><b>Basis:</b> total revenue at today's statutory rates for NSE and BSE; MCX as reported (fut + opt, source values, not re-priced), whatever the exchange switcher shows.${r ? ` Grey rows lie outside the ${fmtNum(r.min, 2)}–${fmtNum(r.max, 2)} VIX range of the fit sample, so they extrapolate.` : ''}</li>
+    <li><b>Fit:</b> per exchange by least squares on daily rows from ${rxDate(VIX_FIT_FROM)} (after SEBI's F&amp;O curbs): ln(revenue ÷ previous 45-session mean) on weekday dummies, for NSE and BSE also an expiry-day and a pre-expiry-day dummy (each exchange's weekly expiry, moved earlier for a holiday, and the session on the scheduled weekday before it; the expiry weekday changed on 1 Sep 2025, so weekday dummies alone cannot hold the expiry spike), and ln(VIX ÷ previous 45-session mean VIX). β is the elasticity; R² (VIX) is what the VIX term adds over those dummies alone. VIX is NSE's daily close, joined by date; BSE and MCX days with no NSE session are left out, and MCX's modelled rows (before 2 Sep 2024) are never used.</li>
+    <li><b>Basis:</b> total revenue at today's statutory rates for NSE and BSE; MCX as reported (fut + opt, source values, not re-priced), whatever the exchange switcher shows.${r ? ` Grey rows extrapolate: the model is fitted on VIX ÷ its previous 45-session mean, which ran from ${fmtNum(r.min, 2)} to ${fmtNum(r.max, 2)} in the fit sample${model.vix45 > 0 ? ` (VIX ${fmtNum(r.min * model.vix45, 2)}–${fmtNum(r.max * model.vix45, 2)} against today's VIX45 of ${fmtNum(model.vix45, 2)})` : ''}, and a grey row's VIX ÷ VIX45 lies outside that range.` : ''}</li>
     <li><b>Week-on-week:</b> Mon–Sun weeks of NSE sessions, daily closes only (the live VIX is not mixed in). Week-end VIX is the VIX of the week's last session (blank while that day's VIX is not in yet); changes are against the week before. Total ADR is NSE + BSE + MCX on the same basis, averaged over the week's NSE sessions.</li>
   </ul>`);
 }
@@ -400,8 +440,21 @@ function vixSensitivityFoot(model, ticker) {
   return `Highlighted: ${tickerNote}. Total % is against the summed 45-session ADR${missing.length ? `; ${missing.map(e => e.toUpperCase()).join(', ')} without a fit ${missing.length === 1 ? 'is' : 'are'} left out of Total` : ''}.`;
 }
 
+// The week-on-week panel's footnote: what Total ADR is, or which exchange's
+// data is missing when it is blank
+function vixWeeklyFoot(model) {
+  const { upTo, nseLast } = model;
+  const missing = model.missing || [];
+  if (missing.length) {
+    const names = missing.map(e => e.toUpperCase());
+    const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0];
+    return `Total ADR and ADR WoW % are blank: ${list} data couldn't be loaded, and Total ADR needs NSE + BSE + MCX. Try again in a moment.`;
+  }
+  return `Total ADR: NSE + BSE + MCX ₹ Cr/day (${feeUnitLabelFor(VIX_EXCHANGES)})${upTo && nseLast && upTo < nseLast ? `, through ${escHtml(rxDate(upTo))} (the latest day every exchange has)` : ''}.`;
+}
+
 function renderVixPanel(el, model, ticker) {
-  const { perEx, upTo, nseLast } = model;
+  const { perEx, nseLast } = model;
   const chips = VIX_EXCHANGES.map(ex => vixFitChip(ex, perEx[ex])).join(' ');
   const sens = rxPanel({
     title: 'India VIX → average daily revenue',
@@ -416,7 +469,7 @@ function renderVixPanel(el, model, ticker) {
     title: 'Week-on-week India VIX',
     meta: `last 8 weeks of NSE sessions · daily closes${nseLast ? ` to ${escHtml(rxDate(nseLast))}` : ''}`,
     body: vixWeeklyHTML(model.weekly),
-    foot: `Total ADR: NSE + BSE + MCX ₹ Cr/day (${feeUnitLabelFor(VIX_EXCHANGES)})${upTo && nseLast && upTo < nseLast ? `, through ${escHtml(rxDate(upTo))} (the latest day every exchange has)` : ''}, averaged over NSE sessions only (MCX days on NSE holidays are left out), so it can differ slightly from the week-on-week average daily revenue Total above.`,
+    foot: vixWeeklyFoot(model),
     attrs: 'id="vixWeeklyPanel"',
   });
   el.innerHTML = sens + weekly;
@@ -453,21 +506,17 @@ async function buildVixPanel() {
   const el = document.getElementById('vixPanel');
   if (!el || isViewKey(currentExchange)) return;
   const seq = ++vixBuildSeq;
-  // A single-exchange view has its own file in DATA; the others come from the shared cache
-  const own = VIEW_LOADED && !DATA.components ? VIEW_LOADED.exchange : null;
-  const cached = VIX_EXCHANGES.filter(e => e !== own);
-  if (!el.firstChild && cached.some(e => !MARKET_RAW[e])) {
-    el.innerHTML = rxPanel({ title: 'India VIX → average daily revenue', body: '<div class="rx-empty"><b>Loading NSE, BSE and MCX data…</b></div>' });
-  }
-  await ensureFreshMarketData(cached);
+  const { rowsByEx, sigs } = await loadCrossExchangeRows(VIX_EXCHANGES, () => {
+    if (!el.firstChild) el.innerHTML = rxPanel({ title: 'India VIX → average daily revenue', body: '<div class="rx-empty"><b>Loading NSE, BSE and MCX data…</b></div>' });
+  });
   if (seq !== vixBuildSeq) return;   // a later build took over while loading
-  const rowsByEx = Object.fromEntries(VIX_EXCHANGES.map(e => [e, rawFor(e)?.daily_all || null]));
+  // Re-drawn on its own (not the whole view) when a cached file it used changes
+  registerCrossPanel('vix', sigs, buildVixPanel);
   if (!rowsByEx.nse) {
     el.innerHTML = rxPanel({ title: 'India VIX → average daily revenue', body: '<div class="rx-empty"><b>Couldn\'t load NSE data</b>Try again in a moment.</div>' });
     VIX_PANEL = null;
     return;
   }
-  cached.filter(e => MARKET_RAW[e]).forEach(e => { VIEW_BUILT_FROM[e] = marketSig(e); });
   renderVixPanel(el, vixPanelModel(rowsByEx), vixTickerNow());
   renderLiveCards();   // the ticker's daily fallback may only now have NSE's rows
 }
