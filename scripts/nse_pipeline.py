@@ -102,7 +102,7 @@ def apply_vix(all_daily, fetch=None, refresh_last=10):
             continue
         old = float(rec.get("vix", 0) or 0)
         if old == 0 or (rec["date"] in recent_dates and abs(new - old) > 0.005):
-            rec["vix"] = vix_map[rec["date"]]
+            rec["vix"] = new
             changed.append(rec["date"])
     filled = sum(1 for r in all_daily if float(r.get("vix", 0) or 0) > 0)
     print(f"VIX applied: {len(changed)} changed; {filled}/{len(all_daily)} records now have VIX data")
@@ -1338,15 +1338,15 @@ def main():
     still = [r["date"] for r in all_daily if missing_detail(r)]
     print(f"Activity detail filled on {len(detail_filled)} row(s); still missing on {len(still)}"
           + (f" ({still[0]} … {still[-1]})" if still else ""))
-    to_rewrite = detail_filled | set(corrected)
+    # Fill missing VIX and re-check the last 10 days (yfinance sometimes returns
+    # the previous day's close)
+    vix_changed = apply_vix(all_daily)
+
+    to_rewrite = detail_filled | set(corrected) | set(vix_changed)
     if supabase and to_rewrite:
         upsert_daily_records(supabase, [r for r in all_daily if r["date"] in to_rewrite])
 
     print(f"Total daily records: {len(all_daily)}")
-
-    # Fill missing VIX and re-check the last 10 days (yfinance sometimes returns
-    # the previous day's close)
-    apply_vix(all_daily)
 
     # Steps 5-6: Recompute aggregates and enriched data (at today's rates)
     out = build_outputs(all_daily, pnl, pnl_fy, cost_ratios)

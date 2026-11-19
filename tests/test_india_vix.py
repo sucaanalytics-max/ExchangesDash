@@ -91,7 +91,7 @@ class ApplyVix(unittest.TestCase):
             out.append({"date": d, "vix": v})
         return out
 
-    def fetch_map(self, bad=None):
+    def fetch_map(self):
         m = {d: 11.0 for d in self.DATES}
         m[self.DATES[14]] = 16.1
         return m
@@ -140,7 +140,7 @@ class ApplyVix(unittest.TestCase):
         nse.apply_vix(rows, fetch=lambda a, b: m)
         self.assertEqual(rows[8]["vix"], 14.0 + 8 / 100)
 
-    def test_no_fetch_when_all_recent_match(self):
+    def test_no_change_when_recent_match(self):
         import nse_pipeline as nse
         rows = [{"date": d, "vix": 12.0} for d in self.DATES]
         m = {d: 12.0 for d in self.DATES}
