@@ -53,6 +53,7 @@ from take_rates import NSE_TR_FUT as TR_FUT, NSE_TR_OPT as TR_OPT, NSE_TR_CASH a
 # ---------------------------------------------------------------------------
 NSE_HOME       = "https://www.nseindia.com/"
 STATUS_API     = "https://www.nseindia.com/api/marketStatus"
+ALL_INDICES_API = "https://www.nseindia.com/api/allIndices"
 LIVE_TURNOVER  = "https://www.nseindia.com/api/NextApi/apiClient?functionName=getMarketTurnoverSummary"
 FO_API         = "https://www.nseindia.com/api/historicalOR/fo/tbg/daily"
 CM_API         = "https://www.nseindia.com/api/historicalOR/cm/tbg/daily"
@@ -297,6 +298,83 @@ def fetch_stock_price(ticker="NSE.BO"):
 
 
 # ---------------------------------------------------------------------------
+# India VIX (NSE allIndices; yfinance ^INDIAVIX as fallback)
+# ---------------------------------------------------------------------------
+
+def parse_india_vix(payload, ts_iso):
+    """The INDIA VIX entry of NSE's allIndices payload, or None."""
+    entry = next((d for d in (payload or {}).get("data", []) if d.get("index") == "INDIA VIX"), None)
+    if not entry:
+        return None
+
+    def _num(v):
+        return None if isinstance(v, bool) or not isinstance(v, (int, float)) else round(float(v), 2)
+
+    last = _num(entry.get("last"))
+    if last is None:
+        return None
+    return {
+        "last":           last,
+        "previous_close": _num(entry.get("previousClose")),
+        "change":         _num(entry.get("variation")),
+        "pct_change":     _num(entry.get("percentChange")),
+        "as_of":          ts_iso,
+        "source":         "nse",
+    }
+
+
+def fetch_india_vix(session, ts_iso):
+    try:
+        r = session.get(ALL_INDICES_API, impersonate="chrome", timeout=15)
+        if r.status_code == 200 and r.text.strip():
+            vix = parse_india_vix(r.json(), ts_iso)
+            if vix:
+                return vix
+    except Exception as e:
+        print(f"  allIndices error: {e}")
+    try:
+        import yfinance as yf
+        fi = yf.Ticker("^INDIAVIX").fast_info
+        last, prev = fi.last_price, fi.previous_close
+        if last is None:
+            return None
+        return {
+            "last":           round(float(last), 2),
+            "previous_close": round(float(prev), 2) if prev else None,
+            "change":         round(float(last) - float(prev), 2) if prev else None,
+            "pct_change":     round((float(last) - float(prev)) / float(prev) * 100, 2) if prev else None,
+            "as_of":          ts_iso,
+            "source":         "yfinance",
+        }
+    except Exception as e:
+        print(f"  India VIX fetch error: {e}")
+        return None
+
+
+def keep_last_vix(new, previous, ts_iso):
+    """A failed fetch keeps the last good reading, flagged stale."""
+    prev_vix = previous.get("india_vix")
+    if new is None and prev_vix:
+        return {**prev_vix, "stale_since": prev_vix.get("stale_since") or previous.get("updated_at")}
+    return new
+
+
+def attach_india_vix(hourly_file, vix):
+    """Set india_vix on the existing hourly JSON, leaving the rest as is."""
+    if vix is None:
+        return False
+    try:
+        data = json.loads(Path(hourly_file).read_text())
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    data["india_vix"] = vix
+    Path(hourly_file).write_text(json.dumps(data, indent=2, default=str))
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -357,6 +435,12 @@ def main():
     if revenue and not revenue.get("stale_since"):
         save_hourly_snapshot(revenue, now_ist, HOURLY_FILE, HISTORY_FILE, exchange="nse")
 
+    # ── 6. India VIX ──
+    vix = keep_last_vix(fetch_india_vix(session, ts_iso), previous, ts_iso)
+    if vix:
+        print(f"India VIX: {vix['last']}  ({vix.get('pct_change')}%)  [{vix['source']}]")
+        attach_india_vix(HOURLY_FILE, vix)
+
     # ── 7b. NSE's own share price ──
     print("Stock price:")
     stock_price = fetch_stock_price("NSE.BO")
@@ -370,6 +454,7 @@ def main():
         "revenue":       revenue,
         "history":       month_history,
         "stock_price":   stock_price,
+        "india_vix":     vix,
     }
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(json.dumps(payload, indent=2, default=str))
