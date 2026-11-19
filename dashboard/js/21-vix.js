@@ -164,8 +164,10 @@ function vixSensitivityRows(perEx, vix45, todayVix, range) {
 // NSE sessions. Changes (fractions for %) are against the next-older week in the
 // data, so the oldest row shown has them too unless no older week exists (one
 // extra week is built for that, then dropped). inProgress marks the week of the
-// latest NSE date while that date is before the week's Friday.
-function vixWeeklyRows(nseRows, totalByDate, weeks = 8) {
+// latest NSE date while a weekday after that date in the week has not yet passed
+// (the IST date of `now` is on or before it), so a week whose Friday is a holiday
+// is complete once the Friday is over, not when the next week's data lands.
+function vixWeeklyRows(nseRows, totalByDate, weeks = 8, now = Date.now()) {
   const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const dm = iso => [Number(iso.slice(8, 10)), MON[Number(iso.slice(5, 7)) - 1]];
   const label = (a, b) => {
@@ -187,13 +189,14 @@ function vixWeeklyRows(nseRows, totalByDate, weeks = 8) {
   const fri = new Date(latestWeek + 'T00:00:00Z');
   fri.setUTCDate(fri.getUTCDate() + 4);
   const latestFriday = fri.toISOString().slice(0, 10);
+  const istToday = new Date(now + 330 * 60000).toISOString().slice(0, 10);
   const stats = [...byWeek.keys()].sort().reverse().slice(0, weeks + 1).map(w => {
     const ds = byWeek.get(w);
     const vix = ds.map(r => r.vix).filter(v => v > 0);
     const tot = ds.map(r => (totalByDate ? totalByDate[r.date] : undefined)).filter(Number.isFinite);
     return { week: w, label: label(ds[0].date, ds[ds.length - 1].date), sessions: ds.length,
              avgVix: mean(vix), closeVix: ds[ds.length - 1].vix > 0 ? ds[ds.length - 1].vix : null, totalAdr: mean(tot),
-             inProgress: w === latestWeek && latest < latestFriday };
+             inProgress: w === latestWeek && latest < latestFriday && istToday <= latestFriday };
   });
   return stats.map((s, i) => {
     const o = stats[i + 1];

@@ -234,13 +234,13 @@ class VixWeekly(unittest.TestCase):
     W2 = ["2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13"]
     W3 = ["2026-11-16", "2026-11-17"]
 
-    def rows(self, weeks=8, extra=None):
+    def rows(self, weeks=8, extra=None, now="2026-11-17T12:00:00Z"):
         nse = (nse_week(self.W1, [12, 13, 14, 15, 16]) + nse_week(self.W2, [15, 15, 16, 16, 18])
                + nse_week(self.W3, [17, 15.5]) + (extra or []))
         total = {d: 60 + i for i, d in enumerate(self.W1 + self.W2 + self.W3)}
         total["2026-11-14"] = 999   # an MCX-only Saturday: not an NSE session, not in the week's ADR
-        return js_eval(VIX_JS, "vixWeeklyRows(DATA.nse, DATA.total, DATA.weeks)",
-                       {"nse": nse, "total": total, "weeks": weeks})
+        return js_eval(VIX_JS, "vixWeeklyRows(DATA.nse, DATA.total, DATA.weeks, Date.parse(DATA.now))",
+                       {"nse": nse, "total": total, "weeks": weeks, "now": now})
 
     def test_weekly_rows(self):
         rows = self.rows()
@@ -292,6 +292,15 @@ class VixWeekly(unittest.TestCase):
         self.assertIsNone(rows[-1]["chgPts"])
         self.assertIsNone(rows[-1]["chgPct"])
         self.assertIsNone(rows[-1]["totalPct"])
+
+    def test_holiday_friday_week_complete_once_friday_passes(self):
+        # 16–19 Nov with Friday 20 Nov an NSE holiday: in progress through Friday (IST),
+        # complete from Saturday, without waiting for the next week's first session
+        extra = nse_week(["2026-11-18", "2026-11-19"], [15, 15])
+        self.assertTrue(self.rows(extra=extra, now="2026-11-19T12:00:00Z")[0]["inProgress"])
+        self.assertTrue(self.rows(extra=extra, now="2026-11-20T17:00:00Z")[0]["inProgress"])    # 22:30 IST Fri
+        self.assertFalse(self.rows(extra=extra, now="2026-11-20T18:31:00Z")[0]["inProgress"])   # 00:01 IST Sat
+        self.assertFalse(self.rows(extra=extra, now="2026-11-21T06:00:00Z")[0]["inProgress"])
 
     def test_week_through_friday_is_not_in_progress(self):
         extra = nse_week(["2026-11-18", "2026-11-19", "2026-11-20"], [15, 15, 15])
