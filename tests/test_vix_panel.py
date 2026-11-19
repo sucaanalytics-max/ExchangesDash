@@ -56,7 +56,7 @@ PER_EX = {"nse": {"adr": 50, "beta": 0.7}, "bse": {"adr": 10, "beta": 0.7}, "mcx
 
 def sens(per_ex=PER_EX, vix45=14.5, today=None, rng=None):
     return js_eval(VIX_JS, "vixSensitivityRows(DATA.p, DATA.v45, DATA.t, DATA.r)",
-                   {"p": per_ex, "v45": vix45, "t": today, "r": rng or {"min": 10, "max": 30}})
+                   {"p": per_ex, "v45": vix45, "t": today, "r": rng or {"min": 0.5, "max": 2.5}})
 
 
 @unittest.skipUnless(NODE, "node not installed")
@@ -191,12 +191,30 @@ class VixSensitivity(unittest.TestCase):
         self.assertNotIn("today", [r["kind"] for r in sens(today=None)])
 
     def test_outside_range_flag(self):
-        rows = {r["vix"]: r["outside"] for r in sens(rng={"min": 10, "max": 21})}
+        # the range is of VIX ÷ VIXMA45 (the fitted ratio): a row is outside when its
+        # VIX ÷ VIX45 is. VIX45 14.5: 20 → 1.379, 22 → 1.517, 11 → 0.759
+        rows = {r["vix"]: r["outside"] for r in sens(rng={"min": 0.7, "max": 1.45})}
         self.assertTrue(rows[22])
         self.assertTrue(rows[25])
         self.assertFalse(rows[20])
         self.assertFalse(rows[11])
-        self.assertTrue({r["vix"]: r["outside"] for r in sens(rng={"min": 11.5, "max": 30})}[11])
+        self.assertFalse(rows[14.5])   # the base, ratio 1
+        self.assertTrue({r["vix"]: r["outside"] for r in sens(rng={"min": 0.8, "max": 2})}[11])
+        # the reviewer's case: the sample saw VIX 25 only against a mean of 22 (ratio ~1.14);
+        # with VIX45 12 the VIX 25 row (ratio 2.08) extrapolates, though 25 was seen as a level
+        rows = {r["vix"]: r["outside"] for r in sens(vix45=12, rng={"min": 0.8, "max": 25 / 22})}
+        self.assertTrue(rows[25])
+        self.assertTrue(rows[14])     # 14 / 12 = 1.167 > 1.136
+        self.assertFalse(rows[13])    # 13 / 12 = 1.083
+
+    def test_panel_range_is_of_fitted_ratios(self):
+        rows = synthetic_rows()
+        names = VIX_JS + ["VIX_EXCHANGES", "vixPanelModel"]
+        m = js_eval(names, "vixPanelModel({nse: DATA.rows, bse: null, mcx: null})", {"rows": rows})
+        s = js_eval(VIX_JS, "vixFitSample(DATA.rows, vixByDate(DATA.rows))", {"rows": rows})
+        self.assertAlmostEqual(m["range"]["min"], min(math.exp(p["x"]) for p in s), places=12)
+        self.assertAlmostEqual(m["range"]["max"], max(math.exp(p["x"]) for p in s), places=12)
+        self.assertLess(m["range"]["max"], 2)   # a ratio, not a VIX level
 
     def test_null_beta_excluded_from_total(self):
         per_ex = {**PER_EX, "mcx": {"adr": 5, "beta": None}}
@@ -451,7 +469,7 @@ SYNC_HARNESS = r"""(() => {
   globalThis.fmtTradeDate = iso => iso;
   globalThis.renderVixPanel = () => { redraws++; };
   const model = { perEx: { nse: { adr: 50, beta: 0.7, fit: {} }, bse: { adr: 10, beta: 0.7, fit: {} }, mcx: { adr: 5, beta: 0.2, fit: {} } },
-                  vix45: 14.5, range: { min: 10, max: 30 } };
+                  vix45: 14.5, range: { min: 0.5, max: 2.5 } };
   globalThis.VIX_PANEL = { model, today: '14|live|' };
   const ticks = [];
   for (const last of [14, 15.2, 15.2]) {

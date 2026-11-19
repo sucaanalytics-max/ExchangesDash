@@ -130,8 +130,9 @@ function vixMean(nseRows, n = VIX_MA) {
 // { vix, kind, pctVsBase, adr: {nse, bse, mcx}, total, totalPct, outside }, the
 // percentages as fractions: pctVsBase vs VIX45, totalPct vs the summed ADR45 of
 // the exchanges in Total. An exchange with a null beta (no fit) has adr null and
-// stays out of Total. `outside`: the vix is outside range = {min, max}, the
-// VIX range of the fit sample.
+// stays out of Total. `outside`: the row's VIX ÷ VIX45 is outside range =
+// {min, max}, the range of VIX ÷ VIXMA45 (exp x) over the fit sample, as the
+// model is fitted on that ratio, not on VIX levels.
 function vixSensitivityRows(perEx, vix45, todayVix, range) {
   if (!(vix45 > 0)) return [];
   const today = todayVix > 0 ? todayVix : null;
@@ -152,7 +153,7 @@ function vixSensitivityRows(perEx, vix45, todayVix, range) {
     const total = inTotal.length ? inTotal.reduce((s, ex) => s + adr[ex], 0) : null;
     return { vix: p.vix, kind: p.kind, pctVsBase: ratio - 1, adr, total,
              totalPct: total != null && baseTotal > 0 ? total / baseTotal - 1 : null,
-             outside: p.vix < lo || p.vix > hi };
+             outside: ratio < lo - 1e-12 || ratio > hi + 1e-12 };
   });
 }
 
@@ -303,8 +304,9 @@ const VIX_EXCHANGES = ['nse', 'bse', 'mcx'];
 let vixBuildSeq = 0;      // latest build; an older one still loading yields to it
 let VIX_PANEL = null;     // { model, today } the panel was last drawn from (today: vixTodayKey)
 
-// Fits, bases, the fit sample's VIX range and the weekly rows from each
-// exchange's daily_all (null where an exchange is missing).
+// Fits, bases, the fit samples' range of VIX ÷ VIXMA45 (exp x, over every
+// exchange's sample) and the weekly rows from each exchange's daily_all (null
+// where an exchange is missing).
 function vixPanelModel(rowsByEx) {
   const nse = rowsByEx.nse || [];
   const vmap = vixByDate(nse);
@@ -314,7 +316,7 @@ function vixPanelModel(rowsByEx) {
     const rows = rowsByEx[ex];
     if (!rows || !rows.length) { perEx[ex] = null; return; }
     const sample = vixFitSample(rows, vmap);
-    sample.forEach(p => { const v = vmap[p.date]; if (v < min) min = v; if (v > max) max = v; });
+    sample.forEach(p => { const v = Math.exp(p.x); if (v < min) min = v; if (v > max) max = v; });
     const fit = vixFit(sample);
     const actual = rows.filter(r => r && !r.modelled);
     perEx[ex] = { adr: vixBase(rows), beta: fit ? fit.beta : null, fit, n: sample.length,
@@ -355,7 +357,7 @@ function vixSensitivityBodyHTML(model, ticker) {
     const cls = [r.kind === 'today' ? 'vix-today' : r.kind === 'base' ? 'vix-base' : '', r.outside ? 'vix-outside' : ''].filter(Boolean).join(' ');
     const label = r.kind === 'today' ? `${fmtNum(r.vix, 2)} <span class="vix-tag">${todayTag}</span>`
       : r.kind === 'base' ? `${fmtNum(r.vix, 2)} <span class="vix-tag">45-day avg (base)</span>` : fmtNum(r.vix, 0);
-    return `<tr${cls ? ` class="${cls}"` : ''}${r.outside ? ' title="Outside the VIX range of the fit sample: the projection extrapolates"' : ''}>
+    return `<tr${cls ? ` class="${cls}"` : ''}${r.outside ? ' title="VIX ÷ VIX45 is outside the range of VIX ÷ its 45-session mean in the fit sample: the projection extrapolates"' : ''}>
       <td>${label}</td><td class="vix-pv">${r.kind === 'base' ? '—' : rxSignedPct(r.pctVsBase)}</td>
       ${VIX_EXCHANGES.map(ex => `<td>${cr(r.adr[ex])}</td>`).join('')}
       <td class="rx-strong">${cr(r.total)}</td><td>${r.kind === 'base' ? '—' : rxSignedPct(r.totalPct)}</td></tr>`;
@@ -392,7 +394,7 @@ function vixHowHTML(model) {
     <li><b>Why VIX moves revenue:</b> options are billed on premium, and premiums rise with volatility, so a higher VIX lifts options revenue (and trading activity with it).</li>
     <li><b>MCX:</b> trades commodities, so India VIX (Nifty volatility) explains little of it: its β is small and its R² (VIX) near zero.</li>
     <li><b>Fit:</b> per exchange by least squares on daily rows from ${rxDate(VIX_FIT_FROM)} (after SEBI's F&amp;O curbs): ln(revenue ÷ previous 45-session mean) on weekday dummies (expiry-day concentration) and ln(VIX ÷ previous 45-session mean VIX). β is the elasticity; R² (VIX) is what the VIX term adds over the weekday dummies alone. VIX is NSE's daily close, joined by date; BSE and MCX days with no NSE session are left out, and MCX's modelled rows (before 2 Sep 2024) are never used.</li>
-    <li><b>Basis:</b> total revenue at today's statutory rates for NSE and BSE; MCX as reported (fut + opt, source values, not re-priced), whatever the exchange switcher shows.${r ? ` Grey rows lie outside the ${fmtNum(r.min, 2)}–${fmtNum(r.max, 2)} VIX range of the fit sample, so they extrapolate.` : ''}</li>
+    <li><b>Basis:</b> total revenue at today's statutory rates for NSE and BSE; MCX as reported (fut + opt, source values, not re-priced), whatever the exchange switcher shows.${r ? ` Grey rows extrapolate: the model is fitted on VIX ÷ its previous 45-session mean, which ran from ${fmtNum(r.min, 2)} to ${fmtNum(r.max, 2)} in the fit sample${model.vix45 > 0 ? ` (VIX ${fmtNum(r.min * model.vix45, 2)}–${fmtNum(r.max * model.vix45, 2)} against today's VIX45 of ${fmtNum(model.vix45, 2)})` : ''}, and a grey row's VIX ÷ VIX45 lies outside that range.` : ''}</li>
     <li><b>Week-on-week:</b> Mon–Sun weeks of NSE sessions, daily closes only (the live VIX is not mixed in). Week-end VIX is the VIX of the week's last session (blank while that day's VIX is not in yet); changes are against the week before. Total ADR is NSE + BSE + MCX on the same basis, averaged over the week's NSE sessions.</li>
   </ul>`);
 }
