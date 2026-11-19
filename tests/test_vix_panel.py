@@ -13,8 +13,10 @@ import unittest
 
 from helpers import NODE, js_eval
 
-VIX_JS = ["VIX_FIT_FROM", "VIX_LEVELS", "VIX_MA", "cpWeekStart", "vixByDate", "vixFitSample", "vixOLS",
-          "vixFit", "vixBase", "vixMean", "vixSensitivityRows", "vixWeeklyRows"]
+EXPIRY_JS = ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry", "computeWeekExpiryDates",
+             "EXPIRY_DATES_CACHE", "expiryDateSet", "PRE_EXPIRY_DATES_CACHE", "preExpiryDateSet"]
+VIX_JS = EXPIRY_JS + ["VIX_FIT_FROM", "VIX_LEVELS", "VIX_MA", "cpWeekStart", "vixByDate", "vixFitSample", "vixOLS",
+                      "vixFit", "vixBase", "vixMean", "vixSensitivityRows", "vixWeeklyRows"]
 
 
 def weekdays_from(start, count):
@@ -47,8 +49,78 @@ def synthetic_rows(count=200, beta=0.7):
     return [{"date": d, "total_rev": r, "vix": v} for d, r, v in zip(dates, rev, vix)]
 
 
+def nse_expiry_days(dates):
+    """NSE's expiry and pre-expiry sessions among `dates` (weekdays), as
+    preExpiryDateSet defines them: Thursday expiry to 31 Aug 2025, Tuesday from
+    1 Sep; a holiday moves the expiry to the week's previous session, and the
+    pre-expiry session is the scheduled weekday before, if it traded before the expiry."""
+    have, last = set(dates), max(dates)
+    exp, pre = set(), set()
+    mondays = sorted({(dt.date.fromisoformat(d) - dt.timedelta(days=dt.date.fromisoformat(d).weekday())) for d in dates})
+    for mon in mondays:
+        wd = 3 if mon.isoformat() < "2025-09-01" else 1
+        target = mon + dt.timedelta(days=wd)
+        p = target - dt.timedelta(days=1)
+        if target.isoformat() > last:   # this week's expiry is still ahead of the data
+            if p.isoformat() in have:
+                pre.add(p.isoformat())
+            continue
+        e = target
+        while e >= mon and e.isoformat() not in have:
+            e -= dt.timedelta(days=1)
+        if e >= mon:
+            exp.add(e.isoformat())
+        if p.isoformat() in have and p < e:
+            pre.add(p.isoformat())
+    return exp, pre
+
+
+def synthetic_expiry_rows(count=300, beta=0.6, b_exp=0.4, b_pre=0.15, holidays=()):
+    """Weekdays from 2025-02-03 (across NSE's 1 Sep 2025 Thu → Tue switch) whose
+    revenue obeys y = β·x + b_exp·[expiry] + b_pre·[pre-expiry] + 0.05·[Fri] + ε."""
+    dates = [d for d in weekdays_from("2025-02-03", count + len(holidays)) if d not in holidays][:count]
+    exp, pre = nse_expiry_days(dates)
+    vix = [15.5 + 4.5 * math.sin(2 * math.pi * i / 40) for i in range(count)]
+    rev = []
+    for i, d in enumerate(dates):
+        if i < 45:
+            rev.append(50.0 + (i % 5))
+            continue
+        ma = sum(rev[i - 45:i]) / 45
+        vma = sum(vix[i - 45:i]) / 45
+        x = math.log(vix[i] / vma)
+        eps = 0.005 * (((i * 7919) % 13) - 6) / 6
+        y = (beta * x + b_exp * (d in exp) + b_pre * (d in pre)
+             + (0.05 if dt.date.fromisoformat(d).weekday() == 4 else 0) + eps)
+        rev.append(ma * math.exp(y))
+    return [{"date": d, "total_rev": r, "vix": v} for d, r, v in zip(dates, rev, vix)]
+
+
 def fit(rows):
     return js_eval(VIX_JS, "vixFit(vixFitSample(DATA.rows, vixByDate(DATA.rows)))", {"rows": rows})
+
+
+def pre_expiry(dates, ex):
+    return sorted(js_eval(EXPIRY_JS, f"[...preExpiryDateSet(DATA, '{ex}')]", [{"date": d} for d in dates]))
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class PreExpiry(unittest.TestCase):
+    def test_scheduled_eve_only(self):
+        # BSE, Thursday rule: 16–20 Nov 2026 full week → Wed 18 Nov
+        self.assertEqual(pre_expiry(weekdays_from("2026-11-16", 5), "bse"), ["2026-11-18"])
+        # Wednesday a holiday: no pre-expiry session (Tuesday is an ordinary day)
+        self.assertEqual(pre_expiry(["2026-11-16", "2026-11-17", "2026-11-19", "2026-11-20"], "bse"), [])
+        # Thursday a holiday: the expiry moves onto Wednesday, which is then not a pre-expiry day
+        self.assertEqual(pre_expiry(["2026-11-16", "2026-11-17", "2026-11-18", "2026-11-20"], "bse"), [])
+        # NSE, Tuesday rule: Monday; Monday a holiday → none
+        self.assertEqual(pre_expiry(weekdays_from("2026-11-16", 5), "nse"), ["2026-11-16"])
+        self.assertEqual(pre_expiry(weekdays_from("2026-11-17", 4), "nse"), [])
+        # the week of the switch: Thu rule to 31 Aug 2025 (eve Wed 27 Aug), Tue from 1 Sep (eve Mon 1 Sep)
+        self.assertEqual(pre_expiry(weekdays_from("2025-08-25", 10), "nse"), ["2025-08-27", "2025-09-01"])
+        # the data ends on the eve, before the week's expiry: still the pre-expiry session
+        self.assertEqual(pre_expiry(["2026-11-13", "2026-11-16"], "nse"), ["2026-11-16"])
+        self.assertEqual(pre_expiry(weekdays_from("2026-11-16", 5), "mcx"), [])
 
 
 PER_EX = {"nse": {"adr": 50, "beta": 0.7}, "bse": {"adr": 10, "beta": 0.7}, "mcx": {"adr": 5, "beta": 0.2}}
@@ -132,6 +204,50 @@ class VixFit(unittest.TestCase):
         self.assertAlmostEqual(p["x"], math.log(vix[mcx[i]["date"]] / (sum(vs) / 44)), places=12)
         self.assertAlmostEqual(p["y"], math.log(mcx[i]["total_rev"] / (sum(r["total_rev"] for r in window) / 45)),
                                places=12)
+
+    def test_expiry_dummies_across_the_rule_switch(self):
+        # NSE's expiry moved Thu → Tue on 1 Sep 2025: the expiry / pre-expiry dummies
+        # recover their effects and β; R² (VIX) is over a baseline that holds them
+        rows = synthetic_expiry_rows(holidays=("2025-08-14",))
+        f = js_eval(VIX_JS, "vixFit(vixFitSample(DATA.rows, vixByDate(DATA.rows), VIX_FIT_FROM, 'nse'))", {"rows": rows})
+        self.assertEqual(f["dummies"], ["dow1", "dow2", "dow3", "dow4", "exp", "pre"])
+        self.assertLess(abs(f["beta"] - 0.6), 0.02)
+        self.assertLess(abs(f["bExpiry"] - 0.4), 0.02)
+        self.assertLess(abs(f["bPre"] - 0.15), 0.02)
+        self.assertAlmostEqual(f["r2Vix"], f["r2"] - f["r2Dow"], places=12)
+        self.assertGreater(f["r2Dow"], 0.5)   # the baseline already explains the expiry spike
+        # weekday dummies alone cannot: the fit without the expiry columns explains less
+        w = js_eval(VIX_JS, "vixFit(vixFitSample(DATA.rows, vixByDate(DATA.rows)))", {"rows": rows})
+        self.assertEqual(w["dummies"], ["dow1", "dow2", "dow3", "dow4"])
+        self.assertIsNone(w["bExpiry"])
+        self.assertLess(w["r2"], f["r2"] - 0.1)
+
+    def test_sample_flags_expiry_and_pre_expiry(self):
+        rows = synthetic_expiry_rows(holidays=("2025-08-14",))
+        exp, pre = nse_expiry_days([r["date"] for r in rows])
+        s = js_eval(VIX_JS, "vixFitSample(DATA.rows, vixByDate(DATA.rows), VIX_FIT_FROM, 'nse')", {"rows": rows})
+        self.assertEqual({p["date"] for p in s if p["exp"]}, exp & {p["date"] for p in s})
+        self.assertEqual({p["date"] for p in s if p["pre"]}, pre & {p["date"] for p in s})
+        by = {p["date"]: p for p in s}
+        self.assertEqual((by["2025-08-13"]["exp"], by["2025-08-13"]["pre"]), (1, 0))   # Thu holiday: Wed is the expiry
+        self.assertEqual((by["2025-08-20"]["pre"], by["2025-08-21"]["exp"]), (1, 1))   # Thu rule: Wed + Thu
+        self.assertEqual((by["2025-09-01"]["pre"], by["2025-09-02"]["exp"]), (1, 1))   # Tue rule: Mon + Tue
+        self.assertEqual(by["2025-09-04"]["exp"], 0)                                     # an ordinary Thursday now
+        # MCX has no expiry rule: no expiry columns
+        m = js_eval(VIX_JS, "vixFitSample(DATA.rows, vixByDate(DATA.rows), VIX_FIT_FROM, 'mcx')", {"rows": rows})
+        self.assertFalse(any(p["exp"] or p["pre"] for p in m))
+        f = js_eval(VIX_JS, "vixFit(vixFitSample(DATA.rows, vixByDate(DATA.rows), VIX_FIT_FROM, 'mcx'))", {"rows": rows})
+        self.assertNotIn("exp", f["dummies"])
+
+    def test_collinear_expiry_dummy_left_out(self):
+        # only Tuesday-rule weeks and no holidays: the expiry dummy is the Tuesday
+        # dummy and the pre-expiry one is Monday (the intercept less the others), so
+        # both are dropped rather than making the fit singular
+        dates = weekdays_from("2025-09-01", 200)
+        rows = [{"date": d, "total_rev": 50 + (i % 7), "vix": 15 + 4 * math.sin(i / 6)} for i, d in enumerate(dates)]
+        f = js_eval(VIX_JS, "vixFit(vixFitSample(DATA.rows, vixByDate(DATA.rows), '2025-01-01', 'nse'))", {"rows": rows})
+        self.assertIsNotNone(f)
+        self.assertEqual(f["dummies"], ["dow1", "dow2", "dow3", "dow4"])
 
     def test_ols_and_singular(self):
         b = js_eval(VIX_JS, "vixOLS([[1,0],[1,1],[1,2],[1,3]], [1,3,5,7])")
