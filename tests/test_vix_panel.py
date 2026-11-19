@@ -12,6 +12,7 @@ import math
 import unittest
 
 from helpers import NODE, js_eval
+from test_dashboard_models import js_eval_async
 
 EXPIRY_JS = ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry", "computeWeekExpiryDates",
              "EXPIRY_DATES_CACHE", "expiryDateSet", "PRE_EXPIRY_DATES_CACHE", "preExpiryDateSet"]
@@ -645,6 +646,65 @@ class VixPanelLiveTick(unittest.TestCase):
     def test_tick_without_table_redraws(self):
         ticks = js_eval(SYNC_JS, SYNC_HARNESS, {"noTable": True})
         self.assertEqual([t["redraws"] for t in ticks], [0, 1, 2])
+
+
+# Cross-exchange panels (CROSS_PANELS, 01-data.js): the VIX panel stays out of
+# VIEW_BUILT_FROM; when the cached file it was drawn from moves, the freshness
+# check re-draws only the panel, and a view rebuild happens only when the view's
+# own data moved.
+FRESHNESS_HARNESS = r"""
+  globalThis.freshnessRun = null;
+  globalThis.isViewKey = () => false;
+  globalThis.currentExchange = 'nse';
+  globalThis.VIEW_BUILT_FROM = DATA.viewBuiltFrom || {};
+  globalThis.VIEW_LOADED = { exchange: 'nse', sig: 'v', checkedAt: Date.now() - (DATA.viewStale ? 3600e3 : 0) };
+  globalThis.MARKET_CHECKED_AT = { bse: 0, mcx: 0 };
+  const sig = { bse: 'b1', mcx: 'm1' };
+  globalThis.marketSig = ex => sig[ex] || '';
+  const fetched = [];
+  globalThis.preloadMarketData = async exs => { fetched.push(...exs); Object.assign(sig, DATA.moves || {}); return []; };
+  globalThis.fetchExchangeFiles = async () => (DATA.viewMoves ? { sig: 'v2' } : { sig: 'v' });
+  let full = 0;
+  globalThis.rebuildCurrentView = async () => { full++; };
+  const redrawn = [];
+  registerCrossPanel('vix', { bse: 'b1', mcx: 'm1' }, () => redrawn.push('vix'));
+  await checkDataFreshness();
+  await new Promise(r => setTimeout(r, 0));
+  return { fetched: fetched.sort(), full, redrawn };
+"""
+FRESHNESS_JS = ["DATA_MAX_AGE_MS", "CROSS_PANELS", "registerCrossPanel", "crossPanelsMoved", "checkDataFreshness"]
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class CrossExchangePanels(unittest.TestCase):
+    def run_check(self, **data):
+        return js_eval_async(FRESHNESS_JS, FRESHNESS_HARNESS, data)
+
+    def test_moved_ids(self):
+        panels = {"a": {"sigs": {"bse": "1", "mcx": "2"}}, "b": {"sigs": {"nse": "3"}}, "c": {"sigs": {}}}
+        self.assertEqual(js_eval(["crossPanelsMoved"], "crossPanelsMoved(DATA, ex => ({bse: '1', mcx: '9', nse: '3'})[ex])", panels), ["a"])
+        self.assertEqual(js_eval(["crossPanelsMoved"], "crossPanelsMoved(DATA, ex => ({bse: '1', mcx: '2', nse: '3'})[ex])", panels), [])
+
+    def test_mcx_move_redraws_only_the_panel(self):
+        out = self.run_check(moves={"mcx": "m2"})
+        self.assertEqual(out["fetched"], ["bse", "mcx"])   # the panel's cached files are kept fresh
+        self.assertEqual((out["full"], out["redrawn"]), (0, ["vix"]))
+
+    def test_nothing_moved_nothing_redrawn(self):
+        self.assertEqual(self.run_check(), {"fetched": ["bse", "mcx"], "full": 0, "redrawn": []})
+
+    def test_view_rebuild_covers_the_panel(self):
+        # the view's own file moved: one full rebuild (which re-draws the panel), no extra redraw
+        out = self.run_check(viewStale=True, viewMoves=True, moves={"mcx": "m2"})
+        self.assertEqual((out["full"], out["redrawn"]), (1, []))
+        # a combined view registered in VIEW_BUILT_FROM still rebuilds whole, as before
+        out = self.run_check(viewBuiltFrom={"bse": "b1", "mcx": "m1"}, moves={"mcx": "m2"})
+        self.assertEqual((out["full"], out["redrawn"]), (1, []))
+
+    def test_vix_panel_not_in_view_built_from(self):
+        src = js_eval(["buildVixPanel"], "buildVixPanel.toString()")
+        self.assertNotIn("VIEW_BUILT_FROM", src)
+        self.assertIn("registerCrossPanel", src)
 
 
 if __name__ == "__main__":

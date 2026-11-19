@@ -325,8 +325,9 @@ function vixTickerNow() {
 // ========================
 // VIX PANEL — the sensitivity and week-on-week VIX tables in #vixPanel, below
 // the Revenue Summary sub-tabs. The same in every exchange view: NSE, BSE and
-// MCX are loaded whatever the switcher shows (the shown exchange is DATA, the
-// others come from the shared cache, as on Contracts to Premium).
+// MCX are loaded whatever the switcher shows (loadCrossExchangeRows: the shown
+// exchange is DATA, the others come from the shared cache; the panel re-draws
+// itself when those change, see CROSS_PANELS in 01-data.js).
 // ========================
 const VIX_EXCHANGES = ['nse', 'bse', 'mcx'];
 let vixBuildSeq = 0;      // latest build; an older one still loading yields to it
@@ -505,21 +506,17 @@ async function buildVixPanel() {
   const el = document.getElementById('vixPanel');
   if (!el || isViewKey(currentExchange)) return;
   const seq = ++vixBuildSeq;
-  // A single-exchange view has its own file in DATA; the others come from the shared cache
-  const own = VIEW_LOADED && !DATA.components ? VIEW_LOADED.exchange : null;
-  const cached = VIX_EXCHANGES.filter(e => e !== own);
-  if (!el.firstChild && cached.some(e => !MARKET_RAW[e])) {
-    el.innerHTML = rxPanel({ title: 'India VIX → average daily revenue', body: '<div class="rx-empty"><b>Loading NSE, BSE and MCX data…</b></div>' });
-  }
-  await ensureFreshMarketData(cached);
+  const { rowsByEx, sigs } = await loadCrossExchangeRows(VIX_EXCHANGES, () => {
+    if (!el.firstChild) el.innerHTML = rxPanel({ title: 'India VIX → average daily revenue', body: '<div class="rx-empty"><b>Loading NSE, BSE and MCX data…</b></div>' });
+  });
   if (seq !== vixBuildSeq) return;   // a later build took over while loading
-  const rowsByEx = Object.fromEntries(VIX_EXCHANGES.map(e => [e, rawFor(e)?.daily_all || null]));
+  // Re-drawn on its own (not the whole view) when a cached file it used changes
+  registerCrossPanel('vix', sigs, buildVixPanel);
   if (!rowsByEx.nse) {
     el.innerHTML = rxPanel({ title: 'India VIX → average daily revenue', body: '<div class="rx-empty"><b>Couldn\'t load NSE data</b>Try again in a moment.</div>' });
     VIX_PANEL = null;
     return;
   }
-  cached.filter(e => MARKET_RAW[e]).forEach(e => { VIEW_BUILT_FROM[e] = marketSig(e); });
   renderVixPanel(el, vixPanelModel(rowsByEx), vixTickerNow());
   renderLiveCards();   // the ticker's daily fallback may only now have NSE's rows
 }
