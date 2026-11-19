@@ -46,6 +46,7 @@ function vixFitSample(rows, vixMap, from = VIX_FIT_FROM) {
       const w = vixMap[days[j].date];
       if (w > 0) { vixSum += w; vixN++; }
     }
+    // VIX MA over the window rows that have VIX, not the last 45 VIX-bearing rows (accepted reading)
     const revMA = revSum / VIX_MA, vixMA = vixN ? vixSum / vixN : 0;
     if (!(revMA > 0) || !(vixMA > 0)) return;
     const wd = new Date(r.date + 'T00:00:00Z').getUTCDay();
@@ -159,9 +160,10 @@ function vixSensitivityRows(perEx, vix45, todayVix, range) {
 // dates, newest first: { week, label, sessions, avgVix, closeVix (last session's
 // VIX), chgPts, chgPct, totalAdr, totalPct, inProgress }. totalAdr is the mean of
 // totalByDate (NSE + BSE + MCX total_rev, built by the caller) over the week's
-// NSE sessions. Changes (fractions for %) are against the next-older row shown,
-// so the oldest row's are null. inProgress marks the week of the latest NSE date
-// while that date is before the week's Friday.
+// NSE sessions. Changes (fractions for %) are against the next-older week in the
+// data, so the oldest row shown has them too unless no older week exists (one
+// extra week is built for that, then dropped). inProgress marks the week of the
+// latest NSE date while that date is before the week's Friday.
 function vixWeeklyRows(nseRows, totalByDate, weeks = 8) {
   const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const dm = iso => [Number(iso.slice(8, 10)), MON[Number(iso.slice(5, 7)) - 1]];
@@ -184,7 +186,7 @@ function vixWeeklyRows(nseRows, totalByDate, weeks = 8) {
   const fri = new Date(latestWeek + 'T00:00:00Z');
   fri.setUTCDate(fri.getUTCDate() + 4);
   const latestFriday = fri.toISOString().slice(0, 10);
-  const stats = [...byWeek.keys()].sort().reverse().slice(0, weeks).map(w => {
+  const stats = [...byWeek.keys()].sort().reverse().slice(0, weeks + 1).map(w => {
     const ds = byWeek.get(w);
     const vix = ds.map(r => r.vix).filter(v => v > 0);
     const tot = ds.map(r => (totalByDate ? totalByDate[r.date] : undefined)).filter(Number.isFinite);
@@ -200,5 +202,5 @@ function vixWeeklyRows(nseRows, totalByDate, weeks = 8) {
              totalAdr: s.totalAdr,
              totalPct: o && s.totalAdr != null && o.totalAdr > 0 ? s.totalAdr / o.totalAdr - 1 : null,
              inProgress: s.inProgress };
-  });
+  }).slice(0, weeks);
 }

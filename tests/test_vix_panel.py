@@ -241,11 +241,30 @@ class VixWeekly(unittest.TestCase):
         self.assertIsNone(rows[2]["chgPct"])
         self.assertIsNone(rows[2]["totalPct"])
 
-    def test_weeks_limit_nulls_oldest_shown(self):
+    def test_weeks_limit_keeps_change_vs_older_week(self):
+        # the oldest row shown still compares with the week before it when the data has one
         rows = self.rows(weeks=2)
         self.assertEqual([r["week"] for r in rows], ["2026-11-16", "2026-11-09"])
-        self.assertIsNone(rows[1]["chgPts"])
-        self.assertIsNone(rows[1]["totalPct"])
+        self.assertAlmostEqual(rows[1]["chgPts"], 2, places=12)
+        self.assertAlmostEqual(rows[1]["chgPct"], 16 / 14 - 1, places=12)
+        self.assertAlmostEqual(rows[1]["totalPct"], 67 / 62 - 1, places=12)
+
+    def test_eight_of_nine_weeks(self):
+        dates = weekdays_from("2026-09-14", 45)   # nine full weeks, 14 Sep – 13 Nov
+        nse = [{"date": d, "total_rev": 50, "vix": 12 + i // 5} for i, d in enumerate(dates)]
+        total = {d: 100 + i // 5 for i, d in enumerate(dates)}
+        rows = js_eval(VIX_JS, "vixWeeklyRows(DATA.nse, DATA.total)", {"nse": nse, "total": total})
+        self.assertEqual(len(rows), 8)
+        self.assertEqual(rows[-1]["week"], "2026-09-21")
+        self.assertAlmostEqual(rows[-1]["chgPts"], 1, places=12)
+        self.assertAlmostEqual(rows[-1]["chgPct"], 13 / 12 - 1, places=12)
+        self.assertAlmostEqual(rows[-1]["totalPct"], 101 / 100 - 1, places=12)
+        # exactly eight weeks of data: nothing older, so the oldest row's changes are null
+        rows = js_eval(VIX_JS, "vixWeeklyRows(DATA.nse, DATA.total)", {"nse": nse[5:], "total": total})
+        self.assertEqual((len(rows), rows[-1]["week"]), (8, "2026-09-21"))
+        self.assertIsNone(rows[-1]["chgPts"])
+        self.assertIsNone(rows[-1]["chgPct"])
+        self.assertIsNone(rows[-1]["totalPct"])
 
     def test_week_through_friday_is_not_in_progress(self):
         extra = nse_week(["2026-11-18", "2026-11-19", "2026-11-20"], [15, 15, 15])
