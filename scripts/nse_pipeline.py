@@ -60,8 +60,13 @@ def fetch_indiavix_map(start_date, end_date):
         if hist.empty:
             print("WARNING: No VIX data returned from Yahoo Finance")
             return {}
-        result = {str(idx.date()): round(float(row["Close"]), 4)
-                  for idx, row in hist.iterrows()}
+        # A partial current-day bar can carry Close NaN: skip it, or json.dump
+        # writes a bare NaN that the dashboard's JSON.parse rejects
+        result = {}
+        for idx, row in hist.iterrows():
+            close = float(row["Close"])
+            if math.isfinite(close) and close > 0:
+                result[str(idx.date())] = round(close, 4)
         print(f"Fetched {len(result)} India VIX data points ({start_date} to {end_date})")
         return result
     except ImportError:
@@ -72,10 +77,20 @@ def fetch_indiavix_map(start_date, end_date):
         return {}
 
 
+def _finite_vix(value):
+    """A VIX value as a float, or 0 when it is missing, non-numeric or not finite."""
+    try:
+        v = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return v if math.isfinite(v) else 0.0
+
+
 def apply_vix(all_daily, fetch=None, refresh_last=10):
     """Fill India VIX on rows missing it and re-check the last `refresh_last`
     rows (trading days), whose yfinance value can be the previous day's close.
     Older non-zero rows are never touched, and 0 never overwrites a value.
+    A non-finite value (NaN, inf) is never written and counts as missing.
     `fetch` defaults to fetch_indiavix_map, looked up at call time.
     Returns the changed dates in date order."""
     if fetch is None:
@@ -84,7 +99,7 @@ def apply_vix(all_daily, fetch=None, refresh_last=10):
         return []
     recent = all_daily[-refresh_last:] if refresh_last > 0 else []
     recent_dates = {r["date"] for r in recent}
-    zero = [r["date"] for r in all_daily if not float(r.get("vix", 0) or 0)]
+    zero = [r["date"] for r in all_daily if not _finite_vix(r.get("vix"))]
     starts = zero[:1] + [recent[0]["date"]] if recent else zero[:1]
     if not starts:
         print("All records already have VIX data")
@@ -97,14 +112,14 @@ def apply_vix(all_daily, fetch=None, refresh_last=10):
         return []
     changed = []
     for rec in all_daily:
-        new = float(vix_map.get(rec["date"], 0) or 0)
+        new = _finite_vix(vix_map.get(rec["date"]))
         if new <= 0:
             continue
-        old = float(rec.get("vix", 0) or 0)
+        old = _finite_vix(rec.get("vix"))
         if old == 0 or (rec["date"] in recent_dates and abs(new - old) > 0.005):
             rec["vix"] = new
             changed.append(rec["date"])
-    filled = sum(1 for r in all_daily if float(r.get("vix", 0) or 0) > 0)
+    filled = sum(1 for r in all_daily if _finite_vix(r.get("vix")) > 0)
     print(f"VIX applied: {len(changed)} changed; {filled}/{len(all_daily)} records now have VIX data")
     return changed
 

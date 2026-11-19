@@ -81,6 +81,24 @@ class IndiaVix(unittest.TestCase):
         self.assertIsNone(vix["pct_change"])
 
 
+class FetchIndiaVixMap(unittest.TestCase):
+    def test_nan_close_is_skipped(self):
+        import datetime as dt
+        import nse_pipeline as nse
+
+        class Hist:
+            empty = False
+
+            def iterrows(self):
+                yield dt.datetime(2026, 11, 18), {"Close": 15.25}
+                yield dt.datetime(2026, 11, 19), {"Close": float("nan")}   # partial current-day bar
+
+        yf = types.SimpleNamespace(Ticker=lambda sym: types.SimpleNamespace(history=lambda **k: Hist()))
+        with mock.patch.dict(sys.modules, {"yfinance": yf}):
+            out = nse.fetch_indiavix_map("2026-11-18", "2026-11-19")
+        self.assertEqual(out, {"2026-11-18": 15.25})
+
+
 class ApplyVix(unittest.TestCase):
     DATES = [f"2026-11-{d:02d}" for d in range(1, 16)]
 
@@ -139,6 +157,28 @@ class ApplyVix(unittest.TestCase):
         m[self.DATES[8]] = 0
         nse.apply_vix(rows, fetch=lambda a, b: m)
         self.assertEqual(rows[8]["vix"], 14.0 + 8 / 100)
+
+    def test_nan_from_fetch_never_written(self):
+        # a NaN (or inf) in the fetched map is skipped: the row keeps 0 / its value
+        import nse_pipeline as nse
+        rows = self.rows()
+        m = self.fetch_map()
+        m[self.DATES[0]] = float("nan")
+        m[self.DATES[14]] = float("inf")
+        changed = nse.apply_vix(rows, fetch=lambda a, b: m)
+        self.assertEqual(rows[0]["vix"], 0)
+        self.assertEqual(rows[14]["vix"], 15.52)
+        self.assertNotIn(self.DATES[0], changed)
+        self.assertNotIn(self.DATES[14], changed)
+        json.dumps(rows, allow_nan=False)   # raises if a non-finite value got in
+
+    def test_nan_already_stored_counts_as_missing(self):
+        import nse_pipeline as nse
+        rows = [{"date": d, "vix": 12.0} for d in self.DATES]
+        rows[2]["vix"] = float("nan")
+        m = {d: 12.0 for d in self.DATES}
+        self.assertEqual(nse.apply_vix(rows, fetch=lambda a, b: m), [self.DATES[2]])
+        self.assertEqual(rows[2]["vix"], 12.0)
 
     def test_no_change_when_recent_match(self):
         import nse_pipeline as nse
