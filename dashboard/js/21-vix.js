@@ -3,7 +3,7 @@
 
 // ========================
 // VIX → ADR SENSITIVITY and WEEK-ON-WEEK VIX — NSE, BSE, MCX and Total on
-// total revenue at today's rates, whatever the exchange switcher shows.
+// total revenue (NSE/BSE at today's rates, MCX source values), whatever the exchange switcher shows.
 // Elasticity β per exchange, by OLS on daily rows since VIX_FIT_FROM:
 //   ln(rev_t / MA45_{t-1}) = a + weekday dummies + β · ln(VIX_t / VIXMA45_{t-1})
 // MA45 is the mean revenue of the previous 45 sessions, VIXMA45 the mean VIX of
@@ -191,7 +191,7 @@ function vixWeeklyRows(nseRows, totalByDate, weeks = 8) {
     const vix = ds.map(r => r.vix).filter(v => v > 0);
     const tot = ds.map(r => (totalByDate ? totalByDate[r.date] : undefined)).filter(Number.isFinite);
     return { week: w, label: label(ds[0].date, ds[ds.length - 1].date), sessions: ds.length,
-             avgVix: mean(vix), closeVix: vix.length ? vix[vix.length - 1] : null, totalAdr: mean(tot),
+             avgVix: mean(vix), closeVix: ds[ds.length - 1].vix > 0 ? ds[ds.length - 1].vix : null, totalAdr: mean(tot),
              inProgress: w === latestWeek && latest < latestFriday };
   });
   return stats.map((s, i) => {
@@ -230,15 +230,18 @@ function vixTickerModel(liveVix, nseRows, now = Date.now()) {
   const istDate = ms => new Date(ms + 330 * 60000).toISOString().slice(0, 10);
   const t = liveVix ? Date.parse(liveVix.as_of) : NaN;
   const liveLast = liveVix ? Number(liveVix.last) : NaN;
-  if (liveLast > 0 && !(lastRow && isFinite(t) && istDate(t) < lastRow.date)) {
-    const ist = new Date(now + 330 * 60000);
-    const wd = ist.getUTCDay(), mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
-    const weekday = wd >= 1 && wd <= 5;
-    const open = weekday && mins >= 555 && mins < 960;
-    const age = isFinite(t) ? Math.round((now - t) / 60000) : null;
-    const today = isFinite(t) && istDate(t) === istDate(now);
-    const fresh = !liveVix.stale_since && age != null && age <= LIVE_STALE_MINUTES;
-    const kind = open && today ? (fresh ? 'live' : 'stale') : weekday && today && mins < 555 ? 'preopen' : 'close';
+  const ist = new Date(now + 330 * 60000);
+  const wd = ist.getUTCDay(), mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  const weekday = wd >= 1 && wd <= 5;
+  const open = weekday && mins >= 555 && mins < 960;
+  const age = isFinite(t) ? Math.round((now - t) / 60000) : null;
+  const today = isFinite(t) && istDate(t) === istDate(now);
+  const fresh = liveVix && !liveVix.stale_since && age != null && age <= LIVE_STALE_MINUTES;
+  const kind = open && today ? (fresh ? 'live' : 'stale') : weekday && today && mins < 555 ? 'preopen' : 'close';
+  // Once the live reading's session is over, NSE's daily close for that date (or a
+  // later one) is the official figure and wins over the last intraday poll
+  const dailyWins = lastRow && isFinite(t) && (istDate(t) < lastRow.date || (istDate(t) === lastRow.date && kind === 'close'));
+  if (liveLast > 0 && !dailyWins) {
     const num = v => (v == null || !isFinite(Number(v)) ? null : Number(v));
     return { kind, last: liveLast, change: num(liveVix.change), pctChange: num(liveVix.pct_change),
              when: liveVix.as_of || null, source: liveVix.source || null, age };
@@ -382,8 +385,8 @@ function vixHowHTML(model) {
     <li><b>Why VIX moves revenue:</b> options are billed on premium, and premiums rise with volatility, so a higher VIX lifts options revenue (and trading activity with it).</li>
     <li><b>MCX:</b> trades commodities, so India VIX (Nifty volatility) explains little of it: its β is small and its R² (VIX) near zero.</li>
     <li><b>Fit:</b> per exchange by least squares on daily rows from ${rxDate(VIX_FIT_FROM)} (after SEBI's F&amp;O curbs): ln(revenue ÷ previous 45-session mean) on weekday dummies (expiry-day concentration) and ln(VIX ÷ previous 45-session mean VIX). β is the elasticity; R² (VIX) is what the VIX term adds over the weekday dummies alone. VIX is NSE's daily close, joined by date; BSE and MCX days with no NSE session are left out, and MCX's modelled rows (before 2 Sep 2024) are never used.</li>
-    <li><b>Basis:</b> total revenue at today's statutory rates for NSE and BSE, MCX as reported (fut + opt), whatever the exchange switcher shows.${r ? ` Grey rows lie outside the ${fmtNum(r.min, 2)}–${fmtNum(r.max, 2)} VIX range of the fit sample, so they extrapolate.` : ''}</li>
-    <li><b>Week-on-week:</b> Mon–Sun weeks of NSE sessions, daily closes only (the live VIX is not mixed in). Week-end VIX is the latest session's VIX in that week; changes are against the week before. Total ADR is NSE + BSE + MCX on the same basis, averaged over the week's NSE sessions.</li>
+    <li><b>Basis:</b> total revenue at today's statutory rates for NSE and BSE; MCX as reported (fut + opt, source values, not re-priced), whatever the exchange switcher shows.${r ? ` Grey rows lie outside the ${fmtNum(r.min, 2)}–${fmtNum(r.max, 2)} VIX range of the fit sample, so they extrapolate.` : ''}</li>
+    <li><b>Week-on-week:</b> Mon–Sun weeks of NSE sessions, daily closes only (the live VIX is not mixed in). Week-end VIX is the VIX of the week's last session (blank while that day's VIX is not in yet); changes are against the week before. Total ADR is NSE + BSE + MCX on the same basis, averaged over the week's NSE sessions.</li>
   </ul>`);
 }
 
@@ -402,7 +405,7 @@ function renderVixPanel(el, model, ticker) {
   const chips = VIX_EXCHANGES.map(ex => vixFitChip(ex, perEx[ex])).join(' ');
   const sens = rxPanel({
     title: 'India VIX → average daily revenue',
-    meta: `₹ Cr/day at today's rates · NSE, BSE, MCX and Total · base: last 45 sessions`,
+    meta: `₹ Cr/day · ${feeUnitLabelFor(VIX_EXCHANGES)} · NSE, BSE, MCX and Total · base: last 45 sessions`,
     right: chips,
     body: vixSensitivityHTML(model, ticker),
     foot: vixSensitivityFoot(model, ticker),
@@ -413,7 +416,7 @@ function renderVixPanel(el, model, ticker) {
     title: 'Week-on-week India VIX',
     meta: `last 8 weeks of NSE sessions · daily closes${nseLast ? ` to ${escHtml(rxDate(nseLast))}` : ''}`,
     body: vixWeeklyHTML(model.weekly),
-    foot: `Total ADR: NSE + BSE + MCX ₹ Cr/day at today's rates${upTo && nseLast && upTo < nseLast ? `, through ${escHtml(rxDate(upTo))} (the latest day every exchange has)` : ''}.`,
+    foot: `Total ADR: NSE + BSE + MCX ₹ Cr/day (${feeUnitLabelFor(VIX_EXCHANGES)})${upTo && nseLast && upTo < nseLast ? `, through ${escHtml(rxDate(upTo))} (the latest day every exchange has)` : ''}.`,
     attrs: 'id="vixWeeklyPanel"',
   });
   el.innerHTML = sens + weekly;
