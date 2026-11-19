@@ -413,7 +413,7 @@ function renderVixPanel(el, model, ticker) {
     title: 'Week-on-week India VIX',
     meta: `last 8 weeks of NSE sessions · daily closes${nseLast ? ` to ${escHtml(rxDate(nseLast))}` : ''}`,
     body: vixWeeklyHTML(model.weekly),
-    foot: `Total ADR: NSE + BSE + MCX ₹ Cr/day at today's rates${upTo && nseLast && upTo < nseLast ? `, through ${escHtml(rxDate(upTo))} (the latest day every exchange has)` : ''}.`,
+    foot: `Total ADR: NSE + BSE + MCX ₹ Cr/day at today's rates${upTo && nseLast && upTo < nseLast ? `, through ${escHtml(rxDate(upTo))} (the latest day every exchange has)` : ''}, averaged over NSE sessions only (MCX days on NSE holidays are left out), so it can differ slightly from the week-on-week average daily revenue Total above.`,
     attrs: 'id="vixWeeklyPanel"',
   });
   el.innerHTML = sens + weekly;
