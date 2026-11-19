@@ -215,6 +215,8 @@ function vixWeeklyRows(nseRows, totalByDate, weeks = 8) {
 // From the poll's india_vix, as the live cards read their polls (liveStatus): in
 // market hours (Mon–Fri 09:15–16:00 IST) a read from today is 'live' when fresh
 // and 'stale' when older than LIVE_STALE_MINUTES or flagged failed (stale_since);
+// a read from today taken before 09:15 IST while it is still before 09:15 (the
+// poller starts at 08:55, in the pre-open) is 'preopen';
 // anything else, stale_since or not, is 'close' (the last reading of an earlier
 // or finished session, so a failed Friday poll does not say "delayed" all
 // weekend). `when` is the
@@ -231,11 +233,12 @@ function vixTickerModel(liveVix, nseRows, now = Date.now()) {
   if (liveLast > 0 && !(lastRow && isFinite(t) && istDate(t) < lastRow.date)) {
     const ist = new Date(now + 330 * 60000);
     const wd = ist.getUTCDay(), mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
-    const open = wd >= 1 && wd <= 5 && mins >= 555 && mins < 960;
+    const weekday = wd >= 1 && wd <= 5;
+    const open = weekday && mins >= 555 && mins < 960;
     const age = isFinite(t) ? Math.round((now - t) / 60000) : null;
     const today = isFinite(t) && istDate(t) === istDate(now);
     const fresh = !liveVix.stale_since && age != null && age <= LIVE_STALE_MINUTES;
-    const kind = open && today ? (fresh ? 'live' : 'stale') : 'close';
+    const kind = open && today ? (fresh ? 'live' : 'stale') : weekday && today && mins < 555 ? 'preopen' : 'close';
     const num = v => (v == null || !isFinite(Number(v)) ? null : Number(v));
     return { kind, last: liveLast, change: num(liveVix.change), pctChange: num(liveVix.pct_change),
              when: liveVix.as_of || null, source: liveVix.source || null, age };
@@ -261,6 +264,7 @@ function vixTickerHTML(m) {
   const src = m.source === 'yfinance' ? ' (Yahoo Finance fallback)' : m.source === 'nse' ? ' (NSE)' : '';
   const pill = m.kind === 'live' ? `<span class="lvc-pill lvc-pill--live"><i></i>Live ${at.time}</span>`
     : m.kind === 'stale' ? `<span class="lvc-pill lvc-pill--stale" title="Last read ${escHtml(fmtTradeDate(at.date, true))} ${at.time} IST"><i></i>Delayed${m.age != null ? ` · ${m.age} min` : ''}</span>`
+      : m.kind === 'preopen' ? `<span class="lvc-pill" title="Read in the pre-open, before trading starts at 09:15 IST"><i></i>Pre-open ${at.time}</span>`
       : `<span class="lvc-pill"><i></i>Last close · ${escHtml(fmtTradeDate(at.date, true))}</span>`;
   const up = m.change != null && m.change >= 0;
   const chg = m.change == null ? ''
@@ -328,14 +332,16 @@ function vixFitChip(ex, p) {
   return `<span class="vix-fit" title="${escHtml(`${name}: elasticity of revenue to VIX, ${f.n} days since ${rxDate(VIX_FIT_FROM)}. R² ${fmtNum(f.r2, 2)} with weekday dummies, ${fmtNum(f.r2Dow, 2)} with the dummies alone; the VIX term adds ${fmtNum(f.r2Vix, 2)}.`)}">${rxChip(`${name} β ${fmtNum(f.beta, 2)} · n ${f.n} · R² (VIX) ${fmtNum(f.r2Vix, 2)}`, 'data')}</span>`;
 }
 
-function vixSensitivityHTML(model, ticker) {
+// The sensitivity table's <tbody> rows ('' when NSE's rows hold no VIX)
+function vixSensitivityBodyHTML(model, ticker) {
   const { perEx, vix45, range } = model;
   const rows = vixSensitivityRows(perEx, vix45, ticker ? ticker.last : null, range);
-  if (!rows.length) return '<div class="rx-empty"><b>No India VIX in NSE\'s daily data</b></div>';
+  if (!rows.length) return '';
   const cr = v => (v == null || !isFinite(v) ? '—' : fmtNum(v, 2));
   const todayTag = !ticker ? '' : ticker.kind === 'close'
-    ? `latest close${ticker.source === 'daily' ? ` · ${escHtml(fmtTradeDate(ticker.when))}` : ''}` : 'today';
-  const body = rows.map(r => {
+    ? `latest close${ticker.source === 'daily' ? ` · ${escHtml(fmtTradeDate(ticker.when))}` : ''}`
+    : ticker.kind === 'preopen' ? 'pre-open' : 'today';
+  return rows.map(r => {
     const cls = [r.kind === 'today' ? 'vix-today' : r.kind === 'base' ? 'vix-base' : '', r.outside ? 'vix-outside' : ''].filter(Boolean).join(' ');
     const label = r.kind === 'today' ? `${fmtNum(r.vix, 2)} <span class="vix-tag">${todayTag}</span>`
       : r.kind === 'base' ? `${fmtNum(r.vix, 2)} <span class="vix-tag">45-day avg (base)</span>` : fmtNum(r.vix, 0);
@@ -344,6 +350,11 @@ function vixSensitivityHTML(model, ticker) {
       ${VIX_EXCHANGES.map(ex => `<td>${cr(r.adr[ex])}</td>`).join('')}
       <td class="rx-strong">${cr(r.total)}</td><td>${r.kind === 'base' ? '—' : rxSignedPct(r.totalPct)}</td></tr>`;
   }).join('');
+}
+
+function vixSensitivityHTML(model, ticker) {
+  const body = vixSensitivityBodyHTML(model, ticker);
+  if (!body) return '<div class="rx-empty"><b>No India VIX in NSE\'s daily data</b></div>';
   return `<div class="rx-scroll"><table class="rx-table vix-sens">
     <thead><tr><th>VIX</th><th class="vix-pv">% vs 45-day avg VIX</th><th>NSE</th><th>BSE</th><th>MCX</th><th>Total <span class="vix-unit">₹ Cr/day</span></th><th>Total %</th></tr></thead>
     <tbody>${body}</tbody></table></div>`;
@@ -376,19 +387,25 @@ function vixHowHTML(model) {
   </ul>`);
 }
 
-function renderVixPanel(el, model, ticker) {
-  const { perEx, upTo, nseLast } = model;
-  const chips = VIX_EXCHANGES.map(ex => vixFitChip(ex, perEx[ex])).join(' ');
+// The sensitivity panel's footnote (the only other part that depends on the ticker)
+function vixSensitivityFoot(model, ticker) {
+  const { perEx } = model;
   const missing = VIX_EXCHANGES.filter(ex => !perEx[ex] || !perEx[ex].fit);
   const tickerNote = !ticker ? 'no India VIX reading, so no today row'
     : ticker.kind === 'close' ? `today's row uses the latest close, ${fmtNum(ticker.last, 2)}`
-      : `today's row uses the ${ticker.kind === 'live' ? 'live' : 'last (delayed)'} reading, ${fmtNum(ticker.last, 2)}`;
+      : `today's row uses the ${ticker.kind === 'live' ? 'live' : ticker.kind === 'preopen' ? 'pre-open' : 'last (delayed)'} reading, ${fmtNum(ticker.last, 2)}`;
+  return `Highlighted: ${tickerNote}. Total % is against the summed 45-session ADR${missing.length ? `; ${missing.map(e => e.toUpperCase()).join(', ')} without a fit ${missing.length === 1 ? 'is' : 'are'} left out of Total` : ''}.`;
+}
+
+function renderVixPanel(el, model, ticker) {
+  const { perEx, upTo, nseLast } = model;
+  const chips = VIX_EXCHANGES.map(ex => vixFitChip(ex, perEx[ex])).join(' ');
   const sens = rxPanel({
     title: 'India VIX → average daily revenue',
     meta: `₹ Cr/day at today's rates · NSE, BSE, MCX and Total · base: last 45 sessions`,
     right: chips,
     body: vixSensitivityHTML(model, ticker),
-    foot: `Highlighted: ${tickerNote}. Total % is against the summed 45-session ADR${missing.length ? `; ${missing.map(e => e.toUpperCase()).join(', ')} without a fit ${missing.length === 1 ? 'is' : 'are'} left out of Total` : ''}.`,
+    foot: vixSensitivityFoot(model, ticker),
     how: vixHowHTML(model),
     attrs: 'id="vixSensPanel"',
   });
@@ -408,13 +425,25 @@ function vixTodayKey(t) {
   return t ? `${t.last}|${t.kind}|${t.source === 'daily' ? t.when : ''}` : '';
 }
 
-// Redraws the panel from its last data when the ticker's reading has changed
-// (the live cards' cycle calls this), without reloading anything
+// Updates the today row when the ticker's reading has changed (the live cards'
+// cycle calls this, every poll in market hours), without reloading anything.
+// Only the sensitivity table's rows and footnote are rewritten, in place, so an
+// open "How this is worked out" and the tables' horizontal scroll survive the
+// tick; the week-on-week table uses daily closes only and is left alone.
 function vixPanelSyncToday() {
   const el = document.getElementById('vixPanel');
   if (!el || !VIX_PANEL || !el.firstChild) return;
   const ticker = vixTickerNow();
-  if (vixTodayKey(ticker) !== VIX_PANEL.today) renderVixPanel(el, VIX_PANEL.model, ticker);
+  const key = vixTodayKey(ticker);
+  if (key === VIX_PANEL.today) return;
+  const panel = el.querySelector('#vixSensPanel');
+  const tbody = panel && panel.querySelector('tbody');
+  const foot = panel && panel.querySelector(':scope > .rx-foot');
+  const body = tbody && foot ? vixSensitivityBodyHTML(VIX_PANEL.model, ticker) : '';
+  if (!body) { renderVixPanel(el, VIX_PANEL.model, ticker); return; }
+  tbody.innerHTML = body;
+  foot.innerHTML = vixSensitivityFoot(VIX_PANEL.model, ticker);
+  VIX_PANEL.today = key;
 }
 
 async function buildVixPanel() {

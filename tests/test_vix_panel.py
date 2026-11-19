@@ -3,8 +3,9 @@
 The elasticity fit ln(rev / MA45) ~ 1 + weekday dummies + β·ln(VIX / VIXMA45)
 recovers a known β, the projection ADR45 × (V / VIX45)^β with today's and the
 base rows folded into the level grid, the week-on-week VIX table keyed by
-cpWeekStart, and the live VIX ticker's reading (live, delayed, last close, or the
-daily close when the poll file has none)."""
+cpWeekStart, the live VIX ticker's reading (live, delayed, pre-open, last close, or
+the daily close when the poll file has none), the live tick's in-place update of
+the sensitivity table, and the live cards surviving a VIX failure."""
 
 import datetime as dt
 import math
@@ -327,6 +328,110 @@ class VixTicker(unittest.TestCase):
         m = ticker({**LIVE_VIX, "as_of": "2026-11-17T10:55:00Z"},
                    [{"date": "2026-11-17", "vix": 15}, {"date": "2026-11-18", "vix": 16.1}], now="2026-11-19T04:00:00Z")
         self.assertEqual((m["kind"], m["last"], m["when"]), ("close", 16.1, "2026-11-18"))
+
+    def test_ticker_preopen(self):
+        # 09:00 IST on a Thursday, read at 08:58 IST (the poller starts at 08:55): pre-open, not "last close"
+        pre = {**LIVE_VIX, "as_of": "2026-11-19T03:28:00Z"}
+        self.assertEqual(ticker(pre, [], now="2026-11-19T03:30:00Z")["kind"], "preopen")
+        # once trading starts at 09:15 the same read is judged like any other: delayed when old ...
+        self.assertEqual(ticker(pre, [], now="2026-11-19T03:50:00Z")["kind"], "stale")
+        # ... live when fresh
+        self.assertEqual(ticker({**LIVE_VIX, "as_of": "2026-11-19T03:46:00Z"}, [], now="2026-11-19T03:50:00Z")["kind"], "live")
+        # yesterday's reading at 09:00 IST is still the last close; so is a Saturday-morning read
+        self.assertEqual(ticker({**LIVE_VIX, "as_of": "2026-11-18T10:55:00Z"}, [], now="2026-11-19T03:30:00Z")["kind"], "close")
+        self.assertEqual(ticker({**LIVE_VIX, "as_of": "2026-11-21T03:28:00Z"}, [], now="2026-11-21T03:30:00Z")["kind"], "close")
+
+    def test_ticker_preopen_label(self):
+        html = js_eval(TICKER_JS + ["vixIstParts", "vixTickerHTML", "escHtml", "fmtNum"],
+                       "(globalThis.fmtTradeDate = iso => iso, vixTickerHTML(vixTickerModel(DATA.live, [], Date.parse(DATA.now))))",
+                       {"live": {**LIVE_VIX, "as_of": "2026-11-19T03:28:00Z"}, "now": "2026-11-19T03:30:00Z"})
+        self.assertIn("Pre-open 08:58", html)
+        self.assertNotIn("Last close", html)
+
+
+# The live cards' cycle with the VIX feature failing: the NSE/BSE cards are still
+# drawn and the banner still refreshed (renderLiveCards / buildLiveCards).
+LIVE_CARDS_HARNESS = r"""(() => {
+  const el = { innerHTML: '' }, warned = [];
+  let banner = 0;
+  globalThis.document = { getElementById: () => el };
+  globalThis.console = { ...console, warn: (msg) => warned.push(msg) };
+  globalThis.liveCardFor = ex => ex;
+  globalThis.liveCardHTML = ex => `<card ${ex}>`;
+  globalThis.vixTickerNow = () => { if (DATA.throwNow) throw new Error('no VIX'); return {}; };
+  globalThis.vixTickerHTML = () => { if (DATA.throwHtml) throw new Error('bad VIX'); return '<vix>'; };
+  globalThis.vixPanelSyncToday = () => { if (DATA.throwSync) throw new Error('bad panel'); };
+  globalThis.updateLatestRevBanner = () => { banner++; };
+  LIVE_CARD_CACHE.nse = { tried: true };
+  buildLiveCards();
+  return { html: el.innerHTML, banner, warned };
+})()"""
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class LiveCardsSurviveVix(unittest.TestCase):
+    def run_cards(self, **throws):
+        return js_eval(["LIVE_CARD_EXCHANGES", "LIVE_CARD_CACHE", "renderLiveCards", "buildLiveCards"],
+                       LIVE_CARDS_HARNESS, throws)
+
+    def test_cards_and_banner_with_vix_working(self):
+        out = self.run_cards()
+        self.assertEqual((out["html"], out["banner"], out["warned"]), ("<card nse><card bse><vix>", 1, []))
+
+    def test_cards_and_banner_when_vix_throws(self):
+        for throws in ({"throwNow": True}, {"throwHtml": True}, {"throwSync": True},
+                       {"throwHtml": True, "throwSync": True}):
+            with self.subTest(**throws):
+                out = self.run_cards(**throws)
+                self.assertTrue(out["html"].startswith("<card nse><card bse>"))
+                self.assertEqual(out["html"].endswith("<vix>"), not (throws.get("throwNow") or throws.get("throwHtml")))
+                self.assertEqual(out["banner"], 1)
+                self.assertEqual(len(out["warned"]), len(throws))
+
+
+# A live tick (vixPanelSyncToday) rewrites only the sensitivity table's rows and
+# footnote in place; the panel itself (open explainer, scroll positions, the
+# week-on-week table) is not redrawn. Without the table it falls back to a redraw.
+SYNC_HARNESS = r"""(() => {
+  let redraws = 0;
+  const tbody = { innerHTML: 'old rows' }, foot = { innerHTML: 'old foot' };
+  const panel = { querySelector: sel => (sel === 'tbody' ? (DATA.noTable ? null : tbody) : sel === ':scope > .rx-foot' ? foot : null) };
+  const el = { firstChild: {}, querySelector: sel => (sel === '#vixSensPanel' ? panel : null),
+               set innerHTML(v) { redraws++; }, get innerHTML() { return ''; } };
+  globalThis.document = { getElementById: () => el };
+  globalThis.fmtTradeDate = iso => iso;
+  globalThis.renderVixPanel = () => { redraws++; };
+  const model = { perEx: { nse: { adr: 50, beta: 0.7, fit: {} }, bse: { adr: 10, beta: 0.7, fit: {} }, mcx: { adr: 5, beta: 0.2, fit: {} } },
+                  vix45: 14.5, range: { min: 10, max: 30 } };
+  globalThis.VIX_PANEL = { model, today: '14|live|' };
+  const ticks = [];
+  for (const last of [14, 15.2, 15.2]) {
+    globalThis.vixTickerNow = () => ({ kind: 'live', last, source: 'nse', when: '2026-11-19T06:00:00Z' });
+    vixPanelSyncToday();
+    ticks.push({ rows: tbody.innerHTML, foot: foot.innerHTML, redraws, today: VIX_PANEL.today });
+  }
+  return ticks;
+})()"""
+
+SYNC_JS = ["VIX_LEVELS", "VIX_EXCHANGES", "vixSensitivityRows", "vixSensitivityBodyHTML", "vixSensitivityFoot",
+           "vixTodayKey", "vixPanelSyncToday", "fmtNum", "escHtml", "rxSignedPct"]
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class VixPanelLiveTick(unittest.TestCase):
+    def test_tick_updates_rows_in_place(self):
+        same, changed, again = js_eval(SYNC_JS, SYNC_HARNESS, {})
+        self.assertEqual((same["rows"], same["redraws"]), ("old rows", 0))     # same reading: nothing touched
+        self.assertIn("15.20", changed["rows"])
+        self.assertIn("vix-today", changed["rows"])
+        self.assertIn("live reading, 15.20", changed["foot"])
+        self.assertEqual(changed["redraws"], 0)                                  # panel not redrawn
+        self.assertEqual(changed["today"], "15.2|live|")
+        self.assertEqual((again["rows"], again["redraws"]), (changed["rows"], 0))
+
+    def test_tick_without_table_redraws(self):
+        ticks = js_eval(SYNC_JS, SYNC_HARNESS, {"noTable": True})
+        self.assertEqual([t["redraws"] for t in ticks], [0, 1, 2])
 
 
 if __name__ == "__main__":

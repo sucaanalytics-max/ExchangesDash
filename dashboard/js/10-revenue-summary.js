@@ -1275,9 +1275,13 @@ function liveCardHTML(ex, m) {
 function renderLiveCards() {
   const el = document.getElementById('liveCards');
   if (!el || !LIVE_CARD_EXCHANGES.some(ex => LIVE_CARD_CACHE[ex]?.tried)) return;
-  // India VIX after the exchange cards, from the NSE poll file just read (21-vix.js)
-  el.innerHTML = LIVE_CARD_EXCHANGES.map(ex => liveCardHTML(ex, liveCardFor(ex))).join('') + vixTickerHTML(vixTickerNow());
-  vixPanelSyncToday();
+  // India VIX after the exchange cards, from the NSE poll file just read (21-vix.js).
+  // The VIX ticker and panel sync are each fenced off, so a VIX failure never
+  // takes down the NSE/BSE cards or the banner that buildLiveCards refreshes next.
+  let vix = '';
+  try { vix = vixTickerHTML(vixTickerNow()); } catch (e) { console.warn('VIX ticker failed', e); }
+  el.innerHTML = LIVE_CARD_EXCHANGES.map(ex => liveCardHTML(ex, liveCardFor(ex))).join('') + vix;
+  try { vixPanelSyncToday(); } catch (e) { console.warn('VIX panel sync failed', e); }
 }
 
 // Each view shows the last reading straight away, then refreshes the cards
