@@ -349,6 +349,35 @@ class VixTicker(unittest.TestCase):
         m = ticker(poll, daily[:1], now="2026-11-19T15:00:00Z")
         self.assertEqual((m["kind"], m["last"], m["source"]), ("close", 15.52, "nse"))
 
+    def test_ticker_weekday_holiday_is_a_close(self):
+        # Tue 24 Nov 2026 taken as an NSE holiday: the poller still runs at 11:05 IST
+        # and allIndices returns Monday's close; trade_date (marketStatus) says 23 Nov
+        poll = {**LIVE_VIX, "as_of": "2026-11-24T05:35:00Z", "trade_date": "2026-11-23"}
+        now = "2026-11-24T05:36:00Z"
+        m = ticker(poll, [], now=now)
+        self.assertEqual((m["kind"], m["last"], m["tradeDate"]), ("close", 15.52, "2026-11-23"))
+        # Monday's daily close is in: it wins (it is the official figure for that trade date)
+        daily = [{"date": "2026-11-20", "vix": 14.0}, {"date": "2026-11-23", "vix": 15.5}]
+        m = ticker(poll, daily, now=now)
+        self.assertEqual((m["kind"], m["last"], m["when"], m["source"]), ("close", 15.5, "2026-11-23", "daily"))
+        # Monday's close not in yet (vix 0): the poll stands, as a close for 23 Nov
+        m = ticker(poll, daily[:1] + [{"date": "2026-11-23", "vix": 0}], now=now)
+        self.assertEqual((m["kind"], m["source"], m["tradeDate"]), ("close", "nse", "2026-11-23"))
+        # pre-open on the holiday morning: also a close
+        early = {**poll, "as_of": "2026-11-24T03:28:00Z"}
+        self.assertEqual(ticker(early, [], now="2026-11-24T03:30:00Z")["kind"], "close")
+        # an ordinary session with trade_date today stays live; without trade_date, as before
+        self.assertEqual(ticker({**LIVE_VIX, "trade_date": "2026-11-19"}, [], now="2026-11-19T06:02:00Z")["kind"], "live")
+        self.assertEqual(ticker(LIVE_VIX, [], now="2026-11-19T06:02:00Z")["tradeDate"], "2026-11-19")
+
+    def test_ticker_holiday_label_shows_trade_date(self):
+        html = js_eval(TICKER_JS + ["vixIstParts", "vixTickerHTML", "escHtml", "fmtNum"],
+                       "(globalThis.fmtTradeDate = iso => iso, vixTickerHTML(vixTickerModel(DATA.live, [], Date.parse(DATA.now))))",
+                       {"live": {**LIVE_VIX, "as_of": "2026-11-24T05:35:00Z", "trade_date": "2026-11-23"},
+                        "now": "2026-11-24T05:36:00Z"})
+        self.assertIn("Last close · 2026-11-23", html)
+        self.assertNotIn("Live", html.split('title=')[0])
+
     def test_ticker_preopen(self):
         # 09:00 IST on a Thursday, read at 08:58 IST (the poller starts at 08:55): pre-open, not "last close"
         pre = {**LIVE_VIX, "as_of": "2026-11-19T03:28:00Z"}

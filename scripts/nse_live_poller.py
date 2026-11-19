@@ -27,7 +27,7 @@ from pathlib import Path
 
 from curl_cffi import requests as cffi_requests
 sys.path.insert(0, str(Path(__file__).parent))
-from live_common import save_hourly_snapshot, in_market_session
+from live_common import save_hourly_snapshot, in_market_session, normalize_trade_date
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -303,7 +303,9 @@ def fetch_stock_price(ticker="NSE.BO"):
 # ---------------------------------------------------------------------------
 
 def parse_india_vix(payload, ts_iso):
-    """The INDIA VIX entry of NSE's allIndices payload, or None."""
+    """The INDIA VIX entry of NSE's allIndices payload, or None. trade_date is
+    the payload's timestamp as YYYY-MM-DD (None if absent); main() replaces it
+    with marketStatus's Capital Market trade date when it has one."""
     entry = next((d for d in (payload or {}).get("data", []) if d.get("index") == "INDIA VIX"), None)
     if not entry:
         return None
@@ -321,6 +323,7 @@ def parse_india_vix(payload, ts_iso):
         "pct_change":     _num(entry.get("percentChange")),
         "as_of":          ts_iso,
         "source":         "nse",
+        "trade_date":     normalize_trade_date((payload or {}).get("timestamp")),
     }
 
 
@@ -352,6 +355,23 @@ def fetch_india_vix(session, ts_iso):
     except Exception as e:
         print(f"  India VIX fetch error: {e}")
         return None
+
+
+def capital_market_trade_date(market_status):
+    """marketStatus's Capital Market tradeDate ('19-Nov-2026 10:45') as YYYY-MM-DD, or None."""
+    cm = next((m for m in (market_status or {}).get("marketState", []) or []
+               if isinstance(m, dict) and m.get("market") == "Capital Market"), {})
+    return normalize_trade_date(cm.get("tradeDate"))
+
+
+def with_trade_date(vix, trade_date):
+    """A fresh VIX reading keyed on the exchange's trade date (CLAUDE.md: live
+    samples are keyed on the trade date, never the wall clock): marketStatus's,
+    else the one parse_india_vix took from allIndices. On a weekday NSE holiday
+    it is the previous session's date, so the dashboard shows a close, not "Live"."""
+    if vix is None:
+        return None
+    return {**vix, "trade_date": trade_date or vix.get("trade_date")}
 
 
 def keep_last_vix(new, previous, ts_iso):
@@ -439,7 +459,8 @@ def main():
         save_hourly_snapshot(revenue, now_ist, HOURLY_FILE, HISTORY_FILE, exchange="nse")
 
     # ── 6. India VIX ──
-    vix = keep_last_vix(fetch_india_vix(session, ts_iso), previous, ts_iso)
+    fresh_vix = with_trade_date(fetch_india_vix(session, ts_iso), capital_market_trade_date(market_status))
+    vix = keep_last_vix(fresh_vix, previous, ts_iso)
     if vix:
         print(f"India VIX: {vix['last']}  ({vix.get('pct_change')}%)  [{vix['source']}]")
         attach_india_vix(HOURLY_FILE, vix)

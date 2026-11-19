@@ -29,8 +29,26 @@ class IndiaVix(unittest.TestCase):
         self.assertEqual(
             poller.parse_india_vix(PAYLOAD, ts),
             {"last": 15.52, "previous_close": 14.9, "change": 0.62, "pct_change": 4.16,
-             "as_of": ts, "source": "nse"},
+             "as_of": ts, "source": "nse", "trade_date": None},
         )
+        # allIndices' own timestamp gives the trade date when present
+        stamped = {**PAYLOAD, "timestamp": "18-Nov-2026 15:30"}
+        self.assertEqual(poller.parse_india_vix(stamped, ts)["trade_date"], "2026-11-18")
+
+    def test_trade_date_from_market_status(self):
+        status = {"marketState": [
+            {"market": "Currency", "tradeDate": "19-Nov-2026"},
+            {"market": "Capital Market", "tradeDate": "18-Nov-2026 15:30", "marketStatus": "Closed"},
+        ]}
+        self.assertEqual(poller.capital_market_trade_date(status), "2026-11-18")
+        self.assertIsNone(poller.capital_market_trade_date(None))
+        self.assertIsNone(poller.capital_market_trade_date({"marketState": [{"market": "Capital Market"}]}))
+        # marketStatus wins; allIndices' timestamp is the fallback; no read stays None
+        vix = {"last": 15.5, "trade_date": "2026-11-19"}
+        self.assertEqual(poller.with_trade_date(vix, "2026-11-18")["trade_date"], "2026-11-18")
+        self.assertEqual(poller.with_trade_date(vix, None)["trade_date"], "2026-11-19")
+        self.assertIsNone(poller.with_trade_date({"last": 15.5}, None)["trade_date"])
+        self.assertIsNone(poller.with_trade_date(None, "2026-11-18"))
 
     def test_parse_missing_entry_is_none(self):
         ts = "2026-11-19T04:20:25Z"

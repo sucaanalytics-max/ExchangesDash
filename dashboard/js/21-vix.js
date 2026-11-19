@@ -211,19 +211,23 @@ function vixWeeklyRows(nseRows, totalByDate, weeks = 8) {
 // (LIVE_CARD_CACHE.nse.hourly.india_vix), so it adds no fetch.
 // ========================
 
-// What the ticker shows: { kind, last, change, pctChange, when, source, age }.
-// From the poll's india_vix, as the live cards read their polls (liveStatus): in
-// market hours (Mon–Fri 09:15–16:00 IST) a read from today is 'live' when fresh
-// and 'stale' when older than LIVE_STALE_MINUTES or flagged failed (stale_since);
-// a read from today taken before 09:15 IST while it is still before 09:15 (the
-// poller starts at 08:55, in the pre-open) is 'preopen';
-// anything else, stale_since or not, is 'close' (the last reading of an earlier
-// or finished session, so a failed Friday poll does not say "delayed" all
-// weekend). `when` is the
-// poll's as_of (UTC). Without a reading, or when NSE's daily rows hold a newer
-// close, it is the latest positive vix in nseRows: kind 'close', `when` its date,
-// change against the close before it. pctChange is in percent (4.16 = 4.16 %),
-// as the poller writes it. null when there is no VIX at all.
+// What the ticker shows: { kind, last, change, pctChange, when, tradeDate, source, age }.
+// From the poll's india_vix, as the live cards read their polls (liveStatus),
+// keyed on the exchange's trade date (india_vix.trade_date, NSE's Capital Market
+// trade date; files written before it existed fall back to the IST date of
+// as_of): in market hours (Mon–Fri 09:15–16:00 IST) a read taken today whose
+// trade date is today is 'live' when fresh and 'stale' when older than
+// LIVE_STALE_MINUTES or flagged failed (stale_since); such a read taken before
+// 09:15 IST while it is still before 09:15 (the poller starts at 08:55, in the
+// pre-open) is 'preopen'; anything else, stale_since or not, is 'close' (the
+// last reading of an earlier or finished session, so a failed Friday poll does
+// not say "delayed" all weekend, and on a weekday NSE holiday, whose trade date
+// is the previous session's, the poll's value is that session's close). `when`
+// is the poll's as_of (UTC). Without a reading, or when NSE's daily rows hold a
+// close for the reading's trade date (once it is a close) or a later one, it is
+// the latest positive vix in nseRows: kind 'close', `when` its date, change
+// against the close before it. pctChange is in percent (4.16 = 4.16 %), as the
+// poller writes it. null when there is no VIX at all.
 function vixTickerModel(liveVix, nseRows, now = Date.now()) {
   const daily = (nseRows || []).filter(r => r && r.vix > 0);
   const lastRow = daily.length ? daily[daily.length - 1] : null;
@@ -235,21 +239,24 @@ function vixTickerModel(liveVix, nseRows, now = Date.now()) {
   const weekday = wd >= 1 && wd <= 5;
   const open = weekday && mins >= 555 && mins < 960;
   const age = isFinite(t) ? Math.round((now - t) / 60000) : null;
-  const today = isFinite(t) && istDate(t) === istDate(now);
+  const td = liveVix && /^\d{4}-\d{2}-\d{2}$/.test(liveVix.trade_date || '') ? liveVix.trade_date : null;
+  const readDate = td || (isFinite(t) ? istDate(t) : null);
+  const today = isFinite(t) && istDate(t) === istDate(now) && readDate === istDate(now);
   const fresh = liveVix && !liveVix.stale_since && age != null && age <= LIVE_STALE_MINUTES;
   const kind = open && today ? (fresh ? 'live' : 'stale') : weekday && today && mins < 555 ? 'preopen' : 'close';
-  // Once the live reading's session is over, NSE's daily close for that date (or a
-  // later one) is the official figure and wins over the last intraday poll
-  const dailyWins = lastRow && isFinite(t) && (istDate(t) < lastRow.date || (istDate(t) === lastRow.date && kind === 'close'));
+  // Once the live reading's session is over, NSE's daily close for its trade date
+  // (or a later one) is the official figure and wins over the last intraday poll
+  const dailyWins = lastRow && isFinite(t) && (readDate < lastRow.date || (readDate === lastRow.date && kind === 'close'));
   if (liveLast > 0 && !dailyWins) {
     const num = v => (v == null || !isFinite(Number(v)) ? null : Number(v));
     return { kind, last: liveLast, change: num(liveVix.change), pctChange: num(liveVix.pct_change),
-             when: liveVix.as_of || null, source: liveVix.source || null, age };
+             when: liveVix.as_of || null, tradeDate: readDate, source: liveVix.source || null, age };
   }
   if (!lastRow) return null;
   const prev = daily.length > 1 ? daily[daily.length - 2].vix : null;
   return { kind: 'close', last: lastRow.vix, change: prev ? lastRow.vix - prev : null,
-           pctChange: prev ? (lastRow.vix / prev - 1) * 100 : null, when: lastRow.date, source: 'daily', age: null };
+           pctChange: prev ? (lastRow.vix / prev - 1) * 100 : null, when: lastRow.date, tradeDate: lastRow.date,
+           source: 'daily', age: null };
 }
 
 // "HH:MM" IST of a UTC timestamp, and its IST date
@@ -268,7 +275,7 @@ function vixTickerHTML(m) {
   const pill = m.kind === 'live' ? `<span class="lvc-pill lvc-pill--live"><i></i>Live ${at.time}</span>`
     : m.kind === 'stale' ? `<span class="lvc-pill lvc-pill--stale" title="Last read ${escHtml(fmtTradeDate(at.date, true))} ${at.time} IST"><i></i>Delayed${m.age != null ? ` · ${m.age} min` : ''}</span>`
       : m.kind === 'preopen' ? `<span class="lvc-pill" title="Read in the pre-open, before trading starts at 09:15 IST"><i></i>Pre-open ${at.time}</span>`
-      : `<span class="lvc-pill"><i></i>Last close · ${escHtml(fmtTradeDate(at.date, true))}</span>`;
+      : `<span class="lvc-pill"><i></i>Last close · ${escHtml(fmtTradeDate(m.tradeDate || at.date, true))}</span>`;
   const up = m.change != null && m.change >= 0;
   const chg = m.change == null ? ''
     : `<span class="vix-chg ${up ? 'vix-chg--up' : 'vix-chg--dn'}">${up ? '▲' : '▼'}${fmtNum(Math.abs(m.change), 2)}${m.pctChange != null ? ` (${fmtNum(Math.abs(m.pctChange), 2)} %)` : ''}</span>`;
