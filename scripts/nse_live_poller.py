@@ -18,6 +18,7 @@ Env: SUPABASE_URL, SUPABASE_KEY  (optional — each sample is also stored in
 """
 
 import json
+import math
 import os
 import sys
 import time
@@ -336,13 +337,15 @@ def fetch_india_vix(session, ts_iso):
         import yfinance as yf
         fi = yf.Ticker("^INDIAVIX").fast_info
         last, prev = fi.last_price, fi.previous_close
-        if last is None:
+        if last is None or not math.isfinite(float(last)):
             return None
+        last = float(last)
+        prev = float(prev) if prev is not None and math.isfinite(float(prev)) and prev else None
         return {
-            "last":           round(float(last), 2),
-            "previous_close": round(float(prev), 2) if prev else None,
-            "change":         round(float(last) - float(prev), 2) if prev else None,
-            "pct_change":     round((float(last) - float(prev)) / float(prev) * 100, 2) if prev else None,
+            "last":           round(last, 2),
+            "previous_close": round(prev, 2) if prev else None,
+            "change":         round(last - prev, 2) if prev else None,
+            "pct_change":     round((last - prev) / prev * 100, 2) if prev else None,
             "as_of":          ts_iso,
             "source":         "yfinance",
         }

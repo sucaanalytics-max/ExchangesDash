@@ -4,9 +4,10 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 from pathlib import Path
 
-import helpers  # puts scripts/ on sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 # The poller imports curl_cffi at module level; tests never touch the network.
 if importlib.util.find_spec("curl_cffi") is None:
@@ -14,7 +15,6 @@ if importlib.util.find_spec("curl_cffi") is None:
     stub.requests = types.SimpleNamespace()
     sys.modules["curl_cffi"] = stub
 
-helpers.ROOT  # imported for its sys.path side effect
 import nse_live_poller as poller
 
 PAYLOAD = {"data": [
@@ -59,6 +59,26 @@ class IndiaVix(unittest.TestCase):
             self.assertFalse(poller.attach_india_vix(missing, {"last": 15.5}))
             self.assertFalse(missing.exists())
             self.assertFalse(poller.attach_india_vix(f, None))
+
+    def test_yfinance_nan_is_not_written(self):
+        class Session:
+            def get(self, *a, **k):
+                raise RuntimeError("nse down")
+
+        def stub(last, prev):
+            ticker = lambda sym: types.SimpleNamespace(
+                fast_info=types.SimpleNamespace(last_price=last, previous_close=prev))
+            return types.SimpleNamespace(Ticker=ticker)
+
+        nan = float("nan")
+        with mock.patch.dict(sys.modules, {"yfinance": stub(nan, 15.0)}):
+            self.assertIsNone(poller.fetch_india_vix(Session(), "T"))
+        with mock.patch.dict(sys.modules, {"yfinance": stub(15.5, nan)}):
+            vix = poller.fetch_india_vix(Session(), "T")
+        self.assertEqual(vix["last"], 15.5)
+        self.assertIsNone(vix["previous_close"])
+        self.assertIsNone(vix["change"])
+        self.assertIsNone(vix["pct_change"])
 
 
 if __name__ == "__main__":
