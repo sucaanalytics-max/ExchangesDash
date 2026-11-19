@@ -204,3 +204,236 @@ function vixWeeklyRows(nseRows, totalByDate, weeks = 8) {
              inProgress: s.inProgress };
   }).slice(0, weeks);
 }
+
+// ========================
+// LIVE INDIA VIX TICKER — a card after the live NSE / BSE cards (renderLiveCards,
+// 10-revenue-summary.js), read from the NSE poll file those cards already hold
+// (LIVE_CARD_CACHE.nse.hourly.india_vix), so it adds no fetch.
+// ========================
+
+// What the ticker shows: { kind, last, change, pctChange, when, source, age }.
+// From the poll's india_vix: 'stale' when the poller flagged its last read failed
+// (stale_since) or, in market hours (Mon–Fri 09:15–16:00 IST), when the read is
+// from today but older than LIVE_STALE_MINUTES; 'live' when it is fresh in market
+// hours; else 'close' (the last reading of a finished session). `when` is the
+// poll's as_of (UTC). Without a reading, or when NSE's daily rows hold a newer
+// close, it is the latest positive vix in nseRows: kind 'close', `when` its date,
+// change against the close before it. pctChange is in percent (4.16 = 4.16 %),
+// as the poller writes it. null when there is no VIX at all.
+function vixTickerModel(liveVix, nseRows, now = Date.now()) {
+  const daily = (nseRows || []).filter(r => r && r.vix > 0);
+  const lastRow = daily.length ? daily[daily.length - 1] : null;
+  const istDate = ms => new Date(ms + 330 * 60000).toISOString().slice(0, 10);
+  const t = liveVix ? Date.parse(liveVix.as_of) : NaN;
+  const liveLast = liveVix ? Number(liveVix.last) : NaN;
+  if (liveLast > 0 && !(lastRow && isFinite(t) && istDate(t) < lastRow.date)) {
+    const ist = new Date(now + 330 * 60000);
+    const wd = ist.getUTCDay(), mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+    const open = wd >= 1 && wd <= 5 && mins >= 555 && mins < 960;
+    const age = isFinite(t) ? Math.round((now - t) / 60000) : null;
+    const today = isFinite(t) && istDate(t) === istDate(now);
+    const kind = liveVix.stale_since ? 'stale'
+      : open && today ? (age != null && age <= LIVE_STALE_MINUTES ? 'live' : 'stale') : 'close';
+    const num = v => (v == null || !isFinite(Number(v)) ? null : Number(v));
+    return { kind, last: liveLast, change: num(liveVix.change), pctChange: num(liveVix.pct_change),
+             when: liveVix.as_of || null, source: liveVix.source || null, age };
+  }
+  if (!lastRow) return null;
+  const prev = daily.length > 1 ? daily[daily.length - 2].vix : null;
+  return { kind: 'close', last: lastRow.vix, change: prev ? lastRow.vix - prev : null,
+           pctChange: prev ? (lastRow.vix / prev - 1) * 100 : null, when: lastRow.date, source: 'daily', age: null };
+}
+
+// "HH:MM" IST of a UTC timestamp, and its IST date
+function vixIstParts(ts) {
+  const ms = Date.parse(ts);
+  if (!isFinite(ms)) return { date: null, time: '' };
+  const s = new Date(ms + 330 * 60000).toISOString();
+  return { date: s.slice(0, 10), time: s.slice(11, 16) };
+}
+
+function vixTickerHTML(m) {
+  if (!m) return '';
+  const name = '<span class="lvc-name">INDIA VIX</span>';
+  const at = m.source === 'daily' ? { date: m.when, time: '' } : vixIstParts(m.when);
+  const src = m.source === 'yfinance' ? ' (Yahoo Finance fallback)' : m.source === 'nse' ? ' (NSE)' : '';
+  const pill = m.kind === 'live' ? `<span class="lvc-pill lvc-pill--live"><i></i>Live ${at.time}</span>`
+    : m.kind === 'stale' ? `<span class="lvc-pill lvc-pill--stale" title="Last read ${escHtml(fmtTradeDate(at.date, true))} ${at.time} IST"><i></i>Delayed${m.age != null ? ` · ${m.age} min` : ''}</span>`
+      : `<span class="lvc-pill"><i></i>Last close · ${escHtml(fmtTradeDate(at.date, true))}</span>`;
+  const up = m.change != null && m.change >= 0;
+  const chg = m.change == null ? ''
+    : `<span class="vix-chg ${up ? 'vix-chg--up' : 'vix-chg--dn'}">${up ? '▲' : '▼'}${fmtNum(Math.abs(m.change), 2)}${m.pctChange != null ? ` (${fmtNum(Math.abs(m.pctChange), 2)} %)` : ''}</span>`;
+  const foot = m.source === 'daily' ? `daily close ${escHtml(fmtTradeDate(at.date))} · ${m.change != null ? 'vs the close before' : 'no earlier close'}`
+    : `${m.kind === 'close' ? 'last read' : 'as of'} ${at.time} IST${src} · vs previous close`;
+  return `<div class="lvc lvc--vix" id="vixTicker" title="India VIX: NSE's index of expected 30-day Nifty volatility. Read with the NSE live poll (about every 5 min); the VIX sensitivity table below uses it as today's VIX">
+    <div class="lvc-top">${name}${pill}</div>
+    <div class="lvc-nums"><span class="lvc-big">${fmtNum(m.last, 2)}</span>${chg}</div>
+    <div class="lvc-foot"><span>${foot}</span></div>
+  </div>`;
+}
+
+// The ticker's reading from the cached NSE poll file and NSE's daily rows
+function vixTickerNow() {
+  return vixTickerModel(LIVE_CARD_CACHE.nse?.hourly?.india_vix, rawFor('nse')?.daily_all);
+}
+
+// ========================
+// VIX PANEL — the sensitivity and week-on-week VIX tables in #vixPanel, below
+// the Revenue Summary sub-tabs. The same in every exchange view: NSE, BSE and
+// MCX are loaded whatever the switcher shows (the shown exchange is DATA, the
+// others come from the shared cache, as on Contracts to Premium).
+// ========================
+const VIX_EXCHANGES = ['nse', 'bse', 'mcx'];
+let vixBuildSeq = 0;      // latest build; an older one still loading yields to it
+let VIX_PANEL = null;     // { model, today } the panel was last drawn from (today: vixTodayKey)
+
+// Fits, bases, the fit sample's VIX range and the weekly rows from each
+// exchange's daily_all (null where an exchange is missing).
+function vixPanelModel(rowsByEx) {
+  const nse = rowsByEx.nse || [];
+  const vmap = vixByDate(nse);
+  const perEx = {};
+  let min = Infinity, max = -Infinity;
+  VIX_EXCHANGES.forEach(ex => {
+    const rows = rowsByEx[ex];
+    if (!rows || !rows.length) { perEx[ex] = null; return; }
+    const sample = vixFitSample(rows, vmap);
+    sample.forEach(p => { const v = vmap[p.date]; if (v < min) min = v; if (v > max) max = v; });
+    const fit = vixFit(sample);
+    const actual = rows.filter(r => r && !r.modelled);
+    perEx[ex] = { adr: vixBase(rows), beta: fit ? fit.beta : null, fit, n: sample.length,
+                  lastDate: actual.length ? actual[actual.length - 1].date : null };
+  });
+  // Total by date over days every exchange has reached, so one exchange's later
+  // file does not drop the others out of the newest day
+  const have = VIX_EXCHANGES.filter(ex => perEx[ex]);
+  const upTo = have.map(ex => perEx[ex].lastDate).filter(Boolean).sort()[0] || '';
+  const totalByDate = {};
+  have.forEach(ex => rowsByEx[ex].forEach(r => {
+    if (!r || r.modelled || !(r.date <= upTo)) return;
+    totalByDate[r.date] = (totalByDate[r.date] || 0) + (Number(r.total_rev) || 0);
+  }));
+  return { perEx, vix45: vixMean(nse), range: min <= max ? { min, max } : null,
+           weekly: vixWeeklyRows(nse, totalByDate), upTo,
+           nseLast: nse.length ? nse[nse.length - 1].date : null };
+}
+
+function vixFitChip(ex, p) {
+  const name = ex.toUpperCase();
+  if (!p) return rxChip(`${name}: no data`, 'warn');
+  if (!p.fit) return rxChip(`${name}: no fit (${p.n} days, needs 60)`, 'warn');
+  const f = p.fit;
+  return `<span title="${escHtml(`${name}: elasticity of revenue to VIX, ${f.n} days since ${rxDate(VIX_FIT_FROM)}. R² ${fmtNum(f.r2, 2)} with weekday dummies, ${fmtNum(f.r2Dow, 2)} with the dummies alone; the VIX term adds ${fmtNum(f.r2Vix, 2)}.`)}">${rxChip(`${name} β ${fmtNum(f.beta, 2)} · n ${f.n} · R² (VIX) ${fmtNum(f.r2Vix, 2)}`, 'data')}</span>`;
+}
+
+function vixSensitivityHTML(model, ticker) {
+  const { perEx, vix45, range } = model;
+  const rows = vixSensitivityRows(perEx, vix45, ticker ? ticker.last : null, range);
+  if (!rows.length) return '<div class="rx-empty"><b>No India VIX in NSE\'s daily data</b></div>';
+  const cr = v => (v == null || !isFinite(v) ? '—' : fmtNum(v, 2));
+  const todayTag = !ticker ? '' : ticker.kind === 'close'
+    ? `latest close${ticker.source === 'daily' ? ` · ${escHtml(fmtTradeDate(ticker.when))}` : ''}` : 'today';
+  const body = rows.map(r => {
+    const cls = [r.kind === 'today' ? 'vix-today' : r.kind === 'base' ? 'vix-base' : '', r.outside ? 'vix-outside' : ''].filter(Boolean).join(' ');
+    const label = r.kind === 'today' ? `${fmtNum(r.vix, 2)} <span class="vix-tag">${todayTag}</span>`
+      : r.kind === 'base' ? `${fmtNum(r.vix, 2)} <span class="vix-tag">45-day avg (base)</span>` : fmtNum(r.vix, 0);
+    return `<tr${cls ? ` class="${cls}"` : ''}${r.outside ? ' title="Outside the VIX range of the fit sample: the projection extrapolates"' : ''}>
+      <td>${label}</td><td>${r.kind === 'base' ? '—' : rxSignedPct(r.pctVsBase)}</td>
+      ${VIX_EXCHANGES.map(ex => `<td>${cr(r.adr[ex])}</td>`).join('')}
+      <td class="rx-strong">${cr(r.total)}</td><td>${r.kind === 'base' ? '—' : rxSignedPct(r.totalPct)}</td></tr>`;
+  }).join('');
+  return `<div class="rx-scroll"><table class="rx-table vix-sens">
+    <thead><tr><th>VIX</th><th>% vs 45-day avg VIX</th><th>NSE</th><th>BSE</th><th>MCX</th><th>Total ₹ Cr/day</th><th>Total %</th></tr></thead>
+    <tbody>${body}</tbody></table></div>`;
+}
+
+function vixWeeklyHTML(weekly) {
+  if (!weekly.length) return '<div class="rx-empty"><b>No NSE sessions</b></div>';
+  const v = x => (x == null ? '—' : fmtNum(x, 2));
+  const pts = x => (x == null ? '—' : `${x >= 0 ? '+' : '−'}${fmtNum(Math.abs(x), 2)}`);
+  const cls = x => (x == null ? '' : x >= 0 ? ' class="rx-up"' : ' class="rx-dn"');
+  const body = weekly.map(w => `<tr${w.inProgress ? ' class="vix-wip"' : ''}>
+      <td>${escHtml(w.label)}${w.inProgress ? ` ${rxChip('in progress')}` : ''}</td><td>${w.sessions}</td>
+      <td>${v(w.avgVix)}</td><td>${v(w.closeVix)}</td>
+      <td${cls(w.chgPts)}>${pts(w.chgPts)}</td><td${cls(w.chgPct)}>${rxSignedPct(w.chgPct)}</td>
+      <td class="rx-strong">${v(w.totalAdr)}</td><td${cls(w.totalPct)}>${rxSignedPct(w.totalPct)}</td></tr>`).join('');
+  return `<div class="rx-scroll"><table class="rx-table vix-weekly">
+    <thead><tr><th>Week</th><th>Sessions</th><th>Avg VIX</th><th>Week-end VIX</th><th>WoW pts</th><th>WoW %</th><th>Total ADR ₹ Cr</th><th>ADR WoW %</th></tr></thead>
+    <tbody>${body}</tbody></table></div>`;
+}
+
+function vixHowHTML(model) {
+  const r = model.range;
+  return rxHow('How this is worked out', `<ul>
+    <li><b>Short term:</b> each row is the average daily revenue to expect over the next few weeks if India VIX holds at that level, scaled from the last 45 sessions: ADR(V) = ADR45 × (V ÷ VIX45)<sup>β</sup>. ADR45 is each exchange's mean daily revenue over its last 45 sessions; VIX45 is NSE's mean VIX over its last 45.</li>
+    <li><b>Why VIX moves revenue:</b> options are billed on premium, and premiums rise with volatility, so a higher VIX lifts options revenue (and trading activity with it).</li>
+    <li><b>MCX:</b> trades commodities, so India VIX (Nifty volatility) explains little of it: its β is small and its R² (VIX) near zero.</li>
+    <li><b>Fit:</b> per exchange by least squares on daily rows from ${rxDate(VIX_FIT_FROM)} (after SEBI's F&amp;O curbs): ln(revenue ÷ previous 45-session mean) on weekday dummies (expiry-day concentration) and ln(VIX ÷ previous 45-session mean VIX). β is the elasticity; R² (VIX) is what the VIX term adds over the weekday dummies alone. VIX is NSE's daily close, joined by date; BSE and MCX days with no NSE session are left out, and MCX's modelled rows (before 2 Sep 2024) are never used.</li>
+    <li><b>Basis:</b> total revenue at today's statutory rates for NSE and BSE, MCX as reported (fut + opt), whatever the exchange switcher shows.${r ? ` Grey rows lie outside the ${fmtNum(r.min, 2)}–${fmtNum(r.max, 2)} VIX range of the fit sample, so they extrapolate.` : ''}</li>
+    <li><b>Week-on-week:</b> Mon–Sun weeks of NSE sessions, daily closes only (the live VIX is not mixed in). Week-end VIX is the latest session's VIX in that week; changes are against the week before. Total ADR is NSE + BSE + MCX on the same basis, averaged over the week's NSE sessions.</li>
+  </ul>`);
+}
+
+function renderVixPanel(el, model, ticker) {
+  const { perEx, upTo, nseLast } = model;
+  const chips = VIX_EXCHANGES.map(ex => vixFitChip(ex, perEx[ex])).join(' ');
+  const missing = VIX_EXCHANGES.filter(ex => !perEx[ex] || !perEx[ex].fit);
+  const tickerNote = !ticker ? 'no India VIX reading, so no today row'
+    : ticker.kind === 'close' ? `today's row uses the latest close, ${fmtNum(ticker.last, 2)}`
+      : `today's row uses the ${ticker.kind === 'live' ? 'live' : 'last (delayed)'} reading, ${fmtNum(ticker.last, 2)}`;
+  const sens = rxPanel({
+    title: 'India VIX → average daily revenue',
+    meta: `₹ Cr/day at today's rates · NSE, BSE, MCX and Total · base: last 45 sessions`,
+    right: chips,
+    body: vixSensitivityHTML(model, ticker),
+    foot: `Highlighted: ${tickerNote}. Total % is against the summed 45-session ADR${missing.length ? `; ${missing.map(e => e.toUpperCase()).join(', ')} without a fit ${missing.length === 1 ? 'is' : 'are'} left out of Total` : ''}.`,
+    how: vixHowHTML(model),
+    attrs: 'id="vixSensPanel"',
+  });
+  const weekly = rxPanel({
+    title: 'Week-on-week India VIX',
+    meta: `last 8 weeks of NSE sessions · daily closes${nseLast ? ` to ${escHtml(rxDate(nseLast))}` : ''}`,
+    body: vixWeeklyHTML(model.weekly),
+    foot: `Total ADR: NSE + BSE + MCX ₹ Cr/day at today's rates${upTo && nseLast && upTo < nseLast ? `, through ${escHtml(rxDate(upTo))} (the latest day every exchange has)` : ''}.`,
+    attrs: 'id="vixWeeklyPanel"',
+  });
+  el.innerHTML = sens + weekly;
+  VIX_PANEL = { model, today: vixTodayKey(ticker) };
+}
+
+// What the today row depends on: the ticker's VIX and how it is labelled
+function vixTodayKey(t) {
+  return t ? `${t.last}|${t.kind}|${t.source === 'daily' ? t.when : ''}` : '';
+}
+
+// Redraws the panel from its last data when the ticker's reading has changed
+// (the live cards' cycle calls this), without reloading anything
+function vixPanelSyncToday() {
+  const el = document.getElementById('vixPanel');
+  if (!el || !VIX_PANEL || !el.firstChild) return;
+  const ticker = vixTickerNow();
+  if (vixTodayKey(ticker) !== VIX_PANEL.today) renderVixPanel(el, VIX_PANEL.model, ticker);
+}
+
+async function buildVixPanel() {
+  const el = document.getElementById('vixPanel');
+  if (!el || isViewKey(currentExchange)) return;
+  const seq = ++vixBuildSeq;
+  // A single-exchange view has its own file in DATA; the others come from the shared cache
+  const own = VIEW_LOADED && !DATA.components ? VIEW_LOADED.exchange : null;
+  const cached = VIX_EXCHANGES.filter(e => e !== own);
+  if (!el.firstChild && cached.some(e => !MARKET_RAW[e])) {
+    el.innerHTML = rxPanel({ title: 'India VIX → average daily revenue', body: '<div class="rx-empty"><b>Loading NSE, BSE and MCX data…</b></div>' });
+  }
+  await ensureFreshMarketData(cached);
+  if (seq !== vixBuildSeq) return;   // a later build took over while loading
+  const rowsByEx = Object.fromEntries(VIX_EXCHANGES.map(e => [e, rawFor(e)?.daily_all || null]));
+  if (!rowsByEx.nse) {
+    el.innerHTML = rxPanel({ title: 'India VIX → average daily revenue', body: '<div class="rx-empty"><b>Couldn\'t load NSE data</b>Try again in a moment.</div>' });
+    VIX_PANEL = null;
+    return;
+  }
+  cached.filter(e => MARKET_RAW[e]).forEach(e => { VIEW_BUILT_FROM[e] = marketSig(e); });
+  renderVixPanel(el, vixPanelModel(rowsByEx), vixTickerNow());
+  renderLiveCards();   // the ticker's daily fallback may only now have NSE's rows
+}

@@ -1016,6 +1016,8 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
 function buildRevenueSummary() {
+  // The VIX panel below the sub-tabs is cross-exchange and loads its own data (21-vix.js); not awaited
+  buildVixPanel().catch(err => console.warn('VIX panel failed:', err));
   const ed = ENRICHED_DATA;
   if (!ed || !ed.summary_total) return;
   if (!DATA.quarterly?.length || !DATA.monthly?.length) return;
@@ -1170,7 +1172,9 @@ function buildRevenueSummary() {
 // Live Predictor tab's figures (liveCardModel, 15-live-predictor.js). The top
 // banner shows the same reading (bannerReadingFromCard, 02-banner-glance.js),
 // so both draw on one copy of these files, refreshed together: polls are read
-// again after 5 min, archives after 30 (they change daily).
+// again after 5 min, archives after 30 (they change daily). The India VIX
+// ticker (vixTickerHTML, 21-vix.js) follows the cards, read from the same NSE
+// poll file.
 // ========================
 const LIVE_CARD_EXCHANGES = ['nse', 'bse'];
 const LIVE_CARD_CACHE = {};
@@ -1271,7 +1275,9 @@ function liveCardHTML(ex, m) {
 function renderLiveCards() {
   const el = document.getElementById('liveCards');
   if (!el || !LIVE_CARD_EXCHANGES.some(ex => LIVE_CARD_CACHE[ex]?.tried)) return;
-  el.innerHTML = LIVE_CARD_EXCHANGES.map(ex => liveCardHTML(ex, liveCardFor(ex))).join('');
+  // India VIX after the exchange cards, from the NSE poll file just read (21-vix.js)
+  el.innerHTML = LIVE_CARD_EXCHANGES.map(ex => liveCardHTML(ex, liveCardFor(ex))).join('') + vixTickerHTML(vixTickerNow());
+  vixPanelSyncToday();
 }
 
 // Each view shows the last reading straight away, then refreshes the cards

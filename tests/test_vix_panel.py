@@ -2,8 +2,9 @@
 
 The elasticity fit ln(rev / MA45) ~ 1 + weekday dummies + β·ln(VIX / VIXMA45)
 recovers a known β, the projection ADR45 × (V / VIX45)^β with today's and the
-base rows folded into the level grid, and the week-on-week VIX table keyed by
-cpWeekStart."""
+base rows folded into the level grid, the week-on-week VIX table keyed by
+cpWeekStart, and the live VIX ticker's reading (live, delayed, last close, or the
+daily close when the poll file has none)."""
 
 import datetime as dt
 import math
@@ -276,6 +277,50 @@ class VixWeekly(unittest.TestCase):
         self.assertEqual(rows[0]["label"], "28 Sep – 2 Oct")
         self.assertIsNone(rows[0]["totalAdr"])
         self.assertFalse(rows[0]["inProgress"])
+
+
+TICKER_JS = ["LIVE_STALE_MINUTES", "vixTickerModel"]
+
+
+def ticker(live, rows, now=None):
+    expr = "vixTickerModel(DATA.live, DATA.rows" + (", Date.parse(DATA.now))" if now else ")")
+    return js_eval(TICKER_JS, expr, {"live": live, "rows": rows, "now": now})
+
+
+LIVE_VIX = {"last": 15.52, "previous_close": 14.9, "change": 0.62, "pct_change": 4.16,
+            "as_of": "2026-11-19T06:00:00Z", "source": "nse"}
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class VixTicker(unittest.TestCase):
+    def test_ticker_falls_back_to_daily(self):
+        m = ticker(None, [{"date": "2026-11-17", "vix": 15.52}, {"date": "2026-11-18", "vix": 0}])
+        self.assertEqual((m["kind"], m["last"], m["when"]), ("close", 15.52, "2026-11-17"))
+        self.assertIsNone(m["change"])   # no earlier close to compare with
+        m = ticker({"last": None}, [{"date": "2026-11-16", "vix": 14}, {"date": "2026-11-17", "vix": 15.4}])
+        self.assertEqual((m["kind"], m["last"], m["when"]), ("close", 15.4, "2026-11-17"))
+        self.assertAlmostEqual(m["change"], 1.4, places=9)
+        self.assertAlmostEqual(m["pctChange"], 10, places=9)   # percent, like the poller's pct_change
+        self.assertIsNone(ticker(None, [{"date": "2026-11-17", "vix": 0}]))
+
+    def test_ticker_stale(self):
+        m = ticker({**LIVE_VIX, "stale_since": "2026-11-19T06:10:00Z"}, [], now="2026-11-19T06:12:00Z")
+        self.assertEqual((m["kind"], m["last"], m["change"], m["pctChange"]), ("stale", 15.52, 0.62, 4.16))
+        self.assertEqual(m["when"], "2026-11-19T06:00:00Z")
+
+    def test_ticker_live_and_close(self):
+        # 11:30 IST on a Thursday, polled 2 min ago: live
+        self.assertEqual(ticker(LIVE_VIX, [], now="2026-11-19T06:02:00Z")["kind"], "live")
+        # in market hours but the last read is 40 min old: delayed
+        self.assertEqual(ticker(LIVE_VIX, [], now="2026-11-19T06:40:00Z")["kind"], "stale")
+        # after the 16:00 IST close: the last close
+        self.assertEqual(ticker({**LIVE_VIX, "as_of": "2026-11-19T10:55:00Z"}, [], now="2026-11-19T12:00:00Z")["kind"], "close")
+        # next morning before the first poll: yesterday's reading is a close, not a delay
+        self.assertEqual(ticker({**LIVE_VIX, "as_of": "2026-11-18T10:55:00Z"}, [], now="2026-11-19T04:00:00Z")["kind"], "close")
+        # an official daily close newer than the live reading wins
+        m = ticker({**LIVE_VIX, "as_of": "2026-11-17T10:55:00Z"},
+                   [{"date": "2026-11-17", "vix": 15}, {"date": "2026-11-18", "vix": 16.1}], now="2026-11-19T04:00:00Z")
+        self.assertEqual((m["kind"], m["last"], m["when"]), ("close", 16.1, "2026-11-18"))
 
 
 if __name__ == "__main__":

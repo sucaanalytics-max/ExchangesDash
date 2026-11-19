@@ -3473,3 +3473,54 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
 @media (max-width: 640px) {
   .cc-top-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* India VIX (js/21-vix.js): the ticker after the live cards (.lvc above) and the
+   VIX panel below the Revenue Summary sub-tabs. Dark values for any theme but
+   data-theme="light", under the OS setting and an explicit dark theme. */
+:root {
+  --vix-accent: #6B4FBB;
+  --vix-up: #176C2E;
+  --vix-dn: #A01822;
+  --vix-today-bg: #FFF4D6;
+  --vix-today-rule: #D9A54A;
+  --vix-base-bg: #F3F3EF;
+  --vix-outside-ink: #A3A6AD;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --vix-accent: #A48FE6;
+    --vix-up: #8FD19E;
+    --vix-dn: #F2A0A6;
+    --vix-today-bg: #4A3D17;
+    --vix-today-rule: #B8913F;
+    --vix-base-bg: #26282D;
+    --vix-outside-ink: #6E7178;
+  }
+}
+:root[data-theme="dark"] {
+  --vix-accent: #A48FE6;
+  --vix-up: #8FD19E;
+  --vix-dn: #F2A0A6;
+  --vix-today-bg: #4A3D17;
+  --vix-today-rule: #B8913F;
+  --vix-base-bg: #26282D;
+  --vix-outside-ink: #6E7178;
+}
+.lvc--vix { width: 230px; border-top-color: var(--vix-accent); }
+.lvc--vix .lvc-nums { gap: 0 8px; }
+.vix-chg { font-size: 13px; font-weight: 600; white-space: nowrap; }
+.vix-chg--up { color: var(--vix-up); }
+.vix-chg--dn { color: var(--vix-dn); }
+#vixPanel { margin-top: var(--space-4); }
+#vixPanel:empty { display: none; }
+.rx-table.vix-sens tr.vix-today td { background: var(--vix-today-bg); font-weight: 600; }
+.rx-table.vix-sens tr.vix-today td:first-child { box-shadow: inset 3px 0 0 var(--vix-today-rule); }
+.rx-table.vix-sens tbody tr.vix-today:hover td { background: var(--vix-today-bg); }
+.rx-table.vix-sens tr.vix-base td { background: var(--vix-base-bg); }
+.rx-table.vix-sens tr.vix-outside td { color: var(--vix-outside-ink); }
+.rx-table.vix-sens tr.vix-outside td.rx-strong { font-weight: 400; }
+.vix-tag { margin-left: 4px; font-size: 11px; font-weight: 400; color: var(--rx-muted); }
+.rx-table.vix-weekly .rx-chip { margin-left: 6px; font-size: 10px; }
+@media (max-width: 640px) {
+  .lvc--vix { flex: 1 1 100%; width: auto; }
+}
