@@ -326,16 +326,18 @@ function vixPanelModel(rowsByEx) {
                   lastDate: actual.length ? actual[actual.length - 1].date : null };
   });
   // Total by date over days every exchange has reached, so one exchange's later
-  // file does not drop the others out of the newest day
-  const have = VIX_EXCHANGES.filter(ex => perEx[ex]);
-  const upTo = have.map(ex => perEx[ex].lastDate).filter(Boolean).sort()[0] || '';
-  const totalByDate = {};
-  have.forEach(ex => rowsByEx[ex].forEach(r => {
+  // file does not drop the others out of the newest day. Total ADR needs all
+  // three: with an exchange missing (its file failed to load) it is left blank
+  // rather than shown understated under the "NSE + BSE + MCX" label.
+  const missing = VIX_EXCHANGES.filter(ex => !perEx[ex]);
+  const upTo = missing.length ? '' : VIX_EXCHANGES.map(ex => perEx[ex].lastDate).filter(Boolean).sort()[0] || '';
+  const totalByDate = missing.length ? null : {};
+  if (totalByDate) VIX_EXCHANGES.forEach(ex => rowsByEx[ex].forEach(r => {
     if (!r || r.modelled || !(r.date <= upTo)) return;
     totalByDate[r.date] = (totalByDate[r.date] || 0) + (Number(r.total_rev) || 0);
   }));
   return { perEx, vix45: vixMean(nse), range: min <= max ? { min, max } : null,
-           weekly: vixWeeklyRows(nse, totalByDate), upTo,
+           weekly: vixWeeklyRows(nse, totalByDate), upTo, missing,
            nseLast: nse.length ? nse[nse.length - 1].date : null };
 }
 
@@ -412,8 +414,21 @@ function vixSensitivityFoot(model, ticker) {
   return `Highlighted: ${tickerNote}. Total % is against the summed 45-session ADR${missing.length ? `; ${missing.map(e => e.toUpperCase()).join(', ')} without a fit ${missing.length === 1 ? 'is' : 'are'} left out of Total` : ''}.`;
 }
 
+// The week-on-week panel's footnote: what Total ADR is, or which exchange's
+// data is missing when it is blank
+function vixWeeklyFoot(model) {
+  const { upTo, nseLast } = model;
+  const missing = model.missing || [];
+  if (missing.length) {
+    const names = missing.map(e => e.toUpperCase());
+    const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0];
+    return `Total ADR and ADR WoW % are blank: ${list} data couldn't be loaded, and Total ADR needs NSE + BSE + MCX. Try again in a moment.`;
+  }
+  return `Total ADR: NSE + BSE + MCX ₹ Cr/day (${feeUnitLabelFor(VIX_EXCHANGES)})${upTo && nseLast && upTo < nseLast ? `, through ${escHtml(rxDate(upTo))} (the latest day every exchange has)` : ''}.`;
+}
+
 function renderVixPanel(el, model, ticker) {
-  const { perEx, upTo, nseLast } = model;
+  const { perEx, nseLast } = model;
   const chips = VIX_EXCHANGES.map(ex => vixFitChip(ex, perEx[ex])).join(' ');
   const sens = rxPanel({
     title: 'India VIX → average daily revenue',
@@ -428,7 +443,7 @@ function renderVixPanel(el, model, ticker) {
     title: 'Week-on-week India VIX',
     meta: `last 8 weeks of NSE sessions · daily closes${nseLast ? ` to ${escHtml(rxDate(nseLast))}` : ''}`,
     body: vixWeeklyHTML(model.weekly),
-    foot: `Total ADR: NSE + BSE + MCX ₹ Cr/day (${feeUnitLabelFor(VIX_EXCHANGES)})${upTo && nseLast && upTo < nseLast ? `, through ${escHtml(rxDate(upTo))} (the latest day every exchange has)` : ''}.`,
+    foot: vixWeeklyFoot(model),
     attrs: 'id="vixWeeklyPanel"',
   });
   el.innerHTML = sens + weekly;

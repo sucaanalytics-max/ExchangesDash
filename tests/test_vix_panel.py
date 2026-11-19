@@ -207,6 +207,27 @@ class VixSensitivity(unittest.TestCase):
         self.assertTrue(rows[14])     # 14 / 12 = 1.167 > 1.136
         self.assertFalse(rows[13])    # 13 / 12 = 1.083
 
+    def test_weekly_total_blank_when_an_exchange_is_missing(self):
+        # a failed BSE load: Total ADR / ADR WoW % are blank, and the footer names BSE
+        nse = synthetic_rows(count=120)
+        mcx = [{"date": r["date"], "total_rev": r["total_rev"] / 4} for r in nse]
+        bse = [{"date": r["date"], "total_rev": r["total_rev"] / 5} for r in nse]
+        names = VIX_JS + ["VIX_EXCHANGES", "vixPanelModel", "vixWeeklyFoot"]
+        expr = ("(globalThis.feeUnitLabelFor = () => 'basis', globalThis.escHtml = s => s, globalThis.rxDate = s => s,"
+                " [vixPanelModel({nse: DATA.nse, bse: DATA.bse, mcx: DATA.mcx}),"
+                "  vixWeeklyFoot(vixPanelModel({nse: DATA.nse, bse: DATA.bse, mcx: DATA.mcx}))])")
+        full, foot = js_eval(names, expr, {"nse": nse, "bse": bse, "mcx": mcx})
+        self.assertEqual(full["missing"], [])
+        self.assertTrue(all(w["totalAdr"] > 0 for w in full["weekly"]))
+        self.assertIn("NSE + BSE + MCX", foot)
+        part, foot = js_eval(names, expr, {"nse": nse, "bse": None, "mcx": mcx})
+        self.assertEqual(part["missing"], ["bse"])
+        self.assertTrue(all(w["totalAdr"] is None and w["totalPct"] is None for w in part["weekly"]))
+        self.assertTrue(all(w["avgVix"] is not None for w in part["weekly"]))   # the VIX columns stay
+        self.assertIn("BSE data couldn't be loaded", foot)
+        _, foot = js_eval(names, expr, {"nse": nse, "bse": None, "mcx": []})
+        self.assertIn("BSE and MCX data couldn't be loaded", foot)
+
     def test_panel_range_is_of_fitted_ratios(self):
         rows = synthetic_rows()
         names = VIX_JS + ["VIX_EXCHANGES", "vixPanelModel"]
