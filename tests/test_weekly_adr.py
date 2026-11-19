@@ -13,9 +13,10 @@ import unittest
 
 from helpers import NODE, js_eval
 
-ADR_JS = ["cpWeekStart", "EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry",
+ADR_JS = ["MONTHS_SHORT", "cpWeekStart", "EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry",
           "computeWeekExpiryDates", "WEEKLY_ADR_EXCHANGES", "WEEKLY_NORMALISED", "weeklyAdrWeeks",
-          "weeklyAdrCell", "weeklyAdrRow", "weeklyAdrOptions"]
+          "weeklyAdrCell", "weeklyAdrRow", "weeklyAdrOptions", "fmtTradeDate", "weeklyAdrHolidayText",
+          "weeklyAdrTable"]
 
 
 def rows(spec):
@@ -240,6 +241,70 @@ class WeeklyAdrOptionsTest(unittest.TestCase):
     def test_single_session_label(self):
         opts = self.options(rows({**full_week("2026-11-09"), "2026-11-16": 60}), [], [])
         self.assertEqual(opts[0]["label"], "16–20 Nov 2026 · 1 session")
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class WeeklyAdrTableTest(unittest.TestCase):
+    """The panel's rows: the other mode's figure as a secondary line, holiday days, % vs row 1."""
+
+    def table(self, weeks_, mode):
+        return js_eval(ADR_JS, "weeklyAdrTable({nse: weeklyAdrWeeks(DATA.n, 'nse'), bse: weeklyAdrWeeks(DATA.b, 'bse'),"
+                               " mcx: weeklyAdrWeeks(DATA.m, 'mcx')}, DATA.w, DATA.mode)",
+                       {"n": NSE, "b": BSE, "m": MCX, "w": weeks_, "mode": mode})
+
+    def test_holiday_text(self):
+        self.assertEqual(js_eval(ADR_JS, "weeklyAdrHolidayText(['2026-10-02'])"), "holiday: Fri 2 Oct")
+        self.assertEqual(js_eval(ADR_JS, "weeklyAdrHolidayText(['2026-10-01', '2026-10-02'])"),
+                         "holiday: Thu 1 Oct, Fri 2 Oct")
+        self.assertEqual(js_eval(ADR_JS, "weeklyAdrHolidayText(['2026-11-10'])"), "holiday: Tue 10 Nov")
+
+    def test_actual(self):
+        ref, hol = self.table(["2026-10-05", "2026-09-28"], "actual")
+        self.assertFalse(ref["holiday"])
+        self.assertIsNone(ref["cells"]["bse"])
+        self.assertIsNone(ref["cells"]["nse"]["alt"])
+        self.assertIsNone(ref["cells"]["nse"]["pct"])  # row 1 has no change
+        self.assertIsNone(ref["total"]["pct"])
+        self.assertIsNone(ref["total"]["alt"])
+        self.assertTrue(hol["holiday"])
+        nse = hol["cells"]["nse"]
+        self.assertAlmostEqual(nse["avg"], 50.5)
+        self.assertAlmostEqual(nse["alt"], 48.6)  # the "normalised" line
+        self.assertEqual(nse["missing"], ["2026-10-02"])
+        self.assertFalse(nse["inProgress"])
+        self.assertAlmostEqual(nse["pct"], (52 - 50.5) / 50.5)
+        self.assertIsNone(hol["cells"]["bse"]["pct"])  # BSE has no week in row 1
+        self.assertIsNone(hol["cells"]["mcx"]["alt"])  # MCX is never normalised
+        self.assertAlmostEqual(hol["cells"]["mcx"]["pct"], 0.2)
+        self.assertAlmostEqual(hol["total"]["avg"], 75.5)
+        self.assertAlmostEqual(hol["total"]["alt"], 73.6)
+        self.assertAlmostEqual(hol["total"]["pct"], (58 - 75.5) / 75.5)
+
+    def test_normalised(self):
+        _, hol = self.table(["2026-10-05", "2026-09-28"], "normalised")
+        nse = hol["cells"]["nse"]
+        self.assertTrue(nse["normalised"])
+        self.assertAlmostEqual(nse["avg"], 48.6)
+        self.assertAlmostEqual(nse["alt"], 50.5)  # the "actual" line
+        self.assertAlmostEqual(nse["pct"], (52 - 48.6) / 48.6)
+        self.assertAlmostEqual(hol["total"]["avg"], 73.6)
+        self.assertAlmostEqual(hol["total"]["alt"], 75.5)
+        self.assertAlmostEqual(hol["total"]["pct"], (58 - 73.6) / 73.6)
+
+    def test_holiday_in_row_one(self):
+        ref, other = self.table(["2026-09-28", "2026-10-05"], "normalised")
+        self.assertAlmostEqual(other["cells"]["nse"]["pct"], (48.6 - 52) / 52)
+        self.assertIsNone(ref["cells"]["nse"]["pct"])
+
+    def test_in_progress_cell(self):
+        nse = rows({**full_week("2026-11-09"), "2026-11-16": 60, "2026-11-17": 80})
+        cur, prev = js_eval(ADR_JS, "weeklyAdrTable({nse: weeklyAdrWeeks(DATA.n, 'nse'), bse: [], mcx: []},"
+                                    " ['2026-11-16', '2026-11-09'], 'actual')", {"n": nse})
+        self.assertTrue(cur["cells"]["nse"]["inProgress"])
+        self.assertEqual(cur["cells"]["nse"]["sessions"], 2)
+        self.assertEqual(cur["cells"]["nse"]["missing"], [])
+        self.assertFalse(cur["holiday"])
+        self.assertAlmostEqual(prev["cells"]["nse"]["pct"], (70 - 10) / 10)
 
 
 if __name__ == "__main__":
