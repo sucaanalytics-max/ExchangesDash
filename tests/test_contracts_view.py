@@ -7,11 +7,13 @@ fields. The parity tests feed one revenue fixture to the pipelines
 (nse_pipeline / bse_pipeline seg_summary and recompute_*) and to the JS mirror,
 so the mirror follows the pipelines' definitions, labels and rounding."""
 
+import json
 import math
+import subprocess
 import unittest
 from datetime import date, timedelta
 
-from helpers import NODE, js_eval
+from helpers import DASHBOARD, JS_FILES, NODE, js_eval
 
 import bse_pipeline as bse
 import nse_pipeline as nse
@@ -19,7 +21,8 @@ import nse_pipeline as nse
 CV_JS = ["quarterSortKey", "FY_MONTH_ORDER", "monthSortKey", "combineRawData", "combineEnrichedData",
          "WEEKDAYS", "CONTRACTS_PER_CRORE", "contractsNum", "contractsRound", "contractsPySum",
          "contractsWeekLabel", "contractsGroup", "contractsDailyRows", "contractsSegSummary",
-         "contractsAggregates", "contractsView", "contractsViewRows", "contractsRatio", "contractsCombined"]
+         "contractsAggregates", "contractsView", "CONTRACTS_JOINED_ROWS", "contractsViewRows", "contractsRatio",
+         "contractsCombined"]
 
 # Holidays inside the fixture, so weekdays repeat unevenly (as in real data)
 HOLIDAYS = {"2025-08-15", "2025-10-02", "2025-10-21", "2025-12-25", "2026-01-26", "2026-03-31",
@@ -230,9 +233,15 @@ class Ratio(unittest.TestCase):
         got = run("[contractsRatio(contractsDailyRows(DATA, 'bse'), r => r.fy_quarter === 'Q2 FY 2027'),"
                   " contractsRatio(contractsDailyRows(DATA, 'bse'), r => r.date === '2026-07-02'),"
                   " contractsRatio([], null)]", rows)
-        self.assertAlmostEqual(got[0], 305 / 2)
+        # The 2026-07-02 day has no premium: its contracts stay out of the sum too
+        self.assertAlmostEqual(got[0], 300 / 2)
         self.assertIsNone(got[1])
         self.assertIsNone(got[2])
+
+    def test_ratio_skips_days_without_premium(self):
+        # A day with contracts but no premium would inflate Σ contracts ÷ Σ premium
+        rows = [bse_row("2026-07-01", 100, 1.0), bse_row("2026-07-02", 300, 0.0), bse_row("2026-07-03", 50, -1.0)]
+        self.assertAlmostEqual(run("contractsRatio(contractsDailyRows(DATA, 'bse'))", rows), 100.0)
 
     def test_nse_ratio_uses_option_contracts_and_premium_only(self):
         rows = [nse_row("2026-07-01", 3000, 1000, 5e6, 5e6, 3.0, 1.0)]
@@ -259,7 +268,8 @@ COMBINED = """(() => {
   walk(c, '$');
   return { n, b, c, bad,
     ratio: { nse: contractsRatio(contractsViewRows(n)), bse: contractsRatio(contractsViewRows(b)),
-             all: contractsRatio(contractsViewRows(c)) } };
+             all: contractsRatio(contractsViewRows(c)) },
+    joined: contractsViewRows(c).map(r => r.date) };
 })()"""
 
 
@@ -313,7 +323,9 @@ class Combined(unittest.TestCase):
             self.assertTrue(math.isfinite(q[f]), f)
             self.assertAlmostEqual(q[f], nq[f] / nq["days"])
 
-    def test_combined_ratio_sums_both_exchanges(self):
+    def test_combined_ratio_joins_dates_both_exchanges_have(self):
+        # As the Contracts to Premium tab: NSE+BSE sums both exchanges over the
+        # dates on which both traded options, not over every row of either
         r = self.out["ratio"]
         fx = combined_fixture()
         nc = sum(x["io_contracts"] + x["so_contracts"] for x in fx["nse"]["daily_all"])
@@ -322,7 +334,321 @@ class Combined(unittest.TestCase):
         bp = sum(x["options_premium_turnover"] for x in fx["bse"]["daily_all"])
         self.assertAlmostEqual(r["nse"], nc / np_)
         self.assertAlmostEqual(r["bse"], bc / bp)
-        self.assertAlmostEqual(r["all"], (nc + bc) / (np_ + bp))
+        both = {x["date"] for x in fx["bse"]["daily_all"] if x["total_contracts"] > 0}
+        jc = sum(x["io_contracts"] + x["so_contracts"] for x in fx["nse"]["daily_all"] if x["date"] in both)
+        jp = sum(x["io_premium"] + x["so_premium"] for x in fx["nse"]["daily_all"] if x["date"] in both)
+        self.assertAlmostEqual(r["all"], (jc + bc) / (jp + bp))
+        self.assertNotAlmostEqual(r["all"], (nc + bc) / (np_ + bp))
+        self.assertEqual(self.out["joined"][0], min(both))
+        self.assertEqual(len(self.out["joined"]), len(both))
+
+
+# ── The ₹ ADR | Contracts toggle ─────────────────────────────────────────────
+MODE_JS = ["CONTRACTS_VIEW_EXCHANGES", "CONTRACTS_MODE_KEY", "CONTRACTS_STATE", "contractsStoredMode",
+           "contractsModeActive"]
+UNIT_JS = MODE_JS + ["fmtNum", "REV_UNITS", "revUnit"]
+VIEWS = ["nse", "bse", "nsebse", "mcx", "all", "broker:angel", "mtf:nse"]
+
+
+def with_storage(stored, body, throws=False):
+    """JS that stubs sessionStorage (holding `stored` under the toggle's key) and runs `body`."""
+    get = "() => { throw new Error('blocked'); }" if throws else f"k => k === CONTRACTS_MODE_KEY ? {json.dumps(stored)} : null"
+    return f"""(() => {{
+  const writes = [];
+  globalThis.sessionStorage = {{ getItem: {get}, setItem: (k, v) => {{ if ({json.dumps(throws)}) throw new Error('blocked'); writes.push([k, v]); }} }};
+  {body}
+}})()"""
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class Toggle(unittest.TestCase):
+    def active(self, stored, views=VIEWS, throws=False):
+        body = "return DATA.map(ex => { globalThis.currentExchange = ex; return contractsModeActive(); });"
+        return js_eval(MODE_JS, with_storage(stored, body, throws), views)
+
+    def test_mode_active_only_in_nse_bse_views(self):
+        self.assertEqual(self.active("contracts"), [True, True, True, False, False, False, False])
+
+    def test_mode_defaults_to_adr(self):
+        self.assertEqual(self.active(None), [False] * len(VIEWS))
+        self.assertEqual(self.active("adr"), [False] * len(VIEWS))
+        self.assertEqual(self.active("anything"), [False] * len(VIEWS))
+
+    def test_blocked_storage_is_adr(self):
+        self.assertEqual(self.active("contracts", throws=True), [False] * len(VIEWS))
+
+    def test_switching_back_restores_contracts(self):
+        # Contracts in NSE, revenue in MCX (toggle hidden), Contracts again back in NSE
+        self.assertEqual(self.active("contracts", ["nse", "mcx", "all", "nse", "nsebse"]), [True, False, False, True, True])
+
+    def test_set_mode_persists_and_rebuilds(self):
+        body = """globalThis.currentExchange = 'bse';
+  let rebuilt = 0;
+  globalThis.rebuildRevenueSummaryPage = () => { rebuilt += 1; };
+  const before = contractsModeActive();
+  setContractsMode(true);
+  const on = contractsModeActive();
+  setContractsMode(false);
+  return { before, on, off: contractsModeActive(), writes, rebuilt };"""
+        got = js_eval(MODE_JS + ["setContractsMode"], with_storage(None, body))
+        self.assertEqual(got, {"before": False, "on": True, "off": False, "rebuilt": 2,
+                               "writes": [["revSummaryUnit", "contracts"], ["revSummaryUnit", "adr"]]})
+
+    def test_set_mode_without_storage_still_switches(self):
+        body = """globalThis.currentExchange = 'nse';
+  globalThis.rebuildRevenueSummaryPage = () => {};
+  setContractsMode(true);
+  return contractsModeActive();"""
+        self.assertTrue(js_eval(MODE_JS + ["setContractsMode"], with_storage(None, body, throws=True)))
+
+    def test_rev_unit_labels(self):
+        body = """globalThis.currentExchange = DATA;
+  const u = revUnit();
+  return { key: u.key, unit: u.unit, short: u.short, noun: u.noun, wireDp: u.wireDp, amount: u.amount(1234.5) };"""
+        adr = js_eval(UNIT_JS, with_storage(None, body), "nse")
+        # Today's texts, exactly
+        self.assertEqual(adr, {"key": "adr", "unit": "₹ Cr", "short": "In Cr", "noun": "Revenue", "wireDp": 1,
+                               "amount": "₹1,234.50 Cr"})
+        con = js_eval(UNIT_JS, with_storage("contracts", body), "nsebse")
+        self.assertEqual(con, {"key": "contracts", "unit": "Cr contracts", "short": "Cr ctr", "noun": "Contracts",
+                               "wireDp": 2, "amount": "1,234.50 Cr contracts"})
+        # Forced to ADR where the toggle is hidden
+        self.assertEqual(js_eval(UNIT_JS, with_storage("contracts", body), "mcx")["key"], "adr")
+
+
+# ── The page, rendered in Node with a minimal DOM ────────────────────────────
+# Runs every dashboard file in index.html order (as test_dashboard_js does),
+# then swaps in a fake document whose elements are the ids found in the HTML
+# the page writes, sets the data globals and builds the Revenue Summary (and,
+# in the combined views, the market-share panel). Each step's snapshot maps
+# element id → innerHTML, plus the toggle's and the Cash sub-tab's state.
+PAGE_JS = r"""
+const vm = require('vm'), fs = require('fs');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const stub = new Proxy(function () {}, {
+  get: (t, k) => k === Symbol.toPrimitive ? () => '' : k === 'then' ? undefined : stub,
+  apply: () => stub, construct: () => stub, set: () => true,
+});
+const els = new Map();
+function el(id) {
+  const cls = new Set();
+  return {
+    id, _html: '', value: '', hidden: false, style: {}, dataset: {},
+    classList: { add: c => cls.add(c), remove: c => cls.delete(c), contains: c => cls.has(c), toggle() {} },
+    addEventListener() {}, setAttribute() {}, getAttribute: () => null, click() {},
+    querySelector: () => null, querySelectorAll: () => [],
+    get innerHTML() { return this._html; },
+    set innerHTML(v) {
+      this._html = String(v);
+      for (const m of this._html.matchAll(/\bid="([^"]+)"/g)) if (!els.has(m[1])) els.set(m[1], el(m[1]));
+    },
+  };
+}
+const ROOTS = ['subtab-rev-total', 'subtab-rev-options', 'subtab-rev-futures', 'subtab-rev-cash', 'marketSharePanel',
+  'revUnitToggle'];
+ROOTS.forEach(id => els.set(id, el(id)));
+const buttons = {};
+['rev-total', 'rev-options', 'rev-futures', 'rev-cash'].forEach(k => { buttons[k] = el('btn-' + k); });
+buttons['rev-cash'].classList.add('active');
+buttons['rev-total'].click = () => { buttons['rev-cash'].classList.remove('active'); buttons['rev-total'].classList.add('active'); };
+const subTabs = el('revSubTabs');
+subTabs.querySelector = sel => buttons[(/data-subtab="([^"]+)"/.exec(sel) || [])[1]] || null;
+els.set('revSubTabs', subTabs);
+const fakeDocument = { body: stub, documentElement: stub, getElementById: id => els.get(id) || null,
+  querySelector: () => null, querySelectorAll: () => [], addEventListener() {}, createElement: () => stub };
+const store = {};
+if (input.stored) store.revSummaryUnit = input.stored;
+const ctx = { console, setTimeout: () => 0, setInterval: () => 0, clearTimeout() {}, clearInterval() {},
+  requestAnimationFrame: () => 0, cancelAnimationFrame() {}, queueMicrotask() {},
+  sessionStorage: { getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } } };
+for (const name of ['document', 'Chart', 'localStorage', 'navigator', 'location', 'history', 'matchMedia',
+    'getComputedStyle', 'fetch', 'addEventListener', 'removeEventListener', 'dispatchEvent', 'ResizeObserver',
+    'IntersectionObserver', 'MutationObserver', 'AbortController', 'URL', 'URLSearchParams', 'Blob', 'FileReader',
+    'Image', 'HTMLElement', 'Event', 'CustomEvent', 'alert', 'print', 'open', 'scrollTo', 'innerWidth',
+    'innerHeight', 'devicePixelRatio', 'performance'])
+  ctx[name] = stub;
+ctx.window = ctx.self = ctx;
+vm.createContext(ctx);
+input.files.forEach((f, i) => {
+  let src = fs.readFileSync(f, 'utf8');
+  if (i === input.files.length - 1) src = src.trimEnd().split('\n').slice(0, -1).join('\n');   // not startDashboard()
+  new vm.Script(src, { filename: f }).runInContext(ctx);
+});
+ctx.document = fakeDocument;
+ctx.__in = input;
+new vm.Script(`
+  MARKET_RAW = __in.raw; MARKET_DATA = __in.enr; currentExchange = __in.view;
+  if (COMBINED_VIEWS[__in.view]) {
+    DATA = buildCombinedRawData(COMBINED_VIEWS[__in.view]);
+    ENRICHED_DATA = buildCombinedEnrichedData(COMBINED_VIEWS[__in.view]);
+    VIEW_LOADED = null;
+  } else {
+    DATA = JSON.parse(JSON.stringify(__in.raw[__in.view]));
+    ENRICHED_DATA = JSON.parse(JSON.stringify(__in.enr[__in.view]));
+    VIEW_LOADED = { exchange: __in.view, sig: 'sig', checkedAt: 0 };
+  }
+  __in.dataBefore = JSON.stringify([DATA, MARKET_RAW]);
+`).runInContext(ctx);
+const snaps = input.steps.map(step => {
+  new vm.Script(step).runInContext(ctx);
+  // Elements still on the page: the static containers and the ids in their current HTML
+  const live = new Set(ROOTS), queue = [...ROOTS];
+  while (queue.length) {
+    for (const m of els.get(queue.pop())._html.matchAll(/\bid="([^"]+)"/g)) {
+      if (!live.has(m[1])) { live.add(m[1]); queue.push(m[1]); }
+    }
+  }
+  const html = {};
+  [...live].sort().forEach(id => { if (els.get(id)._html) html[id] = els.get(id)._html; });
+  return { html, toggleHidden: els.get('revUnitToggle').hidden, cashHidden: buttons['rev-cash'].hidden,
+    cashActive: buttons['rev-cash'].classList.contains('active'),
+    dataUnchanged: new vm.Script('JSON.stringify([DATA, MARKET_RAW]) === __in.dataBefore').runInContext(ctx) };
+});
+process.stdout.write(JSON.stringify(snaps));
+"""
+
+BUILD = ("buildRevenueSummary(); if (COMBINED_VIEWS[currentExchange]) "
+         "buildMarketSharePanel(COMBINED_VIEWS[currentExchange]);")
+
+
+def page_fixture():
+    """NSE and BSE files from the pipelines (build_outputs) on 320 days with
+    contract figures; BSE's first 20 days have none (as BSE before 2023-04-19)."""
+    nse_rows, bse_rows = [], []
+    for i, r in enumerate(revenue_rows("2025-07-01", 320)):
+        nse_rows.append({**r, "io_contracts": 3e7 + i * 1e5, "so_contracts": 1e7 + i % 7 * 1e5,
+                         "if_contracts": 2e6 + i % 5 * 1e4, "sf_contracts": 3e6,
+                         "io_premium": 9000.0 + i % 11 * 100, "so_premium": 2000.0})
+        has = i >= 20
+        bse_rows.append({**r, "total_contracts": 2e7 + i * 5e4 if has else 0,
+                         "options_premium_turnover": 4000.0 + i % 13 * 50 if has else 0.0})
+    n, b = nse.build_outputs(nse_rows, [], [], {}), bse.build_outputs(bse_rows)
+    return {"raw": {"nse": n["dashboard"], "bse": b["dashboard"]},
+            "enr": {"nse": n["enriched"], "bse": b["enriched"]}}, nse_rows, bse_rows
+
+
+def render(view, stored=None, steps=(BUILD,)):
+    fx, _, _ = PAGE_FIXTURE
+    payload = {**fx, "files": [str(DASHBOARD / f) for f in JS_FILES], "view": view, "stored": stored,
+               "steps": list(steps)}
+    out = subprocess.run([NODE, "-e", PAGE_JS], input=json.dumps(payload), capture_output=True, text=True)
+    if out.returncode:
+        raise RuntimeError(out.stderr)
+    return json.loads(out.stdout)
+
+
+PAGE_FIXTURE = page_fixture()
+
+
+def num(html):
+    """The figure in a cell's <span class="xl-num">…</span>"""
+    return html.split('<span class="xl-num">', 1)[1].split("<", 1)[0]
+
+
+def quarter_rows(rows, label):
+    return [r for r in rows if r["fy_quarter"] == label]
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class Page(unittest.TestCase):
+    def test_adr_unchanged_after_toggling_back(self):
+        # ₹ ADR is the default; Contracts on, then off again renders today's page
+        for view in ("nse", "bse", "nsebse"):
+            with self.subTest(view=view):
+                adr, on, off = render(view, steps=(BUILD, "setContractsMode(true);", "setContractsMode(false);"))
+                for snap in (adr, off):
+                    snap["html"].pop("revUnitToggle")
+                self.assertEqual(off["html"], adr["html"])
+                self.assertNotEqual(on["html"]["subtab-rev-total"], adr["html"]["subtab-rev-total"])
+                self.assertIn("₹ Cr · daily avg", adr["html"]["subtab-rev-total"])
+                self.assertNotIn("xl-has-ratio", adr["html"]["subtab-rev-total"])
+                self.assertFalse(adr["cashHidden"])
+                for snap in (adr, on, off):
+                    self.assertTrue(snap["dataUnchanged"])
+
+    def test_nse_contracts_values_and_ratio(self):
+        snap = render("nse", "contracts")[0]
+        h = snap["html"]
+        _, nse_rows, _ = PAGE_FIXTURE
+        label = nse_rows[-1]["fy_quarter"]
+        q = quarter_rows(nse_rows, label)
+        total = sum(r["io_contracts"] + r["so_contracts"] + r["if_contracts"] + r["sf_contracts"] for r in q) / 1e7 / len(q)
+        opt = sum(r["io_contracts"] + r["so_contracts"] for r in q)
+        prem = sum(r["io_premium"] + r["so_premium"] for r in q)
+        self.assertEqual(num(h["xlQVal0-total"]), f"{total:.2f}")
+        self.assertEqual(num(h["xlQRat0-total"]), f"{round(opt / prem):,}")
+        self.assertEqual(num(h["xlQRat0-options"]), f"{round(opt / prem):,}")
+        # Ratio only beside Total and Options; Futures has none
+        self.assertIn("xl-has-ratio", h["subtab-rev-total"])
+        self.assertNotIn("xlQRat0-futures", h)
+        self.assertNotIn("xl-has-ratio", h["subtab-rev-futures"])
+        # Contracts wording, no fee basis, no ₹ Cr unit
+        self.assertIn("Total Contracts", h["subtab-rev-total"])
+        self.assertIn("Cr contracts · daily avg", h["subtab-rev-total"])
+        self.assertNotIn("₹ Cr ·", h["subtab-rev-total"])
+        self.assertNotIn("(In Cr)", h["subtab-rev-total"])
+        self.assertNotIn("avg ₹", h["subtab-rev-total"])   # the "Last 5 Days" hover
+        self.assertIn(" Cr contracts):", h["subtab-rev-total"])
+        self.assertNotIn("today's rates", h["subtab-rev-total"])
+        # Cash hidden; it was the open sub-tab, so Total takes over
+        self.assertNotIn("subtab-rev-cash", h)
+        self.assertTrue(snap["cashHidden"])
+        self.assertFalse(snap["cashActive"])
+        self.assertFalse(snap["toggleHidden"])
+        self.assertIn('data-value="contracts" aria-pressed="true"', h["revUnitToggle"])
+        self.assertTrue(snap["dataUnchanged"])
+
+    def test_week_rows_ratio(self):
+        h = render("nse", "contracts")[0]["html"]["subtab-rev-total"]
+        _, nse_rows, _ = PAGE_FIXTURE
+        last5 = nse_rows[-5:]
+        want = sum(r["io_contracts"] + r["so_contracts"] for r in last5) / sum(r["io_premium"] + r["so_premium"] for r in last5)
+        row = h.split("Last 5 Days", 1)[1].split("</tr>", 1)[0]
+        self.assertIn(f'<td class="xl-ratio"><span class="xl-num">{round(want):,}</span></td>', row)
+
+    def test_bse_contracts_futures_shows_dash(self):
+        h = render("bse", "contracts")[0]["html"]
+        self.assertIn("Futures Contracts", h["subtab-rev-futures"])
+        self.assertIn("—", h["subtab-rev-futures"])
+        self.assertNotIn("xlQVal0-futures", h)
+        _, _, bse_rows = PAGE_FIXTURE
+        label = bse_rows[-1]["fy_quarter"]
+        q = [r for r in quarter_rows(bse_rows, label) if r["total_contracts"] > 0]
+        self.assertEqual(num(h["xlQVal0-options"]), f"{sum(r['total_contracts'] for r in q) / 1e7 / len(q):.2f}")
+        # The expiry blocks render contracts too
+        self.assertIn("Cr contracts", h["subtab-rev-options"].split("Month-End Expiry Comparison", 1)[1])
+
+    def test_nsebse_contracts_panel_note_and_ratio(self):
+        snap = render("nsebse", "contracts")[0]
+        h = snap["html"]
+        self.assertIn("NSE only", h["subtab-rev-futures"])
+        panel = h["marketSharePanel"]
+        self.assertIn("F&amp;O contracts", panel)
+        self.assertNotIn("today's rates", panel)
+        # BSE has no futures: the Futures share table is left out, never 0 %
+        self.assertNotIn('ms-seg-label">Futures', panel)
+        self.assertIn('ms-seg-label">Options', panel)
+        # Ratio over the dates both exchanges traded options (BSE's start here)
+        _, nse_rows, bse_rows = PAGE_FIXTURE
+        fy = nse_rows[-1]["fy"]
+        both = {r["date"] for r in bse_rows if r["total_contracts"] > 0 and r["fy"] == fy}
+        c = sum(r["io_contracts"] + r["so_contracts"] for r in nse_rows if r["date"] in both) \
+            + sum(r["total_contracts"] for r in bse_rows if r["date"] in both)
+        p = sum(r["io_premium"] + r["so_premium"] for r in nse_rows if r["date"] in both) \
+            + sum(r["options_premium_turnover"] for r in bse_rows if r["date"] in both)
+        self.assertEqual(num(h["xlFYRat0-total"]), f"{round(c / p):,}")
+        self.assertTrue(snap["dataUnchanged"])
+
+    def test_contracts_stored_but_mcx_like_view_renders_revenue(self):
+        # A combined view other than NSE+BSE hides the toggle and renders revenue
+        fx, _, _ = PAGE_FIXTURE
+        adr = render("nsebse")[0]
+        snap = render("nsebse", "contracts", steps=("currentExchange = 'all';" + BUILD,))[0]
+        self.assertTrue(snap["toggleHidden"])
+        self.assertFalse(snap["cashHidden"])
+        self.assertIn("₹ Cr · daily avg", snap["html"]["subtab-rev-total"])
+        self.assertNotIn("xl-has-ratio", snap["html"]["subtab-rev-total"])
+        del adr
 
 
 if __name__ == "__main__":

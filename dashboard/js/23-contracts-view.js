@@ -268,20 +268,43 @@ function contractsView(raw, exchange) {
   };
 }
 
-// A view's daily rows: its own, or each exchange's for a combined view
+// The daily rows behind a view's contracts-per-premium ratio. One exchange:
+// its own rows (in daily_all's order, so a trailing slice is the page's). A
+// combined view: one row per date on which every exchange traded options
+// (contracts and premium > 0 on each side), contracts and premium summed, as
+// the Contracts to Premium tab joins them (contractsPremiumDaily). Cached per view.
+const CONTRACTS_JOINED_ROWS = new WeakMap();
+
 function contractsViewRows(view) {
   const data = (view && view.data) || {};
-  return data.components ? data.components.flatMap(c => c.daily_all || []) : data.daily_all || [];
+  if (!data.components) return data.daily_all || [];
+  if (CONTRACTS_JOINED_ROWS.has(view)) return CONTRACTS_JOINED_ROWS.get(view);
+  const traded = r => r.opt_contracts > 0 && r.opt_premium > 0;
+  const byDate = data.components.map(c => new Map((c.daily_all || []).filter(traded).map(r => [r.date, r])));
+  const rows = [...(byDate[0] || new Map()).keys()].sort()
+    .filter(date => byDate.every(m => m.has(date)))
+    .map(date => {
+      const parts = byDate.map(m => m.get(date));
+      const f = parts[0];
+      return { date, day: f.day, fy: f.fy, fy_quarter: f.fy_quarter, fy_month: f.fy_month,
+        opt_contracts: parts.reduce((a, r) => a + r.opt_contracts, 0),
+        opt_premium: parts.reduce((a, r) => a + r.opt_premium, 0) };
+    });
+  CONTRACTS_JOINED_ROWS.set(view, rows);
+  return rows;
 }
 
 // Contracts per ₹ 1 Cr of option premium over the rows passing `filter`:
-// Σ opt_contracts ÷ Σ opt_premium, never a mean of daily ratios; null without premium
+// Σ opt_contracts ÷ Σ opt_premium, never a mean of daily ratios; null without
+// premium. A day without premium (≤ 0) is left out entirely: its contracts
+// alone would inflate the ratio.
 function contractsRatio(rows, filter) {
   let contracts = 0, premium = 0;
   (rows || []).forEach(r => {
     if (filter && !filter(r)) return;
+    if (!(r.opt_premium > 0)) return;
     contracts += r.opt_contracts || 0;
-    premium += r.opt_premium || 0;
+    premium += r.opt_premium;
   });
   return premium > 0 ? contracts / premium : null;
 }
@@ -301,4 +324,112 @@ function contractsCombined(viewNse, viewBse) {
     enriched: combineEnrichedData(views.map(v => v.enriched)),
     fut_note: true,
   };
+}
+
+// ========================
+// ₹ ADR | CONTRACTS TOGGLE — Revenue Summary's unit, in its sub-tab row.
+// Shown in the NSE, BSE and NSE+BSE views; elsewhere (MCX, All, Brokers, MTF)
+// it is hidden and the page renders revenue, while the stored choice is kept
+// for the next NSE / BSE view. The choice lives in sessionStorage (every access
+// guarded: blocked storage means ADR, and a switch still applies in memory).
+// Contracts mode swaps only what the Revenue Summary renders from (RS_VIEW in
+// 10-revenue-summary.js): DATA, rawFor, MARKET_RAW / MARKET_DATA and every
+// other tab, the live cards and the banner stay in revenue.
+// ========================
+const CONTRACTS_VIEW_EXCHANGES = ['nse', 'bse', 'nsebse'];
+const CONTRACTS_MODE_KEY = 'revSummaryUnit';
+// mode: 'adr' | 'contracts' once read; cache: contracts views by exchange
+const CONTRACTS_STATE = { mode: null, cache: {} };
+
+function contractsStoredMode() {
+  if (CONTRACTS_STATE.mode == null) {
+    let stored = null;
+    try { stored = sessionStorage.getItem(CONTRACTS_MODE_KEY); } catch (e) { /* storage blocked: ADR */ }
+    CONTRACTS_STATE.mode = stored === 'contracts' ? 'contracts' : 'adr';
+  }
+  return CONTRACTS_STATE.mode;
+}
+
+// True when the Revenue Summary renders contracts: stored as Contracts, in an NSE / BSE view
+function contractsModeActive() {
+  return contractsStoredMode() === 'contracts' && CONTRACTS_VIEW_EXCHANGES.includes(currentExchange);
+}
+
+function setContractsMode(on) {
+  CONTRACTS_STATE.mode = on ? 'contracts' : 'adr';
+  try { sessionStorage.setItem(CONTRACTS_MODE_KEY, CONTRACTS_STATE.mode); } catch (e) { /* kept in memory */ }
+  rebuildRevenueSummaryPage();
+}
+
+// The unit the Revenue Summary's labels use. ADR keeps the page's texts as
+// they were: unit (segment headers), short ("Val (In Cr)"), noun ("Total
+// Revenue"), wireDp (weekday tables' decimals) and amount (hover text).
+const REV_UNITS = {
+  adr: { key: 'adr', unit: '₹ Cr', short: 'In Cr', noun: 'Revenue', wireDp: 1, amount: v => `₹${fmtNum(v, 2)} Cr` },
+  contracts: { key: 'contracts', unit: 'Cr contracts', short: 'Cr ctr', noun: 'Contracts', wireDp: 2,
+    amount: v => `${fmtNum(v, 2)} Cr contracts` },
+};
+
+function revUnit() {
+  return REV_UNITS[contractsModeActive() ? 'contracts' : 'adr'];
+}
+
+// One exchange's contracts view, cached per (exchange, data signature): the
+// dashboard file behind it (rawFor) and that file's fingerprint, so toggling
+// or redrawing reuses it until the data changes.
+function contractsViewFor(ex) {
+  const raw = rawFor(ex);
+  if (!raw || !raw.daily_all) return null;
+  const sig = VIEW_LOADED && VIEW_LOADED.exchange === ex && raw === DATA ? VIEW_LOADED.sig : marketSig(ex);
+  const hit = CONTRACTS_STATE.cache[ex];
+  if (hit && hit.raw === raw && hit.sig === sig) return hit.view;
+  const view = contractsView(raw, ex);
+  CONTRACTS_STATE.cache[ex] = { raw, sig, view };
+  return view;
+}
+
+// What the Revenue Summary renders from in Contracts mode (null: revenue)
+function contractsPageView() {
+  if (!contractsModeActive()) return null;
+  if (currentExchange !== 'nsebse') return contractsViewFor(currentExchange);
+  const nseView = contractsViewFor('nse'), bseView = contractsViewFor('bse');
+  if (!nseView || !bseView) return null;
+  const hit = CONTRACTS_STATE.cache.nsebse;
+  if (hit && hit.nse === nseView && hit.bse === bseView) return hit.view;
+  const view = contractsCombined(nseView, bseView);
+  CONTRACTS_STATE.cache.nsebse = { nse: nseView, bse: bseView, view };
+  return view;
+}
+
+// The toggle (shown in NSE / BSE / NSE+BSE) and the Cash sub-tab (hidden in
+// Contracts: F&O only; an open Cash tab falls back to Total). Every other
+// sub-tab stays open across a switch.
+function syncRevUnitControls() {
+  const box = document.getElementById('revUnitToggle');
+  const shown = CONTRACTS_VIEW_EXCHANGES.includes(currentExchange);
+  const on = contractsModeActive();
+  if (box) {
+    // A switch redraws the buttons; keyboard focus moves to the pressed one
+    const hadFocus = !!(box.contains && document.activeElement && box.contains(document.activeElement));
+    box.hidden = !shown;
+    box.innerHTML = shown ? rxSeg('revunit', [['adr', '₹ ADR'], ['contracts', 'Contracts']], on ? 'contracts' : 'adr',
+      'Revenue Summary in average daily revenue or F&O contracts') : '';
+    if (shown) rxOnSeg(box, 'revunit', v => setContractsMode(v === 'contracts'));
+    const pressed = hadFocus && box.querySelector('button[aria-pressed="true"]');
+    if (pressed) pressed.focus();
+  }
+  const tabs = document.getElementById('revSubTabs');
+  const cash = tabs && tabs.querySelector('[data-subtab="rev-cash"]');
+  if (!cash) return;
+  cash.hidden = on;
+  if (on && cash.classList.contains('active')) {
+    const total = tabs.querySelector('[data-subtab="rev-total"]');
+    if (total) total.click();
+  }
+}
+
+// Redraws what the toggle changes: the Revenue Summary and, in NSE+BSE, the market-share panel
+function rebuildRevenueSummaryPage() {
+  const combined = COMBINED_VIEWS[currentExchange];
+  runSections([buildRevenueSummary].concat(combined ? [() => buildMarketSharePanel(combined)] : []));
 }
