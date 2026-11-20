@@ -301,7 +301,7 @@ async function buildBrokersPat() {
   }
   const pat = BRK.pat, name = escHtml(BRK_BROKER.name);
   if (!pat.run || !pat.rows.length) {
-    el.innerHTML = `<div class="brk-wrap">${summary.run ? brkRunBar({ legend: false }) : ''}<div class="chart-panel brk-norun" role="status">
+    el.innerHTML = `<div class="brk-wrap">${summary.run ? brkRunBar({ legend: false, tags: 'fp' }) : ''}<div class="chart-panel brk-norun" role="status">
       <b>No PAT model published for ${name} yet.</b>
       <p>${escHtml(pat.reason || '')}. The brokers-dashboard engine publishes it to <code>sb_pat_lines</code> after each ${escHtml(BRK.mode)} ADR run; nothing is estimated on this page in the meantime.</p></div></div>`;
     return;
@@ -427,7 +427,7 @@ function brkPatPredictor(el, pat, summary, kit) {
       <thead><tr><th scope="col" class="rx-l">Line</th>${cols.map(c => `<th scope="col" class="${c === firstFy ? 'brk-pat-fy' : ''}">${escHtml(brkPatShort(c) + (/^FY/.test(c) && regimeOf(c) !== 'actual' ? 'E' : ''))} ${brkPatTag(regimeOf(c))}</th>`).join('')}</tr></thead>
       <tbody>${body}</tbody></table></div>`;
   };
-  const tagFoot = `<span class="brk-tag brk-tag--act">F</span> Filed: ${escHtml(BRK_BROKER.name)}'s consolidated results · <span class="brk-tag brk-tag--est">P</span> Projected by the model. Hover a figure for its rule.`;
+  const tagFoot = `<span class="brk-tag-key"><span class="brk-tag brk-tag--act">F</span> Filed: ${escHtml(BRK_BROKER.name)}'s consolidated results · <span class="brk-tag brk-tag--est">P</span> Projected by the model. </span>Hover a figure for its rule.`;
   const years = [kit.fy0, fy1, fy2].filter(Boolean);
   const projCols = [...kit.fy1q, ...years].filter(c => regimeOf(c) === 'projected' && lines.some(l => pl[l]?.[c]?.rule));
   const rules = rxHow('Rules behind the projections', `<div class="rx-scroll"><table class="rx-table brk-pat-rules">
@@ -440,7 +440,7 @@ function brkPatPredictor(el, pat, summary, kit) {
     how: rules });
 
   const checkNote = locked ? rxAlert(`<strong>The inputs are switched off: recomputing at the published defaults does not give the published figures.</strong> ${bad.slice(0, 4).map(x => `${escHtml(x.key.replace(/\|$/, '').replace(/\|/g, ' · '))}: published ${fmtNum(x.published, 4)}, recomputed ${fmtNum(x.recomputed, 4)}`).join('; ')}${bad.length > 4 ? `; and ${bad.length - 4} more` : ''}. The figures below are the engine's as published.`) : '';
-  el.innerHTML = `<div class="brk-wrap">${summary.run ? brkRunBar({ legend: false }) : ''}<div class="rx brk-pat">
+  el.innerHTML = `<div class="brk-wrap">${summary.run ? brkRunBar({ legend: false, tags: 'fp' }) : ''}<div class="rx brk-pat">
     ${rxAlert(`<strong>PAT model, as the engine published it</strong> (${brkPatRunNote(pat, summary)}). ${kit.proj.length ? `${escHtml(kit.fy1q.filter(q => !kit.proj.includes(q)).join(' and ') || 'No quarter')} ${kit.fy1q.length - kit.proj.length === 1 ? 'is' : 'are'} ${name}'s filed results; the rest is projected from the engine's ADR. ` : ''}${locked ? '' : 'Change the broking or MTF QoQ growth, a P/E or a discount rate and the page recomputes the build-up, the predictor, both P&Ls and the Valuation tab\'s ADR method with the engine\'s own rules. Your edits stay on this page and are not saved.'}`, 'info')}
     ${checkNote}
     ${buildup}
@@ -626,11 +626,11 @@ function brkPatLegacy(el, pat, summary, missing) {
     body: `<div class="rx-scroll"><table class="rx-table brk-pat-pl">
       <thead><tr><th scope="col" class="rx-l">Line</th>${cols.map(c => `<th scope="col" class="${c === firstFy ? 'brk-pat-fy' : ''}">${escHtml(c.replace(/ FY \d{2}(\d{2})$/, ' FY$1').replace(/^FY \d{2}(\d{2})$/, 'FY$1E'))} ${brkPatTag(brkPatRegime(pl, c))}</th>`).join('')}</tr></thead>
       <tbody>${plBody}</tbody></table></div>`,
-    foot: `<span class="brk-tag brk-tag--act">F</span> Filed: the quarter's consolidated results (${escHtml(BRK_BROKER.name)}'s filings) · <span class="brk-tag brk-tag--est">P</span> Projected by the model. Trading days and ADR: a projected quarter's days include those already traded; the ${short(fy1)} column shows the ADR the projection starts from (today's), the ${short(fy2)} column its average for that year.`,
+    foot: `<span class="brk-tag-key"><span class="brk-tag brk-tag--act">F</span> Filed: the quarter's consolidated results (${escHtml(BRK_BROKER.name)}'s filings) · <span class="brk-tag brk-tag--est">P</span> Projected by the model. </span>Trading days and ADR: a projected quarter's days include those already traded; the ${short(fy1)} column shows the ADR the projection starts from (today's), the ${short(fy2)} column its average for that year.`,
     how: rules,
   });
 
-  el.innerHTML = `<div class="brk-wrap">${summary.run ? brkRunBar({ legend: false }) : ''}<div class="rx">
+  el.innerHTML = `<div class="brk-wrap">${summary.run ? brkRunBar({ legend: false, tags: 'fp' }) : ''}<div class="rx">
     ${rxAlert(`<strong>Earlier layout.</strong> This run of the PAT model was published without the rows the ADR build-up and the editable PAT predictor need (${escHtml(missing.slice(0, 6).join(', '))}${missing.length > 6 ? ', …' : ''}), so the page shows it as before, with no inputs, until the engine's updated PAT step publishes a run with them.`)}
     ${rxAlert(`<strong>PAT model, as the engine published it.</strong> ${filed.length ? `${escHtml(filed.join(' and '))} are ${name}'s filed consolidated results; ` : ''}the rest of ${escHtml(fy1)} and ${escHtml(fy2)} are projected from the engine's ADR (${brkPatRunNote(pat, summary)}). This page computes nothing.`, 'info')}
     <section class="rx-kpis" aria-label="PAT summary">${kpis}</section>

@@ -208,6 +208,37 @@ function brkVal(v) {
 function brkChgClass(v) { return v > 0 ? 'pos' : v < 0 ? 'neg' : 'neu'; }
 function brkPct(v) { return `${(v * 100).toFixed(1)}%`; }
 
+// The A / E (and the PAT tab's F / P) marks are hidden until the viewer turns them on with the
+// toggle in the run bar: one switch for the whole mode (body.brk-tags-on), remembered in this browser
+const BRK_TAGS_KEY = 'brk_tags_shown_v1';
+const BRK_TAG_LETTERS = { ae: 'A / E', fp: 'F / P' };
+function brkTagsShown() { return document.body.classList.contains('brk-tags-on'); }
+function brkTagToggle(kind = 'ae') {
+  const on = brkTagsShown();
+  const what = kind === 'fp' ? 'which figures are filed and which are projected' : 'which figures are actual and which are estimates';
+  return `<button type="button" class="brk-tag-toggle" data-brk-tags="${kind}" aria-pressed="${on}" title="${on ? 'Hide' : 'Show'} ${what}">${on ? 'Hide' : 'Show'} ${BRK_TAG_LETTERS[kind] || BRK_TAG_LETTERS.ae}</button>`;
+}
+function brkSetTags(on) {
+  document.body.classList.toggle('brk-tags-on', on);
+  document.querySelectorAll('[data-brk-tags]').forEach(b => {
+    b.setAttribute('aria-pressed', String(on));
+    b.textContent = `${on ? 'Hide' : 'Show'} ${BRK_TAG_LETTERS[b.dataset.brkTags] || BRK_TAG_LETTERS.ae}`;
+    b.title = b.title.replace(/^(Show|Hide)/, on ? 'Hide' : 'Show');
+  });
+}
+document.addEventListener('click', e => {
+  const btn = e.target && e.target.closest ? e.target.closest('[data-brk-tags]') : null;
+  if (!btn) return;
+  const on = !brkTagsShown();
+  brkSetTags(on);
+  try { localStorage.setItem(BRK_TAGS_KEY, on ? '1' : '0'); } catch (err) { /* storage blocked: not remembered */ }
+});
+(() => {
+  let on = false;
+  try { on = localStorage.getItem(BRK_TAGS_KEY) === '1'; } catch (err) { /* storage blocked: hidden */ }
+  if (on && document.body) brkSetTags(true);
+})();
+
 function brkTag(regime) {
   if (!regime) return '';
   return regime === 'estimate'
@@ -393,15 +424,16 @@ function brkMonthTicks(dates, max) {
 }
 
 // The A / E legend describes the tags on the Summary, Daily ADR and Calibration
-// tabs; tabs without those tags (Price vs ADR, F&O vs Exchanges, PAT) pass legend: false
-function brkRunBar({ legend = true } = {}) {
+// tabs; tabs without those tags (Price vs ADR, F&O vs Exchanges, PAT) pass legend: false.
+// `tags` puts the show / hide toggle for the marks in the bar: 'ae' with the legend, 'fp' on the PAT tab.
+function brkRunBar({ legend = true, tags = legend ? 'ae' : null } = {}) {
   const run = BRK.summary.run;
   const published = run?.started_at ? fmtLongDate(run.started_at.slice(0, 10)) + ' ' + run.started_at.slice(11, 16) + ' UTC' : '—';
   const mtf = brkMtfThrough();
   return `<div class="brk-runbar">
     ${run ? `<span><b>${escHtml(BRK_BROKER.name)}</b> · as of <b>${escHtml(fmtLongDate(run.as_of_date))}</b>${mtf.item}</span>
     <span>run <code title="${escHtml(run.run_id)}">${escHtml(run.run_id.slice(0, 8))}</code> · published ${escHtml(published)}</span>
-    ${legend ? `<span class="brk-legend"><span class="brk-tag brk-tag--act">A</span> Actual: every day in a period ${escHtml(BRK_BROKER.name)} has reported · <span class="brk-tag brk-tag--est">E</span> Estimate: includes projected days after the last reported period · numbered notes say why a figure is missing · all figures are the engine's published values</span>` : ''}`
+    ${legend || tags ? `<span class="brk-legend">${tags ? brkTagToggle(tags) : ''}${legend ? `<span class="brk-tag-key"><span class="brk-tag brk-tag--act">A</span> Actual: every day in a period ${escHtml(BRK_BROKER.name)} has reported · <span class="brk-tag brk-tag--est">E</span> Estimate: includes projected days after the last reported period · </span>numbered notes say why a figure is missing · all figures are the engine's published values` : ''}</span>` : ''}`
     : `<span><b>${escHtml(BRK_BROKER.name)}</b> · no ${BRK.mode} run published yet</span>`}
     ${mtf.note}
     ${BRK_BROKER_BASIS[BRK_BROKER.id] ? `<p class="brk-basis" role="note">${escHtml(BRK_BROKER_BASIS[BRK_BROKER.id].note)}</p>` : ''}
