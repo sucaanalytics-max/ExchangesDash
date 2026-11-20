@@ -15,7 +15,8 @@ is derived exactly as TtlTrfVal − strike × multiplier × lots. On 17 Nov 2026
 that gave ₹103.1137 Cr against the ₹103.1136557 Cr in NSE's own market
 turnover summary, and futures and options notional and trade counts matched
 too. Each option row's implied average premium is checked against its
-low–high range, which also validates OPTION_MULTIPLIER. An option traded on an
+low–high range (to rounding: all of 10 Nov 2026's expiry-day rows pass), which
+also validates OPTION_MULTIPLIER. An option traded on an
 underlying with no known multiplier leaves that underlying's premium null and
 warns.
 
@@ -206,7 +207,10 @@ def parse_bhavcopy(zip_bytes):
                 cell["premium_cr"] += prem / 1e7
             avg = prem / (mult * lots)
             lo, hi = _f(r.get("LwPric")), _f(r.get("HghPric"))
-            tol = 0.01 + 0.001 * (strike + hi)
+            # Rounding only: TtlTrfVal is in paise, so the derived average is exact
+            # to well under a paisa. (A tolerance scaled to the strike would exceed
+            # the price of most expiry-day options and could not catch them.)
+            tol = 0.01 + 1e-6 * strike
             if not (lo - tol <= avg <= hi + tol):
                 bad_rows[sym] = bad_rows.get(sym, 0) + 1
     for sym in sorted(no_mult):

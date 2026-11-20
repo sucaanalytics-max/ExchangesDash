@@ -295,6 +295,31 @@ function ccTopTableHTML(doc, months, idx, metric) {
   </table></div>`;
 }
 
+// MCX's revenue at risk by month: each session, NSE's commodity futures notional and options premium
+// priced at MCX's own rates that session (its reported fut_rev ÷ its futures notional, opt_rev ÷ its
+// options premium, from `mcxDaily`, MCX's dashboard rows), against MCX's revenue over the same
+// sessions. Sessions without an MCX row, an MCX premium (23 Jun 2026) or a known NSE premium are
+// left out. An upper bound: it assumes every NSE trade would otherwise have traded on MCX.
+function ccRiskByMonth(days, mcxDaily) {
+  const byDate = new Map((mcxDaily || []).map(r => [r.date, r]));
+  const out = new Map();
+  for (const r of days) {
+    const m = byDate.get(r.date);
+    const mFut = ccVal(r.mcx, 'all', 'fut'), mPrem = ccVal(r.mcx, 'all', 'prem');
+    const nFut = ccVal(r.nse, 'all', 'fut'), nPrem = ccVal(r.nse, 'all', 'prem');
+    if (!m || !(mFut > 0) || !(mPrem > 0) || nFut == null || nPrem == null) continue;
+    const risk = nFut * (m.fut_rev || 0) / mFut + nPrem * (m.opt_rev || 0) / mPrem;
+    const k = r.date.slice(0, 7);
+    const p = out.get(k) || { month: k, days: 0, risk: 0, mcx: 0, nse: 0 };
+    p.days += 1;
+    p.risk += risk;
+    p.mcx += (m.fut_rev || 0) + (m.opt_rev || 0);
+    p.nse += r.rev[0];
+    out.set(k, p);
+  }
+  return [...out.values()].sort((a, b) => a.month.localeCompare(b.month));
+}
+
 function ccPanelEmpty(msg) {
   return rxPanel({ title: 'Competition', body: `<div class="rx-empty"><b>${msg}</b></div>` });
 }
@@ -384,10 +409,15 @@ async function buildMcxCompetition() {
           ${rxSeg('ccMetric', CC_METRICS, CC_VIEW.metric, 'Measure')}</div>
           ${rxLegend([{ label: 'Each session', color: RX.light, kind: 'dot' }, { label: `${CC_ROLL}-session share`, color: RX.model, kind: 'line' }])}
           ${rxCanvas('chartCcDaily')}</div>`,
-      foot: 'NSE\'s crude and natural-gas options expire a day before MCX\'s, and most of its options volume comes on its own expiry day and the day before, so the daily share spikes once a month; the 20-session line evens that out. '
+      foot: 'Since the January 2026 contract NSE\'s crude-oil options expire around the 7th–10th of the month, about a week before MCX\'s (to December 2025 they expired on the 16th–17th, close to MCX\'s). Most of NSE\'s options volume comes on its own expiry day and the day before, so the daily share spikes once a month; the 20-session line evens that out. '
         + 'The scale follows the 20-session line: sessions above the scale are drawn as triangles on the top edge, with their share in the tooltip. '
         + (doc.notes || []).map(n => `${rxDate(n.date)}: ${escHtml(n.label)}.`).join(' ') + premNote })}
     ${rxPanel({ title: 'NSE share by month', meta: '<span data-cc="monmeta"></span>', body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas('chartCcMonthly')}</div>` })}
+    ${rxPanel({ title: 'MCX revenue at risk (upper bound)', meta: '<span data-cc="riskmeta"></span>',
+      body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas('chartCcRisk')}</div>`,
+      foot: 'NSE\'s commodity futures notional and options premium, priced each session at MCX\'s own rates (MCX\'s reported futures revenue ÷ its futures notional, options revenue ÷ its options premium: ₹210 and ₹4,180 per crore a side), as a share of MCX\'s reported transaction revenue over the same sessions. '
+        + 'An upper bound, not a loss: it assumes every NSE trade would otherwise have traded on MCX at MCX\'s fees. NSE charges ₹10 and ₹100 per crore, so most of its volume is cheap options on its own expiry day, a week before MCX\'s, and some of it is new trading. '
+        + 'MCX\'s own revenue has kept rising meanwhile; compare its ₹ Cr a day in the tooltip. The latest month (lighter) is to date.' })}
     ${rxPanel({ title: 'Top commodities by month, MCX and NSE', meta: '<span data-cc="topmeta"></span>',
       right: rxSeg('ccTop', CC_TOP_METRICS, CC_VIEW.top, 'Measure'),
       body: `<div class="rx-pb">
@@ -531,6 +561,39 @@ async function buildMcxCompetition() {
     });
   };
 
+  const drawRisk = () => {
+    const months = ccRiskByMonth(days, rawFor('mcx')?.daily);
+    if (!months.length) {
+      q('riskmeta').textContent = 'Needs MCX\'s daily revenue, which has not loaded';
+      if (charts.ccRisk) { charts.ccRisk.destroy(); delete charts.ccRisk; }
+      return;
+    }
+    const last = months[months.length - 1];
+    const pct = p => (p.mcx > 0 ? (p.risk / p.mcx) * 100 : null);
+    q('riskmeta').textContent = `${ccMonthLabel(last.month)} to date: ₹${ccCr(last.risk / last.days)} Cr a day, ${ccPct(last.mcx > 0 ? last.risk / last.mcx : null)} of MCX's ₹${ccCr(last.mcx / last.days)} Cr`;
+    rxChart('ccRisk', 'chartCcRisk', 200, {
+      type: 'bar',
+      data: { labels: months.map(p => ccMonthLabel(p.month)), datasets: [
+        { label: 'Share of MCX\'s revenue', data: months.map(pct), ...ccToDateBars(RX.rev, months.length) },
+      ] },
+      options: {
+        plugins: { tooltip: { callbacks: {
+          title: items => ccMonthTitle(months, items[0].dataIndex),
+          label: ctx => ` At risk: ${ccPct(ctx.raw / 100)} of MCX's revenue`,
+          footer: items => {
+            const p = months[items[0].dataIndex];
+            return [`NSE's volume at MCX's fees: ₹${ccCr(p.risk / p.days)} Cr a day`,
+              `MCX's revenue: ₹${ccCr(p.mcx / p.days)} Cr a day`,
+              `NSE's own charges: ₹${ccCr(p.nse / p.days)} Cr a day · ${p.days} sessions`];
+          } } } },
+        scales: {
+          x: { grid: { display: false }, ticks: { maxTicksLimit: 12, maxRotation: 0, autoSkip: true } },
+          y: { min: 0, title: { display: true, text: '% of MCX\'s revenue' }, ticks: { callback: v => `${v} %` } },
+        },
+      },
+    });
+  };
+
   const drawRev = () => {
     const months = (doc.monthly || []).filter(p => p.days > 0);
     rxChart('ccRev', 'chartCcRev', 200, {
@@ -628,7 +691,7 @@ async function buildMcxCompetition() {
     q('toptable').innerHTML = ccTopTableHTML(doc, months, idx, metric);
   };
 
-  const drawCharts = () => { drawDaily(); drawMonthly(); drawTop(); drawRev(); };
+  const drawCharts = () => { drawDaily(); drawMonthly(); drawRisk(); drawTop(); drawRev(); };
   drawTable();
   drawCharts();
   rxOnSeg(root, 'ccWin', v => { CC_VIEW.win = v; drawTable(); });
