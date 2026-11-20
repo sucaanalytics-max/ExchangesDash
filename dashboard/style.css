@@ -3571,4 +3571,108 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
   .xl-has-ratio .xl-col-ratio  { width: 12%; }
   .xl-has-ratio .xl-col-exp,
   .xl-exp-multi.xl-has-ratio .xl-col-exp    { width: 12%; }
+/* India VIX (js/21-vix.js): the ticker after the live cards (.lvc above) and the
+   VIX panel below the Revenue Summary sub-tabs. Dark values for any theme but
+   data-theme="light", under the OS setting and an explicit dark theme. */
+:root {
+  --vix-accent: #6B4FBB;
+  --vix-up: #176C2E;
+  --vix-dn: #A01822;
+  --vix-today-bg: #FFF4D6;
+  --vix-today-rule: #D9A54A;
+  --vix-base-bg: #F3F3EF;
+  --vix-outside-ink: #A3A6AD;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --vix-accent: #A48FE6;
+    --vix-up: #8FD19E;
+    --vix-dn: #F2A0A6;
+    --vix-today-bg: #4A3D17;
+    --vix-today-rule: #B8913F;
+    --vix-base-bg: #26282D;
+    --vix-outside-ink: #6E7178;
+  }
+}
+:root[data-theme="dark"] {
+  --vix-accent: #A48FE6;
+  --vix-up: #8FD19E;
+  --vix-dn: #F2A0A6;
+  --vix-today-bg: #4A3D17;
+  --vix-today-rule: #B8913F;
+  --vix-base-bg: #26282D;
+  --vix-outside-ink: #6E7178;
+}
+.lvc--vix { width: 230px; border-top-color: var(--vix-accent); }
+.lvc--vix .lvc-nums { gap: 0 8px; }
+.vix-chg { font-size: 13px; font-weight: 600; white-space: nowrap; }
+.vix-chg--up { color: var(--vix-up); }
+.vix-chg--dn { color: var(--vix-dn); }
+#vixPanel { margin-top: var(--space-4); }
+#vixPanel:empty { display: none; }
+.rx-table.vix-sens tr.vix-today td { background: var(--vix-today-bg); font-weight: 600; }
+.rx-table.vix-sens tr.vix-today td:first-child { box-shadow: inset 3px 0 0 var(--vix-today-rule); }
+.rx-table.vix-sens tbody tr.vix-today:hover td { background: var(--vix-today-bg); }
+.rx-table.vix-sens tr.vix-base td { background: var(--vix-base-bg); }
+.rx-table.vix-sens tr.vix-outside td { color: var(--vix-outside-ink); }
+.rx-table.vix-sens tr.vix-outside td.rx-strong { font-weight: 400; }
+.vix-tag { margin-left: 4px; font-size: 11px; font-weight: 400; color: var(--rx-muted); }
+.rx-table.vix-weekly .rx-chip { margin-left: 6px; font-size: 10px; }
+/* β and n stay lower case: the chip's capitals would turn β into a Latin B */
+.vix-fit .rx-chip { text-transform: none; }
+@media (max-width: 640px) {
+  .lvc--vix { flex: 1 1 100%; width: auto; }
+  /* Phones: Total in view without scrolling. Drop the columns the rest implies
+     (% vs average VIX; sessions and points change), stack labels and units */
+  .rx-table.vix-sens .vix-pv, .rx-table.vix-weekly .vix-nar { display: none; }
+  .rx-table.vix-sens th, .rx-table.vix-weekly th { white-space: normal; }
+  .rx-table.vix-sens th, .rx-table.vix-sens td,
+  .rx-table.vix-weekly th, .rx-table.vix-weekly td { padding-left: 5px; padding-right: 5px; }
+  .vix-unit { display: block; }
+  .vix-tag { display: block; margin-left: 0; font-size: 10.5px; white-space: normal; }
+  .rx-table.vix-weekly td:first-child .rx-chip { display: table; margin: 2px 0 0; }
+}
+
+/* Week-on-week ADR (js/22-weekly-adr.js): the panel above #vixPanel. Holiday
+   weeks shade amber. Dark values for any theme but data-theme="light", under
+   the OS setting and an explicit dark theme. */
+:root {
+  --wadr-hol-bg: #FCEFD6;
+  --wadr-hol-rule: #D9A54A;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --wadr-hol-bg: #3F3216;
+    --wadr-hol-rule: #B8913F;
+  }
+}
+:root[data-theme="dark"] {
+  --wadr-hol-bg: #3F3216;
+  --wadr-hol-rule: #B8913F;
+}
+#weeklyAdrPanel { margin-top: var(--space-4); }
+#weeklyAdrPanel:empty { display: none; }
+.rx-table.wadr td { vertical-align: top; padding-top: 7px; padding-bottom: 7px; }
+.rx-table.wadr td.wadr-wk { min-width: 230px; }
+.rx-table.wadr tr.wadr-ref .wadr-sel { font-weight: 600; }
+.rx-table.wadr .wadr-c > span { display: block; }
+.rx-table.wadr .wadr-c > .rx-chip { display: table; margin: 3px 0 0 auto; }
+.wadr-v { font-size: 14px; font-weight: 600; }
+.wadr-v--norm { font-style: italic; }
+.wadr-s, .wadr-alt { font-size: 11px; color: var(--rx-muted); }
+.wadr-alt { font-style: italic; }
+.wadr-excl { font-size: 11px; font-weight: 600; color: var(--rx-warn); }
+.wadr-pct { font-size: 12px; font-weight: 600; margin-top: 2px; }
+.rx-table.wadr tr.wadr-hol td,
+.rx-table.wadr tbody tr.wadr-hol:hover td { background: var(--wadr-hol-bg); }
+.rx-table.wadr tr.wadr-hol td:first-child { box-shadow: inset 3px 0 0 var(--wadr-hol-rule); }
+@media (max-width: 640px) {
+  /* Phones: Total in view without scrolling. The week dropdown takes its own
+     line above the four figures */
+  .rx-table.wadr, .rx-table.wadr thead, .rx-table.wadr tbody { display: block; }
+  .rx-table.wadr tr { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .rx-table.wadr th, .rx-table.wadr td { padding-left: 5px; padding-right: 5px; white-space: normal; min-width: 0; }
+  .rx-table.wadr th:first-child { display: none; }
+  .rx-table.wadr td.wadr-wk { grid-column: 1 / -1; min-width: 0; border-bottom: 0; padding-bottom: 2px; }
+  .rx-table.wadr .wadr-c > .rx-chip { white-space: normal; text-align: right; }
 }
