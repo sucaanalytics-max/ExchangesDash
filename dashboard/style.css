@@ -3646,6 +3646,10 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
   transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1), opacity 140ms ease;
 }
 .rx-drawer.rx.is-open { transform: none; opacity: 1; }
+/* Closed means gone: `display: flex` above would otherwise override [hidden] and
+   leave a transparent panel over the right of the page, swallowing clicks */
+.rx-drawer.rx[hidden], .rx-drawer-scrim[hidden] { display: none; }
+.rx-drawer.rx:not(.is-open), .rx-drawer-scrim:not(.is-open) { pointer-events: none; }
 .rx-drawer-head {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 12px 16px; border-top: 3px solid var(--color-primary); border-bottom: 1px solid var(--rx-rule);
