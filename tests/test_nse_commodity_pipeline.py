@@ -188,6 +188,34 @@ class Periods(unittest.TestCase):
         self.assertEqual(m["ru_days"], {"nse": 3, "mcx": 2})
         self.assertEqual(m["ru"], {"nse": {"crude": 0.03}, "mcx": {"crude": 4.0, "gold": 1.0}})
 
+    def test_zero_premium_day_adds_no_premium_on_either_side(self):
+        # 23 Jun 2026: every MCX option row has premium 0 though options traded
+        day = lambda d, mcx_prem: {"date": d, "nse": {"crude": {"f": [5, 50.0], "o": [10, 100.0, 1.0]}},
+                                   "mcx": {"crude": {"f": [50, 500.0], "o": [1000, 9000.0, mcx_prem]},
+                                           "gold": {"o": [100, 900.0, mcx_prem]}},
+                                   "rev": [0.1, 0.1]}
+        daily = [day("2026-06-22", 99.0), day("2026-06-23", 0.0), day("2026-06-24", 99.0)]
+        self.assertEqual([com.premium_out(r) for r in daily], [False, True, False])
+        m = com.periods(daily, "month")[0]
+        self.assertEqual((m["days"], m["prem_days"]), (3, 2))
+        # contracts and notional count every day; premium only the two good ones, on both sides
+        self.assertEqual(m["nse"]["crude"]["o"], [30, 300.0, 2.0])
+        self.assertEqual(m["mcx"]["crude"]["o"], [3000, 27000.0, 198.0])
+        self.assertEqual(m["mcx"]["gold"]["o"], [300, 2700.0, 198.0])
+        self.assertEqual(m["nse"]["crude"]["f"], [15, 150.0])
+        self.assertEqual(com.periods(daily, "quarter")[0]["prem_days"], 2)
+        # the stored day itself is unchanged
+        self.assertEqual(daily[1]["nse"]["crude"]["o"], [10, 100.0, 1.0])
+
+    def test_premium_out_needs_options_traded_and_a_known_zero(self):
+        self.assertFalse(com.premium_out({"mcx": None}))
+        self.assertFalse(com.premium_out({"mcx": {"crude": {"f": [1, 10.0]}}}))             # no options
+        self.assertFalse(com.premium_out({"mcx": {"crude": {"o": [0, 0.0, 0.0]}}}))         # none traded
+        self.assertFalse(com.premium_out({"mcx": {"crude": {"o": [1, 9.0, None]}}}))        # unknown, not 0
+        # one underlying's premium rounding to 0 (MCX's 1–4 contract index / zinc trades) is a real figure
+        self.assertFalse(com.premium_out({"mcx": {"crude": {"o": [9, 90.0, 5.0]}, "index": {"o": [2, 0.2, 0.0]}}}))
+        self.assertTrue(com.premium_out({"mcx": {"crude": {"o": [9, 90.0, 0.0]}, "gold": {"o": [1, 9.0, 0]}}}))
+
     def test_none_propagates(self):
         acc = {}
         com._add(acc, {"gold": {"o": [3, 0.3, None]}})

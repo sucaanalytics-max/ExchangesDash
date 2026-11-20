@@ -311,6 +311,16 @@ const RX = {
 };
 const RX_FONT = "'IBM Plex Sans', Arial, sans-serif";
 
+// `color` (#RGB or #RRGGBB) at opacity `a` (0–1) as rgba(); any other colour
+// string comes back unchanged (drawn solid rather than as an invalid colour)
+function rxAlpha(color, a) {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(color || '').trim());
+  if (!m) return color;
+  const h = m[1].length === 3 ? m[1].replace(/./g, c => c + c) : m[1];
+  const [r, g, b] = [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16));
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
 // Called after a redesigned tab becomes visible, so its charts are drawn at
 // their real size (Chart.js mis-sizes some charts built while display:none).
 // Keyed by tab id; rebuildAll clears it, each builder sets its own entry.
