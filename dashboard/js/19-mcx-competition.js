@@ -295,29 +295,116 @@ function ccTopTableHTML(doc, months, idx, metric) {
   </table></div>`;
 }
 
-// MCX's revenue at risk by month: each session, NSE's commodity futures notional and options premium
-// priced at MCX's own rates that session (its reported fut_rev ÷ its futures notional, opt_rev ÷ its
-// options premium, from `mcxDaily`, MCX's dashboard rows), against MCX's revenue over the same
-// sessions. Sessions without an MCX row, an MCX premium (23 Jun 2026) or a known NSE premium are
-// left out. An upper bound: it assumes every NSE trade would otherwise have traded on MCX.
-function ccRiskByMonth(days, mcxDaily) {
-  const byDate = new Map((mcxDaily || []).map(r => [r.date, r]));
-  const out = new Map();
-  for (const r of days) {
-    const m = byDate.get(r.date);
-    const mFut = ccVal(r.mcx, 'all', 'fut'), mPrem = ccVal(r.mcx, 'all', 'prem');
-    const nFut = ccVal(r.nse, 'all', 'fut'), nPrem = ccVal(r.nse, 'all', 'prem');
-    if (!m || !(mFut > 0) || !(mPrem > 0) || nFut == null || nPrem == null) continue;
-    const risk = nFut * (m.fut_rev || 0) / mFut + nPrem * (m.opt_rev || 0) / mPrem;
-    const k = r.date.slice(0, 7);
-    const p = out.get(k) || { month: k, days: 0, risk: 0, mcx: 0, nse: 0 };
-    p.days += 1;
-    p.risk += risk;
-    p.mcx += (m.fut_rev || 0) + (m.opt_rev || 0);
-    p.nse += r.rev[0];
-    out.set(k, p);
+// ── MCX revenue at risk ──────────────────────────────────────────────────────────────────
+// Each session, NSE's commodity futures notional and options premium priced at MCX's own rates
+// that session (its reported fut_rev ÷ its futures notional, opt_rev ÷ its options premium, from
+// MCX's dashboard rows) is the ceiling: what MCX would earn had every NSE trade been on MCX. NSE's
+// options premium is split by when it traded: an underlying's NSE options expiry day and the NSE
+// session before it (the expiry window, xo in the file; NSE's crude options expire about a week
+// before MCX's and most of NSE's volume comes then) against every other session (ordinary days;
+// futures always count there). The estimated loss applies an assumed share that would otherwise
+// have traded on MCX to each part (CC_SUB_DEFAULTS, overridable per browser).
+const CC_SUB_DEFAULTS = { ord: 100, exp: 30 };   // valuation_inputs.json exchanges.mcx.competition overrides these
+const CC_SUB_KEY = 'mcx_competition_subs_v1';
+
+// {date: Set of underlyings in their NSE options expiry window}, and whether each date's
+// window is known: a day read before parser 2 has no xo, and a day's "day before" status
+// needs the next session's file (so the latest day's is provisional until then)
+function ccExpiryWindow(daily) {
+  const win = new Map(), known = new Map();
+  const ok = r => (r.parser || 1) >= 2;
+  daily.forEach((r, i) => {
+    const next = daily[i + 1];
+    known.set(r.date, ok(r) && (!next || ok(next)));
+    for (const u of r.xo || []) {
+      for (const d of [r.date, i > 0 ? daily[i - 1].date : null]) {
+        if (!d) continue;
+        if (!win.has(d)) win.set(d, new Set());
+        win.get(d).add(u);
+      }
+    }
+  });
+  return { win, known };
+}
+
+// One session: { fut, optOrd, optExp, known, mcx, mcxOpt, mcxPrem, nse } in ₹ Cr, or null when
+// MCX's row, its futures notional or options premium (0 on 23 Jun 2026), or NSE's premium is missing
+function ccRiskDay(r, m, ew) {
+  const mFut = ccVal(r.mcx, 'all', 'fut'), mPrem = ccVal(r.mcx, 'all', 'prem');
+  const nFut = ccVal(r.nse, 'all', 'fut'), nPrem = ccVal(r.nse, 'all', 'prem');
+  if (!m || !(mFut > 0) || !(mPrem > 0) || nFut == null || nPrem == null) return null;
+  const futRate = (m.fut_rev || 0) / mFut, optRate = (m.opt_rev || 0) / mPrem;
+  const unds = (ew && ew.win.get(r.date)) || new Set();
+  let expPrem = 0;
+  for (const u of unds) expPrem += ccVal(r.nse, u, 'prem') || 0;
+  return {
+    fut: nFut * futRate, optOrd: (nPrem - expPrem) * optRate, optExp: expPrem * optRate,
+    known: !!(ew && ew.known.get(r.date)), mcx: (m.fut_rev || 0) + (m.opt_rev || 0),
+    mcxOpt: m.opt_rev || 0, mcxPrem: mPrem, nse: r.rev[0], nsePrem: nPrem,
+  };
+}
+
+// Sums over `rows`: { days, ceil, ord, exp (null unless every day's split is known), unknown,
+// mcx, mcxOpt, mcxPrem, nse, nsePrem }, ₹ Cr over the sessions counted
+function ccRiskSum(rows, byDate, ew) {
+  const t = { days: 0, ceil: 0, ord: 0, exp: 0, unknown: 0, mcx: 0, mcxOpt: 0, mcxPrem: 0, nse: 0, nsePrem: 0 };
+  for (const r of rows) {
+    const x = ccRiskDay(r, byDate.get(r.date), ew);
+    if (!x) continue;
+    t.days += 1;
+    t.ceil += x.fut + x.optOrd + x.optExp;
+    t.ord += x.fut + x.optOrd;
+    t.exp += x.optExp;
+    if (!x.known) t.unknown += 1;
+    for (const k of ['mcx', 'mcxOpt', 'mcxPrem', 'nse', 'nsePrem']) t[k] += x[k];
   }
-  return [...out.values()].sort((a, b) => a.month.localeCompare(b.month));
+  if (t.unknown) { t.ord = null; t.exp = null; }
+  return t;
+}
+
+// Estimated loss (₹ Cr over the sessions) at substitution shares sub = { ord, exp } in %; null
+// when the split is unknown
+function ccRiskLoss(t, sub) {
+  return t.ord == null ? null : t.ord * sub.ord / 100 + t.exp * sub.exp / 100;
+}
+
+// A year of a per-session loss: { rev, pat, eps, value } from MCX's sessions, PAT margin (%),
+// shares (Cr) and P/E; eps and value null without shares
+function ccRiskYear(perDay, days, marginPct, shares, pe) {
+  const rev = perDay * days, pat = rev * marginPct / 100;
+  const eps = shares > 0 ? pat / shares : null;
+  return { rev, pat, eps, value: eps == null ? null : eps * pe };
+}
+
+function ccRiskByMonth(days, mcxDaily, ew) {
+  const byDate = new Map((mcxDaily || []).map(r => [r.date, r]));
+  const groups = new Map();
+  for (const r of days) {
+    const k = r.date.slice(0, 7);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(r);
+  }
+  return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([month, rows]) => ({ month, ...ccRiskSum(rows, byDate, ew) })).filter(p => p.days > 0);
+}
+
+// This browser's substitution shares over the defaults ({ ord, exp } in %, 0–100)
+function ccSubs(defaults) {
+  const out = { ...defaults };
+  try {
+    const o = JSON.parse(localStorage.getItem(CC_SUB_KEY) || 'null') || {};
+    for (const k of ['ord', 'exp']) if (typeof o[k] === 'number' && o[k] >= 0 && o[k] <= 100) out[k] = o[k];
+  } catch (e) { /* storage blocked or unreadable: the defaults */ }
+  return out;
+}
+
+function ccSubsSave(sub, defaults) {
+  try {
+    const o = {};
+    for (const k of ['ord', 'exp']) if (sub[k] !== defaults[k]) o[k] = sub[k];
+    if (Object.keys(o).length) localStorage.setItem(CC_SUB_KEY, JSON.stringify(o));
+    else localStorage.removeItem(CC_SUB_KEY);
+  } catch (e) { /* storage blocked: not remembered */ }
 }
 
 function ccPanelEmpty(msg) {
@@ -413,11 +500,25 @@ async function buildMcxCompetition() {
         + 'The scale follows the 20-session line: sessions above the scale are drawn as triangles on the top edge, with their share in the tooltip. '
         + (doc.notes || []).map(n => `${rxDate(n.date)}: ${escHtml(n.label)}.`).join(' ') + premNote })}
     ${rxPanel({ title: 'NSE share by month', meta: '<span data-cc="monmeta"></span>', body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas('chartCcMonthly')}</div>` })}
-    ${rxPanel({ title: 'MCX revenue at risk (upper bound)', meta: '<span data-cc="riskmeta"></span>',
-      body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas('chartCcRisk')}</div>`,
-      foot: 'NSE\'s commodity futures notional and options premium, priced each session at MCX\'s own rates (MCX\'s reported futures revenue ÷ its futures notional, options revenue ÷ its options premium: ₹210 and ₹4,180 per crore a side), as a share of MCX\'s reported transaction revenue over the same sessions. '
-        + 'An upper bound, not a loss: it assumes every NSE trade would otherwise have traded on MCX at MCX\'s fees. NSE charges ₹10 and ₹100 per crore, so most of its volume is cheap options on its own expiry day, a week before MCX\'s, and some of it is new trading. '
-        + 'MCX\'s own revenue has kept rising meanwhile; compare its ₹ Cr a day in the tooltip. The latest month (lighter) is to date.' })}
+    ${rxPanel({ title: 'MCX revenue at risk from NSE', meta: '<span data-cc="riskmeta"></span>',
+      body: `<div class="rx-pb">
+          <p class="cc-risk-read" data-cc="riskread"></p>
+          <div data-cc="riskkpis"></div>
+          <div class="cc-risk-in" data-cc="riskin">
+            <span class="cc-risk-in-h">Assumed share of NSE's volume that would otherwise trade on MCX</span>
+            <label>Ordinary days <input class="rx-in" type="number" min="0" max="100" step="5" inputmode="decimal" data-sub="ord" aria-label="Ordinary days, % that would trade on MCX"> %</label>
+            <label>NSE expiry window <input class="rx-in" type="number" min="0" max="100" step="5" inputmode="decimal" data-sub="exp" aria-label="NSE expiry window, % that would trade on MCX"> %</label>
+            <button type="button" class="cc-risk-reset" data-cc="riskreset">Reset</button>
+          </div>
+          ${rxLegend([{ label: 'Ordinary days', color: RX.rev }, { label: 'NSE expiry day and the day before', color: rxAlpha(RX.rev, 0.35) },
+            { label: 'Split not yet known', color: RX.light }, { label: 'Estimated loss', color: RX.ink, kind: 'line' },
+            { label: 'MCX revenue, ₹ Cr a day (right)', color: RX.model, kind: 'dash' }])}
+          ${rxCanvas('chartCcRisk')}</div>`,
+      foot: 'Ceiling: NSE\'s commodity futures notional and options premium, priced each session at MCX\'s own rates (its reported futures revenue ÷ its futures notional, options revenue ÷ its options premium: about ₹210 and ₹4,180 per crore a side), against MCX\'s reported transaction revenue over the same sessions. It assumes every NSE trade would otherwise have traded on MCX, at MCX\'s fees. '
+        + 'The split: an underlying\'s NSE options premium on its NSE options expiry day and the session before (crude\'s falls about a week before MCX\'s expiry, and carries most of NSE\'s options volume) against every other session; futures count as ordinary days. The latest day counts as ordinary until the next session\'s file shows whether it was the day before an expiry. '
+        + 'Estimated loss: the ceiling\'s parts at the assumed shares above, which are judgements, not data. MCX\'s own volume shows no consistent dip on NSE\'s expiry days, so much of that window\'s volume looks like new trading. '
+        + 'A year: the loss a session × MCX\'s sessions, PAT margin, shares and base P/E from the Valuation Inputs; value is EPS × P/E, undiscounted. '
+        + 'MCX\'s revenue has kept rising meanwhile (dashed line): a loss here is growth MCX did not get, not a fall. The latest month (outlined) is to date; a month with an NSE expiry but only part of its sessions overstates the share.' })}
     ${rxPanel({ title: 'Top commodities by month, MCX and NSE', meta: '<span data-cc="topmeta"></span>',
       right: rxSeg('ccTop', CC_TOP_METRICS, CC_VIEW.top, 'Measure'),
       body: `<div class="rx-pb">
@@ -561,38 +662,143 @@ async function buildMcxCompetition() {
     });
   };
 
+  const ew = ccExpiryWindow(doc.daily || []);
+  const mcxByDate = () => new Map((rawFor('mcx')?.daily || []).map(r => [r.date, r]));
+  const subDefaults = { ...CC_SUB_DEFAULTS };
+  let sub = ccSubs(subDefaults), val = null;   // val: MCX's valuation inputs, once loaded
+  // MCX's options rate a side (₹ per crore of premium) against NSE's, over the window's sessions
+  const nseOptRate = (doc.fee_rules || []).find(r => r.product === 'com_opt' && !r.effective_to)?.rate_per_cr_per_side;
+
+  const drawRiskKpis = () => {
+    const w = ccWindow(days, CC_VIEW.win);
+    const byDate = mcxByDate();
+    const t = ccRiskSum(w.rows, byDate, ew), tp = w.prev.length ? ccRiskSum(w.prev, byDate, ew) : null;
+    if (!t.days) {
+      q('riskkpis').innerHTML = '';
+      q('riskread').textContent = byDate.size ? 'No session in this window with both exchanges\' figures and MCX\'s revenue' : 'Needs MCX\'s daily revenue, which has not loaded';
+      return;
+    }
+    const n = t.days, frac = x => (t.mcx > 0 && x != null ? x / t.mcx : null);
+    const loss = ccRiskLoss(t, sub);
+    const vsPrev = (cur, prev) => {
+      if (cur == null || prev == null || !w.prevLabel) return '';
+      const d = (cur - prev) * 100;
+      return ` · ${ccPpText(d).text} against ${escHtml(w.prevLabel)}`;
+    };
+    const pPrev = tp && tp.days && tp.mcx > 0 ? tp.ceil / tp.mcx : null;
+    const lossPrev = tp && tp.days && tp.mcx > 0 ? ccRiskLoss(tp, sub) : null;
+    const splitNote = t.unknown ? `Split known once ${t.unknown} session${t.unknown === 1 ? '' : 's'} are re-read with NSE's options expiries` : '';
+    const row1 = [
+      rxKpi('NSE volume at MCX\'s fees (ceiling)', `₹${ccCr(t.ceil / n)} Cr <small>a day</small>`,
+        `${ccPct(frac(t.ceil))} of MCX's ₹${ccCr(t.mcx / n)} Cr${vsPrev(frac(t.ceil), pPrev)}`),
+      rxKpi('Ordinary days', t.ord == null ? '—' : `₹${ccCr(t.ord / n)} Cr <small>a day</small>`,
+        t.ord == null ? splitNote : `${ccPct(frac(t.ord))} of MCX's revenue · futures and options`),
+      rxKpi('NSE expiry window', t.exp == null ? '—' : `₹${ccCr(t.exp / n)} Cr <small>a day</small>`,
+        t.exp == null ? splitNote : `${ccPct(frac(t.exp))} of MCX's revenue · expiry day and the day before`),
+      rxKpi('Estimated loss', loss == null ? '—' : `₹${ccCr(loss / n)} Cr <small>a day</small>`,
+        loss == null ? splitNote : `${ccPct(frac(loss))} of MCX's revenue at ${sub.ord} % / ${sub.exp} %${vsPrev(frac(loss), lossPrev != null ? lossPrev / tp.mcx : null)}`,
+        { accent: true }),
+    ];
+    let row2 = '';
+    if (loss != null && val) {
+      const shares = SHARES_OUTSTANDING_CR.mcx?.value;
+      const y = ccRiskYear(loss / n, val.days, val.margin, shares, val.pe1);
+      const totalRev = (t.mcx / n) * val.days;
+      row2 = rxKpis([
+        rxKpi('Estimated loss a year', `₹${fmtNum(y.rev, 0)} Cr`, `${val.days} sessions · ${ccPct(totalRev > 0 ? y.rev / totalRev : null)} of MCX's transaction revenue at this pace`),
+        rxKpi('PAT a year', `₹${fmtNum(y.pat, 0)} Cr`, `at MCX's ${fmtNum(val.margin, 0)} % PAT margin`),
+        rxKpi('EPS', y.eps == null ? '—' : `₹${fmtNum(y.eps, 2)}`, `${fmtNum(shares, 2)} Cr shares ${sharesChip('mcx')}`),
+        rxKpi('Value a share', y.value == null ? '—' : `₹${fmtNum(y.value, 0)}`, `EPS × base P/E ${fmtNum(val.pe1, 0)}, undiscounted`),
+      ], 'MCX\'s estimated loss a year');
+    }
+    q('riskkpis').innerHTML = rxKpis(row1, 'MCX revenue at risk from NSE') + row2;
+    // The reading: NSE's share, what it earns, and what the same volume is worth at MCX's fees
+    const share = ccShare(w.rows, 'all', 'prem');
+    const mcxSide = t.mcxPrem > 0 ? t.mcxOpt / t.mcxPrem * 1e7 / 2 : null;   // ₹ per crore of premium, a side
+    const nseRows = (rawFor('nse')?.daily_all || []).filter(r => w.rows.some(x => x.date === r.date));
+    const nseRev = nseRows.length ? nseRows.reduce((a, r) => a + (r.total_rev || 0), 0) / nseRows.length : null;
+    q('riskread').innerHTML = `${escHtml(w.label)}: NSE took <b>${ccPct(share)}</b> of commodity options premium and earned `
+      + `<b>₹${fmtNum(t.nse / n * 100, 2)} lakh</b> a day${nseRev ? ` (${ccPct(t.nse / n / nseRev)} of NSE's own revenue)` : ''}. `
+      + `${mcxSide && nseOptRate ? `MCX charges about ₹${fmtNum(mcxSide, 0)} per crore of premium a side against NSE's ₹${fmtNum(nseOptRate, 0)} (${fmtNum(mcxSide / nseOptRate, 0)}×), so ` : ''}`
+      + `at MCX's fees the same volume is <b>₹${ccCr(t.ceil / n)} Cr</b> a day, ${ccPct(frac(t.ceil))} of MCX's revenue.`;
+  };
+
   const drawRisk = () => {
-    const months = ccRiskByMonth(days, rawFor('mcx')?.daily);
+    drawRiskKpis();
+    const months = ccRiskByMonth(days, rawFor('mcx')?.daily, ew);
     if (!months.length) {
       q('riskmeta').textContent = 'Needs MCX\'s daily revenue, which has not loaded';
       if (charts.ccRisk) { charts.ccRisk.destroy(); delete charts.ccRisk; }
       return;
     }
-    const last = months[months.length - 1];
-    const pct = p => (p.mcx > 0 ? (p.risk / p.mcx) * 100 : null);
-    q('riskmeta').textContent = `${ccMonthLabel(last.month)} to date: ₹${ccCr(last.risk / last.days)} Cr a day, ${ccPct(last.mcx > 0 ? last.risk / last.mcx : null)} of MCX's ₹${ccCr(last.mcx / last.days)} Cr`;
-    rxChart('ccRisk', 'chartCcRisk', 200, {
+    q('riskmeta').textContent = `${ccWindow(days, CC_VIEW.win).label} · chart by month, % of MCX's revenue`;
+    const nM = months.length, lastI = nM - 1;
+    const pct = (p, x) => (p.mcx > 0 && x != null ? (x / p.mcx) * 100 : null);
+    const outline = color => ({ borderColor: color, borderWidth: months.map((_, i) => (i === lastI ? 1.5 : 0)) });
+    rxChart('ccRisk', 'chartCcRisk', 240, {
       type: 'bar',
       data: { labels: months.map(p => ccMonthLabel(p.month)), datasets: [
-        { label: 'Share of MCX\'s revenue', data: months.map(pct), ...ccToDateBars(RX.rev, months.length) },
+        { label: 'Ordinary days', data: months.map(p => pct(p, p.ord)), stack: 'r', yAxisID: 'y',
+          backgroundColor: months.map((_, i) => (i === lastI ? rxAlpha(RX.rev, 0.55) : RX.rev)), ...outline(RX.rev) },
+        { label: 'NSE expiry window', data: months.map(p => pct(p, p.exp)), stack: 'r', yAxisID: 'y',
+          backgroundColor: rxAlpha(RX.rev, 0.35), ...outline(RX.rev) },
+        { label: 'Split not yet known', data: months.map(p => (p.ord == null ? pct(p, p.ceil) : null)), stack: 'r', yAxisID: 'y',
+          backgroundColor: RX.light, ...outline(RX.grey) },
+        { type: 'line', label: 'Estimated loss', data: months.map(p => pct(p, ccRiskLoss(p, sub))), yAxisID: 'y', stack: 'loss',
+          borderColor: RX.ink, backgroundColor: RX.ink, borderWidth: 2, pointRadius: 2, tension: 0, spanGaps: false, order: -1 },
+        { type: 'line', label: 'MCX revenue', data: months.map(p => p.mcx / p.days), yAxisID: 'y2',
+          borderColor: RX.model, backgroundColor: RX.model, borderWidth: 1.5, borderDash: [5, 4], pointRadius: 0, tension: 0, order: -2 },
       ] },
       options: {
-        plugins: { tooltip: { callbacks: {
+        interaction: { mode: 'index', intersect: false },
+        plugins: { tooltip: { filter: item => item.raw != null, callbacks: {
           title: items => ccMonthTitle(months, items[0].dataIndex),
-          label: ctx => ` At risk: ${ccPct(ctx.raw / 100)} of MCX's revenue`,
+          label: ctx => {
+            if (ctx.dataset.yAxisID === 'y2') return ` MCX revenue: ₹${ccCr(ctx.raw)} Cr a day`;
+            const p = months[ctx.dataIndex];
+            const amt = [p.ord, p.exp, p.ceil, ccRiskLoss(p, sub)][ctx.datasetIndex];
+            return ` ${ctx.dataset.label}: ${ccPct(ctx.raw / 100)} of MCX's revenue (₹${ccCr(amt / p.days)} Cr a day)`;
+          },
           footer: items => {
             const p = months[items[0].dataIndex];
-            return [`NSE's volume at MCX's fees: ₹${ccCr(p.risk / p.days)} Cr a day`,
-              `MCX's revenue: ₹${ccCr(p.mcx / p.days)} Cr a day`,
+            return [`Ceiling: ₹${ccCr(p.ceil / p.days)} Cr a day, ${ccPct(p.mcx > 0 ? p.ceil / p.mcx : null)}`,
               `NSE's own charges: ₹${ccCr(p.nse / p.days)} Cr a day · ${p.days} sessions`];
           } } } },
         scales: {
-          x: { grid: { display: false }, ticks: { maxTicksLimit: 12, maxRotation: 0, autoSkip: true } },
-          y: { min: 0, title: { display: true, text: '% of MCX\'s revenue' }, ticks: { callback: v => `${v} %` } },
+          x: { stacked: true, grid: { display: false }, ticks: { maxTicksLimit: 12, maxRotation: 0, autoSkip: true } },
+          y: { stacked: true, min: 0, title: { display: true, text: '% of MCX\'s revenue' }, ticks: { callback: v => `${v} %` } },
+          y2: { position: 'right', min: 0, grid: { display: false }, title: { display: true, text: 'MCX, ₹ Cr a day' } },
         },
       },
     });
   };
+
+  // Assumption inputs: shown values, edited state, and redraw on change
+  const showSubs = () => root.querySelectorAll('[data-sub]').forEach(inp => {
+    const k = inp.dataset.sub;
+    if (document.activeElement !== inp) inp.value = sub[k];
+    inp.classList.toggle('is-edited', sub[k] !== subDefaults[k]);
+  });
+  root.querySelectorAll('[data-sub]').forEach(inp => inp.addEventListener('input', () => {
+    const x = parseFloat(inp.value);
+    if (!(x >= 0 && x <= 100)) return;
+    sub = { ...sub, [inp.dataset.sub]: x };
+    ccSubsSave(sub, subDefaults);
+    showSubs();
+    drawRisk();
+  }));
+  q('riskreset').addEventListener('click', () => { sub = { ...subDefaults }; ccSubsSave(sub, subDefaults); showSubs(); drawRisk(); });
+  showSubs();
+  // MCX's valuation inputs (sessions, PAT margin, base P/E, with this browser's edits) and the
+  // shared substitution defaults; the year's figures appear once they load
+  loadValuationDefaults().then(defaults => {
+    if (!defaults || defaults.error || seq !== ccBuildSeq) return;
+    for (const k of ['ord', 'exp']) if (defaults.comp && defaults.comp[k] != null) subDefaults[k] = defaults.comp[k];
+    sub = ccSubs(subDefaults);
+    val = valuationInputsFor(defaults, readValuationOverrides(), 'mcx').v;
+    showSubs();
+    drawRisk();
+  }).catch(() => { /* no year figures */ });
 
   const drawRev = () => {
     const months = (doc.monthly || []).filter(p => p.days > 0);
@@ -694,7 +900,7 @@ async function buildMcxCompetition() {
   const drawCharts = () => { drawDaily(); drawMonthly(); drawRisk(); drawTop(); drawRev(); };
   drawTable();
   drawCharts();
-  rxOnSeg(root, 'ccWin', v => { CC_VIEW.win = v; drawTable(); });
+  rxOnSeg(root, 'ccWin', v => { CC_VIEW.win = v; drawTable(); drawRiskKpis(); q('riskmeta').textContent = `${ccWindow(days, CC_VIEW.win).label} · chart by month, % of MCX's revenue`; });
   rxOnSeg(root, 'ccUnd', v => { CC_VIEW.und = v; drawDaily(); drawMonthly(); });
   rxOnSeg(root, 'ccMetric', v => { CC_VIEW.metric = v; drawDaily(); drawMonthly(); });
   rxOnSeg(root, 'ccRange', v => { CC_VIEW.range = v; drawDaily(); });

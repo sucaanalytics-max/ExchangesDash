@@ -18,7 +18,10 @@ too. Each option row's implied average premium is checked against its
 low–high range (to rounding: all of 10 Nov 2026's expiry-day rows pass), which
 also validates OPTION_MULTIPLIER. An option traded on an
 underlying with no known multiplier leaves that underlying's premium null and
-warns.
+warns. Each day also lists, as `xo`, the underlyings with an options contract
+expiring that day (XpryDt = TradDt, traded or not): NSE's crude options expire
+about a week before MCX's and most of NSE's volume comes on that day and the
+one before, which the Competition tab's revenue-at-risk split needs.
 
 MCX source: Supabase mcx_commodity_daily (the "OctoTusk + MCX" project, MCX's
 bhavcopy per commodity and instrument, written by mcx-vercel): turnover_cr is
@@ -84,7 +87,7 @@ MANUAL_BACKFILL = 700       # every commodity day since 2024-09-02 in one run
 PENDING_DAYS = 4            # a 404 this recent is "not posted yet", older is unavailable
 PAUSE_S = 0.3
 STOP_STATUSES = (401, 403, 429)
-PARSER_VERSION = 1          # bump when a parser fix changes stored figures
+PARSER_VERSION = 2          # bump when a parser fix changes stored figures (2: options expiries, xo)
 
 # Underlyings shared by both exchanges: key → (label, NSE symbols, MCX symbols).
 # Contract sizes differ (GOLD 1 kg, GOLDM 100 g, GOLD10G 10 g …), so every
@@ -166,20 +169,24 @@ def compact(out, nd=4):
 
 
 def parse_bhavcopy(zip_bytes):
-    """(TradDt, compact {underlying: {"f": [...], "o": [...]}}, checks) from one
-    day's bhavcopy zip. Only contracts that traded count."""
+    """(TradDt, compact {underlying: {"f": [...], "o": [...]}}, checks, xo) from one
+    day's bhavcopy zip. Only contracts that traded count; xo is the sorted list of
+    underlyings with an options contract expiring that day, traded or not."""
     z = zipfile.ZipFile(io.BytesIO(zip_bytes))
     name = next(n for n in z.namelist() if n.lower().endswith(".csv"))
     rows = csv.DictReader(io.TextIOWrapper(z.open(name), encoding="utf-8-sig"))
-    out, checks, bad_rows, no_mult = {}, [], {}, set()
+    out, checks, bad_rows, no_mult, expiring = {}, [], {}, set(), set()
     trade_date = None
     for r in rows:
         trade_date = trade_date or r.get("TradDt")
+        inst = NSE_INSTRUMENT.get(r.get("FinInstrmTp"))
+        sym = (r.get("TckrSymb") or "").strip()
+        xp = (r.get("XpryDt") or "").strip()
+        if inst == "opt" and xp and xp == (r.get("TradDt") or "").strip():
+            expiring.add(NSE_SYMBOL.get(sym, sym.lower()))
         lots = _f(r.get("TtlTradgVol"))
         if lots <= 0:
             continue
-        inst = NSE_INSTRUMENT.get(r.get("FinInstrmTp"))
-        sym = (r.get("TckrSymb") or "").strip()
         if inst is None:
             msg = f"unknown instrument type {r.get('FinInstrmTp')!r} ({sym}): left out"
             if msg not in checks:
@@ -217,7 +224,7 @@ def parse_bhavcopy(zip_bytes):
         checks.append(f"options traded on {sym} with no known multiplier: premium left null")
     for sym, n in sorted(bad_rows.items()):
         checks.append(f"{sym}: {n} option row(s) whose derived premium is outside the day's price range")
-    return trade_date, compact(out), checks
+    return trade_date, compact(out), checks, sorted(expiring)
 
 
 def fetch_nse(session, d):
@@ -466,16 +473,20 @@ def periods(daily, key):
 # ═══════════════════════════════════════════════════════════════
 
 def load_store(path=None):
-    """(NSE day records by date, unavailable {date: reason}) from the last output."""
+    """(NSE day records by date, unavailable {date: reason}) from the last output.
+    Records read by an older parser are kept (published until re-read) but marked
+    `stale`, so the backfill re-reads them."""
     try:
         doc = json.loads(Path(path or OUT_PATH).read_text())
     except (OSError, ValueError):
         doc = {}
     nse = {}
     for r in doc.get("daily", []):
-        if r.get("parser", 1) >= PARSER_VERSION:
-            nse[r["date"]] = {"date": r["date"], "nse": r["nse"], "checks": r.get("checks", []),
-                              "parser": r.get("parser", 1)}
+        rec = {"date": r["date"], "nse": r["nse"], "checks": r.get("checks", []),
+               "xo": r.get("xo", []), "parser": r.get("parser", 1)}
+        if rec["parser"] < PARSER_VERSION:
+            rec["stale"] = True
+        nse[r["date"]] = rec
     return nse, dict(doc.get("unavailable", {}))
 
 
@@ -510,7 +521,8 @@ def plan_dates(dates, have, unavailable, recent=RECENT_DAYS, backfill=BACKFILL_P
 def run_nse(session, store, unavailable, dates, mcx_dates, backfill, now_iso, today,
             fetch=fetch_nse, pause=time.sleep, retry=False):
     """Fetch and parse planned days into `store`. Returns (changed dates, errors)."""
-    window, older = plan_dates(dates, store, unavailable, backfill=backfill, retry=retry)
+    fresh = {k for k, rec in store.items() if not rec.get("stale")}
+    window, older = plan_dates(dates, fresh, unavailable, backfill=backfill, retry=retry)
     print(f"NSE commodity: {len(window)} recent + {len(older)} older day(s) to read")
     changed, errors = [], []
     for d in window + older:
@@ -533,16 +545,17 @@ def run_nse(session, store, unavailable, dates, mcx_dates, backfill, now_iso, to
                     changed.append(key)
             continue
         try:
-            trade_date, nse, checks = parse_bhavcopy(body)
+            trade_date, nse, checks, xo = parse_bhavcopy(body)
         except Exception as e:  # a malformed file: retried next run
             errors.append(f"{key}: parse failed ({type(e).__name__}: {e})")
             print(f"  {key}: parse failed ({type(e).__name__}: {e})")
             continue
         if trade_date and trade_date != key:
             checks = checks + [f"file's TradDt is {trade_date}"]
-        rec = {"date": key, "nse": nse, "checks": checks, "parser": PARSER_VERSION}
+        rec = {"date": key, "nse": nse, "checks": checks, "xo": xo, "parser": PARSER_VERSION}
         old = store.get(key)
-        if old is None or (old.get("nse"), old.get("checks", [])) != (nse, checks):
+        if old is None or old.get("stale") or \
+                (old.get("nse"), old.get("checks", []), old.get("xo", [])) != (nse, checks, xo):
             changed.append(key)
             store[key] = rec
             if unavailable.pop(key, None) is not None:
@@ -573,6 +586,8 @@ def build_doc(store, unavailable, mcx, unmapped_mcx, updated_at, mcx_rev=None):
         s = trading_calendar.special_session("mcx", key)
         if s:
             row["session"], row["session_note"] = s["type"], s["note"]
+        if rec.get("xo"):
+            row["xo"] = rec["xo"]
         if rec.get("checks"):
             row["checks"] = rec["checks"]
         if rec.get("parser", 1) != 1:
@@ -587,6 +602,8 @@ def build_doc(store, unavailable, mcx, unmapped_mcx, updated_at, mcx_rev=None):
                          "from fee_register, MCX's = its reported futures / options revenue for the day split "
                          "by each underlying's share of futures notional / options premium; in periods, summed "
                          "over ru_days",
+                   "xo": "underlyings with an NSE options contract expiring that day (bhavcopy XpryDt = "
+                         "TradDt); absent on days read before parser 2",
                    "prem_days": "in periods: the sessions whose options premium is summed; a day whose MCX file "
                                 "gives every option a premium of 0 (2026-06-23) adds no premium on either side"},
         "source": {
