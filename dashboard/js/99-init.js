@@ -8,6 +8,7 @@
 async function init() {
   showLoading('nse');
   initExchangeSwitcher();
+  initActiveAria();   // aria-current / aria-pressed follow .active
   initModeSwitch();   // Exchanges | Brokers, shown once a broker view has registered
   updateHeaderExchange('nse');
   buildSidebarNav('nse');

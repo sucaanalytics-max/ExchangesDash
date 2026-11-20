@@ -141,7 +141,7 @@
       <!-- India VIX sensitivity and week-on-week VIX: NSE, BSE, MCX and Total in every view (buildVixPanel in js/21-vix.js) -->
       <div id="vixPanel" class="rx"></div>
       <!-- Fee basis in use, method, and what "modelled" means -->
-      <p class="fee-note" id="feeModeNote" hidden></p>
+      <div class="fee-note" id="feeModeNote" hidden></div>
       <!-- NSE view only: NSE's commodity charges, a memo kept out of every total (buildNseCommodityMemo in js/19-mcx-competition.js) -->
       <p class="fee-note" id="nseCommodityMemo" hidden></p>
     </section>
@@ -203,11 +203,6 @@
           <div style="font-size:14px;font-weight:600;margin-bottom:8px">Loading valuation model…</div>
         </div>
       </div>
-    </section>
-
-    <!-- TAB: Valuation Inputs, BSE + MCX + NSE in one table, the same under every NSE / BSE / MCX view (js/18-valuation-inputs.js) -->
-    <section class="tab-content" id="tab-valinputs">
-      <div id="valuationInputsContent"></div>
     </section>
 
     <!-- TAB: NSE vs BSE Market Share Trend -->

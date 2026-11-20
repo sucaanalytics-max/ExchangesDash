@@ -21,11 +21,11 @@ const MTF_PUBLISH_LAG = `${MTF_PUBLISHED.nse}; ${MTF_PUBLISHED.bse}.`;
 // Sidebar tabs: label and NAV_ICONS key
 const MTF_TABS = {
   summary: { label: 'Summary', icon: 'revenue' },
-  book:    { label: 'MTF Book', icon: 'share' },
-  periods: { label: 'By Quarter', icon: 'temporal' },
+  book:    { label: 'MTF Book', icon: 'book' },
+  periods: { label: 'By Quarter', icon: 'calendar' },
   flows:   { label: 'Flows', icon: 'prediction' },
-  stocks:  { label: 'Top Securities', icon: 'advanced' },
-  brokers: { label: 'Brokers', icon: 'share' },
+  stocks:  { label: 'Top Securities', icon: 'list' },
+  brokers: { label: 'Brokers', icon: 'briefcase' },
 };
 
 // The views: pill order, exchange series, and their tabs (BSE's flows stop at
@@ -578,14 +578,21 @@ function mtfXlVal(w) {
 }
 
 // Change cells (0.0 %, green / red as in the workbooks), with a † when measured across a series change
+// A change that rounds to 0.0 % is shown as a neutral 0.0 % (never a red "-0.0%")
+function mtfRoundChg(v) {
+  const r = +(v * 100).toFixed(1);
+  return r === 0 ? 0 : r;
+}
 function mtfXlChg(v, mark = '') {
   if (v == null || !isFinite(v)) return '<td><span class="xl-chg xl-neu">—</span></td>';
-  return `<td><span class="xl-chg ${v > 0 ? 'xl-pos' : v < 0 ? 'xl-neg' : 'xl-neu'}">${(v * 100).toFixed(1)}%${mark || ''}</span></td>`;
+  const r = mtfRoundChg(v);
+  return `<td><span class="xl-chg ${r > 0 ? 'xl-pos' : r < 0 ? 'xl-neg' : 'xl-neu'}">${r.toFixed(1)}%${mark || ''}</span></td>`;
 }
 
 function mtfWireChg(v, mark = '') {
   if (v == null || !isFinite(v)) return '<td class="wire-delta neutral">—</td>';
-  return `<td class="wire-delta ${v > 0 ? 'positive' : v < 0 ? 'negative' : 'neutral'}">${(v * 100).toFixed(1)}%${mark || ''}</td>`;
+  const r = mtfRoundChg(v);
+  return `<td class="wire-delta ${r > 0 ? 'positive' : r < 0 ? 'negative' : 'neutral'}">${r.toFixed(1)}%${mark || ''}</td>`;
 }
 
 function mtfSummaryHTML(view, s) {
@@ -1034,9 +1041,11 @@ function mtfBrokerChgCell(p, c) {
   return `<td>${pp}<div class="mtf-bk-sub">${book ? `book ${book} · ` : ''}vs ${rxDate(c.from)}</div></td>`;
 }
 
-function mtfBrokerFigCell(p) {
-  if (!p) return '<td class="mtf-bk-old">—</td>';
-  return `<td class="mtf-bk-old">${mtfBookText(p)}<div class="mtf-bk-sub">${rxDate(p.as_of)} · ${mtfShareText(p)}</div></td>`;
+// The two figures before the latest, stacked in one cell (one column keeps the table within the panel)
+function mtfBrokerFigCell(...figs) {
+  const shown = figs.filter(Boolean);
+  if (!shown.length) return '<td class="mtf-bk-old">—</td>';
+  return `<td class="mtf-bk-old">${shown.map(p => `<div class="mtf-bk-fig">${mtfBookText(p)}<div class="mtf-bk-sub">${rxDate(p.as_of)} · ${mtfShareText(p)}</div></div>`).join('')}</td>`;
 }
 
 function mtfBrokerSourceCell(p, alts) {
@@ -1062,14 +1071,14 @@ function mtfBrokerLeague(doc, rows, todayIso) {
       <td class="rx-strong">${mtfShareText(p)}</td>
       ${mtfBrokerChgCell(p, p && p.chg)}
       ${mtfBrokerChgCell(p, p && p.yoy)}
-      ${mtfBrokerFigCell(r.history[0])}${mtfBrokerFigCell(r.history[1])}
+      ${mtfBrokerFigCell(r.history[0], r.history[1])}
       ${mtfBrokerSourceCell(p, r.alts)}
     </tr>`;
   }).join('');
   return `<div class="rx-scroll"><table class="rx-table mtf-bk-table">
     <thead><tr><th scope="col">#</th><th scope="col" class="rx-l">Broker</th><th scope="col" class="rx-l">Measure</th><th scope="col">Latest</th>
       <th scope="col">Market share</th><th scope="col">vs previous</th><th scope="col">vs a year earlier</th>
-      <th scope="col">Previous</th><th scope="col">Earlier</th><th scope="col" class="rx-l">Source</th></tr></thead>
+      <th scope="col" title="The two figures before the latest">Earlier figures</th><th scope="col" class="rx-l">Source</th></tr></thead>
     <tbody>${body}</tbody></table></div>`;
 }
 

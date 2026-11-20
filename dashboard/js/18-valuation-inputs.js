@@ -1,16 +1,15 @@
-// dashboard/js/18-valuation-inputs.js — Valuation Inputs tab: BSE, MCX and NSE's valuation inputs in one table (the workbook's "Valuation Inputs" sheet).
+// dashboard/js/18-valuation-inputs.js — Valuation inputs: the drawer the Valuation Model tab opens to edit the shown exchange's inputs (the workbook's "Valuation Inputs" sheet), and the strip of BSE, MCX and NSE base-case targets.
 // index.html loads dashboard/js/*.js in name order as classic scripts sharing one global scope.
 
 // ========================
-// VALUATION INPUTS TAB — under every exchange view that has the Valuation Model tab
+// VALUATION INPUTS — a side drawer on the Valuation Model tab (js/14-valuation.js)
 // ========================
-// One table, a column per exchange: the editable inputs (ADR estimate, QoQ ADR
-// growth, P/E, method weights, the regression's data-from date), saved in this
-// browser over the shared defaults in dashboard/data/valuation_inputs.json, then
-// what they feed (the ADR reference, the fixed inputs, the fit from that date). Above it, each exchange's base-case target from the
-// ADR-estimate triangulation, as the workbook's header. The model is
-// valuationModel in js/14-valuation.js; the Valuation Model tab reads the same
-// inputs when it is shown again.
+// The editable inputs of the exchange on show (ADR estimate, QoQ ADR growth, P/E,
+// method weights, the regression's data-from date), saved in this browser over the
+// shared defaults in dashboard/data/valuation_inputs.json; under them, folded, what
+// they feed (the ADR reference, the fixed inputs, the fit from that date). Each
+// edit re-renders the Valuation Model behind the drawer. The model is
+// valuationModel in js/14-valuation.js.
 
 // Table rows: sec = section heading; key = editable input (a number, or a date with
 // type 'date'); out = read-only figure (valuationInputsCell); note = the line under the label
@@ -104,116 +103,84 @@ function valuationInputShown(v, key) {
   return x == null ? '' : key === 'adr' ? String(Math.round(x * 100) / 100) : String(x);
 }
 
-function buildValuationInputs() {
-  const el = document.getElementById('valuationInputsContent');
-  if (!el) return;
-  el.innerHTML = '<div class="rx"><div class="rx-empty"><b>Loading valuation inputs…</b>BSE, MCX and NSE data</div></div>';
-  // Built when first shown: it needs every exchange's data, not only the one on show.
-  // Once built, renderValuationInputs sets its own refresh.
-  RX_TAB_REFRESH.valinputs = () => {
-    RX_TAB_REFRESH.valinputs = null;
-    renderValuationInputs(el).catch(err => {
-      console.error('Valuation inputs failed:', err);
-      el.innerHTML = `<div class="rx">${rxAlert('<strong>Valuation inputs could not be built.</strong> Reload the page to try again.')}</div>`;
-    });
-  };
+// The strip above the Valuation Model: each exchange's base-case target from the
+// ADR-estimate triangulation, as the workbook's header (list: valuationExchange
+// results, in VALUATION_EXCHANGES order; the shown exchange is accented)
+function valuationTargetTiles(list, defaults, overrides, shownEx) {
+  return list.map(d => {
+    const name = SHARE_EXCHANGE_NAMES[d.ex];
+    if (!d.c) return rxKpi(`${name} · base case target`, '—', escHtml(d.error || 'loading…'), { accent: d.ex === shownEx });
+    const { v } = valuationInputsFor(defaults, overrides, d.ex, d.c.lastDate);
+    const c = valuationFitted(d.c, v.from);
+    const m = c ? valuationModel(c, v, SHARES_OUTSTANDING_CR[d.ex].value) : null;
+    const t = m && m.est, avg = t && t.avg;
+    return rxKpi(`${name} · base case target`, avg ? rxRupee(avg[1]) : '—',
+      avg ? `${d.c.cmp ? `Upside ${valuationUpHTML(avg[1], d.c.cmp)} · CMP ${rxRupee(d.c.cmp)}` : 'no CMP yet'}<br>Bear ${rxRupee(avg[0])} · Bull ${rxRupee(avg[2])} · ADR ${fmtNum(t.adr, 2)}${m.estIsDma ? ' (45 DMA)' : ''}`
+        : 'no method has a value', { accent: d.ex === shownEx });
+  }).join('');
 }
 
-let VALUATION_INPUTS_SEQ = 0;   // latest Inputs tab render; an older one still loading yields to it
-
-async function renderValuationInputs(el) {
-  const seq = ++VALUATION_INPUTS_SEQ, shownEx = currentExchange;
-  // Exchanges not on show come from the shared cache: fetch any that are stale, and record
-  // what this render read so the freshness check rebuilds the view when they move on
-  const cached = VALUATION_EXCHANGES.filter(ex => !valuationOnShow(ex));
-  await ensureFreshMarketData(cached);
-  if (seq !== VALUATION_INPUTS_SEQ || currentExchange !== shownEx) return;
-  const [defaults, ...list] = await Promise.all([loadValuationDefaults(), ...VALUATION_EXCHANGES.map(valuationExchange)]);
-  if (seq !== VALUATION_INPUTS_SEQ || currentExchange !== shownEx) return;   // rebuilt or switched away while loading
-  if (defaults.error) {
-    el.innerHTML = valuationDefaultsMissing(defaults);
-    return;
-  }
-  cached.filter(ex => MARKET_RAW[ex]).forEach(ex => { VIEW_BUILT_FROM[ex] = marketSig(ex); });
-  const byEx = Object.fromEntries(list.map(d => [d.ex, d]));
-  // Mixed snapshots: the notice under the header names each exchange's latest date
-  VIEW_SOURCES.valinputs = list.filter(d => d.c).map(d => ({ ex: d.ex, date: d.c.lastDate }));
-  updateSnapshotNotice();
-  let overrides = readValuationOverrides();
-  const anyC = list.find(d => d.c)?.c;
+// Opens the drawer on one exchange's inputs. ctx: { ex, defaults, data (its
+// valuationExchange result), onChange (re-renders the Valuation Model) }
+function openValuationDrawer(ctx) {
+  const { ex, defaults, data, onChange } = ctx;
+  const name = SHARE_EXCHANGE_NAMES[ex];
+  const latest = () => data.c && data.c.lastDate;
+  const anyC = data.c;
   const qLabel = anyC ? `Q${anyC.start.q} ${valuationFYShort(anyC.start.fy)}` : 'This quarter';
   const rows = valuationInputsRows(qLabel, anyC ? anyC.start.fy + 1 : defaults.fy);
-  const name = ex => SHARE_EXCHANGE_NAMES[ex];
-  const failed = list.filter(d => !d.c);
+  let overrides = readValuationOverrides();
 
-  const head = `<tr><th scope="col">Input</th>${VALUATION_EXCHANGES.map(ex => `<th scope="col" class="rx-vi-ex">
-      <span class="rx-vi-exname">${name(ex)}</span>
-      <span class="rx-vi-exact" data-vi-edited="${ex}"></span></th>`).join('')}</tr>`;
-  const body = rows.map(r => {
-    if (r.sec) return `<tr class="rx-vi-sec"><td colspan="${VALUATION_EXCHANGES.length + 1}">${r.sec}</td></tr>`;
-    const label = `<td class="rx-vi-lab">${r.label}${r.note ? `<span class="rx-vi-note">${r.note}</span>` : ''}</td>`;
-    const range = ex => {   // the date picker's bounds: the share file's first revenue day to the latest data
-      const c = byEx[ex].c;
-      return c ? `${c.dataFirst ? ` min="${c.dataFirst}"` : ''} max="${c.lastDate}"` : '';
-    };
-    const cells = VALUATION_EXCHANGES.map(ex => !r.key ? `<td data-vi-out="${ex}:${r.out}"></td>`
-      : r.type === 'date'
-        ? `<td class="rx-vi-in"><input class="rx-in rx-date-in" type="date"${range(ex)} data-vi="${ex}:${r.key}" aria-label="${name(ex)} ${escHtml(r.label)}"></td>`
-        : `<td class="rx-vi-in"><input class="rx-in rx-num-in" type="number" step="${r.step}" inputmode="decimal" data-vi="${ex}:${r.key}" aria-label="${name(ex)} ${escHtml(r.label)}"></td>`).join('');
-    return `<tr${r.key ? ' class="rx-vi-edit"' : ''}>${label}${cells}</tr>`;
+  // Sections: inputs and the data-from date in view; reference figures folded
+  const input = r => r.type === 'date'
+    ? `<input class="rx-in rx-date-in" type="date"${anyC ? `${anyC.dataFirst ? ` min="${anyC.dataFirst}"` : ''} max="${anyC.lastDate}"` : ''} data-vd="${r.key}" aria-label="${escHtml(r.label)}">`
+    : `<input class="rx-in rx-num-in" type="number" step="${r.step}" inputmode="decimal" data-vd="${r.key}" aria-label="${escHtml(r.label)}">`;
+  const row = r => `<div class="rx-drawer-row"><span class="rx-dl">${r.label}${r.note ? `<small>${r.note}</small>` : ''}</span>
+      <span class="rx-dv">${r.key ? input(r) : `<span data-vd-out="${r.out}"></span>`}</span></div>`;
+  const groups = [];
+  rows.forEach(r => { if (r.sec) groups.push({ sec: r.sec, rows: [] }); else groups[groups.length - 1].rows.push(r); });
+  const body = groups.map((g, gi) => {
+    const shown = g.rows.filter(r => gi === 0 || r.key);
+    const folded = g.rows.filter(r => gi !== 0 && !r.key);
+    const title = gi === 3 ? 'Regression and ratio fit' : g.sec;
+    return (shown.length ? `<div class="rx-drawer-sec">${gi === 3 ? 'Regression data from · saved in this browser' : g.sec}</div>${shown.map(row).join('')}` : '')
+      + (folded.length ? `<details class="rx-how"><summary>${title}</summary>${folded.map(row).join('')}</details>` : '');
   }).join('');
 
-  el.innerHTML = `<div class="rx">
-    ${valuationDefaultsNotes(defaults, anyC)}
-    ${failed.length ? rxAlert(`<strong>${failed.map(d => name(d.ex)).join(' and ')} not loaded</strong> (${failed.map(d => escHtml(d.error)).join('; ')}): ${failed.length > 1 ? 'their' : 'its'} figures show —. The inputs can still be edited.`) : ''}
-    <section class="rx-kpis rx-vi-strip" aria-label="Base case targets" data-vi="strip"></section>
-    ${rxPanel({ title: 'Valuation inputs', meta: 'BSE, MCX and NSE · edits are saved in this browser over the shared defaults',
-      body: `<div class="rx-scroll"><table class="rx-table rx-vi">
-        <thead>${head}</thead><tbody>${body}</tbody></table></div>`,
-      foot: 'Light-blue boxes are inputs; an amber edge marks one edited from the shared default (dashboard/data/valuation_inputs.json, from the workbook’s Valuation Inputs sheet and its BSE, MCX and NSE sheets), and Reset restores an exchange’s defaults. Other income, PAT margin, sessions and the discounts are fixed. The regression data-from date moves the valuation only: the Regression tab, the banner’s fair value and the share files keep the published fit. Every ADR is at today’s rates, the basis the fits are built on. The Valuation Model tab shows each exchange’s two triangulations and how they are built.',
-      how: rxHow('How the targets are built', `<ul>
-        <li><strong>ADR model</strong> (both triangulations): the current quarter’s ADR to date, grown by QoQ growth each quarter to Q4 of the next FY; that FY’s average × sessions + other income → × PAT margin ÷ shares = EPS; × P/E Bear / Base / Bull, then discounted to this FY’s end and to today.</li>
-        <li><strong>Regression</strong>: a + b × ADR, fitted as the workbook does on the data from the <em>Regression data from</em> date: revenue and prices start there, so the 45 DMA is built only from revenue on or after it and the first point is the close after its 45th session (MCX sessions whose MA includes modelled revenue, before 2 Sep 2024, stay out). Blank: the published fit, MA over all revenue. Bear / Bull are base ∓ its standard error of estimate; with fewer than 60 sessions, a slope that is not positive or significant, or a MA that moved under 10 %, it has no value.</li>
-        <li><strong>Ratio Analysis</strong>: price ÷ 45-session revenue MA over the same fit window, (mean ∓ σ) × ADR.</li>
-        <li><strong>Triangulated · 45 DMA</strong> feeds Regression and Ratio the last 45 sessions’ ADR; <strong>Triangulated · ADR estimate</strong> feeds them the ADR estimate above. Each is Σ weight × target ÷ Σ weight over the methods with a value, so a method without one (no fit yet) drops out without moving the average’s scale.</li></ul>`) })}
-  </div>`;
-
+  const el = openRxDrawer({
+    title: `${name} valuation inputs`,
+    body: `<p class="rx-drawer-note">Saved in this browser over the shared defaults; the tables behind update as you type. Light-blue boxes are inputs; an amber edge marks one edited from the default.</p>
+      ${body}
+      <div class="rx-drawer-acts"><span data-vd-edited></span></div>`,
+  });
   const q = sel => el.querySelector(sel);
-  const shownIn = (ex, key) => q(`input[data-vi="${ex}:${key}"]`);
 
   function update() {
-    const tiles = [];
-    VALUATION_EXCHANGES.forEach(ex => {
-      const d = byEx[ex];
-      const { v, edited } = valuationInputsFor(defaults, overrides, ex, d.c && d.c.lastDate);
-      const c = valuationFitted(d.c, v.from);   // regression and ratio on the data from the chosen date
-      const m = c ? valuationModel(c, v, SHARES_OUTSTANDING_CR[ex].value) : null;
-      rows.filter(r => r.out).forEach(r => {
-        const n = q(`[data-vi-out="${ex}:${r.out}"]`);
-        if (n) n.innerHTML = valuationInputsCell(r.out, { ...d, c }, v, m);
-      });
-      VALUATION_EDITABLE.forEach(k => {
-        const i = shownIn(ex, k);
-        if (!i) return;
-        i.classList.toggle('is-edited', edited.includes(k));
-        if (document.activeElement !== i) i.value = valuationInputShown(v, k);
-        if (k === 'adr') i.placeholder = d.c ? fmtNum(d.c.adr45, 2) : '45 DMA';
-      });
-      q(`[data-vi-edited="${ex}"]`).innerHTML = edited.length
-        ? `${rxChip('Edited', 'edit')} <button type="button" class="rx-link" data-vi-reset="${ex}" aria-label="Reset ${name(ex)} inputs to the defaults">Reset</button>` : '';
-      const t = m && m.est, avg = t && t.avg;
-      tiles.push(rxKpi(`${name(ex)} · base case target`, avg ? rxRupee(avg[1]) : '—',
-        avg ? `${d.c.cmp ? `Upside ${valuationUpHTML(avg[1], d.c.cmp)} · CMP ${rxRupee(d.c.cmp)}` : 'no CMP yet'}<br>Bear ${rxRupee(avg[0])} · Bull ${rxRupee(avg[2])} · ADR ${fmtNum(t.adr, 2)}${m.estIsDma ? ' (45 DMA)' : ''}`
-          : escHtml(d.error || 'no method has a value'), { accent: ex === shownEx }));
+    const { v, edited } = valuationInputsFor(defaults, overrides, ex, latest());
+    const c = valuationFitted(data.c, v.from);
+    const m = c ? valuationModel(c, v, SHARES_OUTSTANDING_CR[ex].value) : null;
+    rows.filter(r => r.out).forEach(r => {
+      const n = q(`[data-vd-out="${r.out}"]`);
+      if (n) n.innerHTML = valuationInputsCell(r.out, { ...data, c }, v, m);
     });
-    q('[data-vi="strip"]').innerHTML = tiles.join('');
+    VALUATION_EDITABLE.forEach(k => {
+      const i = q(`input[data-vd="${k}"]`);
+      if (!i) return;
+      i.classList.toggle('is-edited', edited.includes(k));
+      if (document.activeElement !== i) i.value = valuationInputShown(v, k);
+      if (k === 'adr') i.placeholder = data.c ? fmtNum(data.c.adr45, 2) : '45 DMA';
+    });
+    q('[data-vd-edited]').innerHTML = edited.length
+      ? `${rxChip(`Edited: ${edited.map(k => VALUATION_INPUT_LABELS[k]).join(', ')}`, 'edit')} <button type="button" class="rx-btn" data-vd-reset>Reset ${name} to the defaults</button>`
+      : '<span class="rx-foot">All inputs at the shared defaults.</span>';
   }
+  const save = () => { writeValuationOverrides(overrides); update(); if (onChange) onChange(); };
+  const showInUse = i => { i.value = valuationInputShown(valuationInputsFor(defaults, overrides, ex, latest()).v, i.dataset.vd); };
 
-  const onInput = e => {
-    const i = e.target.closest && e.target.closest('input[data-vi]');
+  el.addEventListener('input', e => {
+    const i = e.target.closest && e.target.closest('input[data-vd]');
     if (!i) return;
-    const [ex, key] = i.dataset.vi.split(':');
-    const text = i.value.trim();
+    const key = i.dataset.vd, text = i.value.trim();
     let value;
     if (key === 'from') {
       if (i.validity && i.validity.badInput) return;   // a date half typed: wait for the rest
@@ -222,57 +189,32 @@ async function renderValuationInputs(el) {
       if (text === '') return;   // cleared to retype, or not a number yet: decided when the field is left
       value = parseFloat(text);
     }
-    if (!valuationInputOk(key, value, byEx[ex].c && byEx[ex].c.lastDate)) return;
+    if (!valuationInputOk(key, value, latest())) return;
     overrides = setValuationOverride(overrides, defaults, ex, key, value);
-    writeValuationOverrides(overrides);
-    update();
-  };
-  // Leaving a field shows the value in use (an unusable entry reverts). A date input also
-  // fires change after each keystroke while it is edited (Chromium), so a half-typed date
-  // is left alone until focus leaves.
-  const showInUse = i => {
-    const [ex, key] = i.dataset.vi.split(':');
-    i.value = valuationInputShown(valuationInputsFor(defaults, overrides, ex, byEx[ex].c && byEx[ex].c.lastDate).v, key);
-  };
-  const onChange = e => {
-    const i = e.target.closest && e.target.closest('input[data-vi]');
+    save();
+  });
+  // Leaving a field shows the value in use (an unusable entry reverts); an ADR box left
+  // empty means the 45 DMA. A date input also fires change after each keystroke while it
+  // is edited (Chromium), so a half-typed date is left alone until focus leaves.
+  el.addEventListener('change', e => {
+    const i = e.target.closest && e.target.closest('input[data-vd]');
     if (!i || i.type === 'date') return;
-    const [ex, key] = i.dataset.vi.split(':');
-    // An ADR box left empty means the 45 DMA (an unparseable entry also reads as empty: revert it)
-    if (key === 'adr' && i.value.trim() === '' && !(i.validity && i.validity.badInput)) {
-      overrides = setValuationOverride(overrides, defaults, ex, key, null);
-      writeValuationOverrides(overrides);
-      update();
+    if (i.dataset.vd === 'adr' && i.value.trim() === '' && !(i.validity && i.validity.badInput)) {
+      overrides = setValuationOverride(overrides, defaults, ex, 'adr', null);
+      save();
     }
     showInUse(i);
-  };
-  const onFocusOut = e => {
-    const i = e.target.closest && e.target.closest('input[data-vi]');
+  });
+  el.addEventListener('focusout', e => {
+    const i = e.target.closest && e.target.closest('input[data-vd]');
     if (i && i.type === 'date') showInUse(i);
-  };
-  const onClick = e => {
-    const b = e.target.closest && e.target.closest('[data-vi-reset]');
-    if (!b) return;
+  });
+  el.addEventListener('click', e => {
+    if (!(e.target.closest && e.target.closest('[data-vd-reset]'))) return;
     overrides = { ...overrides };
-    delete overrides[b.dataset.viReset];
-    writeValuationOverrides(overrides);
-    update();
-  };
-  // The container outlives each render (exchange switches, freshness rebuilds), so drop the
-  // previous render's listeners before adding this one's
-  if (el._viOff) el._viOff();
-  el.addEventListener('input', onInput);
-  el.addEventListener('change', onChange);
-  el.addEventListener('click', onClick);
-  el.addEventListener('focusout', onFocusOut);
-  el._viOff = () => {
-    el.removeEventListener('input', onInput);
-    el.removeEventListener('change', onChange);
-    el.removeEventListener('click', onClick);
-    el.removeEventListener('focusout', onFocusOut);
-  };
-  // Shown again: render afresh, picking up newer data for every exchange (each loader keeps
-  // its cache for DATA_MAX_AGE_MS) and edits saved meanwhile in another browser tab
-  RX_TAB_REFRESH.valinputs = () => renderValuationInputs(el).catch(err => console.error('Valuation inputs failed:', err));
+    delete overrides[ex];
+    save();
+    el.querySelectorAll('input[data-vd]').forEach(showInUse);
+  });
   update();
 }

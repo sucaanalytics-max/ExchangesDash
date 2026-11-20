@@ -264,11 +264,21 @@ function glanceTodayCard(ex, live, hourly, raw) {
   const hhmm = parseUtcTs(live.updated_at).toLocaleTimeString('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' });
   const samples = hourly && hourly.date === todayIST ? (hourly.samples || []) : [];
   const lastS = samples[samples.length - 1];
-  const pred = lastS && lastS.predicted_eod;
-  const method = lastS && lastS.pred_method ? (lastS.pred_method.startsWith('historical') ? 'from past sessions\' intraday curves' : 'straight-line') : '';
+  // The figure the banner and live cards show (liveCardModel: the latest hourly
+  // sample), so the phone never shows two "today" numbers on one screen
+  const cardS = samples.filter(s => s.elapsed_minutes > 0 && s.total_revenue != null).slice(-1)[0];
+  const booked = cardS ? cardS.total_revenue : rev.total_revenue;
+  // The live card's predicted close (the share-of-day estimate), so the phone
+  // shows what the full view shows; the poll's own model when the card has none
+  const card = typeof liveCardFor === 'function' ? liveCardFor(ex) : null;
+  const useCard = card && card.sessDate === todayIST && card.pred != null;
+  const pred = useCard ? card.pred : lastS && lastS.predicted_eod;
+  const method = useCard && card.predSource === 'share'
+    ? `share of the close past sessions had reached by now${card.range ? ` · range ₹${fmtNum(card.range.lo, 1)}–${fmtNum(card.range.hi, 1)} Cr` : ''}`
+    : lastS && lastS.pred_method ? (lastS.pred_method.startsWith('historical') ? 'from past sessions\' intraday curves' : 'straight-line') : '';
   const partial = rev.options_pending ? '<div class="glance-note">Partial: BSE has not posted options premium yet — cash only.</div>' : '';
   return glanceCard(`Today <span class="glance-live">LIVE</span>`, `
-      <div class="glance-big">₹${fmtNum(rev.total_revenue, 1)}<span class="glance-unit"> Cr</span></div>
+      <div class="glance-big">₹${fmtNum(booked, 1)}<span class="glance-unit"> Cr</span></div>
       <div class="glance-sub">as of ${hhmm} IST · ${glanceAge(live.updated_at)}</div>
       ${partial}
       <div class="glance-row"><span>Predicted end of day</span><strong>${pred != null ? '₹' + fmtNum(pred, 1) + ' Cr' : '—'}</strong></div>
@@ -415,11 +425,11 @@ function rebuildAll() {
   const byExchange = {
     nsebse: [() => buildMarketSharePanel(['nse', 'bse']), buildMarketShareTrend, buildContractsPremium],
     all:    [() => buildMarketSharePanel(['nse', 'bse', 'mcx']), buildContractsPremium],
-    nse:    [() => buildRevenuePredictor('nse'), () => buildValuation('nse'), buildValuationInputs, () => buildShareAnalysis('nse'),
+    nse:    [() => buildRevenuePredictor('nse'), () => buildValuation('nse'), () => buildShareAnalysis('nse'),
              () => buildLivePredictor('nse'), buildContractsPremium, () => buildParticipants('nse')],
-    bse:    [() => buildRevenuePredictor('bse'), () => buildShareAnalysis('bse'), () => buildValuation('bse'), buildValuationInputs,
+    bse:    [() => buildRevenuePredictor('bse'), () => buildShareAnalysis('bse'), () => buildValuation('bse'),
              () => buildLivePredictor('bse'), buildContractsPremium, () => buildParticipants('bse')],
-    mcx:    [() => buildRevenuePredictor('mcx'), () => buildShareAnalysis('mcx'), () => buildValuation('mcx'), buildValuationInputs,
+    mcx:    [() => buildRevenuePredictor('mcx'), () => buildShareAnalysis('mcx'), () => buildValuation('mcx'),
              buildMcxCompetition],
   };
   runSections(common.concat(byExchange[currentExchange] || []));

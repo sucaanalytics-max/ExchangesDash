@@ -93,19 +93,19 @@ function safeHttpUrl(u) {
 //     shares → EPS × P/E → next-FY-end target, ÷ (1 + 18 %) to this FY's end and
 //     ÷ (1 + 9 %) to today.
 // The two triangulations differ only in the ADR fed to Regression and Ratio: the
-// current 45-session ADR, or the ADR estimate typed on the Valuation Inputs tab
+// current 45-session ADR, or the ADR estimate typed in the inputs drawer
 // (blank = the 45-session ADR). The ADR model row is the same in both. Every ADR
 // is at today's rates, the basis the fits are built on (the whole dashboard is).
 // Inputs: the shared defaults in dashboard/data/valuation_inputs.json (hand-edited;
 // without it the tabs say so and show no targets), with this browser's edits from
-// the Valuation Inputs tab (js/18-valuation-inputs.js) on top.
+// the inputs drawer (js/18-valuation-inputs.js) on top.
 
 
 // The workbook's column order
 const VALUATION_EXCHANGES = ['bse', 'mcx', 'nse'];
 // Row keys and labels of the 3 × 3 tables, in the order of the weights w0 / w1 / w2
 const VALUATION_METHODS = [['reg', 'Regression'], ['ratio', 'Ratio Analysis'], ['adr', 'ADR model']];
-// The inputs the Valuation Inputs tab edits; the rest (oi, margin, days, d1, d2) are fixed.
+// The inputs the drawer edits; the rest (oi, margin, days, d1, d2) are fixed.
 // from: the "Regression data from" date (ISO, null = all the share file's data).
 const VALUATION_EDITABLE = ['adr', 'g', 'pe0', 'pe1', 'pe2', 'w0', 'w1', 'w2', 'from'];
 const VALUATION_INPUT_LABELS = {
@@ -546,15 +546,21 @@ function valuationTabHTML(ex, defaults, c0, analysts, open) {
   const adrTxt = x => fmtNum(x, 2);
   const vs45 = v.adr != null && c.adr45 ? ` · ${rxSignedPct(v.adr / c.adr45 - 1, 1)} vs 45 DMA` : '';
   const editedChip = edited.length ? rxChip(`Edited: ${edited.map(k => VALUATION_INPUT_LABELS[k]).join(', ')}`, 'edit') : '';
-  const triPanel = (t, title, meta, aria) => rxPanel({
-    cls: 'rx-col-half', title, meta,
+  const triPanel = (t, title, meta, aria, cls = 'rx-col-half') => rxPanel({
+    cls, title, meta,
     body: `<div class="rx-pb rx-scroll">${valuationTriTable(t, v, cmp, aria)}</div>`,
     foot: valuationTriNote(t, c) || `Weighted average = Σ weight × target ÷ Σ weight, over the methods with a value.`,
   });
-  const tris = `<div class="rx-row">
+  // No ADR estimate: the estimate triangulation would repeat the 45 DMA one, so show it once
+  const tris = m.estIsDma
+    ? `<div class="rx-row">
+    ${triPanel(m.dma, `Triangulated · 45 DMA (ADR ${adrTxt(c.adr45)})`,
+      `last ${c.n45} sessions${flagTags(c.flags)} · no ADR estimate set, so there is no second table · <button type="button" class="rx-link" data-val-edit>set one in the inputs</button>`,
+      '45 DMA triangulation', 'rx-col-full')}
+  </div>`
+    : `<div class="rx-row">
     ${triPanel(m.dma, `Triangulated · 45 DMA (ADR ${adrTxt(c.adr45)})`, `last ${c.n45} sessions${flagTags(c.flags)}`, '45 DMA triangulation')}
-    ${triPanel(m.est, `Triangulated · ADR estimate (ADR ${adrTxt(m.est.adr)})`,
-      m.estIsDma ? 'no estimate set: the 45 DMA' : `from Valuation Inputs${vs45}`, 'ADR estimate triangulation')}
+    ${triPanel(m.est, `Triangulated · ADR estimate (ADR ${adrTxt(m.est.adr)})`, `your estimate${vs45}`, 'ADR estimate triangulation')}
   </div>`;
 
   // Workings: the ADR model block, the ADR path, the regression and ratio figures
@@ -619,8 +625,9 @@ function valuationTabHTML(ex, defaults, c0, analysts, open) {
       <span><strong>${SHARE_EXCHANGE_NAMES[ex]}</strong> · CMP ${rxRupee(cmp, 2)} <span class="rx-foot">${cmpWhen}</span></span>
       <span class="rx-foot">Targets ₹ per share for today · ADR ₹ Cr / session at today’s rates, the fits’ basis</span>
       ${editedChip}
-      <button type="button" class="rx-btn" data-rx-goto="valinputs">Edit inputs →</button>
+      <button type="button" class="rx-btn rx-btn--primary" data-val-edit aria-haspopup="dialog">Edit ${SHARE_EXCHANGE_NAMES[ex]} inputs</button>
     </div>
+    <section class="rx-kpis rx-vi-strip" aria-label="Base case targets, BSE, MCX and NSE" data-val-strip></section>
     ${tris}
     ${how}
     ${analystHTML}
@@ -645,11 +652,33 @@ async function buildValuation(ex) {
     el.innerHTML = `<div class="rx">${rxAlert(`<strong>No valuation:</strong> ${escHtml(data.error || 'no data')}.`)}</div>`;
     return;
   }
-  // Inputs are edited on the Valuation Inputs tab: showing this tab again picks them up
+  // The strip of all three exchanges' targets: the others load from the shared cache
+  let others = null;
+  const fillStrip = () => {
+    const strip = el.querySelector('[data-val-strip]');
+    if (!strip) return;
+    const list = VALUATION_EXCHANGES.map(e => e === ex ? data : (others && others.find(o => o.ex === e)) || { ex: e, c: null, error: 'loading…' });
+    strip.innerHTML = valuationTargetTiles(list, defaults, readValuationOverrides(), ex);
+  };
+  // Inputs are edited in the drawer (js/18-valuation-inputs.js): each edit re-renders this
   const render = () => {
     const open = !!el.querySelector('details.rx-val-how[open]');
     el.innerHTML = valuationTabHTML(ex, defaults, data.c, analysts, open);
+    fillStrip();
   };
   render();
   RX_TAB_REFRESH.valuation = render;
+  el._valCtx = { ex, defaults, data, onChange: render };
+  if (!el._valEditBound) {
+    el._valEditBound = true;
+    el.addEventListener('click', e => {
+      if (e.target.closest && e.target.closest('[data-val-edit]') && el._valCtx) openValuationDrawer(el._valCtx);
+    });
+  }
+  const rest = VALUATION_EXCHANGES.filter(e => e !== ex);
+  await ensureFreshMarketData(rest.filter(e => !valuationOnShow(e)));
+  const got = await Promise.all(rest.map(valuationExchange));
+  if (seq !== VALUATION_BUILD_SEQ || currentExchange !== ex) return;
+  others = got;
+  fillStrip();
 }

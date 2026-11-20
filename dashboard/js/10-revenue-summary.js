@@ -1285,7 +1285,7 @@ function liveCardHTML(ex, m) {
     side = m.pctOfClose != null ? `${Math.round(m.pctOfClose * 100)}% of close` : '';
     footL = m.range
       ? `<span title="Revenue so far ÷ the 10th–90th percentile share of the close past sessions had reached by ${m.rangeAt} · n = ${m.range.n}">typical range ₹${fmtNum(m.range.lo, 1)}–${fmtNum(m.range.hi, 1)} · n ${m.range.n}</span>`
-        + (m.outsideRange ? ` <span class="lvc-warn" title="The predicted close (▲) is ${m.outsideRange} the range: the two are built from different past sessions">▲ ${m.outsideRange} range</span>` : '')
+        + (m.outsideRange ? ` <span class="lvc-warn" title="The live model's close (₹${fmtNum(m.predModel, 1)} Cr) is ${m.outsideRange} the range; the close shown is the share-of-day estimate, the middle of the range">live model ${m.outsideRange} range</span>` : '')
       : m.sessionDone ? 'session complete · official close with the evening data' : 'typical range needs complete past sessions';
   }
   const footR = open ? fmtSessionProgress(m.elapsed) : `last poll ${m.time} IST`;

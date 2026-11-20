@@ -398,10 +398,10 @@ async function buildMcxCompetition() {
     <div data-cc="kpis"></div>
     ${rxPanel({ title: 'NSE against MCX, by underlying', meta: '<span data-cc="winmeta"></span>',
       body: '<div data-cc="table"></div>',
-      foot: 'Averages per session over the window. NSE share = NSE ÷ (NSE + MCX), in ₹, on the underlying (contract sizes differ). '
-        + '"vs before" is the change in percentage points against the window before (the session before, the 20 sessions before, the month, quarter or FY before). '
+      foot: 'Averages per session over the window. NSE share = NSE ÷ (NSE + MCX), in ₹, on the underlying (contract sizes differ).',
+      how: rxHow('How the table is worked out', `<p>"vs before" is the change in percentage points against the window before (the session before, the 20 sessions before, the month, quarter or FY before). `
         + 'MCX only: NSE had no trades in that underlying over the window, so its figures (grey) are zero. '
-        + 'MCX\'s indices and agri contracts count in "All commodities"; NSE lists neither. NSE\'s Brent crude has no MCX contract, so no share.' + premNote })}
+        + 'MCX\'s indices and agri contracts count in "All commodities"; NSE lists neither. NSE\'s Brent crude has no MCX contract, so no share.' + premNote + '</p>') })}
     ${rxPanel({ title: 'NSE share by day', meta: '<span data-cc="daymeta"></span>',
       right: rxSeg('ccRange', CC_RANGES.map(([v, l]) => [v, l]), CC_VIEW.range, 'Range'),
       body: `<div class="rx-pb" style="padding-bottom:4px">
