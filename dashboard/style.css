@@ -243,6 +243,7 @@ html, body {
 
 .sidebar-logo svg {
   flex-shrink: 0;
+  color: #FFFFFF;   /* its frame and S stroke are currentColor: ink on ink hid them */
 }
 
 .sidebar-logo .logo-text {
@@ -365,6 +366,7 @@ html, body {
   min-width: 0;
 }
 
+.header-title .ht-short { display: none; }
 .header-title {
   font-family: var(--font-display);
   font-size: 15px;
@@ -463,7 +465,7 @@ html, body {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.09em;
-  color: var(--color-text-faint);
+  color: var(--color-text-muted);
   flex-shrink: 0;
 }
 
@@ -494,7 +496,7 @@ html, body {
 
 .rev-banner-date {
   font-size: 11px;
-  color: var(--color-text-faint);
+  color: var(--color-text-muted);
 }
 
 .rev-banner-live {
@@ -846,10 +848,12 @@ span.neutral {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
+  flex: 1 1 100%;   /* the full row under the sub-tabs, so the cards line up with the tables below */
 }
 .live-cards:empty { display: none; }
 .lvc {
-  width: 350px;
+  flex: 1 1 300px;   /* the cards share the row; one that wraps (VIX on tablets) takes it whole */
+  min-width: 0;
   box-sizing: border-box;
   background: #fff;
   border: 1px solid var(--color-border);
@@ -2450,6 +2454,8 @@ span.pr-neu {
     white-space: nowrap;
     text-overflow: ellipsis;
   }
+  .header-title .ht-long { display: none; }
+  .header-title .ht-short { display: inline; }
 
   .header-right {
     flex-shrink: 0;
@@ -2988,6 +2994,7 @@ span.pr-neu {
 .rx-col-wide { flex: 3 1 560px; }
 .rx-col-narrow { flex: 2 1 340px; }
 .rx-col-half { flex: 1 1 460px; }
+.rx-col-full { flex: 1 1 100%; }
 
 /* KPI strip: one bordered grid, hairline gaps */
 .rx-kpis {
@@ -3325,6 +3332,18 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
 .rx-table.rx-vi td.rx-vi-in .rx-in.is-edited { border-color: #D9A54A; box-shadow: inset 3px 0 0 #D9A54A; }
 .rx-table.rx-vi td.rx-vi-in .rx-in::placeholder { color: var(--rx-muted); }
 .rx-vi-strip .rx-kpi-s { line-height: 1.5; }
+/* Phones: one exchange's column at a time, picked above the table */
+.rx-vi-pick { display: none; }
+@media (max-width: 640px) {
+  .rx-vi-pick { display: block; padding: 10px 12px 0; }
+  .rx-table.rx-vi { min-width: 0; width: 100%; }
+  .rx-table.rx-vi[data-vi-show="bse"] [data-vi-ex]:not([data-vi-ex="bse"]),
+  .rx-table.rx-vi[data-vi-show="mcx"] [data-vi-ex]:not([data-vi-ex="mcx"]),
+  .rx-table.rx-vi[data-vi-show="nse"] [data-vi-ex]:not([data-vi-ex="nse"]) { display: none; }
+  .rx-scroll table.rx-table.rx-vi td.rx-vi-lab { max-width: none; }
+  table.rx-table.rx-vi .rx-num-in { width: 80px; }
+  table.rx-table.rx-vi .rx-date-in { width: 136px; }
+}
 /* Regression data-from date: the browser's date picker, themed with the page */
 .rx-table.rx-vi .rx-date-in { width: 136px; text-align: left; font-size: 12.5px; color-scheme: light; }
 :root:not([data-theme="light"]) .rx-table.rx-vi .rx-date-in { color-scheme: dark; }
@@ -3399,7 +3418,7 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
 /* MTF Summary tab (js/40-mtf.js mtfBuildSummary): the Revenue Summary's Excel
    tables (.xl-segment, .xl-period-table, .wire-table above), sized like the
    brokers' Summary panel (brokers.css .brk-panel) */
-.mtf-sum { padding: var(--space-3) var(--space-2) var(--space-6); max-width: 1120px; }
+.mtf-sum { padding: var(--space-3) var(--space-2) var(--space-6); }
 .mtf-sum-bar { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-bottom: var(--space-3); font-size: 12px; color: var(--color-text-muted); }
 .mtf-sum-bar b { color: var(--color-text); font-weight: 600; }
 .mtf-sum-ahead { cursor: help; border-bottom: 1px dotted currentColor; }
@@ -3450,7 +3469,13 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
 .mtf-bk-table td.mtf-bk-name { min-width: 150px; }
 .mtf-bk-table td.mtf-bk-name .mtf-bk-sub { white-space: normal; max-width: 220px; }
 .mtf-bk-table td.mtf-bk-old { color: var(--rx-ink-2); }
-.mtf-bk-table td.mtf-bk-src { min-width: 200px; max-width: 280px; }
+.mtf-bk-table td.mtf-bk-old .mtf-bk-fig + .mtf-bk-fig { margin-top: 5px; }
+.mtf-bk-table td.mtf-bk-old .mtf-bk-sub { white-space: nowrap; max-width: none; }
+/* Change cells: the book line wraps so the table fits a 1440 px screen */
+.mtf-bk-table td .mtf-bk-sub { white-space: normal; max-width: 130px; margin-left: auto; }
+.mtf-bk-table td.mtf-bk-name .mtf-bk-sub { margin-left: 0; }
+.mtf-bk-table td.mtf-bk-src { min-width: 180px; max-width: 260px; }
+.mtf-bk-table td.mtf-bk-src .mtf-bk-sub { max-width: none; margin-left: 0; }
 .mtf-bk-table td.mtf-bk-src .mtf-bk-sub { white-space: normal; cursor: help; }
 .mtf-bk-table .rx-chip, .mtf-bk-qtable .rx-chip { white-space: nowrap; }
 .mtf-bk-qtable td.mtf-bk-none { color: var(--rx-muted); }
@@ -3525,7 +3550,7 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
   --vix-base-bg: #26282D;
   --vix-outside-ink: #6E7178;
 }
-.lvc--vix { width: 230px; border-top-color: var(--vix-accent); }
+.lvc--vix { flex: 1 1 180px; border-top-color: var(--vix-accent); }
 .lvc--vix .lvc-nums { gap: 0 8px; }
 .vix-chg { font-size: 13px; font-weight: 600; white-space: nowrap; }
 .vix-chg--up { color: var(--vix-up); }
@@ -3597,4 +3622,41 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
   .rx-table.wadr th:first-child { display: none; }
   .rx-table.wadr td.wadr-wk { grid-column: 1 / -1; min-width: 0; border-bottom: 0; padding-bottom: 2px; }
   .rx-table.wadr .wadr-c > .rx-chip { white-space: normal; text-align: right; }
+}
+
+/* Market Share Trend (js/11-market-share.js) on the rx panels: the period table
+   scrolls inside its panel with its header held, and on phones the Period
+   column stays in view while the figures scroll */
+.ms-trend .exp-trend-table { margin: 0; border-top: 1px solid var(--rx-rule); }
+.ms-trend .exp-trend-table thead th { position: sticky; top: 0; z-index: 2; }
+.ms-trend .rx-chart-note, .ms-trend .fee-chart-note { padding: 0 14px 12px; }
+@media (max-width: 640px) {
+  .ms-pin th:first-child, .ms-pin td:first-child { position: sticky; left: 0; z-index: 1; background: var(--rx-surface); box-shadow: inset -1px 0 0 var(--rx-rule); }
+  .ms-pin thead th:first-child { z-index: 3; }
+  .ms-pin tr.exp-diff-row td:first-child { background: #FBF3E6; }
+}
+
+/* Revenue tab: the sub-tab row, the panels and notes under the Revenue Summary
+   share its side padding (#subtab-rev-*), so every block starts on one edge */
+#tab-revenue > .rev-subtab-row,
+#weeklyAdrPanel, #vixPanel,
+#tab-revenue > .fee-note { margin-left: var(--space-2); margin-right: var(--space-2); }
+@media (pointer: coarse) and (max-width: 640px) {
+  #tab-revenue > .rev-subtab-row,
+  #weeklyAdrPanel, #vixPanel,
+  #tab-revenue > .fee-note { margin-left: 0; margin-right: 0; }
+}
+
+/* Notes under the Revenue Summary: the fee basis in view, the reference notes folded */
+#feeModeNote > p { margin: 0; }
+#feeModeNote .fee-note-more { border-top: 0; padding: 6px 0 0; font-size: inherit; }
+#feeModeNote .fee-note-more p { margin: 6px 0 0; max-width: none; }
+
+/* Phones: a segmented control stays one row and scrolls sideways when it is
+   wider than the screen (wrapped rows broke its borders); Competition's
+   underlying / measure grid (.cc-ctl) keeps its own layout */
+@media (max-width: 640px) {
+  .rx-seg { flex-wrap: nowrap; max-width: 100%; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .rx-seg::-webkit-scrollbar { display: none; }
+  .rx-seg button { flex: 0 0 auto; white-space: nowrap; }
 }

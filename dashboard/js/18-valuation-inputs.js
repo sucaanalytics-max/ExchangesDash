@@ -146,7 +146,9 @@ async function renderValuationInputs(el) {
   const name = ex => SHARE_EXCHANGE_NAMES[ex];
   const failed = list.filter(d => !d.c);
 
-  const head = `<tr><th scope="col">Input</th>${VALUATION_EXCHANGES.map(ex => `<th scope="col" class="rx-vi-ex">
+  // Phones show one exchange's column at a time (the one on show first), picked above the table
+  const phoneEx = VALUATION_EXCHANGES.includes(shownEx) ? shownEx : VALUATION_EXCHANGES[0];
+  const head = `<tr><th scope="col">Input</th>${VALUATION_EXCHANGES.map(ex => `<th scope="col" class="rx-vi-ex" data-vi-ex="${ex}">
       <span class="rx-vi-exname">${name(ex)}</span>
       <span class="rx-vi-exact" data-vi-edited="${ex}"></span></th>`).join('')}</tr>`;
   const body = rows.map(r => {
@@ -156,10 +158,10 @@ async function renderValuationInputs(el) {
       const c = byEx[ex].c;
       return c ? `${c.dataFirst ? ` min="${c.dataFirst}"` : ''} max="${c.lastDate}"` : '';
     };
-    const cells = VALUATION_EXCHANGES.map(ex => !r.key ? `<td data-vi-out="${ex}:${r.out}"></td>`
+    const cells = VALUATION_EXCHANGES.map(ex => !r.key ? `<td data-vi-ex="${ex}" data-vi-out="${ex}:${r.out}"></td>`
       : r.type === 'date'
-        ? `<td class="rx-vi-in"><input class="rx-in rx-date-in" type="date"${range(ex)} data-vi="${ex}:${r.key}" aria-label="${name(ex)} ${escHtml(r.label)}"></td>`
-        : `<td class="rx-vi-in"><input class="rx-in rx-num-in" type="number" step="${r.step}" inputmode="decimal" data-vi="${ex}:${r.key}" aria-label="${name(ex)} ${escHtml(r.label)}"></td>`).join('');
+        ? `<td class="rx-vi-in" data-vi-ex="${ex}"><input class="rx-in rx-date-in" type="date"${range(ex)} data-vi="${ex}:${r.key}" aria-label="${name(ex)} ${escHtml(r.label)}"></td>`
+        : `<td class="rx-vi-in" data-vi-ex="${ex}"><input class="rx-in rx-num-in" type="number" step="${r.step}" inputmode="decimal" data-vi="${ex}:${r.key}" aria-label="${name(ex)} ${escHtml(r.label)}"></td>`).join('');
     return `<tr${r.key ? ' class="rx-vi-edit"' : ''}>${label}${cells}</tr>`;
   }).join('');
 
@@ -168,7 +170,8 @@ async function renderValuationInputs(el) {
     ${failed.length ? rxAlert(`<strong>${failed.map(d => name(d.ex)).join(' and ')} not loaded</strong> (${failed.map(d => escHtml(d.error)).join('; ')}): ${failed.length > 1 ? 'their' : 'its'} figures show —. The inputs can still be edited.`) : ''}
     <section class="rx-kpis rx-vi-strip" aria-label="Base case targets" data-vi="strip"></section>
     ${rxPanel({ title: 'Valuation inputs', meta: 'BSE, MCX and NSE · edits are saved in this browser over the shared defaults',
-      body: `<div class="rx-scroll"><table class="rx-table rx-vi">
+      body: `<div class="rx-vi-pick">${rxSeg('vi-ex', VALUATION_EXCHANGES.map(ex => [ex, name(ex)]), phoneEx, 'Exchange to show')}</div>
+        <div class="rx-scroll"><table class="rx-table rx-vi" data-vi-show="${phoneEx}">
         <thead>${head}</thead><tbody>${body}</tbody></table></div>`,
       foot: 'Light-blue boxes are inputs; an amber edge marks one edited from the shared default (dashboard/data/valuation_inputs.json, from the workbook’s Valuation Inputs sheet and its BSE, MCX and NSE sheets), and Reset restores an exchange’s defaults. Other income, PAT margin, sessions and the discounts are fixed. The regression data-from date moves the valuation only: the Regression tab, the banner’s fair value and the share files keep the published fit. Every ADR is at today’s rates, the basis the fits are built on. The Valuation Model tab shows each exchange’s two triangulations and how they are built.',
       how: rxHow('How the targets are built', `<ul>
@@ -179,6 +182,7 @@ async function renderValuationInputs(el) {
   </div>`;
 
   const q = sel => el.querySelector(sel);
+  rxOnSeg(el, 'vi-ex', ex => { q('table.rx-vi').dataset.viShow = ex; });
   const shownIn = (ex, key) => q(`input[data-vi="${ex}:${key}"]`);
 
   function update() {

@@ -264,11 +264,15 @@ function glanceTodayCard(ex, live, hourly, raw) {
   const hhmm = parseUtcTs(live.updated_at).toLocaleTimeString('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' });
   const samples = hourly && hourly.date === todayIST ? (hourly.samples || []) : [];
   const lastS = samples[samples.length - 1];
+  // The figure the banner and live cards show (liveCardModel: the latest hourly
+  // sample), so the phone never shows two "today" numbers on one screen
+  const cardS = samples.filter(s => s.elapsed_minutes > 0 && s.total_revenue != null).slice(-1)[0];
+  const booked = cardS ? cardS.total_revenue : rev.total_revenue;
   const pred = lastS && lastS.predicted_eod;
   const method = lastS && lastS.pred_method ? (lastS.pred_method.startsWith('historical') ? 'from past sessions\' intraday curves' : 'straight-line') : '';
   const partial = rev.options_pending ? '<div class="glance-note">Partial: BSE has not posted options premium yet — cash only.</div>' : '';
   return glanceCard(`Today <span class="glance-live">LIVE</span>`, `
-      <div class="glance-big">₹${fmtNum(rev.total_revenue, 1)}<span class="glance-unit"> Cr</span></div>
+      <div class="glance-big">₹${fmtNum(booked, 1)}<span class="glance-unit"> Cr</span></div>
       <div class="glance-sub">as of ${hhmm} IST · ${glanceAge(live.updated_at)}</div>
       ${partial}
       <div class="glance-row"><span>Predicted end of day</span><strong>${pred != null ? '₹' + fmtNum(pred, 1) + ' Cr' : '—'}</strong></div>

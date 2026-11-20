@@ -271,7 +271,8 @@ async function buildLivePredictor(ex) {
     <div class="rx-bar" style="position:static">${statusHTML}<p class="rx-foot" style="margin-left:0">${name} · trade date ${sessLong} · ${dayType.replace('_', '-')} day · ${samples.length} polls since 09:15</p></div>
     <section class="rx-kpis" data-rx="kpis" aria-label="Session so far"></section>
     ${rxPanel({ title: 'Cumulative revenue through the session', meta: '₹ Cr, 09:15–16:00 IST',
-      right: rxSeg('type', LIVE_DAY_TYPES.map(([k, l]) => [k, `${l} (${countOf(k)})`]), state.type, 'Archived days the band is built from'),
+      // No archived session yet: no band, so no choice of days to build it from
+      right: complete.length ? rxSeg('type', LIVE_DAY_TYPES.map(([k, l]) => [k, `${l} (${countOf(k)})`]), state.type, 'Archived days the band is built from') : '',
       body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas(`rxLiveCum-${ex}`)}</div><div class="rx-chart-note" data-rx="legCum"></div>`,
       foot: '<span data-rx="cumNote"></span>' })}
     <div class="rx-row">
@@ -302,7 +303,7 @@ async function buildLivePredictor(ex) {
     } else if (at < SESSION_MINUTES) {
       // From the close the range collapses to the booked figure, so it is left out
       items.push(rxKpi('Typical-path range', rng ? `₹${fmtNum(rng.lo, 1)} – ${fmtNum(rng.hi, 1)} Cr` : '—',
-        rng ? `revenue so far ÷ 10th–90th pct. share reached by ${sessionClock(at)} · n = ${rng.n}` : 'needs complete archived sessions'));
+        rng ? `revenue so far ÷ 10th–90th pct. share reached by ${sessionClock(at)} · n = ${rng.n}` : 'appears after the first complete archived session'));
     }
     const mixBar = `<div style="display:flex;height:10px;gap:2px;margin:9px 0 7px" role="img" aria-label="${segs.map(s => `${s[0]} ${fmtNum(s[1], 2)} crore`).join(', ')}">${segs.map(s => `<div style="flex:${Math.max(s[1], 0)} 1 0;background:${s[2]}" title="${s[0]} ${rxCr(s[1], 2)}"></div>`).join('')}</div>`;
     items.push(rxKpi('Segment mix so far', mixBar, segs.map(s => `${s[0]} ${segTotal ? fmtPct(s[1] / segTotal) : '—'}`).join(' · ')));
@@ -357,9 +358,11 @@ async function buildLivePredictor(ex) {
     qx('legCum').innerHTML = rxLegend([
       { label: sessLong || 'Session', color: RX.ink, kind: 'line' },
       { label: actualClose != null ? `To the actual close ${rxCr(actualClose, 2)}` : `Projection to ${rxCr(pred, 2)}`, color: RX.model, kind: 'dot' },
-      { label: `${typeName} path, 10th–90th pct.`, color: 'rgba(43, 92, 200, 0.22)' },
-    ].concat(prevDay ? [{ label: `Last ${dayType.replace('_', '-')} day, ${fmtTradeDate(prevDay.date, true)}`, color: RX.grey, kind: 'line' }] : []));
-    qx('cumNote').textContent = `Band = the share of the close that ${pool.length} complete ${state.type === 'all' || pool.length !== countOf(state.type) ? 'archived' : typeName.toLowerCase()} sessions had reached by each time × ${actualClose != null ? 'the actual close' : 'the predicted close'}, so it shows where the session would sit if it closes there.`;
+    ].concat(pool.length ? [{ label: `${typeName} path, 10th–90th pct.`, color: 'rgba(43, 92, 200, 0.22)' }] : [])
+     .concat(prevDay ? [{ label: `Last ${dayType.replace('_', '-')} day, ${fmtTradeDate(prevDay.date, true)}`, color: RX.grey, kind: 'line' }] : []));
+    qx('cumNote').textContent = !complete.length
+      ? 'The typical-path band appears after the first complete archived session.'
+      : `Band = the share of the close that ${pool.length} complete ${state.type === 'all' || pool.length !== countOf(state.type) ? 'archived' : typeName.toLowerCase()} sessions had reached by each time × ${actualClose != null ? 'the actual close' : 'the predicted close'}, so it shows where the session would sit if it closes there.`;
   }
 
   function renderWindows() {

@@ -193,7 +193,7 @@ function buildMarketShareChart(canvasId, rows, field) {
     },
     options: {
       interaction: { mode: 'index', intersect: false },
-      plugins: { tooltip: { footerColor: getTooltipText(), callbacks: {
+      plugins: { legend: { display: false }, tooltip: { footerColor: getTooltipText(), callbacks: {
         label: ctx => ctx.dataset.label + ': ' + ctx.raw.toFixed(1) + ' %',
         footer: items => expiryTooltipFooter(rows[items[0]?.dataIndex]),
       } } },
@@ -265,73 +265,50 @@ function fmtRatePerMonth(v) {
 }
 
 // Builds the KPI row + trend-comparison table + chart panel + projection table for the predictor.
-function optionsSharePredictorHTML(predictor) {
+function optionsSharePredictorHTML(predictor, predFlags) {
   if (!predictor) {
-    return `<div class="chart-panel" style="text-align:center;padding:40px;color:var(--color-text-muted)">
-      <div style="font-size:14px;font-weight:600">Not enough overlapping history to fit an options-share trend</div>
-    </div>`;
+    return rxPanel({ title: 'Options share predictor', body: '<div class="rx-empty"><b>Not enough overlapping history to fit an options-share trend</b></div>' });
   }
   const { longFit, recentFit, chosen, reason, chosenFit, currentShare, asOfDate, projections } = predictor;
-  const rateSentiment = chosenFit.ratePerMonth > 0.05 ? 'positive' : chosenFit.ratePerMonth < -0.05 ? 'negative' : '';
+  const rateCls = chosenFit.ratePerMonth > 0.05 ? 'rx-up' : chosenFit.ratePerMonth < -0.05 ? 'rx-dn' : '';
   const chosenLabel = chosen === 'recent' ? 'Recent (60D)' : 'Long-Term (252D)';
 
-  const kpiHTML = `
-  <div class="share-kpi-grid">
-    ${kpi('Current NSE Options Share', fmtNum(currentShare, 1) + ' %', 'as of ' + asOfDate + ' (5D avg)', '')}
-    ${kpi('Rate of Change (NSE)', fmtRatePerMonth(chosenFit.ratePerMonth), chosenLabel + ' · ' + chosenFit.fit + ' fit (R²=' + Math.round(chosenFit.ols.r2 * 100) + '%)', rateSentiment)}
-    ${kpi('12M Projected NSE Share', fmtNum(projections[2].nseShare, 1) + ' %', 'assumes trend continues, capped 0–100%', '')}
-    ${kpi('Model Selected', chosenLabel, reason, '')}
-  </div>`;
+  const kpiHTML = rxKpis([
+    rxKpi(`Current NSE options share${flagTags(predFlags || NO_FLAGS)}`, fmtNum(currentShare, 1) + ' %', 'as of ' + asOfDate + ' (5D avg)', { accent: true }),
+    rxKpi('Rate of change (NSE)', fmtRatePerMonth(chosenFit.ratePerMonth), chosenLabel + ' · ' + chosenFit.fit + ' fit (R² ' + Math.round(chosenFit.ols.r2 * 100) + ' %)', { cls: rateCls }),
+    rxKpi('12M projected NSE share', fmtNum(projections[2].nseShare, 1) + ' %', 'assumes the trend continues, capped 0–100 %'),
+    rxKpi('Model selected', chosenLabel, reason),
+  ], 'Options share predictor');
 
   const fitRow = (label, fit, isChosen) => `
-    <tr${isChosen ? '' : ' style="color:var(--color-text-muted)"'}>
-      <td>${label} <span style="font-size:11px;color:var(--color-text-muted)">${isChosen ? '(used)' : '(informational)'}</span></td>
-      <td style="text-align:center">${fit.startDate} → ${fit.endDate}</td>
-      <td style="text-align:center">${fmtRatePerMonth(fit.ratePerMonth)}</td>
-      <td style="text-align:center">${Math.round(fit.ols.r2 * 100)}%</td>
-      <td style="text-align:center">${fit.fit}</td>
+    <tr${isChosen ? ' class="rx-sub"' : ' class="rx-pct"'}>
+      <td>${label} ${rxChip(isChosen ? 'used' : 'informational')}</td>
+      <td class="rx-c">${fit.startDate} → ${fit.endDate}</td>
+      <td>${fmtRatePerMonth(fit.ratePerMonth)}</td>
+      <td>${Math.round(fit.ols.r2 * 100)} %</td>
+      <td class="rx-c">${fit.fit}</td>
     </tr>`;
-
-  const tableHTML = `
-  <div class="chart-panel" style="margin-bottom:var(--space-4);padding:0">
-    <div class="chart-title">Trend Comparison — Long-Term vs Recent</div>
-    <div class="table-scroll">
-    <table class="data-table" style="margin:0">
-      <thead><tr><th>Window</th><th style="text-align:center">Date Range</th><th style="text-align:center">Rate (NSE)</th><th style="text-align:center">R²</th><th style="text-align:center">Fit</th></tr></thead>
-      <tbody>
-        ${fitRow('Long-Term (252D, ~1yr)', longFit, chosen === 'long')}
-        ${fitRow('Recent (60D, ~3mo)', recentFit, chosen === 'recent')}
-      </tbody>
-    </table>
-    </div>
-  </div>`;
-
-  const chartHTML = `
-  <div class="chart-panel" style="margin-bottom:var(--space-4)">
-    <div class="chart-title">Options Share Predictor — NSE vs BSE</div>
-    <div class="chart-wrapper"><canvas id="chartOptionsSharePredictor"></canvas></div>
-  </div>`;
 
   const projRows = projections.map(p => `
     <tr>
-      <td>+${p.months} Months</td>
-      <td style="text-align:center">${fmtNum(p.nseShare, 1)} %</td>
-      <td style="text-align:center">${fmtNum(100 - p.nseShare, 1)} %</td>
+      <td>+${p.months} months</td>
+      <td>${fmtNum(p.nseShare, 1)} %</td>
+      <td>${fmtNum(100 - p.nseShare, 1)} %</td>
     </tr>`).join('');
 
-  const projHTML = `
-  <div class="chart-panel" style="padding:0">
-    <div class="chart-title">Forward Projection</div>
-    <div class="table-scroll">
-    <table class="data-table" style="margin:0">
-      <thead><tr><th>Horizon</th><th style="text-align:center">NSE Share</th><th style="text-align:center">BSE Share</th></tr></thead>
-      <tbody>${projRows}</tbody>
-    </table>
-    </div>
-    <p class="section-desc" style="padding:10px 14px 14px">Linear extrapolation of the ${chosen === 'recent' ? 'recent (60-day)' : 'long-term (252-day)'} trend; assumes no regime change; clipped to 0–100%.</p>
-  </div>`;
-
-  return kpiHTML + tableHTML + chartHTML + projHTML;
+  return kpiHTML
+    + rxPanel({ title: 'Trend comparison', meta: 'long-term vs recent',
+      body: `<div class="rx-scroll"><table class="rx-table">
+        <thead><tr><th scope="col">Window</th><th scope="col" class="rx-c">Date range</th><th scope="col">Rate (NSE)</th><th scope="col">R²</th><th scope="col" class="rx-c">Fit</th></tr></thead>
+        <tbody>${fitRow('Long-term (252D, ~1 yr)', longFit, chosen === 'long')}${fitRow('Recent (60D, ~3 mo)', recentFit, chosen === 'recent')}</tbody>
+      </table></div>` })
+    + rxPanel({ title: 'Options share predictor', meta: 'NSE vs BSE', body: rxCanvas('chartOptionsSharePredictor') })
+    + rxPanel({ title: 'Forward projection', meta: 'options revenue share',
+      body: `<div class="rx-scroll"><table class="rx-table">
+        <thead><tr><th scope="col">Horizon</th><th scope="col">NSE share</th><th scope="col">BSE share</th></tr></thead>
+        <tbody>${projRows}</tbody>
+      </table></div>`,
+      foot: `Linear extrapolation of the ${chosen === 'recent' ? 'recent (60-day)' : 'long-term (252-day)'} trend; assumes no regime change; clipped to 0–100 %.` });
 }
 
 // Caption under a share-trend chart naming the months whose NSE or BSE revenue
@@ -453,7 +430,7 @@ function buildExpiryTrendChart(canvasId, rows) {
     },
     options: {
       interaction: { mode: 'index', intersect: false },
-      plugins: { tooltip: { footerColor: warn, callbacks: {
+      plugins: { legend: { display: false }, tooltip: { footerColor: warn, callbacks: {
         title: items => { const r = rows[items[0].dataIndex]; return r.label + (r.partial ? ' (to date)' : ''); },
         label: ctx => {
           const s = rows[ctx.dataIndex][ctx.datasetIndex === 0 ? 'nse' : 'bse'];
@@ -479,17 +456,17 @@ function expiryTrendTableHTML(rows) {
       { exchange: 'bse', expiries: r.bse.expiries, days: r.bse.days },
     ]);
     return `<tr${r.nse.expiries !== r.bse.expiries ? ' class="exp-diff-row"' : ''}>
-      <td>${r.label}${r.partial ? ' <span class="exp-partial">to date</span>' : ''}</td>
-      <td style="text-align:right">${fmtNum(r.nse.avg, 2)}${flagTags(r.nse.flags)}</td>
-      <td style="text-align:right">${fmtNum(r.bse.avg, 2)}${flagTags(r.bse.flags)}</td>
-      <td style="text-align:right">${total > 0 ? fmtNum(r.nse.avg / total * 100, 1) + ' %' : '—'}</td>
-      <td style="text-align:center">${days}</td>
-      <td style="text-align:center">${exp}</td>
+      <td>${r.label}${r.partial ? ` ${rxChip('to date')}` : ''}</td>
+      <td>${fmtNum(r.nse.avg, 2)}${flagTags(r.nse.flags)}</td>
+      <td>${fmtNum(r.bse.avg, 2)}${flagTags(r.bse.flags)}</td>
+      <td class="rx-hl">${total > 0 ? fmtNum(r.nse.avg / total * 100, 1) + ' %' : '—'}</td>
+      <td class="rx-c">${days}</td>
+      <td class="rx-c">${exp}</td>
     </tr>`;
   }).join('');
-  return `<div class="table-scroll exp-trend-table">
-    <table class="data-table" style="margin:0">
-      <thead><tr><th>Period</th><th style="text-align:right">NSE ₹ Cr/day</th><th style="text-align:right">BSE ₹ Cr/day</th><th style="text-align:right">NSE share</th><th style="text-align:center" title="Trading days (NSE / BSE when they differ)">Days</th><th style="text-align:center" title="Expiry days: N = NSE, B = BSE">Expiries</th></tr></thead>
+  return `<div class="rx-scroll exp-trend-table ms-pin">
+    <table class="rx-table">
+      <thead><tr><th scope="col">Period</th><th scope="col">NSE ₹ Cr/day</th><th scope="col">BSE ₹ Cr/day</th><th scope="col" class="rx-hl">NSE share</th><th scope="col" class="rx-c" title="Trading days (NSE / BSE when they differ)">Days</th><th scope="col" class="rx-c" title="Expiry days: N = NSE, B = BSE">Expiries</th></tr></thead>
       <tbody>${body}</tbody>
     </table>
   </div>`;
@@ -501,15 +478,9 @@ function buildMarketShareTrend() {
 
   const nseRaw = MARKET_RAW.nse, bseRaw = MARKET_RAW.bse;
   if (!getMarketShareRows(nseRaw, bseRaw, 'monthly').length) {
-    el.innerHTML = `<div class="chart-panel" style="text-align:center;padding:40px;color:var(--color-text-muted)">
-      <div style="font-size:14px;font-weight:600">No overlapping NSE/BSE data available</div>
-    </div>`;
+    el.innerHTML = `<div class="rx">${rxPanel({ title: 'NSE vs BSE market share', body: '<div class="rx-empty"><b>No overlapping NSE/BSE data available</b></div>' })}</div>`;
     return;
   }
-
-  const toggleHTML = prefix => `<div class="share-range-toggle">${MS_GRANULARITIES.map(g =>
-    `<button class="share-range-btn ${prefix}-gran-btn${g.key === 'monthly' ? ' active' : ''}" data-gran="${g.key}">${g.label}</button>`
-  ).join('')}</div>`;
 
   const predictor = computeOptionsSharePredictor(nseRaw, bseRaw);
   // Fee-basis estimates inside the trend fit's window (date-effective files only)
@@ -517,60 +488,37 @@ function buildMarketShareTrend() {
     ? mergeFlags([nseRaw, bseRaw].map(raw => rowsFlags((raw?.daily_all || []).filter(r => r.date >= predictor.chosenFit.startDate), 'options')))
     : NO_FLAGS;
 
-  const expToggleHTML = (cls, opts, active) => `<div class="share-range-toggle">${opts.map(o =>
-    `<button class="share-range-btn ${cls}${o.key === active ? ' active' : ''}" data-key="${o.key}">${o.label}</button>`
-  ).join('')}</div>`;
+  const seg = (group, opts, aria) => rxSeg(group, opts.map(o => [o.key, o.label]), opts[0].key, aria);
+  const legend = kind => rxLegend([
+    { label: 'NSE', color: MS_META.nse.color, kind },
+    { label: 'BSE', color: MS_META.bse.color, kind },
+  ]);
 
-  el.innerHTML = `
-  <div class="chart-panel" style="margin-bottom:var(--space-4)">
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:var(--space-3)">
-      <div class="chart-title" style="margin-bottom:0">Daily Avg Revenue &amp; Expiries — NSE vs BSE</div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px">
-        ${expToggleHTML('expGran-btn', EXP_TREND_GRANULARITIES, 'monthly')}
-        ${expToggleHTML('expSeg-btn', EXP_TREND_SEGMENTS, 'total')}
-      </div>
-    </div>
-    <div class="chart-wrapper"><canvas id="chartExpTrend"></canvas></div>
-    <p class="fee-chart-note">₹ Cr per trading day. Under each period, its expiry days (N = NSE, B = BSE: each exchange's weekly index expiry); ≠ and amber mark periods where they differ, so the two averages are not like for like. * = period to date.</p>
-    <div id="expTrendTable"></div>
-  </div>
-  <div class="chart-panel" style="margin-bottom:var(--space-4)">
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:var(--space-3)">
-      <div class="chart-title" style="margin-bottom:0">Options Revenue Market Share — NSE vs BSE</div>
-      ${toggleHTML('msOpt')}
-    </div>
-    <div class="chart-wrapper"><canvas id="chartMsOptions"></canvas></div>
-    ${marketShareFlagNote(nseRaw, bseRaw, 'options')}
-  </div>
-  <div class="chart-panel" style="margin-bottom:var(--space-4)">
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:var(--space-3)">
-      <div class="chart-title" style="margin-bottom:0">Total Revenue Market Share — NSE vs BSE</div>
-      ${toggleHTML('msTotal')}
-    </div>
-    <div class="chart-wrapper"><canvas id="chartMsTotal"></canvas></div>
-    ${marketShareFlagNote(nseRaw, bseRaw, 'total')}
-  </div>
-  <h3 style="margin:0 0 var(--space-3);font-size:var(--text-lg);font-weight:700;color:var(--color-text)">Options Share Predictor${flagTags(predFlags)}</h3>
-  ${optionsSharePredictorHTML(predictor)}`;
+  el.innerHTML = `<div class="rx ms-trend">
+    ${rxPanel({ title: 'Daily avg revenue &amp; expiries', meta: 'NSE vs BSE · ₹ Cr per trading day',
+      right: `${seg('msExpGran', EXP_TREND_GRANULARITIES, 'Period')} ${seg('msExpSeg', EXP_TREND_SEGMENTS, 'Segment')}`,
+      body: `${rxCanvas('chartExpTrend')}<div class="rx-pb">${legend('box')}</div><div id="expTrendTable"></div>`,
+      foot: 'Under each period, its expiry days (N = NSE, B = BSE: each exchange’s weekly index expiry); ≠ and amber mark periods where they differ, so the two averages are not like for like. * = period to date.' })}
+    ${rxPanel({ title: 'Options revenue market share', meta: 'NSE vs BSE · % of the two',
+      right: seg('msOptGran', MS_GRANULARITIES, 'Period'),
+      body: `${rxCanvas('chartMsOptions')}<div class="rx-pb">${legend('line')}</div>${marketShareFlagNote(nseRaw, bseRaw, 'options')}` })}
+    ${rxPanel({ title: 'Total revenue market share', meta: 'NSE vs BSE · % of the two',
+      right: seg('msTotalGran', MS_GRANULARITIES, 'Period'),
+      body: `${rxCanvas('chartMsTotal')}<div class="rx-pb">${legend('line')}</div>${marketShareFlagNote(nseRaw, bseRaw, 'total')}` })}
+    ${optionsSharePredictorHTML(predictor, predFlags)}
+  </div>`;
+  const root = el.firstElementChild;
 
   let expGran = 'monthly', expSeg = 'total';
   const refreshExp = () => {
     const rows = buildExpiryTrendSeries(nseRaw, bseRaw, expGran, expSeg);
     buildExpiryTrendChart('chartExpTrend', rows);
-    const tableEl = el.querySelector('#expTrendTable');
+    const tableEl = root.querySelector('#expTrendTable');
     if (tableEl) tableEl.innerHTML = expiryTrendTableHTML(rows);
   };
   refreshExp();
-  [['.expGran-btn', k => { expGran = k; }], ['.expSeg-btn', k => { expSeg = k; }]].forEach(([sel, set]) => {
-    el.querySelectorAll(sel).forEach(btn => {
-      btn.addEventListener('click', () => {
-        el.querySelectorAll(sel).forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        set(btn.dataset.key);
-        refreshExp();
-      });
-    });
-  });
+  rxOnSeg(root, 'msExpGran', k => { expGran = k; refreshExp(); });
+  rxOnSeg(root, 'msExpSeg', k => { expSeg = k; refreshExp(); });
 
   let optGran = 'monthly', totalGran = 'monthly';
   const refreshOpt   = () => buildMarketShareChart('chartMsOptions', getMarketShareRows(nseRaw, bseRaw, optGran), 'opt');
@@ -578,23 +526,8 @@ function buildMarketShareTrend() {
   refreshOpt();
   refreshTotal();
   chartOptionsSharePredictor('chartOptionsSharePredictor', predictor);
-
-  el.querySelectorAll('.msOpt-gran-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      el.querySelectorAll('.msOpt-gran-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      optGran = btn.dataset.gran;
-      refreshOpt();
-    });
-  });
-  el.querySelectorAll('.msTotal-gran-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      el.querySelectorAll('.msTotal-gran-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      totalGran = btn.dataset.gran;
-      refreshTotal();
-    });
-  });
+  rxOnSeg(root, 'msOptGran', k => { optGran = k; refreshOpt(); });
+  rxOnSeg(root, 'msTotalGran', k => { totalGran = k; refreshTotal(); });
 }
 
 // Off-screen chart-to-image rendering for the downloadable reports (mirrors buildAllRegressionChartImgs)

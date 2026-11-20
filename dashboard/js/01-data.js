@@ -416,12 +416,14 @@ function buildFeeNote() {
       parts.push(`${flagTags({ modelled: true })} marks MCX history ${fmtLongDate(mh.first_date)} – ${fmtLongDate(mh.last_date)}, which is modelled (scaled to reported quarters, options split derived) and left out of YoY, QoQ, segment-mix and market-share comparisons, shown as —.`);
     }
   }
+  // The rest is reference: folded under one line, like the panels' "How this is worked out"
+  const more = [];
   // Expiry-day counts (expiryCountHTML in 10-revenue-summary.js)
   if (exs.includes('nse') || exs.includes('bse')) {
-    parts.push(`<strong>Expiries</strong> counts the period's expiry days: each exchange's weekly index expiry (NSE Nifty, BSE Sensex) on the weekday then in force, moved to the previous trading day for a holiday; this week's counts once it has traded.${multi ? ' N = NSE, B = BSE; amber marks counts that differ, where the daily averages are not like for like.' : ''} Before 20 Nov 2024 both exchanges also had other weekly index expiries, not counted; BSE counts before the Sensex relaunch (15 May 2023) are notional.`);
+    more.push(`<strong>Expiries</strong> counts the period's expiry days: each exchange's weekly index expiry (NSE Nifty, BSE Sensex) on the weekday then in force, moved to the previous trading day for a holiday; this week's counts once it has traded.${multi ? ' N = NSE, B = BSE; amber marks counts that differ, where the daily averages are not like for like.' : ''} Before 20 Nov 2024 both exchanges also had other weekly index expiries, not counted; BSE counts before the Sensex relaunch (15 May 2023) are notional.`);
   }
   // The live cards beside the segment tabs (buildLiveCards in 10-revenue-summary.js)
-  parts.push('<strong>Live cards</strong> show NSE and BSE total revenue booked so far today at today\'s statutory fees, from the live polls (about every 5 min, 09:15–16:00 IST), with the predicted close and the typical-path range as on the Live Predictor tab; outside market hours they show the last session, and its actual close once the evening data is in, also at today\'s fees. The revenue banner at the top shows the same figure, with the time of the poll.');
+  more.push('<strong>Live cards</strong> show NSE and BSE total revenue booked so far today at today\'s statutory fees, from the live polls (about every 5 min, 09:15–16:00 IST), with the predicted close and the typical-path range as on the Live Predictor tab; outside market hours they show the last session, and its actual close once the evening data is in, also at today\'s fees. The revenue banner at the top shows the same figure, with the time of the poll.');
   // Muhurat / DR test sessions (scripts/trading_calendar.py): left out of every
   // average and day count, listed here with their revenue
   const special = exs.flatMap(ex => (rawFor(ex)?.special_sessions || []).map(r => ({ ex, r })));
@@ -436,10 +438,12 @@ function buildFeeNote() {
       const [d, s] = k.split('|');
       return `${label[s] || s} ${fmtLongDate(d)} (${byDate[k].join(', ')})`;
     });
-    parts.push(`<strong>Special sessions</strong> are short sessions left out of averages, day counts and weekday figures: ${items.join('; ')}.`);
+    more.push(`<strong>Special sessions</strong> are short sessions left out of averages, day counts and weekday figures: ${items.join('; ')}.`);
   }
-  el.innerHTML = parts.join(' ');
-  el.hidden = !parts.length;
+  const moreTitle = ['Expiries', 'live cards'].concat(special.length ? ['special sessions'] : []).join(', ').replace(/, ([^,]*)$/, ' and $1');
+  el.innerHTML = (parts.length ? `<p>${parts.join(' ')}</p>` : '')
+    + `<details class="rx-how fee-note-more"><summary>${moreTitle}: how they are counted</summary>${more.map(t => `<p>${t}</p>`).join('')}</details>`;
+  el.hidden = false;
 }
 
 

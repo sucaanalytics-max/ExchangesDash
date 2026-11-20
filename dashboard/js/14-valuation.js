@@ -546,15 +546,21 @@ function valuationTabHTML(ex, defaults, c0, analysts, open) {
   const adrTxt = x => fmtNum(x, 2);
   const vs45 = v.adr != null && c.adr45 ? ` · ${rxSignedPct(v.adr / c.adr45 - 1, 1)} vs 45 DMA` : '';
   const editedChip = edited.length ? rxChip(`Edited: ${edited.map(k => VALUATION_INPUT_LABELS[k]).join(', ')}`, 'edit') : '';
-  const triPanel = (t, title, meta, aria) => rxPanel({
-    cls: 'rx-col-half', title, meta,
+  const triPanel = (t, title, meta, aria, cls = 'rx-col-half') => rxPanel({
+    cls, title, meta,
     body: `<div class="rx-pb rx-scroll">${valuationTriTable(t, v, cmp, aria)}</div>`,
     foot: valuationTriNote(t, c) || `Weighted average = Σ weight × target ÷ Σ weight, over the methods with a value.`,
   });
-  const tris = `<div class="rx-row">
+  // No ADR estimate: the estimate triangulation would repeat the 45 DMA one, so show it once
+  const tris = m.estIsDma
+    ? `<div class="rx-row">
+    ${triPanel(m.dma, `Triangulated · 45 DMA (ADR ${adrTxt(c.adr45)})`,
+      `last ${c.n45} sessions${flagTags(c.flags)} · no ADR estimate set, so there is no second table · <button type="button" class="rx-link" data-rx-goto="valinputs">set one on Valuation Inputs →</button>`,
+      '45 DMA triangulation', 'rx-col-full')}
+  </div>`
+    : `<div class="rx-row">
     ${triPanel(m.dma, `Triangulated · 45 DMA (ADR ${adrTxt(c.adr45)})`, `last ${c.n45} sessions${flagTags(c.flags)}`, '45 DMA triangulation')}
-    ${triPanel(m.est, `Triangulated · ADR estimate (ADR ${adrTxt(m.est.adr)})`,
-      m.estIsDma ? 'no estimate set: the 45 DMA' : `from Valuation Inputs${vs45}`, 'ADR estimate triangulation')}
+    ${triPanel(m.est, `Triangulated · ADR estimate (ADR ${adrTxt(m.est.adr)})`, `from Valuation Inputs${vs45}`, 'ADR estimate triangulation')}
   </div>`;
 
   // Workings: the ADR model block, the ADR path, the regression and ratio figures

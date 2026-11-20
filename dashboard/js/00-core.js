@@ -523,6 +523,16 @@ const NAV_ICONS = {
   share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>',
   inputs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>',
   ratio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="6" r="1.5"/><line x1="5" y1="12" x2="19" y2="12"/><circle cx="12" cy="18" r="1.5"/></svg>',
+  // One icon per kind of tab, so no two tabs in a menu look alike
+  glance: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>',
+  live: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>',
+  users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.3a6.5 6.5 0 0 1 3.5 5.7"/></svg>',
+  versus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M5 21h14"/><path d="M5 7h14"/><path d="M5 7l-3 7a3 3 0 0 0 6 0z"/><path d="M19 7l-3 7a3 3 0 0 0 6 0z"/></svg>',
+  pie: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.2 15.9A10 10 0 1 1 8 2.8"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>',
+  book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/></svg>',
+  calendar: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>',
+  list: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/></svg>',
+  briefcase: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>',
 };
 
 // ========================
@@ -539,12 +549,12 @@ const EXCHANGE_TABS = {
   nse: [
     { id: 'revenue',    label: 'Revenue Summary',    icon: 'revenue' },
     { id: 'prediction', label: 'Revenue Predictor',   icon: 'prediction' },
-    { id: 'intraday',   label: 'Live Predictor',      icon: 'temporal' },
+    { id: 'intraday',   label: 'Live Predictor',      icon: 'live' },
     { id: 'share',      label: 'Regression',          icon: 'share' },
     { id: 'valuation',  label: 'Valuation Model',     icon: 'advanced' },
     { id: 'valinputs',  label: 'Valuation Inputs',    icon: 'inputs' },
     { id: 'contracts',  label: 'Contracts to Premium', icon: 'ratio' },
-    { id: 'participants', label: 'Participants',      icon: 'share' },
+    { id: 'participants', label: 'Participants',      icon: 'users' },
   ],
   bse: [
     { id: 'revenue',    label: 'Revenue Summary',     icon: 'revenue' },
@@ -562,7 +572,7 @@ const EXCHANGE_TABS = {
     { id: 'share',      label: 'Regression',            icon: 'share' },
     { id: 'valuation',  label: 'Valuation Model',       icon: 'advanced' },
     { id: 'valinputs',  label: 'Valuation Inputs',      icon: 'inputs' },
-    { id: 'competition', label: 'Competition',          icon: 'share' },
+    { id: 'competition', label: 'Competition',          icon: 'versus' },
   ],
   all: [
     { id: 'revenue',    label: 'Revenue Summary',     icon: 'revenue' },
@@ -570,7 +580,7 @@ const EXCHANGE_TABS = {
   ],
   nsebse: [
     { id: 'revenue',      label: 'Revenue Summary',     icon: 'revenue' },
-    { id: 'marketshare',  label: 'Market Share Trend',  icon: 'share' },
+    { id: 'marketshare',  label: 'Market Share Trend',  icon: 'pie' },
     { id: 'contracts',    label: 'Contracts to Premium', icon: 'ratio' },
   ],
 };
@@ -786,6 +796,35 @@ function syncModeSwitch() {
   });
 }
 
+// Screen readers: the selected menu item, exchange and segment button carry
+// aria-current / aria-pressed, kept in step with their .active class wherever
+// it is toggled (one observer instead of a call beside every toggle)
+const ACTIVE_ARIA_SEL = '.nav-item, .exchange-btn, .sub-tab';
+function syncActiveAria(el) {
+  const on = el.classList.contains('active');
+  if (el.classList.contains('nav-item')) {
+    if (on) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current');
+  } else {
+    el.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+}
+function initActiveAria() {
+  document.querySelectorAll(ACTIVE_ARIA_SEL).forEach(syncActiveAria);
+  new MutationObserver(muts => {
+    for (const m of muts) {
+      if (m.type === 'attributes') {
+        if (m.target.matches(ACTIVE_ARIA_SEL)) syncActiveAria(m.target);
+      } else {
+        m.addedNodes.forEach(n => {
+          if (n.nodeType !== 1) return;
+          if (n.matches(ACTIVE_ARIA_SEL)) syncActiveAria(n);
+          n.querySelectorAll(ACTIVE_ARIA_SEL).forEach(syncActiveAria);
+        });
+      }
+    }
+  }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
+}
+
 // Exchanges → the last exchange shown (NSE at first); another mode → the last
 // view shown in it, or its first
 async function setMode(mode) {
@@ -824,7 +863,7 @@ function buildSidebarNav(exchange) {
   const tabs = tabsFor(exchange);
   // Phones only (CSS hides it above 640 px): back to the glance view
   const glance = `<button class="nav-item nav-item--glance" data-glance="1" aria-label="At a glance">
-      ${NAV_ICONS.temporal}
+      ${NAV_ICONS.glance}
       At a glance
     </button>`;
   nav.innerHTML = glance + tabs.map((t, i) =>
@@ -861,7 +900,10 @@ function attachTabListeners() {
       const tabEl = document.getElementById('tab-' + tab);
       if (tabEl) tabEl.classList.add('active');
       const titles = titlesFor(currentExchange);
-      document.getElementById('headerTitle').textContent = titles[tab] || tab;
+      // Phones show the menu's short name; the long title wraps nothing useful into an ellipsis there
+      const long = titles[tab] || tab, short = btn.textContent.trim();
+      document.getElementById('headerTitle').innerHTML = short && short !== long
+        ? `<span class="ht-long">${escHtml(long)}</span><span class="ht-short">${escHtml(short)}</span>` : escHtml(long);
       if (glanceActive()) {
         document.getElementById('headerTitle').textContent = 'At a glance';
         updateHeaderExchange(GLANCE_EX);
