@@ -1049,7 +1049,9 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
 function buildRevenueSummary() {
-  // The VIX panel below the sub-tabs is cross-exchange and loads its own data (21-vix.js); not awaited
+  // The week-on-week ADR and VIX panels below the sub-tabs are cross-exchange and
+  // load their own data (22-weekly-adr.js, 21-vix.js); not awaited
+  buildWeeklyAdrPanel().catch(err => console.warn('Weekly ADR panel failed:', err));
   buildVixPanel().catch(err => console.warn('VIX panel failed:', err));
   const ed = ENRICHED_DATA;
   if (!ed || !ed.summary_total) return;

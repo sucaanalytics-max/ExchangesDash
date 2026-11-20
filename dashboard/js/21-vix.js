@@ -184,15 +184,18 @@ function vixSensitivityRows(perEx, vix45, todayVix, range) {
 
 // Week-on-week VIX: the last `weeks` Mon–Sun weeks (cpWeekStart) of NSE trading
 // dates, newest first: { week, label, sessions, avgVix, closeVix (last session's
-// VIX), chgPts, chgPct, totalAdr, totalPct, inProgress }. totalAdr is the mean of
-// totalByDate (NSE + BSE + MCX total_rev, built by the caller) over the week's
-// NSE sessions. Changes (fractions for %) are against the next-older week in the
+// VIX), chgPts, chgPct, totalAdr, totalPct, totalExcl, inProgress }. `totals` is
+// either a function week → { avg, excl } | null (the panel's: the week-on-week
+// ADR panel's Total, the sum of the exchanges' per-session averages, with the
+// exchanges that have no such week in excl) or a { date: total } map whose
+// mean over the week's NSE sessions is totalAdr (excl []); null for none.
+// totalPct needs both weeks' Totals made of the same exchanges. Changes (fractions for %) are against the next-older week in the
 // data, so the oldest row shown has them too unless no older week exists (one
 // extra week is built for that, then dropped). inProgress marks the week of the
 // latest NSE date while a weekday after that date in the week has not yet passed
 // (the IST date of `now` is on or before it), so a week whose Friday is a holiday
 // is complete once the Friday is over, not when the next week's data lands.
-function vixWeeklyRows(nseRows, totalByDate, weeks = 8, now = Date.now()) {
+function vixWeeklyRows(nseRows, totals, weeks = 8, now = Date.now()) {
   const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const dm = iso => [Number(iso.slice(8, 10)), MON[Number(iso.slice(5, 7)) - 1]];
   const label = (a, b) => {
@@ -218,9 +221,12 @@ function vixWeeklyRows(nseRows, totalByDate, weeks = 8, now = Date.now()) {
   const stats = [...byWeek.keys()].sort().reverse().slice(0, weeks + 1).map(w => {
     const ds = byWeek.get(w);
     const vix = ds.map(r => r.vix).filter(v => v > 0);
-    const tot = ds.map(r => (totalByDate ? totalByDate[r.date] : undefined)).filter(Number.isFinite);
+    let t = null;
+    if (typeof totals === 'function') t = totals(w);
+    else if (totals) t = { avg: mean(ds.map(r => totals[r.date]).filter(Number.isFinite)), excl: [] };
     return { week: w, label: label(ds[0].date, ds[ds.length - 1].date), sessions: ds.length,
-             avgVix: mean(vix), closeVix: ds[ds.length - 1].vix > 0 ? ds[ds.length - 1].vix : null, totalAdr: mean(tot),
+             avgVix: mean(vix), closeVix: ds[ds.length - 1].vix > 0 ? ds[ds.length - 1].vix : null,
+             totalAdr: t && Number.isFinite(t.avg) ? t.avg : null, totalExcl: (t && t.excl) || [],
              inProgress: w === latestWeek && latest < latestFriday && istToday <= latestFriday };
   });
   return stats.map((s, i) => {
@@ -228,8 +234,9 @@ function vixWeeklyRows(nseRows, totalByDate, weeks = 8, now = Date.now()) {
     const vixChg = o && s.avgVix != null && o.avgVix > 0;
     return { week: s.week, label: s.label, sessions: s.sessions, avgVix: s.avgVix, closeVix: s.closeVix,
              chgPts: vixChg ? s.avgVix - o.avgVix : null, chgPct: vixChg ? s.avgVix / o.avgVix - 1 : null,
-             totalAdr: s.totalAdr,
-             totalPct: o && s.totalAdr != null && o.totalAdr > 0 ? s.totalAdr / o.totalAdr - 1 : null,
+             totalAdr: s.totalAdr, totalExcl: s.totalExcl,
+             totalPct: o && s.totalAdr != null && o.totalAdr > 0 && s.totalExcl.join() === o.totalExcl.join()
+               ? s.totalAdr / o.totalAdr - 1 : null,
              inProgress: s.inProgress };
   }).slice(0, weeks);
 }
@@ -351,20 +358,41 @@ function vixPanelModel(rowsByEx) {
     perEx[ex] = { adr: vixBase(rows), beta: fit ? fit.beta : null, fit, n: sample.length,
                   lastDate: actual.length ? actual[actual.length - 1].date : null };
   });
-  // Total by date over days every exchange has reached, so one exchange's later
-  // file does not drop the others out of the newest day. Total ADR needs all
-  // three: with an exchange missing (its file failed to load) it is left blank
-  // rather than shown understated under the "NSE + BSE + MCX" label.
+  // Total ADR needs all three: with an exchange missing (its file failed to load)
+  // it is left blank rather than shown understated under the "NSE + BSE + MCX"
+  // label. With the week-on-week ADR panel loaded (22-weekly-adr.js) a week's
+  // Total is that panel's (vixWeeklyAdrTotals); otherwise the mean of NSE + BSE +
+  // MCX by date over the week's NSE sessions, through the latest day every
+  // exchange has, so one exchange's later file does not drop the others out.
   const missing = VIX_EXCHANGES.filter(ex => !perEx[ex]);
-  const upTo = missing.length ? '' : VIX_EXCHANGES.map(ex => perEx[ex].lastDate).filter(Boolean).sort()[0] || '';
-  const totalByDate = missing.length ? null : {};
-  if (totalByDate) VIX_EXCHANGES.forEach(ex => rowsByEx[ex].forEach(r => {
-    if (!r || r.modelled || !(r.date <= upTo)) return;
-    totalByDate[r.date] = (totalByDate[r.date] || 0) + (Number(r.total_rev) || 0);
-  }));
+  const adrTotals = !missing.length && typeof weeklyAdrWeeks === 'function';
+  const upTo = missing.length || adrTotals ? '' : VIX_EXCHANGES.map(ex => perEx[ex].lastDate).filter(Boolean).sort()[0] || '';
+  let totals = null;
+  if (adrTotals) totals = vixWeeklyAdrTotals(rowsByEx);
+  else if (!missing.length) {
+    totals = {};
+    VIX_EXCHANGES.forEach(ex => rowsByEx[ex].forEach(r => {
+      if (!r || r.modelled || !(r.date <= upTo)) return;
+      totals[r.date] = (totals[r.date] || 0) + (Number(r.total_rev) || 0);
+    }));
+  }
   return { perEx, vix45: vixMean(nse), range: min <= max ? { min, max } : null,
-           weekly: vixWeeklyRows(nse, totalByDate), upTo, missing,
+           weekly: vixWeeklyRows(nse, totals), upTo, missing, adrTotals,
            nseLast: nse.length ? nse[nse.length - 1].date : null };
+}
+
+// week → { avg, excl } from the week-on-week ADR panel's maths (weeklyAdrWeeks,
+// 22-weekly-adr.js): the sum of each exchange's actual average per session that
+// week, as that panel's Total, excl naming the exchanges with no such week; null
+// when none has it.
+function vixWeeklyAdrTotals(rowsByEx) {
+  const byWeek = {};
+  VIX_EXCHANGES.forEach(ex => { byWeek[ex] = new Map(weeklyAdrWeeks(rowsByEx[ex] || [], ex).map(w => [w.week, w])); });
+  return week => {
+    const have = VIX_EXCHANGES.filter(ex => byWeek[ex].has(week));
+    if (!have.length) return null;
+    return { avg: have.reduce((s, ex) => s + byWeek[ex].get(week).avg, 0), excl: VIX_EXCHANGES.filter(ex => !have.includes(ex)) };
+  };
 }
 
 function vixFitChip(ex, p) {
@@ -412,7 +440,7 @@ function vixWeeklyHTML(weekly) {
       <td>${escHtml(w.label)}${w.inProgress ? ` ${rxChip('in progress')}` : ''}</td><td class="vix-nar">${w.sessions}</td>
       <td>${v(w.avgVix)}</td><td>${v(w.closeVix)}</td>
       <td class="vix-nar${w.chgPts == null ? '' : w.chgPts >= 0 ? ' rx-up' : ' rx-dn'}">${pts(w.chgPts)}</td><td${cls(w.chgPct)}>${rxSignedPct(w.chgPct)}</td>
-      <td class="rx-strong">${v(w.totalAdr)}</td><td${cls(w.totalPct)}>${rxSignedPct(w.totalPct)}</td></tr>`).join('');
+      <td class="rx-strong">${v(w.totalAdr)}${w.totalAdr != null && w.totalExcl && w.totalExcl.length ? ` <span class="wadr-excl" title="No such week in ${w.totalExcl.map(e => e.toUpperCase()).join(' or ')}'s data: Total leaves it out, and its ADR WoW % is shown only against a Total of the same exchanges">excl. ${w.totalExcl.map(e => e.toUpperCase()).join(', ')}</span>` : ''}</td><td${cls(w.totalPct)}>${rxSignedPct(w.totalPct)}</td></tr>`).join('');
   return `<div class="rx-scroll"><table class="rx-table vix-weekly">
     <thead><tr><th>Week</th><th class="vix-nar">Sessions</th><th>Avg VIX</th><th>Week-end VIX</th><th class="vix-nar">WoW pts</th><th>VIX WoW %</th><th>Total ADR <span class="vix-unit">₹ Cr</span></th><th>ADR WoW %</th></tr></thead>
     <tbody>${body}</tbody></table></div>`;
@@ -426,7 +454,7 @@ function vixHowHTML(model) {
     <li><b>MCX:</b> trades commodities, so India VIX (Nifty volatility) explains little of it: its β is small and its R² (VIX) near zero.</li>
     <li><b>Fit:</b> per exchange by least squares on daily rows from ${rxDate(VIX_FIT_FROM)} (after SEBI's F&amp;O curbs): ln(revenue ÷ previous 45-session mean) on weekday dummies, for NSE and BSE also an expiry-day and a pre-expiry-day dummy (each exchange's weekly expiry, moved earlier for a holiday, and the session on the scheduled weekday before it; the expiry weekday changed on 1 Sep 2025, so weekday dummies alone cannot hold the expiry spike), and ln(VIX ÷ previous 45-session mean VIX). β is the elasticity; R² (VIX) is what the VIX term adds over those dummies alone. VIX is NSE's daily close, joined by date; BSE and MCX days with no NSE session are left out, and MCX's modelled rows (before 2 Sep 2024) are never used.</li>
     <li><b>Basis:</b> total revenue at today's statutory rates for NSE and BSE; MCX as reported (fut + opt, source values, not re-priced), whatever the exchange switcher shows.${r ? ` Grey rows extrapolate: the model is fitted on VIX ÷ its previous 45-session mean, which ran from ${fmtNum(r.min, 2)} to ${fmtNum(r.max, 2)} in the fit sample${model.vix45 > 0 ? ` (VIX ${fmtNum(r.min * model.vix45, 2)}–${fmtNum(r.max * model.vix45, 2)} against today's VIX45 of ${fmtNum(model.vix45, 2)})` : ''}, and a grey row's VIX ÷ VIX45 lies outside that range.` : ''}</li>
-    <li><b>Week-on-week:</b> Mon–Sun weeks of NSE sessions, daily closes only (the live VIX is not mixed in). Week-end VIX is the VIX of the week's last session (blank while that day's VIX is not in yet); changes are against the week before. Total ADR is NSE + BSE + MCX on the same basis, averaged over the week's NSE sessions.</li>
+    <li><b>Week-on-week:</b> Mon–Sun weeks of NSE sessions, daily closes only (the live VIX is not mixed in). Week-end VIX is the VIX of the week's last session (blank while that day's VIX is not in yet); changes are against the week before. Total ADR is NSE + BSE + MCX on the same basis: ${model.adrTotals ? "the sum of each exchange's average revenue per session that week, the same Total as the week-on-week average daily revenue panel above" : "averaged over the week's NSE sessions"}.</li>
   </ul>`);
 }
 
@@ -450,6 +478,7 @@ function vixWeeklyFoot(model) {
     const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0];
     return `Total ADR and ADR WoW % are blank: ${list} data couldn't be loaded, and Total ADR needs NSE + BSE + MCX. Try again in a moment.`;
   }
+  if (model.adrTotals) return `Total ADR: NSE + BSE + MCX ₹ Cr/day (${feeUnitLabelFor(VIX_EXCHANGES)}), the sum of each exchange's average per session that week, as in the week-on-week average daily revenue panel above; "excl." marks a week an exchange's data does not have, and ADR WoW % then compares only Totals of the same exchanges.`;
   return `Total ADR: NSE + BSE + MCX ₹ Cr/day (${feeUnitLabelFor(VIX_EXCHANGES)})${upTo && nseLast && upTo < nseLast ? `, through ${escHtml(rxDate(upTo))} (the latest day every exchange has)` : ''}.`;
 }
 

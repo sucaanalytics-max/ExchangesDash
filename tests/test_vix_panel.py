@@ -345,6 +345,41 @@ class VixSensitivity(unittest.TestCase):
         _, foot = js_eval(names, expr, {"nse": nse, "bse": None, "mcx": []})
         self.assertIn("BSE and MCX data couldn't be loaded", foot)
 
+    def test_weekly_total_is_the_weekly_adr_panels(self):
+        # with 22-weekly-adr.js loaded, a week's Total ADR is the weekly ADR panel's Total:
+        # the sum of each exchange's per-session average; "excl." when an exchange lacks the week
+        nse = synthetic_rows(count=120)
+        mcx = [{"date": r["date"], "total_rev": r["total_rev"] / 4} for r in nse]
+        mcx.append({"date": "2025-07-19", "total_rev": 999})   # an MCX-only Saturday counts in MCX's own average
+        bse = [{"date": r["date"], "total_rev": r["total_rev"] / 5} for r in nse[:-5]]   # BSE lacks the newest week (120 weekdays = 24 full weeks)
+        names = VIX_JS + ["VIX_EXCHANGES", "vixPanelModel", "vixWeeklyAdrTotals", "vixWeeklyFoot", "MONTHS_SHORT",
+                          "WEEKLY_ADR_EXCHANGES", "WEEKLY_NORMALISED", "weeklyAdrWeeks", "weeklyAdrCell", "weeklyAdrRow"]
+        expr = ("(globalThis.feeUnitLabelFor = () => 'basis', (m => [m, vixWeeklyFoot(m),"
+                " m.weekly.map(w => weeklyAdrRow({nse: weeklyAdrWeeks(DATA.nse, 'nse'), bse: weeklyAdrWeeks(DATA.bse, 'bse'),"
+                " mcx: weeklyAdrWeeks(DATA.mcx, 'mcx')}, w.week, 'actual').total.avg)])"
+                "(vixPanelModel({nse: DATA.nse, bse: DATA.bse, mcx: DATA.mcx})))")
+        m, foot, panel = js_eval(names, expr, {"nse": nse, "bse": bse, "mcx": mcx})
+        self.assertTrue(m["adrTotals"])
+        self.assertEqual([w["totalAdr"] for w in m["weekly"]], panel)
+        self.assertIn("as in the week-on-week average daily revenue panel", foot)
+        newest, prev = m["weekly"][0], m["weekly"][1]
+        self.assertGreater(newest["week"], bse[-1]["date"])
+        self.assertEqual(newest["totalExcl"], ["bse"])
+        self.assertIsNone(newest["totalPct"])   # different exchanges: no ADR WoW %
+        self.assertEqual(prev["totalExcl"], [])
+        self.assertIsNotNone(prev["totalPct"])
+        # a failed load still blanks Total ADR (#100 point 1), whatever the totals' source
+        part = js_eval(names, "vixPanelModel({nse: DATA.nse, bse: null, mcx: DATA.mcx})", {"nse": nse, "mcx": mcx})
+        self.assertTrue(all(w["totalAdr"] is None for w in part["weekly"]))
+
+    def test_weekly_rows_function_totals(self):
+        nse = nse_week(["2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13", "2026-11-16"], [14] * 6)
+        rows = js_eval(VIX_JS, "vixWeeklyRows(DATA, w => (w === '2026-11-16' ? {avg: 70, excl: ['bse']} : {avg: 80, excl: []}))", nse)
+        self.assertEqual([(r["totalAdr"], r["totalExcl"]) for r in rows], [(70, ["bse"]), (80, [])])
+        self.assertIsNone(rows[0]["totalPct"])
+        rows = js_eval(VIX_JS, "vixWeeklyRows(DATA, w => ({avg: w === '2026-11-16' ? 70 : 80, excl: []}))", nse)
+        self.assertAlmostEqual(rows[0]["totalPct"], 70 / 80 - 1, places=12)
+
     def test_panel_range_is_of_fitted_ratios(self):
         rows = synthetic_rows()
         names = VIX_JS + ["VIX_EXCHANGES", "vixPanelModel"]
