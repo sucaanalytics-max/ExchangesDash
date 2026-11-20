@@ -62,9 +62,17 @@ function ccSum(rows, side, und, metric) {
 }
 
 // A day whose MCX file gives every option a premium of 0 though options traded (23 Jun 2026):
-// its premium can't be compared, so premium shares and averages leave it out
+// its premium can't be compared, so premium shares and averages leave it out. The same rule
+// as premium_out in scripts/nse_commodity_pipeline.py, which leaves such days out of the
+// monthly and quarterly premium sums (prem_days). An unknown premium (null) is not 0.
 function ccPremOk(r) {
-  return !(ccVal(r.mcx, 'all', 'onot') > 0 && !ccVal(r.mcx, 'all', 'prem'));
+  return !(ccVal(r.mcx, 'all', 'onot') > 0 && ccVal(r.mcx, 'all', 'prem') === 0);
+}
+
+// Sessions a period's per-session average divides by: for options premium the
+// period's prem_days (files written before it existed: every session)
+function ccPeriodDays(p, metric) {
+  return metric === 'prem' ? (p.prem_days ?? p.days) : p.days;
 }
 
 // The rows a metric's share is taken over
@@ -212,7 +220,7 @@ function ccTopVal(p, side, und, metric) {
 
 // Sessions behind a period's figure: revenue counts only the days it could be split for
 function ccTopDays(p, side, metric) {
-  return metric === 'rev' ? (p.ru_days?.[side] ?? 0) : p.days;
+  return metric === 'rev' ? (p.ru_days?.[side] ?? 0) : ccPeriodDays(p, metric);
 }
 
 // Per-session value in display units
@@ -402,8 +410,10 @@ async function buildMcxCompetition() {
       return rxKpi(label, ccPct(s), d == null ? '' : `${ccPpText(d).text} against ${escHtml(w.prevLabel)}`);
     };
     const n = w.rows.length;
-    const sumPrem = ccSum(w.rows, 'nse', 'all', 'prem');   // null when a premium is unknown
-    const nseFut = ccSum(w.rows, 'nse', 'all', 'fut') / n, nsePrem = sumPrem == null ? null : sumPrem / n;
+    // Premium a day over the same sessions as the table's premium columns (ccRowsFor)
+    const premRows = ccRowsFor(w.rows, 'prem');
+    const sumPrem = premRows.length ? ccSum(premRows, 'nse', 'all', 'prem') : null;   // null when a premium is unknown
+    const nseFut = ccSum(w.rows, 'nse', 'all', 'fut') / n, nsePrem = sumPrem == null ? null : sumPrem / premRows.length;
     // Premium and notional are different measures, so they are shown side by side, never added
     q('kpis').innerHTML = rxKpis([
       kp('prem', 'NSE share of options premium'),
@@ -488,7 +498,9 @@ async function buildMcxCompetition() {
           label: ctx => ` NSE share: ${ccPct(ctx.raw / 100)}`,
           footer: items => {
             const p = months[items[0].dataIndex];
-            return `${p.days} sessions · NSE ₹${ccCr(ccVal(p.nse, und, metric) / p.days)} Cr a day · MCX ₹${ccCr(ccVal(p.mcx, und, metric) / p.days)} Cr a day`;
+            const nd = ccPeriodDays(p, metric);
+            const out = nd < p.days ? ` (${p.days - nd} left out: MCX's premium 0)` : '';
+            return `${nd} sessions${out} · NSE ₹${ccCr(ccVal(p.nse, und, metric) / nd)} Cr a day · MCX ₹${ccCr(ccVal(p.mcx, und, metric) / nd)} Cr a day`;
           } } } },
         scales: {
           x: { grid: { display: false }, ticks: { maxTicksLimit: 12, maxRotation: 0, autoSkip: true } },
@@ -548,7 +560,7 @@ async function buildMcxCompetition() {
         label: und === 'others' ? 'Others' : ccLabel(doc, und),
         und,
         data: months.map(p => { const v = ccTopPer(p, side, und, metric); return v == null ? null : v * unit.k; }),
-        backgroundColor: ctx => (ctx.dataIndex === idx ? CC_TOP_COLORS[und] : `${CC_TOP_COLORS[und]}59`),
+        backgroundColor: ctx => (ctx.dataIndex === idx ? CC_TOP_COLORS[und] : rxAlpha(CC_TOP_COLORS[und], 0.35)),
         borderColor: '#FFFFFF', borderWidth: { top: 1 }, borderSkipped: 'bottom',
         stack: 's',
       })).filter(ds => ds.data.some(v => v));
@@ -588,8 +600,8 @@ async function buildMcxCompetition() {
     draw('nse', 'ccTopNse', 'chartCcTopNse', 'topunitN');
     const p = months[idx];
     q('topmeta').textContent = `${metricText} · ${ccMonthLabel(months[0].month)} to ${ccMonthLabel(months[months.length - 1].month)}`;
-    // the month itself is in the picker beside it
-    q('toptitle').textContent = `${metricText[0].toUpperCase()}${metricText.slice(1)} a session${idx > 0 && metric !== 'con' ? ` · NSE share against ${ccMonthLabel(months[idx - 1].month)}` : ''}`;
+    // The heading names the month too (it is also in the picker), so it reads on its own
+    q('toptitle').textContent = `${ccMonthLabel(p.month)}${idx === months.length - 1 ? ' to date' : ''}, ${metricText} a session${idx > 0 && metric !== 'con' ? ` · NSE share against ${ccMonthLabel(months[idx - 1].month)}` : ''}`;
     q('toptable').innerHTML = ccTopTableHTML(doc, months, idx, metric);
   };
 

@@ -380,6 +380,21 @@ def _add(acc, by_und):
                 a[i] = None if v is None or a[i] is None else a[i] + v
 
 
+def premium_out(row):
+    """True on a day whose MCX file gives every option a premium of 0 though
+    options traded (2026-06-23): its options premium can't be compared, so
+    periods leave it out of both sides' premium (`prem_days`). ccPremOk in
+    dashboard/js/19-mcx-competition.js applies the same rule to daily rows."""
+    opts = [c["o"] for c in (row.get("mcx") or {}).values() if "o" in c]
+    return sum(o[1] for o in opts) > 0 and all(o[2] == 0 for o in opts)
+
+
+def _without_premium(by_und):
+    """Compact aggregates with every option's premium set to 0 (contracts and notional kept)."""
+    return {u: {k: (list(c[:2]) + [0.0] if k == "o" else c) for k, c in cells.items()}
+            for u, cells in by_und.items()}
+
+
 def _round_tree(by_und):
     for cells in by_und.values():
         for k, c in cells.items():
@@ -403,17 +418,26 @@ def periods(daily, key):
     """Monthly or quarterly sums over regular days that have both exchanges'
     figures (`days`), so every share in a period has a real MCX denominator.
     `ru` sums each side's revenue per underlying over the `ru_days` of those
-    days that have it (a day MCX's revenue can't be split for is left out)."""
+    days that have it (a day MCX's revenue can't be split for is left out).
+    Options premium is summed over the `prem_days` of those days: a day whose
+    MCX file gives every option a premium of 0 (premium_out) adds its contracts
+    and notional but no premium, on either side, so premium shares and averages
+    per session leave it out."""
     out = {}
     for r in daily:
         if r.get("session") or r.get("mcx") is None:
             continue
         label = r["date"][:7] if key == "month" else fy_quarter_label(r["date"])
-        p = out.setdefault(label, {key: label, "days": 0, "nse": {}, "mcx": {}, "rev": [0.0, 0.0],
+        p = out.setdefault(label, {key: label, "days": 0, "prem_days": 0, "nse": {}, "mcx": {}, "rev": [0.0, 0.0],
                                    "ru": {"nse": {}, "mcx": {}}, "ru_days": {"nse": 0, "mcx": 0}})
         p["days"] += 1
-        _add(p["nse"], r["nse"])
-        _add(p["mcx"], r["mcx"])
+        if premium_out(r):
+            _add(p["nse"], _without_premium(r["nse"]))
+            _add(p["mcx"], _without_premium(r["mcx"]))
+        else:
+            p["prem_days"] += 1
+            _add(p["nse"], r["nse"])
+            _add(p["mcx"], r["mcx"])
         p["rev"] = [p["rev"][0] + r["rev"][0], p["rev"][1] + r["rev"][1]]
         ru = r.get("ru") or {}
         for side in ("nse", "mcx"):
@@ -558,7 +582,9 @@ def build_doc(store, unavailable, mcx, unmapped_mcx, updated_at, mcx_rev=None):
                    "ru": "transaction revenue per underlying, ₹ Cr at today's rates: {nse, mcx}; NSE's priced "
                          "from fee_register, MCX's = its reported futures / options revenue for the day split "
                          "by each underlying's share of futures notional / options premium; in periods, summed "
-                         "over ru_days"},
+                         "over ru_days",
+                   "prem_days": "in periods: the sessions whose options premium is summed; a day whose MCX file "
+                                "gives every option a premium of 0 (2026-06-23) adds no premium on either side"},
         "source": {
             "nse": "NSE commodity bhavcopy (UDiFF): " + NSE_URL.format(ymd="YYYYMMDD"),
             "mcx": "MCX bhavcopy per commodity (Supabase mcx_commodity_daily)",
