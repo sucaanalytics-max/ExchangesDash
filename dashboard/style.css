@@ -233,37 +233,37 @@ html, body {
 .sidebar-logo {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
   margin-bottom: var(--space-3);
-  background: var(--color-ink);
+  background: var(--color-sidebar);
   border-top: 3px solid var(--color-primary);
-  border-bottom: 1px solid var(--color-ink);
+  border-bottom: 1px solid var(--color-border);
 }
 
-.sidebar-logo svg {
-  flex-shrink: 0;
-  color: #FFFFFF;   /* its frame and S stroke are currentColor: ink on ink hid them */
+/* Tusk Exchange Dashboard logo (dashboard/tusk-exchange-logo.png, transparent, 3× its shown size) */
+.sidebar-logo img {
+  display: block;
+  height: 60px;
+  width: auto;
 }
 
-.sidebar-logo .logo-text {
-  font-family: var(--font-display);
-  font-size: 13px;
-  font-weight: 700;
-  color: #FFFFFF;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
+/* "by Tusk Investments": the firm's emblem and its wordmark's two tones, under the nav */
+.sidebar-credit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: var(--space-4) var(--space-3) 0;
+  padding: var(--space-3) var(--space-1) 0;
+  border-top: 1px solid var(--color-border);
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--color-text-muted);
 }
-
-.sidebar-logo .logo-sub {
-  font-family: var(--font-display);
-  font-size: 11px;
-  color: rgba(255,255,255,0.65);
-  font-weight: 600;
-  letter-spacing: 0.08em; /* 0.1em at 11px wraps "Trading Intelligence" in the 220px sidebar */
-  text-transform: uppercase;
-  margin-top: 1px;
-}
+.sidebar-credit img { width: 34px; height: 34px; flex-shrink: 0; }
+/* the wordmark's tones: "tusk" near-black, "investments" grey (brand text, so no contrast minimum) */
+.sidebar-credit span { letter-spacing: -0.01em; }
+.sidebar-credit b { margin-left: 3px; font-weight: 700; color: #1D1D1B; }
+.sidebar-credit i { font-style: normal; font-weight: 600; color: #9B9B96; }
 
 .sidebar-nav {
   flex: 1;

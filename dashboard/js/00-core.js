@@ -1113,10 +1113,6 @@ async function switchExchange(exchange) {
   currentExchange = exchange;
   LAST_KEY[modeOf(exchange)] = exchange;
   syncModeSwitch();
-  // Update logo
-  const logoLabels = { nse: 'NSE Analytics', bse: 'BSE Analytics', mcx: 'MCX Analytics', all: 'All Exchanges', nsebse: 'NSE+BSE' };
-  document.getElementById('logoText').textContent = view ? view.label
-    : logoLabels[exchange] || exchange.toUpperCase() + ' Analytics';
   document.querySelectorAll('.exchange-btn').forEach(b => b.classList.toggle('active', b.dataset.exchange === exchange));
   updateHeaderExchange(exchange);
   // Update sidebar nav
