@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-20T10:15:28Z",
+  "updated_at": "2026-11-20T10:20:26Z",
   "market_status": {
     "marketState": [
       {
@@ -54,14 +54,14 @@
         "marketStatus": "Open",
         "tradeDate": "20-Nov-2026",
         "index": "",
-        "last": "92.6800",
+        "last": "92.6775",
         "variation": "",
         "percentChange": "",
         "marketStatusMessage": "Market is Open",
         "expiryDate": "26-Nov-2026",
         "underlying": "USDINR",
-        "updated_time": "20-Nov-2026 15:45",
-        "tradeDateFormatted": "20-Nov-2026 15:45",
+        "updated_time": "20-Nov-2026 15:49",
+        "tradeDateFormatted": "20-Nov-2026 15:49",
         "slickclass": "slick-item"
       }
     ],
@@ -418,19 +418,19 @@
     }
   ],
   "stock_price": {
-    "last_price": 2224.0,
+    "last_price": 2220.3,
     "previous_close": 2194.05,
     "open": 2218.15,
     "day_high": 2251.0,
     "day_low": 2212.0,
-    "pct_change": 1.37
+    "pct_change": 1.2
   },
   "india_vix": {
     "last": 17.33,
     "previous_close": 16.11,
     "change": 1.22,
     "pct_change": 7.54,
-    "as_of": "2026-11-20T10:15:28Z",
+    "as_of": "2026-11-20T10:20:26Z",
     "source": "nse",
     "trade_date": "2026-11-20"
   }
