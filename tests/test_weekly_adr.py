@@ -14,9 +14,10 @@ import unittest
 from helpers import NODE, js_eval
 
 ADR_JS = ["MONTHS_SHORT", "cpWeekStart", "EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry",
-          "computeWeekExpiryDates", "WEEKLY_ADR_EXCHANGES", "WEEKLY_NORMALISED", "weeklyAdrWeeks",
+          "computeWeekExpiryDates", "EXPIRY_DATES_CACHE", "expiryDateSet", "PRE_EXPIRY_DATES_CACHE", "preExpiryDateSet",
+          "WEEKLY_ADR_EXCHANGES", "WEEKLY_NORMALISED", "weeklyAdrWeeks",
           "weeklyAdrCell", "weeklyAdrRow", "weeklyAdrOptions", "fmtTradeDate", "weeklyAdrHolidayText",
-          "weeklyAdrTable"]
+          "weeklyAdrTable", "weeklyAdrDefaultWeeks", "weeklyAdrContext"]
 
 
 def rows(spec):
@@ -35,6 +36,12 @@ def weeks(data, exchange):
 
 def week_of(data, exchange, monday):
     return next(w for w in weeks(data, exchange) if w["week"] == monday)
+
+
+def weeks_ctx(data, exchange, ref_rows, now):
+    """weeklyAdrWeeks with the panel's context: today's IST date at `now` and ref_rows' (NSE's) dates."""
+    return js_eval(ADR_JS, "weeklyAdrWeeks(DATA.rows, DATA.ex, weeklyAdrContext(DATA.ref, Date.parse(DATA.now)))",
+                   {"rows": data, "ex": exchange, "ref": ref_rows, "now": now})
 
 
 # NSE week of 28 Sep 2026 with Friday 2 Oct a holiday; the data runs on into the next week.
@@ -149,6 +156,51 @@ class WeeklyAdrWeeksTest(unittest.TestCase):
         for r in data[:5]:
             r["modelled"] = True
         self.assertEqual([w["week"] for w in weeks(data, "mcx")], ["2026-10-05"])
+
+    def test_pre_expiry_holiday_leaves_expiry_alone(self):
+        # BSE Thursday rule, Wednesday 18 Nov a holiday: the pair is Thursday only; Tuesday is ordinary
+        data = {"2026-11-16": 8, "2026-11-17": 9, "2026-11-19": 45, "2026-11-20": 7, **full_week("2026-11-23")}
+        w = week_of(rows(data), "bse", "2026-11-16")
+        self.assertEqual(w["pair"], ["2026-11-19"])
+        self.assertEqual(w["missing"], ["2026-11-18"])
+        self.assertAlmostEqual(w["norm"]["total"], 45 + (8 + 9 + 7) / 3 * 4)
+        # the old rule's "latest session before expiry" would have paired Tuesday; under the
+        # Thursday rule with Thursday a holiday the expiry moves onto Wednesday: pair = Wed alone
+        data = {"2026-11-16": 8, "2026-11-17": 9, "2026-11-18": 30, "2026-11-20": 7, **full_week("2026-11-23")}
+        self.assertEqual(week_of(rows(data), "bse", "2026-11-16")["pair"], ["2026-11-18"])
+
+    def test_holiday_friday_week_complete_on_saturday(self):
+        # NSE week of 30 Mar 2026 with Good-Friday-style 3 Apr holiday, seen on Saturday 4 Apr (IST)
+        data = rows({**full_week("2026-03-23"), "2026-03-30": 60, "2026-03-31": 80, "2026-04-01": 40, "2026-04-02": 50})
+        sat = "2026-04-04T04:00:00Z"
+        w = weeks_ctx(data, "nse", data, sat)[0]
+        self.assertEqual(w["week"], "2026-03-30")
+        self.assertTrue(w["complete"])
+        self.assertTrue(w["holiday"])
+        self.assertEqual(w["missing"], ["2026-04-03"])
+        self.assertEqual(w["pair"], ["2026-03-30", "2026-03-31"])
+        self.assertAlmostEqual(w["norm"]["total"], 140 + 45 * 3)
+        # on the Friday itself (IST) it is still in progress; without ctx, as before, until Monday's data
+        self.assertFalse(weeks_ctx(data, "nse", data, "2026-04-03T10:00:00Z")[0]["complete"])
+        self.assertFalse(weeks(data, "nse")[0]["complete"])
+
+    def test_bse_lagging_friday_stays_in_progress(self):
+        # NSE has Friday 20 Nov; BSE's file stops at Thursday: on Saturday BSE's week is still in progress
+        nse = rows({**full_week("2026-11-09"), **full_week("2026-11-16")})
+        bse = rows({**full_week("2026-11-09"), "2026-11-16": 8, "2026-11-17": 9, "2026-11-18": 30, "2026-11-19": 45})
+        w = weeks_ctx(bse, "bse", nse, "2026-11-21T06:00:00Z")[0]
+        self.assertFalse(w["complete"])
+        self.assertFalse(w["holiday"])
+        self.assertIsNone(w["norm"])
+
+    def test_holiday_on_expiry_in_latest_week(self):
+        # BSE Thursday rule, Thursday 19 and Friday 20 Nov holidays, data to Wednesday, seen on Saturday:
+        # complete, and the expiry is moved onto Wednesday (the pair is Wednesday alone)
+        data = rows({**full_week("2026-11-09"), "2026-11-16": 8, "2026-11-17": 9, "2026-11-18": 30})
+        w = weeks_ctx(data, "bse", data, "2026-11-21T06:00:00Z")[0]
+        self.assertTrue(w["complete"])
+        self.assertEqual(w["pair"], ["2026-11-18"])
+        self.assertAlmostEqual(w["norm"]["total"], 30 + 8.5 * 4)
 
     def test_complete_uses_own_last_date(self):
         # BSE a day behind: its week is still in progress on Thursday.
@@ -313,6 +365,37 @@ class WeeklyAdrTableTest(unittest.TestCase):
         self.assertAlmostEqual(other["cells"]["nse"]["pct"], (48.6 - 52) / 52)
         self.assertIsNone(ref["cells"]["nse"]["pct"])
 
+    def test_in_progress_pct_blank(self):
+        # row 1 in progress: rows 2-3 show no % (cells or Total); a row in progress: its % is blank too
+        nse = rows({**full_week("2026-11-02"), **full_week("2026-11-09"), "2026-11-16": 60, "2026-11-17": 80})
+        mcx = rows({**full_week("2026-11-02"), **full_week("2026-11-09"), **full_week("2026-11-16")})
+        expr = ("weeklyAdrTable({nse: weeklyAdrWeeks(DATA.n, 'nse'), bse: [], mcx: weeklyAdrWeeks(DATA.m, 'mcx')},"
+                " DATA.w, 'actual')")
+        cur, prev = js_eval(ADR_JS, expr, {"n": nse, "m": mcx, "w": ["2026-11-16", "2026-11-09"]})
+        self.assertIsNone(prev["cells"]["nse"]["pct"])
+        self.assertIsNotNone(prev["cells"]["mcx"]["pct"])   # MCX's week of 16 Nov is complete
+        self.assertIsNone(prev["total"]["pct"])
+        ref, wip = js_eval(ADR_JS, expr, {"n": nse, "m": mcx, "w": ["2026-11-09", "2026-11-16"]})
+        self.assertIsNone(wip["cells"]["nse"]["pct"])
+        self.assertIsNone(wip["total"]["pct"])
+        ref, old = js_eval(ADR_JS, expr, {"n": nse, "m": mcx, "w": ["2026-11-09", "2026-11-02"]})
+        self.assertAlmostEqual(old["cells"]["nse"]["pct"], 0)
+        self.assertAlmostEqual(old["total"]["pct"], 0)
+
+    def test_default_weeks_latest_complete(self):
+        nse = rows({**full_week("2026-10-26"), **full_week("2026-11-02"), **full_week("2026-11-09"),
+                    "2026-11-16": 60, "2026-11-17": 80})
+        mcx = rows({**full_week("2026-11-09"), **full_week("2026-11-16")})
+        expr = ("(b => weeklyAdrDefaultWeeks(b, weeklyAdrOptions(b)))({nse: weeklyAdrWeeks(DATA.n, 'nse'), bse: [],"
+                " mcx: weeklyAdrWeeks(DATA.m, 'mcx')})")
+        self.assertEqual(js_eval(ADR_JS, expr, {"n": nse, "m": mcx}), ["2026-11-09", "2026-11-02", "2026-10-26"])
+        # keyed on NSE's weeks: a newer week only MCX has (NSE's file not in yet) is not row 1
+        nse2 = rows({**full_week("2026-11-02"), **full_week("2026-11-09")})
+        self.assertEqual(js_eval(ADR_JS, expr, {"n": nse2, "m": mcx}), ["2026-11-09", "2026-11-02", "2026-11-02"])
+        # too few weeks: the oldest repeats
+        self.assertEqual(js_eval(ADR_JS, expr, {"n": rows(full_week("2026-11-09")), "m": []}),
+                         ["2026-11-09", "2026-11-09", "2026-11-09"])
+
     def test_in_progress_cell(self):
         nse = rows({**full_week("2026-11-09"), "2026-11-16": 60, "2026-11-17": 80})
         cur, prev = js_eval(ADR_JS, "weeklyAdrTable({nse: weeklyAdrWeeks(DATA.n, 'nse'), bse: [], mcx: []},"
@@ -321,7 +404,18 @@ class WeeklyAdrTableTest(unittest.TestCase):
         self.assertEqual(cur["cells"]["nse"]["sessions"], 2)
         self.assertEqual(cur["cells"]["nse"]["missing"], [])
         self.assertFalse(cur["holiday"])
-        self.assertAlmostEqual(prev["cells"]["nse"]["pct"], (70 - 10) / 10)
+        self.assertIsNone(prev["cells"]["nse"]["pct"])   # against an in-progress row 1: blank
+
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class WeeklyAdrLoader(unittest.TestCase):
+    def test_uses_shared_loader_not_view_built_from(self):
+        src = js_eval(["buildWeeklyAdrPanel"], "buildWeeklyAdrPanel.toString()")
+        self.assertIn("loadCrossExchangeRows", src)
+        self.assertIn("registerCrossPanel", src)
+        self.assertNotIn("VIEW_BUILT_FROM", src)
+        self.assertNotIn("ensureFreshMarketData", src)
 
 
 if __name__ == "__main__":

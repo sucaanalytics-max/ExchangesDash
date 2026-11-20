@@ -4,13 +4,17 @@
 // ========================
 // WEEK-ON-WEEK ADR — NSE, BSE, MCX and Total on total revenue (NSE/BSE at today's rates, MCX source values),
 // whatever the exchange switcher shows. Weeks are Monday-keyed (cpWeekStart).
-// A holiday week is a complete week (its Friday on or before the exchange's last
-// data date) with fewer than 5 sessions; the current week is "in progress" and
-// never normalised. NSE and BSE complete weeks whose session count is not 5 get a
+// A holiday week is a complete week with fewer than 5 sessions. A week is
+// complete when the exchange's data reaches its Friday or, given a reference
+// calendar (NSE's trading dates) and today's date, when every weekday after the
+// exchange's last session in it has passed with no NSE session (so a week whose
+// Friday is a holiday is complete on Saturday, while a day BSE's file merely
+// lags NSE's on is not a holiday). Other weeks are "in progress" and never
+// normalised. NSE and BSE complete weeks whose session count is not 5 get a
 // normalised 5-day week: the expiry pair (the week's expiry day from
-// computeWeekExpiryDates, holiday-shifted, plus the latest session before it in
-// the same week) at its own revenue, and every other day at the average of the
-// week's non-pair sessions:
+// computeWeekExpiryDates, holiday-shifted, plus the session on the scheduled
+// pre-expiry weekday, preExpiryDateSet, when it traded before the expiry) at its
+// own revenue, and every other day at the average of the week's non-pair sessions:
 //   norm.total = pairRev + nonPairAvg × (5 − pair sessions),  norm.avg = norm.total / 5
 // A missing pre-expiry day is filled at the non-pair average, which slightly
 // understates it. MCX has no weekly expiry pattern and is never normalised.
@@ -24,7 +28,9 @@ const WEEKLY_NORMALISED = new Set(['nse', 'bse']);
 // complete, holiday, missing (Mon–Fri dates with no session, holiday weeks
 // only), pair (expiry pair dates, ascending; [] for MCX), norm ({ total, avg }
 // or null) }. rows is the exchange's daily_all; modelled rows are dropped.
-function weeklyAdrWeeks(rows, exchange) {
+// ctx (optional): { today (IST 'YYYY-MM-DD'), refDates (NSE's trading dates, a
+// Set or array) }; without it a week is complete only once the data reaches its Friday.
+function weeklyAdrWeeks(rows, exchange, ctx = null) {
   const days = (rows || []).filter(r => r && r.date && !r.modelled)
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   if (!days.length) return [];
@@ -35,6 +41,24 @@ function weeklyAdrWeeks(rows, exchange) {
     return d.toISOString().slice(0, 10);
   };
   const expiryByWeek = new Map(computeWeekExpiryDates(days, exchange).map(e => [e.weekStart, e.expiryDate]));
+  const preSet = preExpiryDateSet(days, exchange);
+  const today = ctx && ctx.today;
+  const ref = ctx && ctx.refDates ? (ctx.refDates instanceof Set ? ctx.refDates : new Set(ctx.refDates)) : null;
+  // Every weekday after `after` up to `fri` has passed (before today) with no NSE session
+  const restWereHolidays = (after, fri) => {
+    if (!today || !ref) return false;
+    for (let d = addDays(after, 1); d <= fri; d = addDays(d, 1)) {
+      const wd = new Date(d + 'T00:00:00Z').getUTCDay();
+      if (wd === 0 || wd === 6) continue;
+      if (!(today > d) || ref.has(d)) return false;
+    }
+    return true;
+  };
+  // The week's scheduled expiry date (rule in force that week), or null
+  const scheduled = week => {
+    for (let i = 4; i >= 0; i--) if (isScheduledExpiry(exchange, addDays(week, i))) return addDays(week, i);
+    return null;
+  };
   const byWeek = new Map();
   days.forEach(r => {
     const w = cpWeekStart(r.date);
@@ -46,15 +70,25 @@ function weeklyAdrWeeks(rows, exchange) {
     const ds = byWeek.get(week);
     const total = ds.reduce((s, r) => s + rev(r), 0);
     const sessions = ds.length;
-    const complete = addDays(week, 4) <= lastDate;
+    const fri = addDays(week, 4);
+    const complete = fri <= lastDate || restWereHolidays(ds[ds.length - 1].date, fri);
     const holiday = complete && sessions < 5;
     const dates = new Set(ds.map(r => r.date));
     const missing = holiday ? [0, 1, 2, 3, 4].map(i => addDays(week, i)).filter(d => !dates.has(d)) : [];
-    const expiry = expiryByWeek.get(week);
+    // computeWeekExpiryDates leaves out a week whose scheduled expiry is after the
+    // last data date; once such a week is complete (the rest were holidays) its
+    // expiry is the last session on or before the scheduled day
+    let expiry = expiryByWeek.get(week);
+    if (!expiry && complete && WEEKLY_NORMALISED.has(exchange)) {
+      const target = scheduled(week);
+      const on = target ? ds.filter(r => r.date <= target) : [];
+      if (on.length) expiry = on[on.length - 1].date;
+    }
+    // The pair: the scheduled pre-expiry session if it traded before the expiry, then the expiry
     const pair = [];
     if (expiry) {
-      const before = ds.filter(r => r.date < expiry);
-      if (before.length) pair.push(before[before.length - 1].date);
+      const pre = ds.find(r => preSet.has(r.date) && r.date < expiry);
+      if (pre) pair.push(pre.date);
       pair.push(expiry);
     }
     let norm = null;
@@ -136,9 +170,10 @@ function weeklyAdrHolidayText(missing) {
 // { avg, total, alt, pct, excl (exchanges with no such week, left out of Total) } }. alt is the other mode's average where the week has
 // a normalised figure: the normalised one under Actual, the actual one under
 // Normalised (else null). pct (rows 2–3 only) is row 1's average against this
-// row's, (row 1 − this) ÷ this, as in the month table above; null on row 1 or
-// when either side is missing. Total's pct is null unless both rows' Totals are
-// made of the same exchanges.
+// row's, (row 1 − this) ÷ this, as in the month table above; null on row 1,
+// when either side is missing, or when either side is in progress (a part week's
+// average is driven by which days are in). Total's pct is null unless both
+// rows' Totals are made of the same exchanges and neither holds an in-progress cell.
 function weeklyAdrTable(byEx, weeks, mode) {
   const other = mode === 'normalised' ? 'actual' : 'normalised';
   const rows = weeks.map(week => {
@@ -158,12 +193,14 @@ function weeklyAdrTable(byEx, weeks, mode) {
                       excl: WEEKLY_ADR_EXCHANGES.filter(ex => !cells[ex]) } };
   });
   const pct = (ref, cur) => (ref == null || cur == null || !cur ? null : (ref - cur) / cur);
+  const wip = row => WEEKLY_ADR_EXCHANGES.some(ex => row.cells[ex] && row.cells[ex].inProgress);
   const first = rows[0];
   rows.slice(1).forEach(row => {
     WEEKLY_ADR_EXCHANGES.forEach(ex => {
-      if (row.cells[ex]) row.cells[ex].pct = pct(first.cells[ex] && first.cells[ex].avg, row.cells[ex].avg);
+      const a = first.cells[ex], c = row.cells[ex];
+      if (c && !(a && a.inProgress) && !c.inProgress) c.pct = pct(a && a.avg, c.avg);
     });
-    if (row.total.excl.join() === first.total.excl.join()) row.total.pct = pct(first.total.avg, row.total.avg);
+    if (row.total.excl.join() === first.total.excl.join() && !wip(first) && !wip(row)) row.total.pct = pct(first.total.avg, row.total.avg);
   });
   return rows;
 }
@@ -171,14 +208,25 @@ function weeklyAdrTable(byEx, weeks, mode) {
 // ========================
 // WEEK-ON-WEEK ADR PANEL — #weeklyAdrPanel, above the VIX panel below the
 // Revenue Summary sub-tabs. The same in every exchange view: NSE, BSE and MCX
-// are loaded whatever the switcher shows (the shown exchange is DATA, the others
-// come from the shared cache), as in buildVixPanel.
+// are loaded whatever the switcher shows (loadCrossExchangeRows, 01-data.js, as
+// for buildVixPanel), and the panel re-draws itself when the cached files move.
 // ========================
 const WEEKLY_ADR_MODE_KEY = 'weeklyAdrMode';
 let weeklyAdrBuildSeq = 0;               // latest build; an older one still loading yields to it
 let WEEKLY_ADR = null;                   // { byEx, opts, last } the panel was last drawn from
-// The week chosen in each row; null = the default (newest, second- and third-newest)
+// The week chosen in each row; null = the default (weeklyAdrDefaultWeeks)
 const weeklyAdrPicks = [null, null, null];
+
+// The default weeks for rows 1–3: the latest complete week by NSE's weeks (else
+// the first exchange with weeks) and the two options before it; the current,
+// in-progress week stays in the dropdown. opts newest first (weeklyAdrOptions).
+function weeklyAdrDefaultWeeks(byEx, opts) {
+  if (!opts.length) return [];
+  const ref = ['nse', ...WEEKLY_ADR_EXCHANGES].map(ex => (byEx && byEx[ex]) || []).find(ws => ws.length) || [];
+  const done = ref.find(w => w.complete);
+  const i = done ? Math.max(0, opts.findIndex(o => o.week === done.week)) : 0;
+  return [0, 1, 2].map(k => (opts[i + k] || opts[opts.length - 1]).week);
+}
 
 let weeklyAdrModeCur = null;           // 'actual' | 'normalised'; read from sessionStorage on first use
 
@@ -233,8 +281,8 @@ function weeklyAdrPairNow(exchange) {
 function weeklyAdrHowHTML() {
   return rxHow('How this is worked out', `<ul>
     <li><b>Weeks:</b> Monday to Sunday, from each exchange's daily rows; each cell is the average revenue per session that week (₹ Cr/day, total revenue at today's statutory rates for NSE and BSE; MCX as reported, fut + opt, source values not re-priced), with the week's revenue and session count below. Total adds the three exchanges' averages. Muhurat and DR-test sessions are not counted; full weekend sessions (Budget days) are.</li>
-    <li><b>Holiday week:</b> a complete week (its Friday on or before that exchange's latest day) with fewer than 5 sessions, shaded amber and with the missing weekdays named. The current week is "in progress" until its Friday is in, and is never normalised; BSE's file often runs a day behind NSE's, so its count can differ.</li>
-    <li><b>Expiry pair:</b> the week's weekly expiry day, moved to the previous session when it falls on a holiday, plus the session before it in the same week. The expiry weekday follows the rule in force that week: NSE ${escHtml(weeklyAdrRulesText('nse'))}; BSE ${escHtml(weeklyAdrRulesText('bse'))}. Today that makes the pair NSE ${weeklyAdrPairNow('nse')} and BSE ${weeklyAdrPairNow('bse')}.</li>
+    <li><b>Holiday week:</b> a complete week with fewer than 5 sessions, shaded amber and with the missing weekdays named. A week is complete once that exchange's data reaches its Friday, or once every weekday after its last session that week has passed with no NSE session (a Friday holiday, say: the week is complete on Saturday). Until then it is "in progress" and never normalised, and its % change is left blank; BSE's file often runs a day behind NSE's, so its count can differ, and a day BSE lacks only because its file lags is not taken for a holiday. Row 1 defaults to the latest complete week; the current week stays in the dropdown.</li>
+    <li><b>Expiry pair:</b> the week's weekly expiry day, moved to the previous session when it falls on a holiday, plus the session on the scheduled pre-expiry weekday (the expiry weekday's eve) when it traded before the expiry. A holiday on the pre-expiry day leaves the expiry alone in the pair (no other day takes its place), and when a holiday moved the expiry onto that day the pair is just the expiry. The expiry weekday follows the rule in force that week: NSE ${escHtml(weeklyAdrRulesText('nse'))}; BSE ${escHtml(weeklyAdrRulesText('bse'))}. Today that makes the pair NSE ${weeklyAdrPairNow('nse')} and BSE ${weeklyAdrPairNow('bse')}.</li>
     <li><b>Normalised:</b> NSE and BSE weeks with other than 5 sessions are rebuilt as a 5-day week: normalised total = expiry-pair revenue + (average of the week's other sessions) × (5 − pair sessions), and the normalised average is that total ÷ 5. With no session outside the pair there is no normalised figure. Under <i>Actual</i> the normalised figure is shown below the actual one; under <i>Normalised</i> it replaces it (and the % changes use it) and the actual figure is shown below.</li>
     <li><b>Limitation:</b> when the missing day is the pre-expiry day, it is filled at the average of the other sessions, which slightly understates it (pre-expiry days usually earn more).</li>
     <li><b>MCX:</b> never normalised. It has no weekly expiry pattern and trades on most exchange holidays, so its column is always the plain average.</li>
@@ -245,7 +293,8 @@ function renderWeeklyAdrPanel(el) {
   const { byEx, opts, last } = WEEKLY_ADR;
   const mode = weeklyAdrMode();
   const known = new Set(opts.map(o => o.week));
-  const weeks = [0, 1, 2].map(r => (weeklyAdrPicks[r] && known.has(weeklyAdrPicks[r]) ? weeklyAdrPicks[r] : (opts[r] || opts[opts.length - 1]).week));
+  const defaults = weeklyAdrDefaultWeeks(byEx, opts);
+  const weeks = [0, 1, 2].map(r => (weeklyAdrPicks[r] && known.has(weeklyAdrPicks[r]) ? weeklyAdrPicks[r] : defaults[r]));
   const table = weeklyAdrTable(byEx, weeks, mode);
   const wip = new Set(WEEKLY_ADR_EXCHANGES.flatMap(ex => byEx[ex].filter(w => !w.complete).map(w => w.week)));
   const sel = (r, cur) => `<select class="xl-row-sel wadr-sel" data-wadr-row="${r}" aria-label="Week for row ${r + 1}">${opts.map(o =>
@@ -267,13 +316,22 @@ function renderWeeklyAdrPanel(el) {
     body: `<div class="rx-scroll"><table class="rx-table wadr">
       <thead><tr><th>Week</th><th>NSE</th><th>BSE</th><th>MCX</th><th>Total</th></tr></thead>
       <tbody>${body}</tbody></table></div>`,
-    foot: `Rows 2 and 3 show % change from that week to row 1's week; a Total that leaves an exchange out (no such week in its data) has no % change unless row 1's leaves out the same. Amber: a holiday week (complete, fewer than 5 sessions). ${mode === 'normalised'
+    foot: `Row 1 defaults to the latest complete week. Rows 2 and 3 show % change from that week to row 1's week, blank against a week in progress; a Total that leaves an exchange out (no such week in its data) has no % change unless row 1's leaves out the same. Amber: a holiday week (complete, fewer than 5 sessions). ${mode === 'normalised'
       ? 'NSE and BSE holiday weeks show their normalised 5-day average; MCX is never normalised.'
       : 'Actual averages; holiday weeks also show their normalised 5-day average (MCX is never normalised).'}${behind.length
       ? ` ${behind.map(ex => `${ex.toUpperCase()} to ${escHtml(rxDate(last[ex]))}`).join(', ')}.` : ''}`,
     how: weeklyAdrHowHTML(),
     attrs: 'id="weeklyAdrBox"',
   });
+}
+
+// weeklyAdrWeeks' ctx: today's IST date and NSE's trading dates as the reference
+// calendar for holiday weeks (null without NSE's rows: weeks then complete only
+// once the data reaches their Friday)
+function weeklyAdrContext(nseRows, now = Date.now()) {
+  if (!nseRows || !nseRows.length) return null;
+  return { today: new Date(now + 330 * 60000).toISOString().slice(0, 10),
+           refDates: new Set(nseRows.filter(r => r && r.date).map(r => r.date)) };
 }
 
 // Selects and the toggle re-render only this panel; wired once on the container
@@ -301,19 +359,18 @@ async function buildWeeklyAdrPanel() {
   const el = document.getElementById('weeklyAdrPanel');
   if (!el || isViewKey(currentExchange)) return;
   const seq = ++weeklyAdrBuildSeq;
-  // A single-exchange view has its own file in DATA; the others come from the shared cache
-  const own = VIEW_LOADED && !DATA.components ? VIEW_LOADED.exchange : null;
-  const cached = WEEKLY_ADR_EXCHANGES.filter(e => e !== own);
   const title = 'Week-on-week average daily revenue';
-  if (!el.firstChild && cached.some(e => !MARKET_RAW[e])) {
-    el.innerHTML = rxPanel({ title, body: '<div class="rx-empty"><b>Loading NSE, BSE and MCX data…</b></div>' });
-  }
-  await ensureFreshMarketData(cached);
+  const { rowsByEx, sigs } = await loadCrossExchangeRows(WEEKLY_ADR_EXCHANGES, () => {
+    if (!el.firstChild) el.innerHTML = rxPanel({ title, body: '<div class="rx-empty"><b>Loading NSE, BSE and MCX data…</b></div>' });
+  });
   if (seq !== weeklyAdrBuildSeq) return;   // a later build took over while loading
+  // Re-drawn on its own (not the whole view) when a cached file it used changes
+  registerCrossPanel('weeklyAdr', sigs, buildWeeklyAdrPanel);
+  const ctx = weeklyAdrContext(rowsByEx.nse);
   const byEx = {}, last = {};
   WEEKLY_ADR_EXCHANGES.forEach(ex => {
-    const rows = rawFor(ex)?.daily_all || [];
-    byEx[ex] = weeklyAdrWeeks(rows, ex);
+    const rows = rowsByEx[ex] || [];
+    byEx[ex] = weeklyAdrWeeks(rows, ex, ctx);
     last[ex] = rows.filter(r => r && r.date && !r.modelled).reduce((mx, r) => (r.date > mx ? r.date : mx), '') || null;
   });
   const opts = weeklyAdrOptions(byEx);
@@ -322,7 +379,6 @@ async function buildWeeklyAdrPanel() {
     WEEKLY_ADR = null;
     return;
   }
-  cached.filter(e => MARKET_RAW[e]).forEach(e => { VIEW_BUILT_FROM[e] = marketSig(e); });
   WEEKLY_ADR = { byEx, opts, last };
   weeklyAdrWire(el);
   renderWeeklyAdrPanel(el);
