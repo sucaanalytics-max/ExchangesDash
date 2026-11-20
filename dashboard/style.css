@@ -3485,6 +3485,7 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
 .cc-risk-in .rx-in { width: 64px; }
 .cc-risk-reset { font: inherit; font-size: 12px; background: none; border: 1px solid var(--rx-rule-2); color: var(--rx-ink-2); padding: 3px 10px; cursor: pointer; }
 .cc-risk-reset:hover { border-color: var(--rx-ink-2); }
+.cc-grow-h { margin: 16px 0 6px; }
 @media (max-width: 640px) {
   .cc-top-grid { grid-template-columns: minmax(0, 1fr); }
   /* The daily chart's underlying and measure buttons: an even 3-column grid (6 and 3 buttons)

@@ -108,6 +108,58 @@ class RevenueAtRisk(unittest.TestCase):
         self.assertEqual([(p["month"], p["days"]) for p in m], [("2026-11", 4)])
 
 
+GROW_JS = ["ccVal", "ccSum", "ccPremOk", "ccRowsFor", "ccPeriodDays", "ccShiftShare", "ccShiftFrom", "ccShiftYoY",
+           "ccExpiryEvents"]
+
+
+def day(d, nse_crude, mcx_crude, mcx_gold=100.0, xo=None):
+    r = {"date": d, "nse": {"crude": {"o": [1, 1.0, nse_crude]}},
+         "mcx": {"crude": {"o": [1, 1.0, mcx_crude]}, "gold": {"o": [1, 1.0, mcx_gold]}}}
+    if xo:
+        r["xo"] = xo
+    return r
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class MarketOrShare(unittest.TestCase):
+    def test_shift_share_adds_up(self):
+        # Market 100 → 150, NSE 1 → 15: MCX 99 → 135
+        ss = js_eval(GROW_JS, "ccShiftFrom(1, 99, 15, 135)")
+        self.assertAlmostEqual(ss["mkt"] + ss["shr"], 135 - 99)
+        self.assertAlmostEqual(ss["mkt"], 50 * 0.99)
+        self.assertAlmostEqual(ss["shr"], -150 * (0.10 - 0.01))
+
+    def test_shift_share_over_sessions_skips_zero_premium_days(self):
+        before = [day("2026-10-01", 1, 99), day("2026-10-02", 1, 99)]
+        after = [day("2026-11-02", 15, 135), dict(day("2026-11-03", 50, 0), mcx={"crude": {"o": [9, 9.0, 0.0]}})]
+        ss = js_eval(GROW_JS, f"ccShiftShare({json.dumps(before)}, {json.dumps(after)}, 'crude', 'prem')")
+        self.assertAlmostEqual(ss["m1"], 135)   # 3 Nov (MCX premium 0) left out
+        self.assertAlmostEqual(ss["n1"], 15)
+
+    def test_year_on_year_pairs_months(self):
+        months = [{"month": "2025-10", "days": 2, "nse": {"crude": {"o": [1, 1.0, 2.0]}}, "mcx": {"crude": {"o": [1, 1.0, 198.0]}}},
+                  {"month": "2026-09", "days": 1, "nse": {"crude": {"o": [1, 1.0, 9.0]}}, "mcx": {"crude": {"o": [1, 1.0, 9.0]}}},
+                  {"month": "2026-10", "days": 2, "nse": {"crude": {"o": [1, 1.0, 30.0]}}, "mcx": {"crude": {"o": [1, 1.0, 270.0]}}}]
+        got = js_eval(GROW_JS, f"ccShiftYoY({json.dumps(months)}, 'crude', 'prem')")
+        self.assertEqual([(g["month"], g["base"]) for g in got], [("2026-10", "2025-10")])
+        self.assertAlmostEqual(got[0]["ss"]["m0"], 99)
+        self.assertAlmostEqual(got[0]["ss"]["m1"], 135)
+
+    def test_expiry_events_against_nearby_sessions(self):
+        days = [day(f"2026-11-{i:02d}", 1, 100) for i in range(1, 8)]
+        days += [day("2026-11-08", 30, 90, 200), day("2026-11-09", 60, 80, 100, xo=["crude"])]
+        days += [day(f"2026-11-{i:02d}", 1, 100) for i in range(10, 17)]
+        ev = js_eval(GROW_JS, f"ccExpiryEvents({json.dumps(days)})")
+        self.assertEqual(len(ev), 1)
+        e = ev[0]
+        self.assertEqual(e["date"], "2026-11-09")
+        self.assertAlmostEqual(e["before"]["mcx"], 0.9)
+        self.assertAlmostEqual(e["expiry"]["mcx"], 0.8)
+        self.assertAlmostEqual(e["expiry"]["nse"], 0.6)
+        self.assertAlmostEqual(e["before"]["placebo"], 2.0)
+        self.assertEqual(e["ctrl"], 14)
+
+
 @unittest.skipUnless(NODE, "node not installed")
 class Alpha(unittest.TestCase):
     def test_hex_to_rgba_and_other_colours_unchanged(self):

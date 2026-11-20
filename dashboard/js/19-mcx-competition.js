@@ -10,7 +10,7 @@
 const CC_URL = './data/nse_commodity_daily.json';
 const CC_MAX_AGE_MS = 15 * 60 * 1000;   // re-fetch when the tab is built after this long
 const CC_DATA = { doc: null, at: 0 };
-const CC_VIEW = { win: '20d', und: 'all', metric: 'prem', range: '1y', top: 'prem', topMonth: null };   // topMonth null = the latest
+const CC_VIEW = { win: '20d', und: 'all', metric: 'prem', range: '1y', top: 'prem', topMonth: null, grow: 'prem' };   // topMonth null = the latest
 const CC_WINDOWS = [['day', 'Latest day'], ['20d', '20 sessions'], ['mtd', 'Month'], ['qtd', 'Quarter'], ['fytd', 'FY']];
 const CC_METRICS = [['prem', 'Options premium'], ['onot', 'Options notional'], ['fut', 'Futures notional']];
 const CC_METRIC_TEXT = { prem: 'options premium', onot: 'options notional', fut: 'futures notional' };
@@ -407,6 +407,67 @@ function ccSubsSave(sub, defaults) {
   } catch (e) { /* storage blocked: not remembered */ }
 }
 
+// ── Market growth or share shift ─────────────────────────────────────────────────────────
+// Measures: [key, label, underlying, metric]; per-session averages in ₹ Cr
+const CC_GROW_MEASURES = [['prem', 'Options premium', 'all', 'prem'], ['crude', 'Crude options premium', 'crude', 'prem'],
+  ['fut', 'Futures notional', 'all', 'fut']];
+
+// Shift-share of MCX's change between two sets of sessions (per-session averages):
+// MCX = market × (1 − NSE share), so MCX's change = market effect (the market's change at
+// the old share) + share effect (the share NSE gained, at the new market size). The share
+// effect is the most NSE could have taken from MCX: it treats all of NSE's gain as MCX's loss.
+// null when either side has no sessions or no market.
+function ccShiftShare(rows0, rows1, und, metric) {
+  rows0 = ccRowsFor(rows0, metric); rows1 = ccRowsFor(rows1, metric);
+  if (!rows0.length || !rows1.length) return null;
+  const avg = (rows, side) => { const v = ccSum(rows, side, und, metric); return v == null ? null : v / rows.length; };
+  const n0 = avg(rows0, 'nse'), m0 = avg(rows0, 'mcx'), n1 = avg(rows1, 'nse'), m1 = avg(rows1, 'mcx');
+  if ([n0, m0, n1, m1].some(v => v == null) || !(n0 + m0 > 0) || !(n1 + m1 > 0)) return null;
+  return ccShiftFrom(n0, m0, n1, m1);
+}
+
+function ccShiftFrom(n0, m0, n1, m1) {
+  const M0 = n0 + m0, M1 = n1 + m1, s0 = n0 / M0, s1 = n1 / M1;
+  return { n0, m0, n1, m1, M0, M1, s0, s1, mkt: (M1 - M0) * (1 - s0), shr: -M1 * (s1 - s0) };
+}
+
+// Each month against the same month a year earlier (per-session averages over the period's
+// sessions; options premium over prem_days): [{ month, base, ss }], months with a year-earlier month only
+function ccShiftYoY(months, und, metric) {
+  const by = new Map(months.map(p => [p.month, p]));
+  const per = (p, side) => { const v = ccVal(p[side], und, metric), n = ccPeriodDays(p, metric); return v == null || !n ? null : v / n; };
+  const out = [];
+  for (const p of months) {
+    const base = by.get(`${+p.month.slice(0, 4) - 1}${p.month.slice(4)}`);
+    if (!base || !p.mcx || !base.mcx) continue;
+    const v = [per(base, 'nse'), per(base, 'mcx'), per(p, 'nse'), per(p, 'mcx')];
+    if (v.some(x => x == null) || !(v[1] > 0) || !(v[0] + v[1] > 0)) continue;
+    out.push({ month: p.month, base: base.month, ss: ccShiftFrom(...v) });
+  }
+  return out;
+}
+
+// NSE's options expiries on `und` (xo) and MCX's volume around them: for each expiry in `days`
+// (sessions with both exchanges' figures), MCX's premium on the expiry day and the session before
+// as a multiple of its median over up to `span` sessions either side (the two left out), NSE's
+// premium those days as a share of that median, and the same multiple for `placebo` (an MCX
+// commodity NSE barely trades), to tell a busy day for everything from one for `und` alone.
+function ccExpiryEvents(days, und = 'crude', placebo = 'gold', span = 7) {
+  const prem = (r, side, u) => ccVal(r[side], u, 'prem');
+  const median = a => { const b = a.filter(x => x != null && x > 0).sort((x, y) => x - y); return b.length ? (b.length % 2 ? b[(b.length - 1) / 2] : (b[b.length / 2 - 1] + b[b.length / 2]) / 2) : null; };
+  const out = [];
+  days.forEach((r, i) => {
+    if (!(r.xo || []).includes(und) || i < 1 || !ccPremOk(r) || !ccPremOk(days[i - 1])) return;
+    const ctrl = days.slice(Math.max(0, i - 1 - span), i - 1).concat(days.slice(i + 1, i + 1 + span)).filter(ccPremOk);
+    const base = median(ctrl.map(x => prem(x, 'mcx', und))), pb = median(ctrl.map(x => prem(x, 'mcx', placebo)));
+    if (!base) return;
+    const at = x => ({ mcx: prem(x, 'mcx', und) / base, nse: prem(x, 'nse', und) / base,
+      placebo: pb ? prem(x, 'mcx', placebo) / pb : null });
+    out.push({ date: r.date, before: at(days[i - 1]), expiry: at(r), ctrl: ctrl.length });
+  });
+  return out;
+}
+
 function ccPanelEmpty(msg) {
   return rxPanel({ title: 'Competition', body: `<div class="rx-empty"><b>${msg}</b></div>` });
 }
@@ -519,6 +580,20 @@ async function buildMcxCompetition() {
         + 'Estimated loss: the ceiling\'s parts at the assumed shares above, which are judgements, not data. MCX\'s own volume shows no consistent dip on NSE\'s expiry days, so much of that window\'s volume looks like new trading. '
         + 'A year: the loss a session × MCX\'s sessions, PAT margin, shares and base P/E from the Valuation Inputs; value is EPS × P/E, undiscounted. '
         + 'MCX\'s revenue has kept rising meanwhile (dashed line): a loss here is growth MCX did not get, not a fall. The latest month (outlined) is to date; a month with an NSE expiry but only part of its sessions overstates the share.' })}
+    ${rxPanel({ title: 'Is the market growing, or is MCX losing share?', meta: '<span data-cc="growmeta"></span>',
+      right: rxSeg('ccGrow', CC_GROW_MEASURES.map(([v, l]) => [v, l]), CC_VIEW.grow, 'Measure'),
+      body: `<div class="rx-pb">
+          <div data-cc="growkpis"></div>
+          <h3 class="cc-top-h cc-grow-h">MCX against the same month a year earlier</h3>
+          ${rxLegend([{ label: 'From the market\'s growth', color: RX.model }, { label: 'From share NSE gained (at most)', color: RX.neg },
+            { label: 'MCX\'s change', color: RX.ink, kind: 'dot' }])}
+          ${rxCanvas('chartCcGrow')}
+          <h3 class="cc-top-h cc-grow-h">MCX's crude options on NSE's crude expiry days</h3>
+          <div data-cc="growexp"></div>
+        </div>`,
+      foot: 'MCX = market × (1 − NSE share), so MCX\'s change splits into the market\'s change at the old share and the share NSE gained at the new market size. That second part is the most NSE could have taken from MCX: it counts all of NSE\'s gain as MCX\'s loss, though some of NSE\'s volume is new trading. Per-session averages; the year-on-year chart\'s latest month (lighter) is to date. '
+        + 'Expiry days: MCX\'s crude options premium on NSE\'s crude options expiry day and the session before, as a multiple of its median over the 7 sessions either side; NSE\'s premium those days as a share of the same median; and MCX\'s gold options (which NSE barely trades) the same way, so a day busy for every commodity can be told from one busy for crude. Below 1× with NSE high would mean trading moving from MCX to NSE; at or above 1× it is new trading. '
+        + 'Crude volatility moves both exchanges, and there is no way to see the market without NSE, so this shows the size of each effect, not the cause.' })}
     ${rxPanel({ title: 'Top commodities by month, MCX and NSE', meta: '<span data-cc="topmeta"></span>',
       right: rxSeg('ccTop', CC_TOP_METRICS, CC_VIEW.top, 'Measure'),
       body: `<div class="rx-pb">
@@ -897,14 +972,87 @@ async function buildMcxCompetition() {
     q('toptable').innerHTML = ccTopTableHTML(doc, months, idx, metric);
   };
 
-  const drawCharts = () => { drawDaily(); drawMonthly(); drawRisk(); drawTop(); drawRev(); };
+  const growPct = (x, base) => (x == null || !(base > 0) ? null : x / base);
+  const growSign = f => (f == null || !isFinite(f) ? '—' : `${f >= 0 ? '+' : '−'}${fmtNum(Math.abs(f) * 100, 1)} %`);
+  const drawGrowKpis = () => {
+    const [, label, und, metric] = CC_GROW_MEASURES.find(m => m[0] === CC_VIEW.grow);
+    const w = ccWindow(days, CC_VIEW.win);
+    q('growmeta').textContent = `${label} · ${w.label}${w.prevLabel ? ` against ${w.prevLabel}` : ''}`;
+    const ss = w.prev.length ? ccShiftShare(w.prev, w.rows, und, metric) : null;
+    if (!ss) { q('growkpis').innerHTML = rxKpis([rxKpi('Market (NSE + MCX)', '—', 'Needs a window before this one')]); return; }
+    const nseGain = ss.n1 - ss.n0, mktGain = ss.M1 - ss.M0;
+    q('growkpis').innerHTML = rxKpis([
+      rxKpi('Market (NSE + MCX)', `₹${ccCr(ss.M1)} Cr <small>a day</small>`, `${growSign(growPct(mktGain, ss.M0))} against ${escHtml(w.prevLabel)}`),
+      rxKpi('MCX', `₹${ccCr(ss.m1)} Cr <small>a day</small>`, `${growSign(growPct(ss.m1 - ss.m0, ss.m0))} · NSE share ${ccPct(ss.s0)} → ${ccPct(ss.s1)}`),
+      rxKpi('From the market\'s growth', `${ss.mkt >= 0 ? '+' : '−'}₹${ccCr(Math.abs(ss.mkt))} Cr`, `${growSign(growPct(ss.mkt, ss.m0))} of MCX's level before`, { accent: true }),
+      rxKpi('From share NSE gained (at most)', `${ss.shr >= 0 ? '+' : '−'}₹${ccCr(Math.abs(ss.shr))} Cr`, `${growSign(growPct(ss.shr, ss.m0))} of MCX's level before`),
+      rxKpi('NSE\'s part of the market\'s change', mktGain > 0 ? ccPct(nseGain / mktGain) : '—',
+        mktGain > 0 ? `NSE ₹${ccCr(ss.n0)} → ₹${ccCr(ss.n1)} Cr a day` : 'The market did not grow'),
+    ], 'Market growth against share shift');
+  };
+
+  const drawGrow = () => {
+    drawGrowKpis();
+    const [, label, und, metric] = CC_GROW_MEASURES.find(m => m[0] === CC_VIEW.grow);
+    const months = (doc.monthly || []).filter(p => p.days > 0);
+    const yoy = ccShiftYoY(months, und, metric);
+    const n = yoy.length, lastI = n - 1, isToDate = n && yoy[lastI].month === months[months.length - 1].month;
+    const fade = c => yoy.map((_, i) => (isToDate && i === lastI ? rxAlpha(c, 0.45) : c));
+    rxChart('ccGrow', 'chartCcGrow', 240, {
+      type: 'bar',
+      data: { labels: yoy.map(y => ccMonthLabel(y.month)), datasets: [
+        { label: 'From the market\'s growth', data: yoy.map(y => y.ss.mkt / y.ss.m0 * 100), backgroundColor: fade(RX.model), stack: 's' },
+        { label: 'From share NSE gained', data: yoy.map(y => y.ss.shr / y.ss.m0 * 100), backgroundColor: fade(RX.neg), stack: 's' },
+        { type: 'line', label: 'MCX\'s change', data: yoy.map(y => (y.ss.m1 / y.ss.m0 - 1) * 100), stack: 'net', showLine: false,
+          pointRadius: 4, pointHoverRadius: 5, pointBackgroundColor: RX.ink, borderColor: RX.ink, order: -1 },
+      ] },
+      options: {
+        interaction: { mode: 'index', intersect: false },
+        plugins: { tooltip: { callbacks: {
+          title: items => `${ccMonthLabel(yoy[items[0].dataIndex].month)}${isToDate && items[0].dataIndex === lastI ? ' to date' : ''} against ${ccMonthLabel(yoy[items[0].dataIndex].base)}`,
+          label: ctx => ` ${ctx.dataset.label}: ${growSign(ctx.raw / 100)}`,
+          footer: items => {
+            const y = yoy[items[0].dataIndex].ss;
+            return [`Market ₹${ccCr(y.M0)} → ₹${ccCr(y.M1)} Cr a day (${growSign(y.M1 / y.M0 - 1)})`,
+              `NSE share ${ccPct(y.s0)} → ${ccPct(y.s1)}`];
+          } } } },
+        scales: {
+          x: { stacked: true, grid: { display: false }, ticks: { maxTicksLimit: 12, maxRotation: 0, autoSkip: true } },
+          y: { stacked: true, title: { display: true, text: `% of MCX's ${label.toLowerCase()} a year earlier` }, ticks: { callback: v => `${v} %` } },
+        },
+      },
+    });
+    // The expiry-day check (crude); needs xo, from parser 2
+    const ev = ccExpiryEvents(days).slice(-8);
+    if (!ev.length) {
+      q('growexp').innerHTML = '<p class="rx-foot">Shown once NSE\'s options expiry dates are in the data (the pipeline\'s re-read of past days).</p>';
+      return;
+    }
+    const x = v => (v == null || !isFinite(v) ? '—' : `${fmtNum(v, 2)}×`);
+    const cls = v => (v == null ? '' : v < 0.9 ? ' class="rx-dn"' : v > 1.1 ? ' class="rx-up"' : '');
+    const med = k => { const a = ev.flatMap(e => [e.before[k], e.expiry[k]]).filter(v => v != null).sort((a2, b) => a2 - b); return a.length ? (a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2) : null; };
+    const row = e => `<tr><td class="rx-l">${rxDate(e.date)}</td>
+      <td${cls(e.before.mcx)}>${x(e.before.mcx)}</td><td${cls(e.expiry.mcx)}>${x(e.expiry.mcx)}</td>
+      <td>${ccPct(e.before.nse)}</td><td>${ccPct(e.expiry.nse)}</td>
+      <td>${x(e.before.placebo)}</td><td>${x(e.expiry.placebo)}</td></tr>`;
+    q('growexp').innerHTML = `<div class="rx-scroll"><table class="rx-table">
+      <thead><tr><th scope="col" class="rx-l" rowspan="2">NSE crude expiry</th>
+        <th scope="colgroup" colspan="2">MCX crude, × nearby</th><th scope="colgroup" colspan="2">NSE crude, % of MCX's nearby</th><th scope="colgroup" colspan="2">MCX gold, × nearby</th></tr>
+        <tr><th scope="col">Day before</th><th scope="col">Expiry day</th><th scope="col">Day before</th><th scope="col">Expiry day</th><th scope="col">Day before</th><th scope="col">Expiry day</th></tr></thead>
+      <tbody>${ev.map(row).join('')}
+        <tr class="rx-sub"><td class="rx-l">Median, both days</td><td colspan="2">${x(med('mcx'))}</td><td colspan="2">${ccPct(med('nse'))}</td><td colspan="2">${x(med('placebo'))}</td></tr></tbody>
+    </table></div>`;
+  };
+
+  const drawCharts = () => { drawDaily(); drawMonthly(); drawRisk(); drawGrow(); drawTop(); drawRev(); };
   drawTable();
   drawCharts();
-  rxOnSeg(root, 'ccWin', v => { CC_VIEW.win = v; drawTable(); drawRiskKpis(); q('riskmeta').textContent = `${ccWindow(days, CC_VIEW.win).label} · chart by month, % of MCX's revenue`; });
+  rxOnSeg(root, 'ccWin', v => { CC_VIEW.win = v; drawTable(); drawRiskKpis(); drawGrowKpis(); q('riskmeta').textContent = `${ccWindow(days, CC_VIEW.win).label} · chart by month, % of MCX's revenue`; });
   rxOnSeg(root, 'ccUnd', v => { CC_VIEW.und = v; drawDaily(); drawMonthly(); });
   rxOnSeg(root, 'ccMetric', v => { CC_VIEW.metric = v; drawDaily(); drawMonthly(); });
   rxOnSeg(root, 'ccRange', v => { CC_VIEW.range = v; drawDaily(); });
   rxOnSeg(root, 'ccTop', v => { CC_VIEW.top = v; drawTop(); });
+  rxOnSeg(root, 'ccGrow', v => { CC_VIEW.grow = v; drawGrow(); });
   q('topsel').addEventListener('change', e => { CC_VIEW.topMonth = e.target.value; drawTop(); });
   RX_TAB_REFRESH.competition = drawCharts;
 }
