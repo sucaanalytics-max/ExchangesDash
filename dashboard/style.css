@@ -3474,6 +3474,18 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
 /* By underlying: NSE's figures for an underlying NSE didn't trade over the window (MCX only)
    are real zeros, shown muted so the rows NSE competes in stand out; a real move keeps its colour */
 .rx-table tr.cc-nse-none td.cc-n:not(.rx-up):not(.rx-dn) { color: var(--rx-muted); }
+/* Revenue at risk: the reading line, the substitution inputs */
+.cc-risk-read { margin: 0 0 10px; font-size: 13px; line-height: 1.5; color: var(--rx-ink-2); }
+.cc-risk-read b { color: var(--rx-ink); font-weight: 600; }
+.cc-risk-read:empty { display: none; }
+[data-cc="riskkpis"] .rx-kpis + .rx-kpis { margin-top: 8px; }
+.cc-risk-in { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin: 12px 0 4px; font-size: 12px; color: var(--rx-muted); }
+.cc-risk-in-h { flex-basis: 100%; font-weight: 600; color: var(--rx-ink-2); }
+.cc-risk-in label { display: inline-flex; align-items: center; gap: 6px; }
+.cc-risk-in .rx-in { width: 64px; }
+.cc-risk-reset { font: inherit; font-size: 12px; background: none; border: 1px solid var(--rx-rule-2); color: var(--rx-ink-2); padding: 3px 10px; cursor: pointer; }
+.cc-risk-reset:hover { border-color: var(--rx-ink-2); }
+.cc-grow-h { margin: 16px 0 6px; }
 @media (max-width: 640px) {
   .cc-top-grid { grid-template-columns: minmax(0, 1fr); }
   /* The daily chart's underlying and measure buttons: an even 3-column grid (6 and 3 buttons)

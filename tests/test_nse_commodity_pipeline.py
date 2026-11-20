@@ -59,7 +59,7 @@ DAY = [
 
 class Parse(unittest.TestCase):
     def test_aggregates_per_underlying(self):
-        d, nse, checks = com.parse_bhavcopy(bhavcopy(DAY))
+        d, nse, checks = com.parse_bhavcopy(bhavcopy(DAY))[:3]
         self.assertEqual(d, "2026-11-17")
         self.assertEqual(checks, [])
         self.assertEqual(set(nse), {"natgas", "crude", "electricity", "gold"})   # untraded rows left out
@@ -67,7 +67,7 @@ class Parse(unittest.TestCase):
         self.assertEqual(nse["electricity"], {"f": [82, 1.3716]})
 
     def test_option_premium_is_value_less_strike_notional(self):
-        _, nse, _ = com.parse_bhavcopy(bhavcopy(DAY))
+        _, nse, _ = com.parse_bhavcopy(bhavcopy(DAY))[:3]
         # (245 + 0.05) × 1,250 × 4,052 → premium 0.05 × 1,250 × 4,052 = ₹253,250
         self.assertEqual(nse["natgas"]["o"], [4052, 124.1178, 0.0253])
         # (7600 + 520) × 100 × 2 → premium 520 × 100 × 2 = ₹104,000
@@ -75,7 +75,7 @@ class Parse(unittest.TestCase):
 
     def test_premium_outside_the_price_range_is_flagged(self):
         bad = [row("FUO", "CRUDEOIL", 2, 1624000.0, strike="7600.00", lo="100", hi="200")]
-        _, nse, checks = com.parse_bhavcopy(bhavcopy(bad))
+        _, nse, checks = com.parse_bhavcopy(bhavcopy(bad))[:3]
         self.assertEqual(nse["crude"]["o"][2], 0.0104)
         self.assertIn("CRUDEOIL: 1 option row(s) whose derived premium is outside the day's price range", checks)
 
@@ -83,18 +83,26 @@ class Parse(unittest.TestCase):
         # A crude option traded at ₹1–2 whose value implies ₹6: within a tolerance
         # scaled to the strike (₹8), but not within rounding
         bad = [row("FUO", "CRUDEOIL", 10, 8006000.0, strike="8000.00", lo="1", hi="2")]
-        _, _, checks = com.parse_bhavcopy(bhavcopy(bad))
+        _, _, checks = com.parse_bhavcopy(bhavcopy(bad))[:3]
         self.assertIn("CRUDEOIL: 1 option row(s) whose derived premium is outside the day's price range", checks)
         ok = [row("FUO", "CRUDEOIL", 10, 8001500.0, strike="8000.00", lo="1", hi="2")]
         self.assertEqual(com.parse_bhavcopy(bhavcopy(ok))[2], [])
 
     def test_unknown_multiplier_leaves_premium_null(self):
-        _, nse, checks = com.parse_bhavcopy(bhavcopy([row("FUO", "GOLDM", 3, 3_000_000.0, strike="13000")]))
+        _, nse, checks = com.parse_bhavcopy(bhavcopy([row("FUO", "GOLDM", 3, 3_000_000.0, strike="13000")]))[:3]
         self.assertEqual(nse["gold"]["o"], [3, 0.3, None])
         self.assertTrue(any("no known multiplier" in c for c in checks))
 
+    def test_options_expiring_that_day(self):
+        rows = [dict(row("FUO", "CRUDEOIL", 0, 0.0, strike="7600"), XpryDt="2026-11-17"),     # untraded, still expiring
+                dict(row("FUO", "NATURALGAS", 4052, 1241178250.0, strike="245.00", lo="0.05", hi="0.05"),
+                     XpryDt="2026-11-25"),
+                dict(row("COF", "GOLD10G", 100, 13513638.0), XpryDt="2026-11-17")]           # futures: not counted
+        self.assertEqual(com.parse_bhavcopy(bhavcopy(rows))[3], ["crude"])
+        self.assertEqual(com.parse_bhavcopy(bhavcopy(DAY))[3], [])                         # no XpryDt
+
     def test_unmapped_symbol_and_instrument(self):
-        _, nse, checks = com.parse_bhavcopy(bhavcopy([row("COF", "COCOA", 1, 1e7), row("XYZ", "GOLD", 1, 1e7)]))
+        _, nse, checks = com.parse_bhavcopy(bhavcopy([row("COF", "COCOA", 1, 1e7), row("XYZ", "GOLD", 1, 1e7)]))[:3]
         self.assertEqual(nse, {"cocoa": {"f": [1, 1.0]}})
         self.assertIn("unmapped NSE symbol COCOA", checks)
         self.assertTrue(any("unknown instrument type 'XYZ'" in c for c in checks))
@@ -246,6 +254,28 @@ class Planning(unittest.TestCase):
         _, older = com.plan_dates(dates, {}, {"2026-11-10": "x"}, recent=2, backfill=5, retry=True)
         self.assertIn(date(2026, 11, 10), older)
 
+    def test_rows_from_an_older_parser_stay_until_re_read(self):
+        tmp = Path(tempfile.mkdtemp()) / "out.json"
+        tmp.write_text(json.dumps({"daily": [
+            {"date": "2026-11-16", "nse": {"crude": {"f": [1, 1.0]}}},
+            {"date": "2026-11-17", "nse": {"crude": {"f": [1, 1.0]}}, "xo": ["crude"], "parser": com.PARSER_VERSION}]}))
+        store, _ = com.load_store(tmp)
+        self.assertEqual(set(store), {"2026-11-16", "2026-11-17"})   # still published
+        self.assertTrue(store["2026-11-16"]["stale"])
+        self.assertNotIn("stale", store["2026-11-17"])
+        self.assertEqual(store["2026-11-17"]["xo"], ["crude"])
+        served = {"2026-11-16": bhavcopy([dict(r, TradDt="2026-11-16") for r in DAY], "20261116")}
+
+        def fetch(session, d):
+            body = served.get(d.isoformat())
+            return "url", body, None if body else "not posted (HTTP 404)"
+        dates = [date(2026, 11, 16), date(2026, 11, 17)]
+        changed, _ = com.run_nse(None, store, {}, dates, set(), 5, "now", date(2026, 11, 18),
+                                 fetch=fetch, pause=lambda s: None)
+        self.assertIn("2026-11-16", changed)                          # re-read by the backfill
+        self.assertEqual(store["2026-11-16"]["parser"], com.PARSER_VERSION)
+        self.assertNotIn("stale", store["2026-11-16"])
+
     def test_commodity_dates_add_weekdays_after_mcx(self):
         tmp = Path(tempfile.mkdtemp()) / "mcx.json"
         tmp.write_text(json.dumps({"daily_all": [{"date": "2024-08-30"}, {"date": "2026-11-13"}],
@@ -325,6 +355,12 @@ class MainRun(unittest.TestCase):
         self.assertIsNone(doc["daily"][1]["mcx"])
         self.assertEqual(doc["monthly"][0]["days"], 1)
         self.assertEqual(com.NEW_DAYS_FILE.read_text(), "1")                       # file changed: commit
+
+    def test_expiring_options_are_published(self):
+        day = DAY + [dict(row("FUO", "CRUDEOIL", 0, 0.0, strike="7600"), XpryDt="2026-11-17")]
+        _, _, doc = self.run_main({"2026-11-17": bhavcopy(day)}, [])
+        self.assertEqual(doc["daily"][-1]["xo"], ["crude"])
+        self.assertEqual(doc["daily"][-1]["parser"], com.PARSER_VERSION)
 
     def test_unchanged_run_counts_zero(self):
         served = {"2026-11-17": bhavcopy(DAY)}

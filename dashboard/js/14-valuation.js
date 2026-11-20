@@ -138,7 +138,12 @@ function valuationDefaultsFrom(json) {
     if (!Object.entries(v).every(([k, x]) => (k === 'from' ? valuationInputOk(k, x) : valuationNum(x) || (k === 'adr' && x === null)))) return null;
     out[ex] = v;
   }
-  return { fy: json.fy, ex: out };
+  // The Competition tab's assumed shares of NSE's volume that would otherwise trade on MCX
+  // (19-mcx-competition.js), optional: absent or out of range = its own defaults
+  const c = json.exchanges.mcx?.competition || {};
+  const pct = x => (valuationNum(x) && x >= 0 && x <= 100 ? x : undefined);
+  const comp = { ord: pct(c.sub_ordinary_pct), exp: pct(c.sub_expiry_pct) };
+  return { fy: json.fy, ex: out, comp };
 }
 
 let VALUATION_DEFAULTS_CACHE = null;
