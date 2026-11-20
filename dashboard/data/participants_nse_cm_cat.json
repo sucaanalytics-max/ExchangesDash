@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-20T12:32:01Z",
+ "updated_at": "2026-11-20T22:18:32Z",
  "source": {
   "key": "nse_cm_cat",
   "name": "NSE CM - Category-wise Turnover",
@@ -786,6 +786,13 @@
   {"date": "2026-11-17", "tables": {"Category-wise turnover": {"fields": ["Buy Value in Rs.Crores", "Sell Value in Rs.Crores"], "rows": {"Bank": [490.35, 250.04], "Insurance Companies": [1917.52, 2038.41], "Mutual Funds": [10381.03, 10003.47], "AIF": [741.34, 734.12], "PMS": [1211.06, 1276.45], "RETAIL": [41822.47, 43745.72], "OTHERS": [64461.31, 62976.87]}}, "FPI Data as reported by NSDL": {"fields": ["Buy Value in Rs.Crores", "Sell Value in Rs.Crores"], "rows": {"FPI": [21092.53, 15177.67]}}}, "fetched_at": "2026-11-19T07:43:07Z", "parser": 1, "sha256": "f6ee747380df984254634aac3469f9212baf94165353b764e0b742cbd82bd46c"},
   {"date": "2026-11-18", "tables": {"Category-wise turnover": {"fields": ["Buy Value in Rs.Crores", "Sell Value in Rs.Crores"], "rows": {"Bank": [396.71, 455.73], "Insurance Companies": [1758.53, 2073.83], "Mutual Funds": [8794.61, 12461.53], "AIF": [1018.53, 461.24], "PMS": [1456.01, 1198.8], "RETAIL": [38382.89, 37074.74], "OTHERS": [56534.69, 54616.09]}}, "FPI Data as reported by NSDL": {"fields": ["Buy Value in Rs.Crores", "Sell Value in Rs.Crores"], "rows": {"FPI": [18698.53, 12705.19]}}}, "fetched_at": "2026-11-20T12:32:01Z", "parser": 1, "sha256": "18f38b7107712f85ba3493902ec3081fff44cb08796ee24c5e514275c4371606"}
  ],
+ "unavailable": {
+  "2026-11-16": "unreadable file: XLRDError: Unsupported format, or corrupt file: Expected BOF record; found b'\\n<!DOCTY'",
+  "2026-11-17": "unreadable file: XLRDError: Unsupported format, or corrupt file: Expected BOF record; found b'\\n<!DOCTY'",
+  "2026-11-18": "unreadable file: XLRDError: Unsupported format, or corrupt file: Expected BOF record; found b'\\n<!DOCTY'",
+  "2026-11-19": "unreadable file: XLRDError: Unsupported format, or corrupt file: Expected BOF record; found b'\\n<!DOCTY'",
+  "2026-11-20": "unreadable file: XLRDError: Unsupported format, or corrupt file: Expected BOF record; found b'\\n<!DOCTY'"
+ },
  "monthly": {
   "title": "Historical Categorywise Turnover - Domestic Institutional Investors (DII)",
   "columns": ["Bank · Buy Traded Value (Rs. Crores)", "Bank · Sell Traded Value (Rs. Crores)", "Domestic Financial Institutions (Other than Banks & Insurance) · Buy Traded Value (Rs. Crores)", "Domestic Financial Institutions (Other than Banks & Insurance) · Sell Traded Value (Rs. Crores)", "Insurance · Buy Traded Value (Rs. Crores)", "Insurance · Sell Traded Value (Rs. Crores)", "Mutual Fund · Buy Traded Value (Rs. Crores)", "Mutual Fund · Sell Traded Value (Rs. Crores)", "New Pension System (NPS) · Buy Traded Value (Rs. Crores)", "New Pension System (NPS) · Sell Traded Value (Rs. Crores)", "Total - DII · Buy Traded Value (Rs. Crores)", "Total - DII · Sell Traded Value (Rs. Crores)", "Net = Buy - Sell · DII - Net (Rs. Crores"],
