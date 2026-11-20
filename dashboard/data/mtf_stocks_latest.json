@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-19T19:15:35Z",
+ "updated_at": "2026-11-20T01:17:02Z",
  "unit": "INR lakh",
  "columns": {
   "nse": ["symbol", "name", "qty_financed", "amount_lakh"],
@@ -2993,7 +2993,7 @@
    ["INE00VM01036", "Manorama Industries Limited", 7603.0, 144.41],
    ["INE08U801020", "Samhi Hotels Limited", 86223.0, 144.03],
    ["INE0MWH01014", "TRUALT BIOENERGY LIMITED", 34574.0, 143.29],
-   ["INE551C01044", "Shukra Pharmaceuticals Limited", 193957.0, 142.84],
+   ["INE551C01044", "SHUKRA MEDTECH LIMITED", 193957.0, 142.84],
    ["INE470A01017", "3M INDIA LTD", 438.0, 142.7],
    ["INE811A01038", "Kirloskar Pnuematic Co. Ltd.", 19588.0, 142.23],
    ["INE935A01035", "Glenmark Pharmaceuticals ltd", 5558.0, 142.2],
