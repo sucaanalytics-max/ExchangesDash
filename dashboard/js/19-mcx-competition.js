@@ -557,7 +557,7 @@ async function buildMcxCompetition() {
           ${rxSeg('ccMetric', CC_METRICS, CC_VIEW.metric, 'Measure')}</div>
           ${rxLegend([{ label: 'Each session', color: RX.light, kind: 'dot' }, { label: `${CC_ROLL}-session share`, color: RX.model, kind: 'line' }])}
           ${rxCanvas('chartCcDaily')}</div>`,
-      foot: 'Since the January 2026 contract NSE\'s crude-oil options expire around the 7th–10th of the month, about a week before MCX\'s (to December 2025 they expired on the 16th–17th, close to MCX\'s). Most of NSE\'s options volume comes on its own expiry day and the day before, so the daily share spikes once a month; the 20-session line evens that out. '
+      foot: 'Since the December 2025 contract (9 Dec 2025) NSE\'s crude-oil options expire around the 7th–10th of the month, about a week before MCX\'s (to November 2025 they expired on the 14th–17th, close to MCX\'s). Most of NSE\'s options volume comes on its own expiry day and the day before, so the daily share spikes once a month; the 20-session line evens that out. '
         + 'The scale follows the 20-session line: sessions above the scale are drawn as triangles on the top edge, with their share in the tooltip. '
         + (doc.notes || []).map(n => `${rxDate(n.date)}: ${escHtml(n.label)}.`).join(' ') + premNote })}
     ${rxPanel({ title: 'NSE share by month', meta: '<span data-cc="monmeta"></span>', body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas('chartCcMonthly')}</div>` })}
