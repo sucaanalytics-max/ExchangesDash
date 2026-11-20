@@ -7,6 +7,8 @@ fields. The parity tests feed one revenue fixture to the pipelines
 (nse_pipeline / bse_pipeline seg_summary and recompute_*) and to the JS mirror,
 so the mirror follows the pipelines' definitions, labels and rounding."""
 
+import copy
+import functools
 import json
 import math
 import subprocess
@@ -416,6 +418,26 @@ class Toggle(unittest.TestCase):
         self.assertEqual(js_eval(UNIT_JS, with_storage("contracts", body), "mcx")["key"], "adr")
 
 
+@unittest.skipUnless(NODE, "node not installed")
+class ViewCache(unittest.TestCase):
+    def test_same_raw_and_signature_reuse_the_view(self):
+        expr = """(() => {
+  globalThis.VIEW_LOADED = null;   // not the loaded view: the signature is marketSig's
+  let raw = DATA, sig = 's1';
+  globalThis.rawFor = () => raw;
+  globalThis.marketSig = () => sig;
+  const a = contractsViewFor('nse'), b = contractsViewFor('nse');
+  sig = 's2';
+  const c = contractsViewFor('nse'), d = contractsViewFor('nse');
+  raw = JSON.parse(JSON.stringify(raw));
+  const e = contractsViewFor('nse');
+  return { hit: a === b, newSig: c !== b, hitAgain: c === d, newRaw: e !== d, rows: a.data.daily_all.length };
+})()"""
+        rows = [nse_row(d.isoformat(), 3e7, 1e7, 2e6, 3e6, 2000.0, 500.0) for d in weekdays("2026-04-01", 6)]
+        got = js_eval(CV_JS + ["CONTRACTS_STATE", "contractsViewFor"], expr, {"daily_all": rows})
+        self.assertEqual(got, {"hit": True, "newSig": True, "hitAgain": True, "newRaw": True, "rows": 6})
+
+
 # ── The page, rendered in Node with a minimal DOM ────────────────────────────
 # Runs every dashboard file in index.html order (as test_dashboard_js does),
 # then swaps in a fake document whose elements are the ids found in the HTML
@@ -511,9 +533,11 @@ BUILD = ("buildRevenueSummary(); if (COMBINED_VIEWS[currentExchange]) "
          "buildMarketSharePanel(COMBINED_VIEWS[currentExchange]);")
 
 
+@functools.lru_cache(maxsize=None)
 def page_fixture():
     """NSE and BSE files from the pipelines (build_outputs) on 320 days with
-    contract figures; BSE's first 20 days have none (as BSE before 2023-04-19)."""
+    contract figures; BSE's first 20 days have none (as BSE before 2023-04-19).
+    Built on first use (only the Node page tests need it), then shared: callers copy before changing it."""
     nse_rows, bse_rows = [], []
     for i, r in enumerate(revenue_rows("2025-07-01", 320)):
         nse_rows.append({**r, "io_contracts": 3e7 + i * 1e5, "so_contracts": 1e7 + i % 7 * 1e5,
@@ -527,17 +551,15 @@ def page_fixture():
             "enr": {"nse": n["enriched"], "bse": b["enriched"]}}, nse_rows, bse_rows
 
 
-def render(view, stored=None, steps=(BUILD,)):
-    fx, _, _ = PAGE_FIXTURE
+def render(view, stored=None, steps=(BUILD,), fx=None):
+    """Snapshots after each step; `fx` replaces the page fixture's files ({ raw, enr })."""
+    fx = fx or page_fixture()[0]
     payload = {**fx, "files": [str(DASHBOARD / f) for f in JS_FILES], "view": view, "stored": stored,
                "steps": list(steps)}
     out = subprocess.run([NODE, "-e", PAGE_JS], input=json.dumps(payload), capture_output=True, text=True)
     if out.returncode:
         raise RuntimeError(out.stderr)
     return json.loads(out.stdout)
-
-
-PAGE_FIXTURE = page_fixture()
 
 
 def num(html):
@@ -569,7 +591,7 @@ class Page(unittest.TestCase):
     def test_nse_contracts_values_and_ratio(self):
         snap = render("nse", "contracts")[0]
         h = snap["html"]
-        _, nse_rows, _ = PAGE_FIXTURE
+        _, nse_rows, _ = page_fixture()
         label = nse_rows[-1]["fy_quarter"]
         q = quarter_rows(nse_rows, label)
         total = sum(r["io_contracts"] + r["so_contracts"] + r["if_contracts"] + r["sf_contracts"] for r in q) / 1e7 / len(q)
@@ -600,7 +622,7 @@ class Page(unittest.TestCase):
 
     def test_week_rows_ratio(self):
         h = render("nse", "contracts")[0]["html"]["subtab-rev-total"]
-        _, nse_rows, _ = PAGE_FIXTURE
+        _, nse_rows, _ = page_fixture()
         last5 = nse_rows[-5:]
         want = sum(r["io_contracts"] + r["so_contracts"] for r in last5) / sum(r["io_premium"] + r["so_premium"] for r in last5)
         row = h.split("Last 5 Days", 1)[1].split("</tr>", 1)[0]
@@ -611,7 +633,7 @@ class Page(unittest.TestCase):
         self.assertIn("Futures Contracts", h["subtab-rev-futures"])
         self.assertIn("—", h["subtab-rev-futures"])
         self.assertNotIn("xlQVal0-futures", h)
-        _, _, bse_rows = PAGE_FIXTURE
+        _, _, bse_rows = page_fixture()
         label = bse_rows[-1]["fy_quarter"]
         q = [r for r in quarter_rows(bse_rows, label) if r["total_contracts"] > 0]
         self.assertEqual(num(h["xlQVal0-options"]), f"{sum(r['total_contracts'] for r in q) / 1e7 / len(q):.2f}")
@@ -629,7 +651,7 @@ class Page(unittest.TestCase):
         self.assertNotIn('ms-seg-label">Futures', panel)
         self.assertIn('ms-seg-label">Options', panel)
         # Ratio over the dates both exchanges traded options (BSE's start here)
-        _, nse_rows, bse_rows = PAGE_FIXTURE
+        _, nse_rows, bse_rows = page_fixture()
         fy = nse_rows[-1]["fy"]
         both = {r["date"] for r in bse_rows if r["total_contracts"] > 0 and r["fy"] == fy}
         c = sum(r["io_contracts"] + r["so_contracts"] for r in nse_rows if r["date"] in both) \
@@ -639,16 +661,58 @@ class Page(unittest.TestCase):
         self.assertEqual(num(h["xlFYRat0-total"]), f"{round(c / p):,}")
         self.assertTrue(snap["dataUnchanged"])
 
-    def test_contracts_stored_but_mcx_like_view_renders_revenue(self):
-        # A combined view other than NSE+BSE hides the toggle and renders revenue
-        fx, _, _ = PAGE_FIXTURE
-        adr = render("nsebse")[0]
+    def test_nsebse_contracts_futures_are_nse_only(self):
+        # BSE has no futures contracts: Futures' expiry counts and "Last 5 Days" hover show NSE alone
+        h = render("nsebse", "contracts")[0]["html"]
+        fut, opt = h["subtab-rev-futures"], h["subtab-rev-options"]
+        for cell in ("xlFYExp0-futures", "xlQExp0-futures", "xlMExp0-futures", "xlMAvgExp-futures"):
+            self.assertNotIn("exp-sep", h[cell], cell)                   # "4", not "N4·B4"
+            self.assertRegex(h[cell], r'^<span class="exp-count" title="\d+ expiry days? in \d+ trading days?">\d+</span>$')
+        self.assertNotIn("exp-sep", fut)                                 # trailing rows too
+        self.assertNotIn("BSE —", fut)
+        self.assertNotIn("NSE + BSE", fut)
+        self.assertNotIn("NSE —", fut)                                   # one exchange: no per-exchange blocks
+        # Options are both exchanges'
+        self.assertIn("exp-sep", h["xlQExp0-options"])
+        self.assertIn("BSE —", opt)
+        self.assertIn("NSE + BSE", opt)
+
+    def test_contracts_without_contract_rows_says_so(self):
+        # A file without contract fields: Contracts replaces the revenue tables with a message
+        fx = copy.deepcopy(page_fixture()[0])
+        for r in fx["raw"]["nse"]["daily_all"]:
+            for k in ("io_contracts", "so_contracts", "if_contracts", "sf_contracts"):
+                r.pop(k, None)
+        adr, on, off = render("nse", steps=(BUILD, "setContractsMode(true);", "setContractsMode(false);"), fx=fx)
+        self.assertIn("₹ Cr · daily avg", adr["html"]["subtab-rev-total"])
+        for key in ("total", "options", "futures"):
+            self.assertIn("No F&amp;O contract data in this file", on["html"]["subtab-rev-" + key])
+        self.assertNotIn("xlQVal0-total", on["html"])
+        self.assertNotIn("₹ Cr", on["html"]["subtab-rev-total"])
+        self.assertFalse(on["toggleHidden"])                             # the way back to ₹ ADR stays
+        self.assertTrue(on["cashHidden"])
+        self.assertIn("₹ Cr · daily avg", off["html"]["subtab-rev-total"])
+        self.assertTrue(on["dataUnchanged"])
+
+    def test_contracts_stored_but_all_view_renders_revenue(self):
+        # The All view (a combined view other than NSE+BSE) hides the toggle and renders revenue
         snap = render("nsebse", "contracts", steps=("currentExchange = 'all';" + BUILD,))[0]
         self.assertTrue(snap["toggleHidden"])
         self.assertFalse(snap["cashHidden"])
         self.assertIn("₹ Cr · daily avg", snap["html"]["subtab-rev-total"])
         self.assertNotIn("xl-has-ratio", snap["html"]["subtab-rev-total"])
-        del adr
+
+    def test_contracts_stored_but_mcx_view_renders_revenue(self):
+        # A single-exchange view without contracts (MCX; NSE's files stand in for its own)
+        fx = copy.deepcopy(page_fixture()[0])
+        fx["raw"]["mcx"], fx["enr"]["mcx"] = fx["raw"]["nse"], fx["enr"]["nse"]
+        snap = render("mcx", "contracts", fx=fx)[0]
+        self.assertTrue(snap["toggleHidden"])
+        self.assertFalse(snap["cashHidden"])
+        self.assertIn("₹ Cr · daily avg", snap["html"]["subtab-rev-total"])
+        self.assertIn("xlQVal0-total", snap["html"])
+        self.assertNotIn("xl-has-ratio", snap["html"]["subtab-rev-total"])
+        self.assertNotIn("Contracts", snap["html"]["subtab-rev-total"])
 
 
 if __name__ == "__main__":

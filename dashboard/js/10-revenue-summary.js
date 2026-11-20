@@ -518,6 +518,14 @@ function revenueSources() {
   return data.components || [{ exchange: currentExchange, quarterly: data.quarterly || [], monthly: data.monthly || [], daily_all: data.daily_all || [] }];
 }
 
+// The exchanges behind segment segKey's figures. In the NSE+BSE contracts view
+// Futures are NSE's alone (fut_note: BSE has no futures contracts), so its
+// expiry counts and "Last 5 Days" breakdown leave BSE out; otherwise every source.
+function segSources(segKey) {
+  const srcs = revenueSources();
+  return segKey === 'futures' && rsView()?.fut_note ? srcs.filter(src => src.exchange === 'nse') : srcs;
+}
+
 function sumOverSources(perSource) {
   const vals = revenueSources().map(perSource).filter(v => v != null);
   return vals.length ? vals.reduce((a, v) => a + v, 0) : null;
@@ -565,37 +573,38 @@ function weekdayQuarterFlags(weekday, qLabel, segKey) {
 }
 
 // Expiry days and trading days behind a period, per exchange with an expiry
-// rule that has rows in it: [{ exchange, expiries, days }] (see expiryCountHTML)
-function sourcesExpiryCounts(rowsOf) {
-  return revenueSources().map(src => {
+// rule that has rows in it: [{ exchange, expiries, days }] (see expiryCountHTML),
+// over segment segKey's exchanges (segSources)
+function sourcesExpiryCounts(rowsOf, segKey) {
+  return segSources(segKey).map(src => {
     const rows = rowsOf(src);
     const n = rows.length ? countExpiryDays(rows, src.daily_all, src.exchange) : null;
     return n == null ? null : { exchange: src.exchange, expiries: n, days: rows.length };
   }).filter(Boolean);
 }
 
-// Exchanges behind the view that have expiry counts (NSE, BSE; not MCX)
-function viewExpiryExchanges() {
-  return revenueSources().map(src => src.exchange).filter(ex => EXPIRY_RULES.some(r => r.exchange === ex));
+// Exchanges behind the view's segKey figures that have expiry counts (NSE, BSE; not MCX)
+function viewExpiryExchanges(segKey) {
+  return segSources(segKey).map(src => src.exchange).filter(ex => EXPIRY_RULES.some(r => r.exchange === ex));
 }
 
-function quarterExpiryCounts(label) { return sourcesExpiryCounts(src => src.daily_all.filter(r => r.fy_quarter === label)); }
-function monthExpiryCounts(label)   { return sourcesExpiryCounts(src => src.daily_all.filter(r => r.fy_month === label)); }
-function fyExpiryCounts(fyStr)      { return sourcesExpiryCounts(src => src.daily_all.filter(r => r.fy === fyStr)); }
-function tailExpiryCounts(from, to) { return sourcesExpiryCounts(src => src.daily_all.slice(from, to)); }
+function quarterExpiryCounts(label, segKey) { return sourcesExpiryCounts(src => src.daily_all.filter(r => r.fy_quarter === label), segKey); }
+function monthExpiryCounts(label, segKey)   { return sourcesExpiryCounts(src => src.daily_all.filter(r => r.fy_month === label), segKey); }
+function fyExpiryCounts(fyStr, segKey)      { return sourcesExpiryCounts(src => src.daily_all.filter(r => r.fy === fyStr), segKey); }
+function tailExpiryCounts(from, to, segKey) { return sourcesExpiryCounts(src => src.daily_all.slice(from, to), segKey); }
 
 // The 125 trading days ending at a month's last trading day (as getM6mAvg)
-function m6ExpiryCounts(monthLabel) {
+function m6ExpiryCounts(monthLabel, segKey) {
   return sourcesExpiryCounts(src => {
     const daily = src.daily_all;
     const endIdx = daily.reduce((last, r, i) => r.fy_month === monthLabel ? i : last, -1);
     return endIdx < 0 ? [] : daily.slice(Math.max(0, endIdx - 124), endIdx + 1);
-  });
+  }, segKey);
 }
 
 // The latest row of each weekday (the "Mon–Fri Avg (Latest)" week)
-function latestWeekdaysExpiryCounts() {
-  return sourcesExpiryCounts(src => WEEKDAYS.map(d => src.daily_all.filter(r => r.day === d).pop()).filter(Boolean));
+function latestWeekdaysExpiryCounts(segKey) {
+  return sourcesExpiryCounts(src => WEEKDAYS.map(d => src.daily_all.filter(r => r.day === d).pop()).filter(Boolean), segKey);
 }
 
 // ── "Last 5 Days" breakdown (hover on the row, chip when a weekday repeats) ───
@@ -605,13 +614,14 @@ function latestWeekdaysExpiryCounts() {
 // the 5 sessions tagged expiry / pre-expiry, the weekdays repeated or missing,
 // the holidays inside the window, and the latest row of each weekday with its
 // average (the "Mon–Fri Avg (Latest)" row's figure). `sources` defaults to the
-// view's exchanges; callers outside the view pass [{ exchange, daily_all }].
+// exchanges behind the view's segKey figures (segSources: NSE alone for Futures
+// in the NSE+BSE contracts view); callers outside the view pass [{ exchange, daily_all }].
 const L5_DAY_MS = 86400000;
 const l5DayAfter = iso => new Date(Date.parse(iso + 'T00:00:00Z') + L5_DAY_MS).toISOString().slice(0, 10);
 
 function lastFiveBreakdown(segKey, sources) {
   const field = getRevFieldObj(segKey).dField;
-  return (sources || revenueSources()).map(src => {
+  return (sources || segSources(segKey)).map(src => {
     const daily = src.daily_all || [];
     const hasExpiry = EXPIRY_RULES.some(r => r.exchange === src.exchange);
     const exp = hasExpiry ? expiryDateSet(daily, src.exchange) : new Set();
@@ -768,7 +778,7 @@ function renderFYRow(rowNum, fyStr, segKey) {
   const chgEl = document.getElementById('xlFYChg' + rowNum + '-' + segKey);
   const expEl = document.getElementById('xlFYExp' + rowNum + '-' + segKey);
   if (valEl) valEl.innerHTML = xlValPlain(cur?.value, 2) + flagTags(flags);
-  if (expEl) expEl.innerHTML = cur ? expiryCountHTML(fyExpiryCounts(fyStr)) : '';
+  if (expEl) expEl.innerHTML = cur ? expiryCountHTML(fyExpiryCounts(fyStr, segKey)) : '';
   if (rsRatioShown(segKey)) rsSetRatio('xlFYRat' + rowNum + '-' + segKey, rsRatioWhere(r => r.fy === fyStr));
   if (chgEl) {
     if (rowNum === 0) { chgEl.innerHTML = ''; return; }
@@ -786,7 +796,7 @@ function renderQRow(rowNum, qIdx, segKey) {
   const chgEl = document.getElementById('xlQChg' + rowNum + '-' + segKey);
   const expEl = document.getElementById('xlQExp' + rowNum + '-' + segKey);
   if (valEl) valEl.innerHTML = xlValPlain(cur?.value, 2) + flagTags(flags);
-  if (expEl) expEl.innerHTML = cur ? expiryCountHTML(quarterExpiryCounts(cur.label)) : '';
+  if (expEl) expEl.innerHTML = cur ? expiryCountHTML(quarterExpiryCounts(cur.label, segKey)) : '';
   if (rsRatioShown(segKey)) rsSetRatio('xlQRat' + rowNum + '-' + segKey, cur ? rsRatioWhere(r => r.fy_quarter === cur.label) : null);
   if (chgEl) {
     if (rowNum === 0) { chgEl.innerHTML = ''; return; }
@@ -803,7 +813,7 @@ function renderMRow(rowNum, mIdx, segKey) {
   const chgEl = document.getElementById('xlMChg' + rowNum + '-' + segKey);
   const expEl = document.getElementById('xlMExp' + rowNum + '-' + segKey);
   if (valEl) valEl.innerHTML = xlValPlain(cur?.value, 2) + flagTags(flags);
-  if (expEl) expEl.innerHTML = cur ? expiryCountHTML(monthExpiryCounts(cur.label)) : '';
+  if (expEl) expEl.innerHTML = cur ? expiryCountHTML(monthExpiryCounts(cur.label, segKey)) : '';
   if (rsRatioShown(segKey)) rsSetRatio('xlMRat' + rowNum + '-' + segKey, cur ? rsRatioWhere(r => r.fy_month === cur.label) : null);
   if (chgEl) {
     if (rowNum === 0) {
@@ -816,7 +826,7 @@ function renderMRow(rowNum, mIdx, segKey) {
       const avgChgEl = document.getElementById('xlMAvgChg-' + segKey);
       const avgExpEl = document.getElementById('xlMAvgExp-' + segKey);
       if (avgValEl) avgValEl.innerHTML = xlValPlain(avg, 2) + flagTags(avgFlags);
-      if (avgExpEl) avgExpEl.innerHTML = cur ? expiryCountHTML(m6ExpiryCounts(cur.label)) : '';
+      if (avgExpEl) avgExpEl.innerHTML = cur ? expiryCountHTML(m6ExpiryCounts(cur.label, segKey)) : '';
       if (rsRatioShown(segKey)) rsSetRatio('xlMAvgRat-' + segKey, cur ? rsRatioM6(cur.label) : null);
       if (avgChgEl) avgChgEl.innerHTML = anyModelled(flags, avgFlags) ? CMP_MODELLED_SPAN
         : wireChg(avg && cur ? (cur.value - avg) / avg : null);
@@ -934,7 +944,7 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
   const tdOrNA = (val, ...flags) => anyModelled(...flags) ? CMP_MODELLED_TD : wireDeltaTd(val);
 
   // Expiry-day counts column (views with NSE or BSE; MCX has no expiry rule)
-  const expExchanges = viewExpiryExchanges();
+  const expExchanges = viewExpiryExchanges(segKey);
   const showExp = expExchanges.length > 0;
   const expTd = (id, html) => showExp ? `<td class="xl-exp"${id ? ` id="${id}"` : ''}>${html || ''}</td>` : '';
   const expHdr = showExp ? '<td title="Expiry days in the period: each exchange\'s weekly index expiry (N = NSE, B = BSE)"><span class="exp-hdr-long">Expiries</span><span class="exp-hdr-short">Exp</span></td>' : '';
@@ -951,11 +961,11 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
   const l5Title = lastFiveTitle(l5List, u.amount);
 
   const wRows = [
-    `<tr class="xl-r-cur"><td>${lastFiveLabel(l5Title)}${lastFiveChip(l5List, l5Title)}</td><td>${xlValPlain(wl5.value, 2)}${flagTags(fl5)}</td><td>${chgOrNA(wl5.wow, fl5, flp5)}</td><td>${chgOrNA(wl5.wo10w, fl45)}</td>${ratioTd('', showRatio && rsRatioHTML(rsRatioTail(-5)))}${expTd('', showExp && expiryCountHTML(tailExpiryCounts(-5)))}</tr>`,
-    `<tr><td>Prev 5 Days</td><td>${xlValPlain(wp5.value, 2)}${flagTags(flp5)}</td><td></td><td></td>${ratioTd('', showRatio && rsRatioHTML(rsRatioTail(-10, -5)))}${expTd('', showExp && expiryCountHTML(tailExpiryCounts(-10, -5)))}</tr>`,
-    `<tr><td>Last 20 Days</td><td>${xlValPlain(w20.value, 2)}${flagTags(fl20)}</td><td></td><td></td>${ratioTd('', showRatio && rsRatioHTML(rsRatioTail(-20)))}${expTd('', showExp && expiryCountHTML(tailExpiryCounts(-20)))}</tr>`,
-    `<tr><td>Last 45 Days</td><td>${xlValPlain(w50.value, 2)}${flagTags(fl45)}</td><td></td><td></td>${ratioTd('', showRatio && rsRatioHTML(rsRatioTail(-45)))}${expTd('', showExp && expiryCountHTML(tailExpiryCounts(-45)))}</tr>`,
-    `<tr><td>Mon–Fri Avg (Latest)</td><td>${xlValPlain(dowLatestAvg, 2)}${flagTags(flDow)}</td><td></td><td></td>${ratioTd('', showRatio && rsRatioHTML(rsRatioLatestWeekdays()))}${expTd('', showExp && expiryCountHTML(latestWeekdaysExpiryCounts()))}</tr>`,
+    `<tr class="xl-r-cur"><td>${lastFiveLabel(l5Title)}${lastFiveChip(l5List, l5Title)}</td><td>${xlValPlain(wl5.value, 2)}${flagTags(fl5)}</td><td>${chgOrNA(wl5.wow, fl5, flp5)}</td><td>${chgOrNA(wl5.wo10w, fl45)}</td>${ratioTd('', showRatio && rsRatioHTML(rsRatioTail(-5)))}${expTd('', showExp && expiryCountHTML(tailExpiryCounts(-5, undefined, segKey)))}</tr>`,
+    `<tr><td>Prev 5 Days</td><td>${xlValPlain(wp5.value, 2)}${flagTags(flp5)}</td><td></td><td></td>${ratioTd('', showRatio && rsRatioHTML(rsRatioTail(-10, -5)))}${expTd('', showExp && expiryCountHTML(tailExpiryCounts(-10, -5, segKey)))}</tr>`,
+    `<tr><td>Last 20 Days</td><td>${xlValPlain(w20.value, 2)}${flagTags(fl20)}</td><td></td><td></td>${ratioTd('', showRatio && rsRatioHTML(rsRatioTail(-20)))}${expTd('', showExp && expiryCountHTML(tailExpiryCounts(-20, undefined, segKey)))}</tr>`,
+    `<tr><td>Last 45 Days</td><td>${xlValPlain(w50.value, 2)}${flagTags(fl45)}</td><td></td><td></td>${ratioTd('', showRatio && rsRatioHTML(rsRatioTail(-45)))}${expTd('', showExp && expiryCountHTML(tailExpiryCounts(-45, undefined, segKey)))}</tr>`,
+    `<tr><td>Mon–Fri Avg (Latest)</td><td>${xlValPlain(dowLatestAvg, 2)}${flagTags(flDow)}</td><td></td><td></td>${ratioTd('', showRatio && rsRatioHTML(rsRatioLatestWeekdays()))}${expTd('', showExp && expiryCountHTML(latestWeekdaysExpiryCounts(segKey)))}</tr>`,
   ].join('');
 
   const wireDetailRow = (label, val, flags) => label
@@ -1118,6 +1128,15 @@ function buildRevenueSummary() {
   // Revenue, or the contracts view in Contracts mode (cached per exchange and data)
   RS_VIEW = contractsPageView();
   syncRevUnitControls();
+  // Contracts mode with no usable contract rows (a file without contract fields):
+  // say so in the sub-tabs rather than leave the last revenue tables under Contracts labels
+  if (contractsModeActive() && !rsView()?.data?.quarterly?.length) {
+    ['total', 'options', 'futures', 'cash'].forEach(key => {
+      const el = document.getElementById('subtab-rev-' + key);
+      if (el) el.innerHTML = '<div class="xl-segment"><p class="rs-unit-empty">No F&amp;O contract data in this file.</p></div>';
+    });
+    return;
+  }
   const pageData = rsData();   // this page's data (DATA itself in ADR mode)
   const ed = rsEnriched();
   if (!ed || !ed.summary_total) return;
@@ -1435,7 +1454,8 @@ function buildMarketSharePanel(exList) {
   if (!el) return;
 
   // Each exchange's files (MARKET_RAW / MARKET_DATA), or in Contracts mode
-  // their contracts views (shares of contracts), without touching the cache
+  // their contracts views (shares of contracts; contractsViewFor builds or reuses
+  // them in CONTRACTS_STATE.cache), leaving MARKET_RAW / MARKET_DATA as they are
   let views = contractsModeActive() ? exList.map(contractsViewFor) : null;
   if (views && views.some(v => !v)) views = null;
   const u = views ? REV_UNITS.contracts : REV_UNITS.adr;
