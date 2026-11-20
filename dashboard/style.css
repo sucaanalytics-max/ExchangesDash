@@ -1101,7 +1101,7 @@ span.neutral {
   padding: 0 16px 0 0;
   appearance: none;
   -webkit-appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%23aaa' stroke-width='1.2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%23686b72' stroke-width='1.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 2px center;
   cursor: pointer;
@@ -1111,6 +1111,7 @@ span.neutral {
 }
 
 .xl-row-sel:hover { color: var(--color-primary); }
+.xl-row-sel:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 .xl-r-cur .xl-row-sel { font-weight: 600; }
 
 .xl-segment {
@@ -3387,7 +3388,9 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
 .mtf-sum { padding: var(--space-3) var(--space-2) var(--space-6); }
 .mtf-sum-bar { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-bottom: var(--space-3); font-size: 12px; color: var(--color-text-muted); }
 .mtf-sum-bar b { color: var(--color-text); font-weight: 600; }
-.mtf-sum-ahead { cursor: help; border-bottom: 1px dotted currentColor; }
+.mtf-sum-kpis { margin-bottom: var(--space-3); }
+/* A change measured across a series change (†): no fill, a dashed edge in its own colour */
+.mtf-sum .xl-chg.xl-brk, .mtf-sum td.wire-delta.wire-brk { background: transparent; border: 1px dashed currentColor; }
 .mtf-sum-panel .xl-period-table { flex: 0 0 57%; width: 57%; }
 .mtf-sum-panel .xl-main-row > .wire-table-scroll { padding-right: 0; border-right: 0; }
 .mtf-sum-panel .xl-col-period { width: 43%; }

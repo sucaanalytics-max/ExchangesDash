@@ -617,7 +617,8 @@ function mtfXlVal(w) {
     w.value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>`;
 }
 
-// Change cells (0.0 %, green / red as in the workbooks), with a † when measured across a series change
+// Change cells (0.0 %, green / red as in the workbooks), with a † when measured across a series change;
+// those cells drop their fill (xl-brk / wire-brk), so a change of reporting basis doesn't read as growth
 // A change that rounds to 0.0 % is shown as a neutral 0.0 % (never a red "-0.0%")
 function mtfRoundChg(v) {
   const r = +(v * 100).toFixed(1);
@@ -626,13 +627,13 @@ function mtfRoundChg(v) {
 function mtfXlChg(v, mark = '') {
   if (v == null || !isFinite(v)) return '<td><span class="xl-chg xl-neu">—</span></td>';
   const r = mtfRoundChg(v);
-  return `<td><span class="xl-chg ${r > 0 ? 'xl-pos' : r < 0 ? 'xl-neg' : 'xl-neu'}">${r.toFixed(1)}%${mark || ''}</span></td>`;
+  return `<td><span class="xl-chg ${r > 0 ? 'xl-pos' : r < 0 ? 'xl-neg' : 'xl-neu'}${mark ? ' xl-brk' : ''}">${r.toFixed(1)}%${mark || ''}</span></td>`;
 }
 
 function mtfWireChg(v, mark = '') {
   if (v == null || !isFinite(v)) return '<td class="wire-delta neutral">—</td>';
   const r = mtfRoundChg(v);
-  return `<td class="wire-delta ${r > 0 ? 'positive' : r < 0 ? 'negative' : 'neutral'}">${r.toFixed(1)}%${mark || ''}</td>`;
+  return `<td class="wire-delta ${r > 0 ? 'positive' : r < 0 ? 'negative' : 'neutral'}${mark ? ' wire-brk' : ''}">${r.toFixed(1)}%${mark || ''}</td>`;
 }
 
 function mtfSummaryHTML(view, s) {
@@ -691,6 +692,7 @@ function mtfBuildSummary(el) {
   const def = mtfDef(view);
   const pts = mtfSeries(MTF.doc, view);
   if (!pts.length) { el.innerHTML = mtfEmpty('Summary', 'mtf_daily.json has no days for this view.'); return; }
+  const kpis = mtfKpis(view, pts);   // the latest book, as on the MTF Book tab
   const draw = () => {
     const s = mtfSummary(pts, MTF.sel);
     const first = pts[0].date;
@@ -698,8 +700,9 @@ function mtfBuildSummary(el) {
     const breaks = mtfNotesFor(view, 'break');
     const excluded = mtfNotesFor(view, 'excluded');
     el.innerHTML = `<div class="mtf-sum">
+      ${kpis ? `<div class="rx mtf-sum-kpis">${kpis}</div>` : ''}
       <div class="mtf-sum-bar"><span><b>${def.name}</b> · as of <b>${rxDate(s.asOf)}</b> (reporting date)</span>
-        ${ahead ? `<span class="mtf-sum-ahead" title="${escHtml(MTF_PUBLISH_LAG)}">${escHtml(ahead)} · NSE + BSE ends on the last date both published</span>` : ''}
+        ${ahead ? `<span>${escHtml(ahead)} · NSE + BSE ends on the last date both published</span>` : ''}
         <span>${s.fy.length} financial years · series from ${rxDate(first)}</span></div>
       <div class="xl-segment mtf-sum-panel">
         <div class="xl-seg-header">${def.name} MTF book <span class="xl-seg-unit">₹ Cr · average over reporting days</span></div>
@@ -711,8 +714,8 @@ function mtfBuildSummary(el) {
       <ul class="mtf-sum-notes">
         <li>Each figure is the average of the daily book over the reporting days it covers; changes compare those averages. Hover a figure for its days.</li>
         <li>Pick the quarter or the month in its first row; the week and weekday tables run to the latest reporting date.</li>
-        ${view === 'combined' ? '<li>NSE + BSE counts only the dates both exchanges published.</li>' : ''}
-        ${breaks.length ? `<li><span class="mtf-dagger">†</span> measured across a change in an exchange’s own series (${breaks.map(n => `${n.ex.toUpperCase()} ${rxDate(n.date)}`).join(', ')}); see the notes on the MTF Book tab.</li>` : ''}
+        ${view === 'combined' ? `<li>NSE + BSE counts only the dates both exchanges published. ${escHtml(MTF_PUBLISH_LAG)}</li>` : ''}
+        ${breaks.length ? `<li><span class="mtf-dagger">†</span> measured across a change in an exchange’s own series (${breaks.map(n => `${n.ex.toUpperCase()} ${rxDate(n.date)}`).join(', ')}), shown without a fill: not like-for-like; see the notes on the MTF Book tab.</li>` : ''}
         ${excluded.length ? `<li>Left out: ${excluded.map(n => rxDate(n.date)).join(', ')} (a one-day jump in BSE’s file that reverts).</li>` : ''}
       </ul>
     </div>`;
