@@ -1,24 +1,24 @@
 {
-  "updated_at": "2026-11-20T03:30:29Z",
+  "updated_at": "2026-11-20T03:35:38Z",
   "sensex": {
-    "last": 83021.75,
-    "change": 989.94,
-    "pct_change": 1.21,
-    "prev_close": 82031.81,
-    "open": 82074.16,
-    "high": 83043.87,
-    "low": 81698.63,
-    "datetime": "19 Nov 26 | 16:00",
+    "last": 82728.03,
+    "change": -293.72,
+    "pct_change": -0.35,
+    "prev_close": 83021.75,
+    "open": 0.0,
+    "high": 0.0,
+    "low": 0.0,
+    "datetime": "20 Nov 26 | 09:04",
     "status": "Closed"
   },
   "market_stat": {
     "market_cap_cr": 51197471.02,
     "market_cap_usd_t": 5.48,
-    "turnover_cr": 11793.65,
+    "turnover_cr": 0.0,
     "listed_companies": 5322,
-    "advances": 2326,
-    "declines": 2085,
-    "unchanged": 228
+    "advances": 0,
+    "declines": 0,
+    "unchanged": 28
   },
   "revenue": {
     "trade_date": "19/11/26",
