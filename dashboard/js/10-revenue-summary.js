@@ -174,6 +174,39 @@ function expiryDateSet(dailyAll, exchange) {
   return byEx[exchange];
 }
 
+// Pre-expiry sessions: in each Mon–Sun week, the session on the scheduled
+// pre-expiry weekday (the expiry rule's weekday − 1, the rule in force that
+// week), counted only when it traded before the week's expiry as
+// computeWeekExpiryDates finds it (moved earlier for a holiday). When a holiday
+// moved the expiry onto that day, the week has no pre-expiry session (the day
+// is the expiry). A week whose expiry is still ahead of the data keeps its
+// pre-expiry session. Cached per daily_all array, as expiryDateSet.
+const PRE_EXPIRY_DATES_CACHE = new WeakMap();
+
+function preExpiryDateSet(dailyAll, exchange) {
+  let byEx = PRE_EXPIRY_DATES_CACHE.get(dailyAll);
+  if (!byEx) { byEx = {}; PRE_EXPIRY_DATES_CACHE.set(dailyAll, byEx); }
+  if (byEx[exchange]) return byEx[exchange];
+  const out = new Set();
+  byEx[exchange] = out;
+  if (!EXPIRY_RULES.some(r => r.exchange === exchange)) return out;
+  const trading = new Set(dailyAll.map(r => r.date));
+  const lastDataDate = dailyAll.reduce((mx, r) => (r.date > mx ? r.date : mx), '');
+  const expiryByWeek = new Map(computeWeekExpiryDates(dailyAll, exchange).map(e => [e.weekStart, e.expiryDate]));
+  const day = (iso, n) => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  const mondays = new Set(dailyAll.map(r => { const wd = new Date(r.date + 'T00:00:00Z').getUTCDay(); return day(r.date, wd === 0 ? -6 : 1 - wd); }));
+  mondays.forEach(monday => {
+    let target = null;
+    for (let i = 4; i >= 0 && !target; i--) if (isScheduledExpiry(exchange, day(monday, i))) target = day(monday, i);
+    if (!target || target === monday) return;
+    const pre = day(target, -1);
+    if (!trading.has(pre)) return;
+    const expiry = expiryByWeek.get(monday);
+    if (expiry ? pre < expiry : target > lastDataDate) out.add(pre);
+  });
+  return out;
+}
+
 // Expiry days among `rows` (rows of dailyAll); null for an exchange with no expiry rule (MCX)
 function countExpiryDays(rows, dailyAll, exchange) {
   if (!EXPIRY_RULES.some(r => r.exchange === exchange)) return null;
@@ -1016,6 +1049,8 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
 function buildRevenueSummary() {
+  // The VIX panel below the sub-tabs is cross-exchange and loads its own data (21-vix.js); not awaited
+  buildVixPanel().catch(err => console.warn('VIX panel failed:', err));
   const ed = ENRICHED_DATA;
   if (!ed || !ed.summary_total) return;
   if (!DATA.quarterly?.length || !DATA.monthly?.length) return;
@@ -1170,7 +1205,9 @@ function buildRevenueSummary() {
 // Live Predictor tab's figures (liveCardModel, 15-live-predictor.js). The top
 // banner shows the same reading (bannerReadingFromCard, 02-banner-glance.js),
 // so both draw on one copy of these files, refreshed together: polls are read
-// again after 5 min, archives after 30 (they change daily).
+// again after 5 min, archives after 30 (they change daily). The India VIX
+// ticker (vixTickerHTML, 21-vix.js) follows the cards, read from the same NSE
+// poll file.
 // ========================
 const LIVE_CARD_EXCHANGES = ['nse', 'bse'];
 const LIVE_CARD_CACHE = {};
@@ -1271,7 +1308,13 @@ function liveCardHTML(ex, m) {
 function renderLiveCards() {
   const el = document.getElementById('liveCards');
   if (!el || !LIVE_CARD_EXCHANGES.some(ex => LIVE_CARD_CACHE[ex]?.tried)) return;
-  el.innerHTML = LIVE_CARD_EXCHANGES.map(ex => liveCardHTML(ex, liveCardFor(ex))).join('');
+  // India VIX after the exchange cards, from the NSE poll file just read (21-vix.js).
+  // The VIX ticker and panel sync are each fenced off, so a VIX failure never
+  // takes down the NSE/BSE cards or the banner that buildLiveCards refreshes next.
+  let vix = '';
+  try { vix = vixTickerHTML(vixTickerNow()); } catch (e) { console.warn('VIX ticker failed', e); }
+  el.innerHTML = LIVE_CARD_EXCHANGES.map(ex => liveCardHTML(ex, liveCardFor(ex))).join('') + vix;
+  try { vixPanelSyncToday(); } catch (e) { console.warn('VIX panel sync failed', e); }
 }
 
 // Each view shows the last reading straight away, then refreshes the cards

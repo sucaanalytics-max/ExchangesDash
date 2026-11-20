@@ -232,10 +232,52 @@ function ensureFreshMarketData(exchanges) {
   return due.length ? preloadMarketData(due) : Promise.resolve([]);
 }
 
+// ── Cross-exchange panels ────────────────────────────────────────────────────
+// Panels on an exchange's view that read every exchange's daily rows (Revenue
+// Summary's India VIX panel, 21-vix.js). They take the exchanges other than the
+// view's own from the shared cache but stay out of VIEW_BUILT_FROM, which would
+// rebuild the whole view, overlay and all, whenever e.g. MCX's file moves.
+// Instead each panel records the cache fingerprints it was drawn from, and
+// checkDataFreshness, after its preload, re-draws just the panels whose cached
+// files changed. CROSS_PANELS: panel id → { sigs: { exchange: marketSig at
+// draw time }, rebuild }.
+const CROSS_PANELS = {};
+
+// `exs`' daily rows for a cross-exchange panel: a single-exchange view's own
+// exchange from DATA, the rest from the shared cache, fetched first when
+// missing or stale. onWait() runs before that wait when some cached exchange
+// has no data yet (for a loading placeholder). Resolves to { rowsByEx (null
+// where an exchange has no rows), missing (those exchanges), sigs (the cached
+// exchanges' fingerprints, for registerCrossPanel) }.
+async function loadCrossExchangeRows(exs, onWait) {
+  const own = VIEW_LOADED && !DATA.components ? VIEW_LOADED.exchange : null;
+  const cached = exs.filter(e => e !== own);
+  if (onWait && cached.some(e => !MARKET_RAW[e])) onWait();
+  await ensureFreshMarketData(cached);
+  const rowsByEx = {};
+  exs.forEach(e => { const rows = rawFor(e)?.daily_all; rowsByEx[e] = rows && rows.length ? rows : null; });
+  return { rowsByEx, missing: exs.filter(e => !rowsByEx[e]), sigs: Object.fromEntries(cached.map(e => [e, marketSig(e)])) };
+}
+
+// Records that panel `id` was drawn from the cached files `sigs`; rebuild()
+// re-draws it (called again by checkDataFreshness when one of them changes,
+// including a file that failed to load and has loaded since).
+function registerCrossPanel(id, sigs, rebuild) {
+  CROSS_PANELS[id] = { sigs: { ...sigs }, rebuild };
+}
+
+// Ids of the panels whose cached files moved since they were drawn (sigOf(ex)
+// is the exchange's current fingerprint)
+function crossPanelsMoved(panels, sigOf) {
+  return Object.keys(panels).filter(id => Object.entries(panels[id].sigs || {}).some(([ex, sig]) => sigOf(ex) !== sig));
+}
+
 let freshnessRun = null;
 
 // Runs when a view is shown: refetches whatever the current view uses that is
-// older than DATA_MAX_AGE_MS, and rebuilds the view if any of it changed.
+// older than DATA_MAX_AGE_MS, and rebuilds the view if any of it changed. The
+// cross-exchange panels' cached files are refetched too; when only those moved,
+// just the panels drawn from them are re-drawn (no overlay, no view rebuild).
 function checkDataFreshness() {
   if (isViewKey(currentExchange)) return Promise.resolve();   // broker and MTF views load their own data
   if (freshnessRun) return freshnessRun;
@@ -244,7 +286,8 @@ function checkDataFreshness() {
     const now = Date.now();
     const isStale = t => !t || now - t > DATA_MAX_AGE_MS;
     const cached = Object.keys(VIEW_BUILT_FROM);
-    const dueCached = cached.filter(e => isStale(MARKET_CHECKED_AT[e]));
+    const panelEx = Object.values(CROSS_PANELS).flatMap(p => Object.keys(p.sigs || {}));
+    const dueCached = [...new Set([...cached, ...panelEx])].filter(e => isStale(MARKET_CHECKED_AT[e]));
     const viewDue = !!VIEW_LOADED && VIEW_LOADED.exchange === ex && isStale(VIEW_LOADED.checkedAt);
     if (!dueCached.length && !viewDue) return;
     if (viewDue) VIEW_LOADED.checkedAt = now;  // one attempt per window, even if it fails
@@ -255,7 +298,11 @@ function checkDataFreshness() {
     if (currentExchange !== ex) return;  // switched meanwhile; that switch loaded its own data
     const fresh = files && VIEW_LOADED && files.sig !== VIEW_LOADED.sig ? files : null;
     const cacheMoved = cached.some(e => marketSig(e) !== VIEW_BUILT_FROM[e]);
-    if (fresh || cacheMoved) await rebuildCurrentView(fresh);
+    if (fresh || cacheMoved) { await rebuildCurrentView(fresh); return; }   // the rebuild re-draws the panels
+    crossPanelsMoved(CROSS_PANELS, marketSig).forEach(id => {
+      Promise.resolve().then(() => CROSS_PANELS[id].rebuild())
+        .catch(err => console.warn(`Panel ${id} refresh failed:`, err));
+    });
   })().catch(err => console.warn('Data freshness check failed:', err))
     .finally(() => { freshnessRun = null; });
   return freshnessRun;
@@ -338,9 +385,12 @@ function feeBasisOf(ex) {
 }
 
 // Short unit label for table headers, e.g. "at today's rates" or "NSE/BSE at today's rates · MCX source values"
-function feeUnitLabel() {
+function feeUnitLabel() { return feeUnitLabelFor(viewExchanges()); }
+
+// The same label for a given list of exchanges (cross-exchange panels show NSE, BSE and MCX in every view)
+function feeUnitLabelFor(exs) {
   const groups = {};
-  viewExchanges().forEach(ex => { (groups[feeBasisOf(ex)] = groups[feeBasisOf(ex)] || []).push(ex.toUpperCase()); });
+  exs.forEach(ex => { (groups[feeBasisOf(ex)] = groups[feeBasisOf(ex)] || []).push(ex.toUpperCase()); });
   const kinds = Object.keys(groups);
   return kinds.length === 1 ? FEE_BASIS_SHORT[kinds[0]]
     : kinds.map(k => `${groups[k].join('/')} ${FEE_BASIS_SHORT[k]}`).join(' · ');

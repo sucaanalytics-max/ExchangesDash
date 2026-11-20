@@ -18,6 +18,7 @@ Env: SUPABASE_URL, SUPABASE_KEY  (optional — each sample is also stored in
 """
 
 import json
+import math
 import os
 import sys
 import time
@@ -26,7 +27,7 @@ from pathlib import Path
 
 from curl_cffi import requests as cffi_requests
 sys.path.insert(0, str(Path(__file__).parent))
-from live_common import save_hourly_snapshot, in_market_session
+from live_common import save_hourly_snapshot, in_market_session, normalize_trade_date
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -53,6 +54,7 @@ from take_rates import NSE_TR_FUT as TR_FUT, NSE_TR_OPT as TR_OPT, NSE_TR_CASH a
 # ---------------------------------------------------------------------------
 NSE_HOME       = "https://www.nseindia.com/"
 STATUS_API     = "https://www.nseindia.com/api/marketStatus"
+ALL_INDICES_API = "https://www.nseindia.com/api/allIndices"
 LIVE_TURNOVER  = "https://www.nseindia.com/api/NextApi/apiClient?functionName=getMarketTurnoverSummary"
 FO_API         = "https://www.nseindia.com/api/historicalOR/fo/tbg/daily"
 CM_API         = "https://www.nseindia.com/api/historicalOR/cm/tbg/daily"
@@ -297,6 +299,105 @@ def fetch_stock_price(ticker="NSE.BO"):
 
 
 # ---------------------------------------------------------------------------
+# India VIX (NSE allIndices; yfinance ^INDIAVIX as fallback)
+# ---------------------------------------------------------------------------
+
+def parse_india_vix(payload, ts_iso):
+    """The INDIA VIX entry of NSE's allIndices payload, or None. trade_date is
+    the payload's timestamp as YYYY-MM-DD (None if absent); main() replaces it
+    with marketStatus's Capital Market trade date when it has one."""
+    entry = next((d for d in (payload or {}).get("data", []) if d.get("index") == "INDIA VIX"), None)
+    if not entry:
+        return None
+
+    def _num(v):
+        return None if isinstance(v, bool) or not isinstance(v, (int, float)) else round(float(v), 2)
+
+    last = _num(entry.get("last"))
+    if last is None:
+        return None
+    return {
+        "last":           last,
+        "previous_close": _num(entry.get("previousClose")),
+        "change":         _num(entry.get("variation")),
+        "pct_change":     _num(entry.get("percentChange")),
+        "as_of":          ts_iso,
+        "source":         "nse",
+        "trade_date":     normalize_trade_date((payload or {}).get("timestamp")),
+    }
+
+
+def fetch_india_vix(session, ts_iso):
+    try:
+        r = session.get(ALL_INDICES_API, impersonate="chrome", timeout=15)
+        if r.status_code == 200 and r.text.strip():
+            vix = parse_india_vix(r.json(), ts_iso)
+            if vix:
+                return vix
+    except Exception as e:
+        print(f"  allIndices error: {e}")
+    try:
+        import yfinance as yf
+        fi = yf.Ticker("^INDIAVIX").fast_info
+        last, prev = fi.last_price, fi.previous_close
+        if last is None or not math.isfinite(float(last)):
+            return None
+        last = float(last)
+        prev = float(prev) if prev is not None and math.isfinite(float(prev)) and prev else None
+        return {
+            "last":           round(last, 2),
+            "previous_close": round(prev, 2) if prev else None,
+            "change":         round(last - prev, 2) if prev else None,
+            "pct_change":     round((last - prev) / prev * 100, 2) if prev else None,
+            "as_of":          ts_iso,
+            "source":         "yfinance",
+        }
+    except Exception as e:
+        print(f"  India VIX fetch error: {e}")
+        return None
+
+
+def capital_market_trade_date(market_status):
+    """marketStatus's Capital Market tradeDate ('19-Nov-2026 10:45') as YYYY-MM-DD, or None."""
+    cm = next((m for m in (market_status or {}).get("marketState", []) or []
+               if isinstance(m, dict) and m.get("market") == "Capital Market"), {})
+    return normalize_trade_date(cm.get("tradeDate"))
+
+
+def with_trade_date(vix, trade_date):
+    """A fresh VIX reading keyed on the exchange's trade date (CLAUDE.md: live
+    samples are keyed on the trade date, never the wall clock): marketStatus's,
+    else the one parse_india_vix took from allIndices. On a weekday NSE holiday
+    it is the previous session's date, so the dashboard shows a close, not "Live"."""
+    if vix is None:
+        return None
+    return {**vix, "trade_date": trade_date or vix.get("trade_date")}
+
+
+def keep_last_vix(new, previous, ts_iso):
+    """A failed fetch keeps the last good reading, flagged stale."""
+    prev_vix = previous.get("india_vix")
+    if new is None and prev_vix:
+        return {**prev_vix, "stale_since": prev_vix.get("stale_since") or previous.get("updated_at")}
+    return new
+
+
+def attach_india_vix(hourly_file, vix):
+    """Set india_vix on the existing hourly JSON, leaving the rest as is."""
+    if vix is None:
+        return False
+    try:
+        data = json.loads(Path(hourly_file).read_text())
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    data["india_vix"] = vix
+    Path(hourly_file).write_text(json.dumps(data, indent=2, default=str))
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -357,6 +458,13 @@ def main():
     if revenue and not revenue.get("stale_since"):
         save_hourly_snapshot(revenue, now_ist, HOURLY_FILE, HISTORY_FILE, exchange="nse")
 
+    # ── 6. India VIX ──
+    fresh_vix = with_trade_date(fetch_india_vix(session, ts_iso), capital_market_trade_date(market_status))
+    vix = keep_last_vix(fresh_vix, previous, ts_iso)
+    if vix:
+        print(f"India VIX: {vix['last']}  ({vix.get('pct_change')}%)  [{vix['source']}]")
+        attach_india_vix(HOURLY_FILE, vix)
+
     # ── 7b. NSE's own share price ──
     print("Stock price:")
     stock_price = fetch_stock_price("NSE.BO")
@@ -370,6 +478,7 @@ def main():
         "revenue":       revenue,
         "history":       month_history,
         "stock_price":   stock_price,
+        "india_vix":     vix,
     }
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(json.dumps(payload, indent=2, default=str))
