@@ -399,8 +399,11 @@ function rxLegend(items) {
 // Signed percentage of a ratio change (0.039 → "▲ +3.9 %"), with its class
 function rxChange(frac, digits = 1) {
   if (frac == null || !isFinite(frac)) return { text: '—', cls: '' };
-  const up = frac >= 0;
-  return { text: `${up ? '▲ +' : '▼ −'}${Math.abs(frac * 100).toFixed(digits)} %`, cls: up ? 'rx-up' : 'rx-dn' };
+  // a change that rounds to 0 at the digits shown is no change: no arrow, no colour (never a red "−0.0 %")
+  const r = +(frac * 100).toFixed(digits);
+  if (r === 0) return { text: `${(0).toFixed(digits)} %`, cls: '' };
+  const up = r > 0;
+  return { text: `${up ? '▲ +' : '▼ −'}${Math.abs(r).toFixed(digits)} %`, cls: up ? 'rx-up' : 'rx-dn' };
 }
 
 function rxChangeHTML(frac, digits = 1) {

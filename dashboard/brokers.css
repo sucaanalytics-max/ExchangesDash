@@ -87,6 +87,27 @@
 }
 .brk-tag--act { color: #08711e; }
 .brk-tag--est { color: #b45309; }
+/* Hidden until the viewer turns them on (the run bar's toggle sets body.brk-tags-on) */
+.brk-tag, .brk-tag-key { display: none; }
+body.brk-tags-on .brk-tag { display: inline-block; }
+body.brk-tags-on .brk-tag-key { display: inline; }
+.brk-tag-toggle {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  margin-right: 8px;
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 2px;
+  background: var(--color-surface, #fff);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  vertical-align: 1px;
+}
+.brk-tag-toggle:hover { color: var(--color-text); border-color: var(--color-text-muted); }
+.brk-tag-toggle[aria-pressed="true"] { color: var(--color-text); background: #F1F1EE; }
+.brk-tag-toggle:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+@media (max-width: 640px) { .brk-tag-toggle { min-height: 32px; padding: 4px 10px; } }
 .xl-period-table td:has(> .brk-tag) { overflow: visible; }
 
 /* Note markers (why a value is missing) and the panel's note list */

@@ -14,7 +14,8 @@ HELPERS = ["MTF_MONTHS", "MTF_WEEKDAYS", "MTF_AVG6M_DAYS", "MTF_NOTES", "MTF_RAN
            "mtfDaysAfter", "mtfMonthsBack", "mtfSeries", "mtfAhead", "mtfAheadText", "rxDate", "mtfPointOnOrBefore", "mtfChanges", "mtfInRange",
            "mtfRangeIsShort", "mtfDateTick", "mtfPeriodRows", "mtfSummary", "mtfFlowRows", "mtfNotesFor", "mtfNotesBetween",
            "mtfTopRows", "MTF_BROKER_PALETTE", "MTF_MEASURE_CHIPS", "mtfBrokerPrimary", "mtfBrokerRows", "mtfBrokerStyle",
-           "mtfBrokerPoints", "mtfBrokerMoves", "mtfShareText", "mtfBookText", "mtfQuarterTicks", "rxCr", "fmtNum"]
+           "mtfBrokerPoints", "mtfBrokerMoves", "mtfShareText", "mtfBookText", "mtfQuarterTicks", "rxCr", "fmtNum",
+           "mtfNum", "MTF_BROKER_STALE_DAYS", "mtfBrokerStale", "mtfBrokerCompare", "mtfBrokerSort"]
 
 
 def js(expr, data=None):
@@ -339,7 +340,7 @@ BROKERS = {
 class Brokers(unittest.TestCase):
     def test_rows_follow_the_primary_measure(self):
         rows = js("mtfBrokerRows(DATA)", BROKERS)
-        self.assertEqual([r["id"] for r in rows][:4], ["a", "b", "d", "c"])  # largest latest book first; none last
+        self.assertEqual([r["id"] for r in rows][:4], ["a", "b", "d", "c"])  # largest latest share first; none last
         a, b, c = rows[0], rows[1], rows[3]
         self.assertEqual((a["latest"]["as_of"], a["latest"]["measure"]), ("2026-09-30", "share"))
         self.assertEqual([p["as_of"] for p in a["history"]], ["2026-06-30"])  # the net figure is not its series
@@ -351,6 +352,48 @@ class Brokers(unittest.TestCase):
         self.assertEqual([(p["as_of"], p["measure"], p["basis"]) for p in d["alts"]],
                          [("2026-10-31", "client_funding", "month_avg"), ("2026-09-30", "net", "period_end")])
         self.assertEqual(js("mtfBrokerRows(null)"), [])
+
+    def test_rows_rank_by_share_not_book(self):
+        doc = {"brokers": [
+            {"id": "big_old", "short": "O", "name": "", "primary": {"measure": "gross", "basis": "period_end"}, "sources": {},
+             "series": [{"as_of": "2025-09-30", "measure": "gross", "basis": "period_end", "share_pct": 3.6, "book_cr": 3772}]},
+            {"id": "small_new", "short": "N", "name": "", "primary": {"measure": "gross", "basis": "period_end"}, "sources": {},
+             "series": [{"as_of": "2026-09-30", "measure": "gross", "basis": "period_end", "share_pct": 2.7, "book_cr": 4351}]},
+        ]}
+        self.assertEqual([r["id"] for r in js("mtfBrokerRows(DATA)", doc)], ["big_old", "small_new"])
+
+    def test_compare_and_sort(self):
+        doc = {"brokers": [
+            {"id": "a", "short": "A", "name": "", "primary": {"measure": "gross", "basis": "period_end"}, "sources": {}, "series": [
+                {"as_of": "2026-09-30", "measure": "gross", "basis": "period_end", "share_pct": 10.0, "book_cr": 100,
+                 "chg": {"from": "2026-06-30", "share_pp": -0.5, "book_pct": 0.05, "book_cr": 5},
+                 "yoy": {"from": "2025-09-30", "share_pp": 1.0, "book_pct": 0.4, "book_cr": 30}}]},
+            {"id": "b", "short": "B", "name": "", "primary": {"measure": "gross", "basis": "period_end"}, "sources": {}, "series": [
+                {"as_of": "2026-06-30", "measure": "gross", "basis": "period_end", "share_pct": 5.0, "book_cr": 50,
+                 "chg": {"from": "2026-03-31", "share_pp": 0.3, "book_pct": 0.1, "book_cr": 4.5}}]},
+            {"id": "c", "short": "C", "name": "", "primary": {"measure": "gross", "basis": "period_end"}, "sources": {}, "series": []},
+        ]}
+        a = js("mtfBrokerCompare(mtfBrokerRows(DATA)[0], 'yoy')", doc)
+        self.assertEqual((a["now"], a["then"], a["pp"], a["from"]), (10.0, 9.0, 1.0, "2025-09-30"))
+        self.assertTrue(a["crosses"])                                          # 2025-09-30 → 2026-09-30 spans 1 Oct 2025
+        self.assertFalse(js("mtfBrokerCompare(mtfBrokerRows(DATA)[0], 'chg')", doc)["crosses"])
+        self.assertIsNone(js("mtfBrokerCompare(mtfBrokerRows(DATA)[1], 'yoy')", doc))   # no figure a year earlier
+        order = lambda key, d, cmp="chg": [r["id"] for r in js(f"mtfBrokerSort(mtfBrokerRows(DATA), '{key}', {d}, '{cmp}')", doc)]
+        self.assertEqual(order("share", -1), ["a", "b", "c"])
+        self.assertEqual(order("move", -1), ["b", "a", "c"])                  # gains first; no figure last
+        self.assertEqual(order("move", 1), ["a", "b", "c"])                   # ... and still last ascending
+        self.assertEqual(order("move", -1, "yoy"), ["a", "b", "c"])           # b has no year-earlier figure
+        self.assertEqual(order("asof", 1), ["b", "a", "c"])
+
+    def test_stale(self):
+        self.assertTrue(js("mtfBrokerStale({as_of: '2026-06-30'}, '2026-11-20')"))     # 143 days
+        self.assertFalse(js("mtfBrokerStale({as_of: '2026-09-30'}, '2026-11-20')"))
+        self.assertFalse(js("mtfBrokerStale(null, '2026-11-20')"))
+
+    def test_moves_a_year_earlier(self):
+        self.assertIsNone(js("mtfBrokerMoves(DATA, 'yoy')", BROKERS))          # no quarter four before the latest
+        out = js("mtfBrokerMoves(DATA)", BROKERS)
+        self.assertEqual((out["prev"]["label"], out["cur"]["label"]), ("Q1 FY 2027", "Q2 FY 2027"))
 
     def test_fixed_styles(self):
         out = js("['a', 'b', 'x3', 'x4'].map(id => mtfBrokerStyle(DATA, id))", BROKERS)
