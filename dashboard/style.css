@@ -3427,43 +3427,119 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
 .mtf-notes .rx-alert + .rx-alert { margin-top: 6px; }
 .mtf-dagger { color: var(--rx-warn); font-weight: 700; margin-left: 2px; cursor: help; }
 .mtf-stocks td.mtf-name { white-space: normal; min-width: 180px; }
-/* MTF Brokers tab */
+/* MTF Brokers tab (mtfBuildBrokers) */
+.mtf-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .mtf-bk-sub { font-size: 11px; font-weight: 400; color: var(--rx-muted); margin-top: 1px; white-space: nowrap; }
 .mtf-bk-sw { display: inline-block; width: 18px; height: 0; border-top: 3px solid currentColor; margin: 0 6px 3px 0; vertical-align: middle; }
 .mtf-bk-sw--dash { border-top-style: dashed; }
-.mtf-bk-table td { vertical-align: top; }
+.mtf-bk-bar .rx-foot { font-size: 11.5px; }
+.mtf-bk-legend { font-size: 11.5px; }
+.mtf-bk-key-bar, .mtf-bk-key-tick, .mtf-bk-key-stale { display: inline-block; vertical-align: -1px; margin-right: 5px; }
+.mtf-bk-key-bar { width: 14px; height: 10px; background: var(--rx-ink-2); }
+.mtf-bk-key-tick { width: 2px; height: 14px; background: var(--rx-ink); margin-left: 4px; margin-right: 8px; vertical-align: -3px; }
+.mtf-bk-key-stale { width: 14px; height: 10px; background: #8F9197 repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.7) 0 2px, transparent 2px 5px); }
+.mtf-bk-all { margin-left: 4px; }
+/* League table: one line per broker */
+.mtf-bk-table td { vertical-align: middle; padding-top: 6px; padding-bottom: 6px; }
+.mtf-bk-table thead th { vertical-align: bottom; }
+.mtf-bk-table thead th.mtf-bk-grp { text-align: center; color: var(--rx-ink-2); border-bottom: 1px solid var(--rx-rule-2); padding-bottom: 4px; }
+.mtf-bk-sort { all: unset; cursor: pointer; font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; white-space: nowrap; }
+.mtf-bk-sort:hover, .mtf-bk-sort.is-on { color: var(--rx-ink); }
+.mtf-bk-sort:focus-visible { outline: 2px solid var(--rx-model); outline-offset: 2px; }
+th[aria-sort="descending"] .mtf-bk-sort::after { content: " ↓"; }
+th[aria-sort="ascending"] .mtf-bk-sort::after { content: " ↑"; }
+.mtf-bk-table th.mtf-bk-sharecol { text-align: left; padding-left: 70px; }
+.mtf-bk-row { cursor: pointer; }
+.mtf-bk-row.is-open td { background: var(--rx-sunk); border-bottom-color: transparent; }
+.mtf-bk-rank { color: var(--rx-muted); width: 24px; }
 .mtf-bk-table td.mtf-bk-name { min-width: 150px; }
-.mtf-bk-table td.mtf-bk-name .mtf-bk-sub { white-space: normal; max-width: 220px; }
-.mtf-bk-table td.mtf-bk-old { color: var(--rx-ink-2); }
-.mtf-bk-table td.mtf-bk-old .mtf-bk-fig + .mtf-bk-fig { margin-top: 5px; }
-.mtf-bk-table td.mtf-bk-old .mtf-bk-sub { white-space: nowrap; max-width: none; }
-/* Change cells: the book line wraps so the table fits a 1440 px screen */
-.mtf-bk-table td .mtf-bk-sub { white-space: normal; max-width: 130px; margin-left: auto; }
-.mtf-bk-table td.mtf-bk-name .mtf-bk-sub { margin-left: 0; }
-.mtf-bk-table td.mtf-bk-src { min-width: 180px; max-width: 260px; }
-.mtf-bk-table td.mtf-bk-src .mtf-bk-sub { max-width: none; margin-left: 0; }
-.mtf-bk-table td.mtf-bk-src .mtf-bk-sub { white-space: normal; cursor: help; }
+.mtf-bk-table td.mtf-bk-name .rx-chip { font-size: 9.5px; margin-left: 2px; }
+.mtf-bk-sharecell { width: 34%; min-width: 220px; }
+.mtf-bk-barcell { display: flex; align-items: center; gap: 8px; }
+.mtf-bk-val { flex: 0 0 56px; text-align: right; font-weight: 600; }
+.mtf-bk-track { position: relative; flex: 1 1 auto; height: 12px; background: #EFEFEA; }
+.mtf-bk-fill { position: absolute; left: 0; top: 0; bottom: 0; opacity: 0.85; }
+.mtf-bk-fill.is-stale { opacity: 0.55; background-image: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.75) 0 2px, transparent 2px 5px); }
+.mtf-bk-tick { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--rx-ink); }
+.mtf-bk-move { white-space: nowrap; }
+.mtf-bk-since { font-size: 11px; color: var(--rx-muted); margin-left: 2px; }
+.mtf-bk-none { color: var(--rx-muted); }
+.mtf-bk-asof { color: var(--rx-muted); }
+.mtf-bk-asof.is-odd { color: var(--rx-ink); font-weight: 600; }
 .mtf-bk-table .rx-chip, .mtf-bk-qtable .rx-chip { white-space: nowrap; }
+.mtf-bk-asof .rx-chip { font-size: 9.5px; margin-left: 4px; }
+.mtf-bk-table a, .mtf-bk-detail a, .mtf-bk-srcs a { color: var(--rx-ink); text-decoration: underline; text-decoration-color: var(--rx-rule-2); text-underline-offset: 2px; }
+.mtf-bk-table a:hover, .mtf-bk-detail a:hover { text-decoration-color: currentColor; }
+.mtf-bk-doc { font-size: 12px; }
+.mtf-bk-btn { width: 36px; text-align: center; }
+.mtf-bk-more { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; padding: 0;
+  border: 1px solid var(--rx-rule-2); background: var(--rx-surface); color: var(--rx-ink-2); cursor: pointer; border-radius: 2px; }
+.mtf-bk-more:hover { background: #F1F1EE; }
+.mtf-bk-more:focus-visible { outline: 2px solid var(--rx-model); outline-offset: 1px; }
+.mtf-bk-more svg { transition: transform 0.15s; }
+.mtf-bk-more[aria-expanded="true"] svg { transform: rotate(180deg); }
+.mtf-bk-detail > td { background: var(--rx-sunk); text-align: left; white-space: normal; padding: 4px 14px 14px 44px; cursor: auto; }
+.rx-table tbody tr.mtf-bk-detail:hover td { background: var(--rx-sunk); }
+.mtf-bk-dgrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1.2fr); gap: 8px 24px; font-size: 12px; color: var(--rx-ink-2); line-height: 1.5; }
+.mtf-bk-dgrid .rx-lbl { margin: 6px 0 2px; }
+.mtf-bk-dgrid p { margin: 2px 0; }
+.mtf-bk-dgrid ul { margin: 2px 0; padding-left: 16px; }
+.mtf-bk-dgrid blockquote { margin: 6px 0; padding: 2px 0 2px 10px; border-left: 2px solid var(--rx-rule-2); color: var(--rx-ink); font-style: italic; }
+.mtf-bk-note { color: var(--rx-muted); }
+/* Size vs momentum beside how to read the figures */
+.mtf-bk-pair { display: grid; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); gap: var(--space-4); align-items: start; }
+.mtf-bk-pair > .rx-panel { margin: 0; }
+.mtf-bk-read { font-size: 12.5px; color: var(--rx-ink-2); line-height: 1.5; }
+.mtf-bk-read p { margin: 0 0 8px; }
+.mtf-bk-read .rx-lbl { margin: 10px 0 4px; }
+.mtf-bk-read ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.mtf-bk-read .rx-chip { margin-right: 2px; }
+/* Small multiples */
+.mtf-bk-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; background: var(--rx-rule); border-top: 1px solid var(--rx-rule); border-bottom: 1px solid var(--rx-rule); }
+.mtf-bk-card { background: var(--rx-surface); padding: 8px 10px 4px; min-width: 0; }
+.mtf-bk-card-h { display: flex; align-items: baseline; gap: 4px; font-size: 12.5px; }
+.mtf-bk-card-h b { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mtf-bk-card-h .mtf-bk-sw { width: 12px; margin-right: 2px; }
+.mtf-bk-card-v { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mtf-bk-card-s { display: flex; align-items: center; gap: 6px; margin: 2px 0 2px; font-size: 10.5px; color: var(--rx-muted); min-height: 18px; }
+.mtf-bk-card-s .rx-chip { font-size: 9px; }
+/* Share by quarter end: highlight table */
 .mtf-bk-qtable td.mtf-bk-none { color: var(--rx-muted); }
-.mtf-bk-qtable td .rx-chip { margin-left: 4px; font-size: 10px; }
-.mtf-bk-mv { font-size: 10px; }
+.mtf-bk-qtable td .rx-chip { margin-left: 4px; font-size: 9.5px; }
+.mtf-bk-qpp { display: inline-block; min-width: 34px; margin-left: 6px; font-size: 10.5px; text-align: right; }
+.rx-table tbody tr:hover td.mtf-bk-hl { filter: brightness(0.97); }
 .mtf-bk-srcs td.rx-wrap { min-width: 180px; font-size: 12px; }
 .mtf-about .rx-chip { margin-right: 2px; }
-/* Phone: columns that make way for the figures (league table, By Quarter); the league table's
-   measure chips move under the broker's name, which stays pinned */
-.mtf-ph-only { display: none; margin-top: 4px; }
+/* Phone: columns that make way for the figures (league table, By Quarter); what they held is in
+   each league row's details */
+.mtf-ph-only { display: none; }
 .mtf-left { margin-top: 4px; }
 .mtf-left summary { cursor: pointer; color: var(--rx-muted); font-size: 12px; }
 .mtf-left ul { margin-top: 4px; gap: 2px; font-size: 12px; }
+@media (max-width: 1200px) {
+  .mtf-bk-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .mtf-bk-pair { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 900px) {
+  .mtf-bk-dgrid { grid-template-columns: minmax(0, 1fr); }
+}
 @media (max-width: 640px) {
   .mtf-stocks .mtf-id { display: none; }
   .mtf-stocks td.mtf-name { min-width: 140px; }
   .rx-table .mtf-ph-hide { display: none; }
-  .mtf-ph-only { display: block; }
-  .rx-scroll .mtf-bk-table th:nth-child(2),
-  .rx-scroll .mtf-bk-table td.mtf-bk-name { position: sticky; left: 0; z-index: 1; background: var(--rx-surface); box-shadow: 1px 0 0 var(--rx-rule); }
-  .mtf-bk-table td.mtf-bk-name { min-width: 128px; white-space: normal; }
-  .mtf-bk-table td.mtf-bk-name .mtf-bk-sub { max-width: 150px; }
+  .mtf-ph-only { display: inline; }
+  .mtf-bk-table td.mtf-bk-name { min-width: 0; white-space: normal; }
+  .mtf-bk-table td.mtf-bk-name .mtf-bk-sw { width: 10px; margin-right: 4px; }
+  .mtf-bk-sharecell { min-width: 120px; width: auto; }
+  .mtf-bk-val { flex-basis: 44px; }
+  .mtf-bk-table th.mtf-bk-sharecol { padding-left: 7px; }
+  .mtf-bk-since { display: none; }
+  .mtf-bk-table thead th, .mtf-bk-sort { white-space: normal; }
+  .mtf-bk-table td.mtf-bk-move { white-space: nowrap; padding-left: 4px; }
+  .mtf-bk-detail > td { padding-left: 10px; }
+  /* the pinned first column is the hidden rank; nothing needs pinning once the rest fits */
+  .rx-scroll .mtf-bk-table th:first-child, .rx-scroll .mtf-bk-table td:first-child { position: static; box-shadow: none; }
+  .mtf-bk-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   /* By Quarter: the part-period chip goes under the label so QoQ / YoY fit */
   .mtf-per-table td:first-child .rx-chip { display: block; width: max-content; margin: 2px 0 0; }
 }
