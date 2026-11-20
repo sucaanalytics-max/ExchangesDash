@@ -164,11 +164,26 @@ function ccPpText(d) {
   return { text: `${d > 0 ? '+' : '−'}${t} pp`, moved: true };
 }
 
-// Change in percentage points, coloured
-function ccPp(cur, prev) {
-  if (cur == null || prev == null) return '<td>—</td>';
+// Change in percentage points, coloured; `cls` adds a class to the cell
+function ccPp(cur, prev, cls = '') {
+  if (cur == null || prev == null) return `<td${cls ? ` class="${cls}"` : ''}>—</td>`;
   const d = (cur - prev) * 100, t = ccPpText(d);
-  return `<td${t.moved ? ` class="${d > 0 ? 'rx-up' : 'rx-dn'}"` : ''}>${t.text}</td>`;
+  const c = [cls, t.moved ? (d > 0 ? 'rx-up' : 'rx-dn') : ''].filter(Boolean).join(' ');
+  return `<td${c ? ` class="${c}"` : ''}>${t.text}</td>`;
+}
+
+// Monthly bars: the latest month is to date, so it is drawn lighter with an outline
+function ccToDateBars(color, n) {
+  return {
+    backgroundColor: Array.from({ length: n }, (_, i) => (i === n - 1 ? rxAlpha(color, 0.4) : color)),
+    borderColor: color,
+    borderWidth: Array.from({ length: n }, (_, i) => (i === n - 1 ? 1.5 : 0)),
+  };
+}
+
+// A month's tooltip title, naming the latest month as to date
+function ccMonthTitle(months, i) {
+  return `${ccMonthLabel(months[i].month)}${i === months.length - 1 ? ' to date' : ''}`;
 }
 
 // The next 1, 2, 2.5 or 5 × 10ⁿ at or above v (v > 0), for an axis maximum
@@ -299,14 +314,17 @@ function ccTableHTML(doc, w) {
     const sh = m => (nseOnly ? null : ccShare(w.rows, k, m));
     const fs = sh('fut'), ps = sh('prem'), os = sh('onot');
     const nseAny = (ccSum(w.rows, 'nse', k, 'fut') || 0) + (ccSum(w.rows, 'nse', k, 'onot') || 0) > 0;
-    const tag = k === 'all' ? '' : nseOnly ? ` ${rxChip('NSE only')}` : !nseAny ? ` ${rxChip('MCX only')}` : '';
-    return `<tr${k === 'all' ? ' class="rx-sub"' : ''}>
+    const mcxOnly = k !== 'all' && !nseOnly && !nseAny;
+    const tag = k === 'all' ? '' : nseOnly ? ` ${rxChip('NSE only')}` : mcxOnly ? ` ${rxChip('MCX only')}` : '';
+    const cls = k === 'all' ? 'rx-sub' : mcxOnly ? 'cc-nse-none' : '';
+    // NSE's cells carry cc-n, so an MCX-only row can mute them (its zeros are real, NSE didn't trade)
+    return `<tr${cls ? ` class="${cls}"` : ''}>
       <td class="rx-l">${escHtml(ccLabel(doc, k))}${tag}</td>
-      <td>${ccCr(cell('fut', 'nse', w.rows, n))}</td><td>${ccCr(cell('fut', 'mcx', w.rows, n))}</td>
-      <td class="rx-hl">${ccPct(fs)}</td>${ccPp(fs, w.prev.length && fs != null ? ccShare(w.prev, k, 'fut') : null)}
-      <td>${ccCr(cell('prem', 'nse', premRows, nPrem))}</td><td>${ccCr(cell('prem', 'mcx', premRows, nPrem))}</td>
-      <td class="rx-hl">${ccPct(ps)}</td>${ccPp(ps, w.prev.length && ps != null ? ccShare(w.prev, k, 'prem') : null)}
-      <td>${ccPct(os)}</td>
+      <td class="cc-n">${ccCr(cell('fut', 'nse', w.rows, n))}</td><td>${ccCr(cell('fut', 'mcx', w.rows, n))}</td>
+      <td class="rx-hl cc-n">${ccPct(fs)}</td>${ccPp(fs, w.prev.length && fs != null ? ccShare(w.prev, k, 'fut') : null, 'cc-n')}
+      <td class="cc-n">${ccCr(cell('prem', 'nse', premRows, nPrem))}</td><td>${ccCr(cell('prem', 'mcx', premRows, nPrem))}</td>
+      <td class="rx-hl cc-n">${ccPct(ps)}</td>${ccPp(ps, w.prev.length && ps != null ? ccShare(w.prev, k, 'prem') : null, 'cc-n')}
+      <td class="cc-n">${ccPct(os)}</td>
     </tr>`;
   }).join('');
   return `<div class="rx-scroll"><table class="rx-table">
@@ -357,6 +375,7 @@ async function buildMcxCompetition() {
       body: '<div data-cc="table"></div>',
       foot: 'Averages per session over the window. NSE share = NSE ÷ (NSE + MCX), in ₹, on the underlying (contract sizes differ). '
         + '"vs before" is the change in percentage points against the window before (the session before, the 20 sessions before, the month, quarter or FY before). '
+        + 'MCX only: NSE had no trades in that underlying over the window, so its figures (grey) are zero. '
         + 'MCX\'s indices and agri contracts count in "All commodities"; NSE lists neither. NSE\'s Brent crude has no MCX contract, so no share.' + premNote })}
     ${rxPanel({ title: 'NSE share by day', meta: '<span data-cc="daymeta"></span>',
       right: rxSeg('ccRange', CC_RANGES.map(([v, l]) => [v, l]), CC_VIEW.range, 'Range'),
@@ -390,6 +409,7 @@ async function buildMcxCompetition() {
       meta: `FY ${ccFy(days[days.length - 1].date)} to date: ₹${fmtNum(revFy * 100, 1)} lakh at today's rates`,
       body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas('chartCcRev')}</div>`,
       foot: `Futures ₹10 per crore of traded value and options ₹100 per crore of premium, each side (NSE/FA/61380); electricity futures were free from 14 Jul to 31 Dec 2025 (NSE/FA/69100), so FY to date at the rules then in force is ₹${fmtNum(revFyEff * 100, 1)} lakh. `
+        + 'Monthly totals; the latest month (lighter) is to date. '
         + 'Not part of NSE\'s revenue anywhere else on the dashboard: it is about ₹0.001–0.1 Cr a day.' })}
     ${rxHow('Sources and method', `<p>NSE: the daily commodity bhavcopy (UDiFF), one row per contract; ${escHtml(doc.source?.premium || '')}. MCX: its bhavcopy per commodity (Supabase <code>mcx_commodity_daily</code>), notional and premium as published.</p>
       <p>Underlyings: ${(doc.underlyings || []).filter(u => u.nse.length || u.mcx.length).map(u => `<b>${escHtml(u.label)}</b> NSE ${escHtml(u.nse.join(', ') || '—')} · MCX ${escHtml(u.mcx.join(', ') || '—')}`).join('; ')}.</p>
@@ -489,12 +509,13 @@ async function buildMcxCompetition() {
     const und = CC_VIEW.und, metric = CC_VIEW.metric;
     const months = (doc.monthly || []).filter(p => p.days > 0);
     const vals = months.map(p => { const s = ccShare([p], und, metric); return s == null ? null : s * 100; });
-    q('monmeta').textContent = `${ccLabel(doc, und)} · ${CC_METRIC_TEXT[metric]} · sessions with both exchanges' figures; the latest month is to date`;
+    q('monmeta').textContent = `${ccLabel(doc, und)} · ${CC_METRIC_TEXT[metric]} · sessions with both exchanges' figures; the latest month (lighter) is to date`;
     rxChart('ccMonthly', 'chartCcMonthly', 220, {
       type: 'bar',
-      data: { labels: months.map(p => ccMonthLabel(p.month)), datasets: [{ label: 'NSE share', data: vals, backgroundColor: RX.model, borderWidth: 0 }] },
+      data: { labels: months.map(p => ccMonthLabel(p.month)), datasets: [{ label: 'NSE share', data: vals, ...ccToDateBars(RX.model, months.length) }] },
       options: {
         plugins: { tooltip: { callbacks: {
+          title: items => ccMonthTitle(months, items[0].dataIndex),
           label: ctx => ` NSE share: ${ccPct(ctx.raw / 100)}`,
           footer: items => {
             const p = months[items[0].dataIndex];
@@ -515,10 +536,11 @@ async function buildMcxCompetition() {
     rxChart('ccRev', 'chartCcRev', 200, {
       type: 'bar',
       data: { labels: months.map(p => ccMonthLabel(p.month)), datasets: [
-        { label: 'At today\'s rates', data: months.map(p => p.rev[0] * 100), backgroundColor: RX.rev, borderWidth: 0 },
+        { label: 'At today\'s rates', data: months.map(p => p.rev[0] * 100), ...ccToDateBars(RX.rev, months.length) },
       ] },
       options: {
         plugins: { tooltip: { callbacks: {
+          title: items => ccMonthTitle(months, items[0].dataIndex),
           label: ctx => ` ₹${fmtNum(ctx.raw, 2)} lakh at today's rates`,
           footer: items => {
             const p = months[items[0].dataIndex];
@@ -580,6 +602,7 @@ async function buildMcxCompetition() {
             itemSort: (a, b) => (b.raw || 0) - (a.raw || 0),
             filter: item => item.raw > 0,
             callbacks: {
+              title: items => ccMonthTitle(months, items[0].dataIndex),
               label: ctx => {
                 const total = per[ctx.dataIndex] * unit.k;
                 return ` ${ctx.dataset.label}: ${unit.fmt(ctx.raw)}${total ? ` · ${ccPct(ctx.raw / total)}` : ''}`;
