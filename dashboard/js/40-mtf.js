@@ -339,7 +339,7 @@ function mtfTopRows(stocks, ex, n = 15) {
 // The categorical slots, in fixed order (dataviz reference palette, light): a broker keeps
 // its slot (its place in the register), whatever is shown; the brokers after the eighth
 // reuse the slots dashed
-const MTF_BROKER_PALETTE = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948'];
+const MTF_BROKER_PALETTE = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#8c564b'];
 
 // What each measure is, as a chip: [label, rx-chip kind, title]
 const MTF_MEASURE_CHIPS = {
@@ -624,11 +624,11 @@ function mtfSummaryHTML(view, s) {
   const { w } = s;
   const wRows = tr(true, `<td>Last 5 trading days</td><td>${mtfXlVal(w.last5)}</td>${
     mtfXlChg(w.wow, w.prev5 && mark(w.prev5.first, w.last5.last))}${mtfXlChg(w.vs45, w.last45 && mark(w.last45.first, w.last5.last))}`)
-    + plain('Previous 5 trading days', w.prev5) + plain('Last 45 trading days', w.last45) + plain('Last 20 trading days', w.last20);
+    + plain('Previous 5 trading days', w.prev5) + plain('Last 20 trading days', w.last20) + plain('Last 45 trading days', w.last45);
 
   const period = `<table class="xl-period-table">
       <colgroup><col class="xl-col-period"><col class="xl-col-val"><col class="xl-col-chg1"><col class="xl-col-chg2"></colgroup>
-      <tbody class="xl-sec">${hdr([['Financial Year'], ['Total', 'Average book over the FY’s reporting days'], ['YoY', 'vs the previous financial year'], ['']])}${fy}</tbody>
+      <tbody class="xl-sec">${hdr([['Financial Year'], ['Avg (In Cr)', 'Average book over the FY’s reporting days'], ['YoY', 'vs the previous financial year'], ['']])}${fy}</tbody>
       <tbody class="xl-sec">${hdr([['Quarter&gt;&gt;'], ['Val (In Cr)'], ['QoQ', 'vs the previous quarter'], ['YoY', 'vs the same quarter last year']])}${qRows}</tbody>
       <tbody class="xl-sec">${hdr([['Month&gt;&gt;'], ['Val (In Cr)'], ['MoM', 'vs the previous month'], ['vs 6M', `vs the average of the last 6 months (${MTF_AVG6M_DAYS} reporting days)`]])}${mRows}</tbody>
       <tbody class="xl-sec">${hdr([['Week&gt;&gt;'], ['Val (In Cr)'], ['WoW', 'Last 5 trading days vs the 5 before'], ['vs 45D', 'Last 5 trading days vs the last 45']])}${wRows}</tbody>
@@ -641,7 +641,7 @@ function mtfSummaryHTML(view, s) {
   }).join('<tr class="wire-day-spacer"><td colspan="4"></td></tr>');
   const weekday = `<div class="wire-table-scroll"><table class="wire-table weekday-wire-table">
       <colgroup><col><col><col><col></colgroup>
-      <thead><tr><th>Week&gt;&gt;</th><th>Val (In Cr)</th><th title="The latest such weekday vs the average of the last 3 (itself included)">Do 3D</th><th title="The latest such weekday vs the average of the last 10 (itself included)">Do 10D</th></tr></thead>
+      <thead><tr><th>Weekday&gt;&gt;</th><th>Val (In Cr)</th><th title="The latest such weekday vs the average of the last 3 (itself included)">Do 3D</th><th title="The latest such weekday vs the average of the last 10 (itself included)">Do 10D</th></tr></thead>
       <tbody>${days}</tbody></table></div>`;
   return `${period}${weekday}`;
 }
@@ -703,7 +703,8 @@ function mtfBuildBook(el) {
   if (!pts.length) { el.innerHTML = mtfEmpty('MTF book', 'mtf_daily.json has no days for this view.'); return; }
   const last = pts[pts.length - 1];
   const legend = view === 'combined'
-    ? rxLegend([{ label: 'NSE', color: MTF_COLORS.nse }, { label: 'BSE', color: MTF_COLORS.bse }])
+    ? rxLegend([{ label: 'NSE + BSE', color: MTF_COLORS.combined, kind: 'line' }, { label: 'NSE', color: MTF_COLORS.nse, kind: 'line' },
+      { label: 'BSE (the gap)', color: 'rgba(196,98,26,0.35)' }])
     : rxLegend([{ label: `${def.name} book`, color: MTF_COLORS[view], kind: 'line' }]);
   const recent = pts.slice(-10).reverse();
   const recentHead = view === 'combined'
@@ -744,11 +745,12 @@ function mtfBuildBook(el) {
     const tooltip = { callbacks: {
       title: items => fmtTradeDate(labels[items[0].dataIndex], true) + ' ' + labels[items[0].dataIndex].slice(0, 4),
       label: c => ` ${c.dataset.label}: ${rxCr(c.raw, 0)}`,
-      footer: items => (view === 'combined' ? `NSE + BSE: ${rxCr(shown[items[0].dataIndex].value, 0)}` : ''),
+      footer: items => (view === 'combined' ? `BSE: ${rxCr(shown[items[0].dataIndex].bse, 0)}` : ''),
     } };
+    // NSE + BSE: two lines, not a stack from zero, so the axis can fit the moves; the band between them is BSE
     const datasets = view === 'combined'
-      ? [{ label: 'NSE', data: shown.map(p => p.nse), borderColor: MTF_COLORS.nse, backgroundColor: 'rgba(43,92,200,0.18)', fill: 'origin', stack: 'b' },
-         { label: 'BSE', data: shown.map(p => p.bse), borderColor: MTF_COLORS.bse, backgroundColor: 'rgba(196,98,26,0.35)', fill: '-1', stack: 'b' }]
+      ? [{ label: 'NSE + BSE', data: shown.map(p => p.value), borderColor: MTF_COLORS.combined, backgroundColor: 'rgba(196,98,26,0.35)', fill: '+1' },
+         { label: 'NSE', data: shown.map(p => p.nse), borderColor: MTF_COLORS.nse, backgroundColor: 'transparent', fill: false }]
       : [{ label: `${def.name} book`, data: shown.map(p => p.value), borderColor: MTF_COLORS[view], backgroundColor: 'transparent', fill: false }];
     datasets.forEach(d => Object.assign(d, { borderWidth: 1.6, pointRadius, pointHoverRadius: 3, tension: 0 }));
     rxChart('mtfBook', `mtfBookChart-${view}`, 260, {
@@ -759,7 +761,7 @@ function mtfBuildBook(el) {
         plugins: { tooltip },
         scales: {
           x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10, callback: mtfDateTick(labels, byDay) } },
-          y: { stacked: view === 'combined', beginAtZero: view === 'combined', ticks: { callback: v => fmtNum(v, 0) } },
+          y: { ticks: { callback: v => fmtNum(v, 0) } },
         },
       },
     });
@@ -792,6 +794,17 @@ function mtfDrawShare(key, canvasId, shown, range) {
   rxFixHeight(charts[key]);
 }
 
+// A left-out day's reason as a kind to count: [singular, plural]
+function mtfLeftOutKind(why) {
+  const w = String(why || '');
+  if (/^not published/.test(w)) return ['not published', 'not published'];
+  if (/^file is for /.test(w)) return ['file for another date', 'files for another date'];
+  if (/^partial file/.test(w)) return ['partial file', 'partial files'];
+  if (/no closing book|no securities/.test(w)) return ['file with no book', 'files with no book'];
+  if (/one-day jump/.test(w)) return ['one-day jump that reverts', 'one-day jumps that revert'];
+  return [w, w];
+}
+
 // The "About these figures" text: sources, conventions, the days left out and
 // the dated notes on the series
 function mtfAboutHTML(view) {
@@ -802,19 +815,30 @@ function mtfAboutHTML(view) {
       + 'NSE republishes a day a few days later with late member submissions; the revised figures are used (marked “revised”).',
     bse: '<b>BSE</b>: the sum of “Amount financed by members” over the securities in BSE’s margin trading file; days before 1 Oct 2025 come from BSE’s margin trading archive.',
   };
-  const left = [];
+  // Days left out: a count per exchange by kind of reason, the dated list folded away below it
+  const summary = [], starts = [], days = [];
   exs.forEach(ex => {
+    const EX = ex.toUpperCase();
     const rows = doc[ex] || [];
     const first = rows.reduce((m, r) => (!m || r.date < m ? r.date : m), null);
-    rows.filter(r => (r.flags || []).includes('spike')).forEach(r => left.push(`${ex.toUpperCase()} ${rxDate(r.date)}: a one-day jump that reverts`));
+    const out = rows.filter(r => (r.flags || []).includes('spike')).map(r => [r.date, 'a one-day jump that reverts']);
     // days before the exchange's first file are where its series starts, not gaps in it: one line for them
     const missing = Object.entries((doc.unavailable || {})[ex] || {});
     const before = missing.filter(([d]) => first && d < first);
-    missing.filter(([d]) => !first || d >= first).forEach(([d, why]) => left.push(`${ex.toUpperCase()} ${rxDate(d)}: ${escHtml(why)}`));
+    out.push(...missing.filter(([d]) => !first || d >= first));
     if (before.length) {
-      left.push(`${ex.toUpperCase()} before ${rxDate(first)}: no file for ${before.length} trading day${before.length === 1 ? '' : 's'} back to ${rxDate(before.map(([d]) => d).sort()[0])}, so the series starts on ${rxDate(first)}`);
+      starts.push(`${EX} has no file for the ${before.length} trading day${before.length === 1 ? '' : 's'} from ${rxDate(before.map(([d]) => d).sort()[0])}, so its series starts on ${rxDate(first)}`);
     }
+    if (!out.length) return;
+    const counts = new Map();
+    out.forEach(([, why]) => { const k = mtfLeftOutKind(why); const c = counts.get(k[0]) || { k, n: 0 }; c.n += 1; counts.set(k[0], c); });
+    summary.push(`${EX} ${out.length} day${out.length === 1 ? '' : 's'} (${[...counts.values()].map(({ k, n }) => `${n} ${escHtml(n === 1 ? k[0] : k[1])}`).join(', ')})`);
+    out.sort((a, b) => (a[0] < b[0] ? -1 : 1)).forEach(([d, why]) => days.push(`${EX} ${rxDate(d)}: ${escHtml(why)}`));
   });
+  const leftOut = summary.length || starts.length
+    ? `<li><b>Left out</b>: ${summary.length ? `${summary.join('; ')}.` : ''}${starts.length ? ` ${starts.join('; ')}.` : ''}${days.length
+      ? `<details class="mtf-left"><summary>List the ${days.length} day${days.length === 1 ? '' : 's'}</summary><ul>${days.map(x => `<li>${x}</li>`).join('')}</ul></details>` : ''}</li>`
+    : '';
   const notes = MTF_NOTES.filter(n => exs.includes(n.ex) && n.kind === 'break');
   return `<div class="rx-pb mtf-about">
     <ul>
@@ -823,7 +847,7 @@ function mtfAboutHTML(view) {
       <li>Each day is the <b>reporting date</b>, the trading day the book is for. ${exs.map(ex => MTF_PUBLISHED[ex]).join('; ')}, so the latest date trails the market by ${
         exs.includes('bse') ? 'about two sessions' : 'a session'}${view === 'combined' ? ', and NSE + BSE usually ends a session before NSE' : ''}.</li>
       <li>This is the exchanges’ disclosed MTF book across all members, not any one broker’s loan book or interest income.</li>
-      ${left.length ? `<li><b>Left out</b>: ${left.join('; ')}.</li>` : ''}
+      ${leftOut}
     </ul>
     ${notes.length ? `<p class="rx-lbl" style="margin:10px 0 4px">Series changes</p><ul>${notes.map(n => `<li><b>${rxDate(n.date)}</b>: ${n.text}</li>`).join('')}</ul>` : ''}
     <p class="rx-foot">Source: <code>dashboard/data/mtf_daily.json</code>, written ${escHtml(rxDate(doc.updated_at || ''))} by <code>scripts/mtf_pipeline.py</code>.</p>
@@ -851,7 +875,7 @@ function mtfBuildPeriods(el) {
     ${rxPanel({ title: `${def.name} average daily MTF book`, meta: '<span data-mtf="perMeta"></span>',
       right: `<span data-mtf="perLegend"></span>${rxSeg('mtfGran', [['quarter', 'Quarter'], ['month', 'Month']], MTF.gran, 'Period')}`,
       body: `<div class="rx-pb" style="padding-bottom:6px">${rxCanvas(`mtfPeriodChart-${view}`)}</div>
-        <div class="rx-scroll"><table class="rx-table" data-mtf="perTable"></table></div>
+        <div class="rx-scroll"><table class="rx-table mtf-per-table" data-mtf="perTable"></table></div>
         <p class="rx-foot rx-pb" data-mtf="perFoot"></p>` })}
   </div>`;
   const q = k => el.querySelector(`[data-mtf="${k}"]`);
@@ -887,17 +911,17 @@ function mtfBuildPeriods(el) {
       },
     });
     const chgHead = gran === 'month' ? 'MoM' : 'QoQ';
-    const extraHead = view === 'combined' ? '<th scope="col">NSE avg</th><th scope="col">BSE avg</th><th scope="col">BSE share</th>' : '';
+    const extraHead = view === 'combined' ? '<th scope="col" class="mtf-ph-hide">NSE avg</th><th scope="col" class="mtf-ph-hide">BSE avg</th><th scope="col">BSE share</th>' : '';
     const body = rows.slice().reverse().map(r => {
       const label = `${r.label}${mtfPartChip(r)}`;
       const extra = view === 'combined'
-        ? `<td>${fmtNum(r.nseAvg, 0)}</td><td>${fmtNum(r.bseAvg, 0)}</td><td>${fmtPct(r.bseAvg / r.avg)}</td>` : '';
-      return `<tr><td>${label}</td><td>${r.days}</td><td class="rx-strong">${fmtNum(r.avg, 0)}</td><td>${fmtNum(r.endValue, 0)}</td>
+        ? `<td class="mtf-ph-hide">${fmtNum(r.nseAvg, 0)}</td><td class="mtf-ph-hide">${fmtNum(r.bseAvg, 0)}</td><td>${fmtPct(r.bseAvg / r.avg)}</td>` : '';
+      return `<tr><td>${label}</td><td class="mtf-ph-hide">${r.days}</td><td class="rx-strong">${fmtNum(r.avg, 0)}</td><td class="mtf-ph-hide">${fmtNum(r.endValue, 0)}</td>
         <td>${r.chg == null ? '—' : rxChangeHTML(r.chg) + mtfBreakMark(view, r.prevFirst, r.last)}</td>
         <td>${r.yoy == null ? '—' : rxChangeHTML(r.yoy) + mtfBreakMark(view, r.lyFirst, r.last)}</td>${extra}</tr>`;
     }).join('');
-    q('perTable').innerHTML = `<thead><tr><th scope="col">${gran === 'month' ? 'Month' : 'Quarter'}</th><th scope="col">Days</th>
-      <th scope="col">Average book</th><th scope="col">End of period</th><th scope="col">${chgHead}</th><th scope="col">YoY</th>${extraHead}</tr></thead>
+    q('perTable').innerHTML = `<thead><tr><th scope="col">${gran === 'month' ? 'Month' : 'Quarter'}</th><th scope="col" class="mtf-ph-hide">Days</th>
+      <th scope="col">Average book</th><th scope="col" class="mtf-ph-hide">End of period</th><th scope="col">${chgHead}</th><th scope="col">YoY</th>${extraHead}</tr></thead>
       <tbody>${body}</tbody>`;
     const breaks = mtfNotesBetween(view, null, null);
     q('perFoot').innerHTML = `Changes compare average daily books. * : part of the ${unit} (“to …”: so far; “from …”: the first day in the file).`
@@ -928,7 +952,7 @@ function mtfBuildFlows(el) {
     ], 'Latest month of flows')}
     ${bseNote}
     ${rxPanel({ title: `${def.name} MTF flows by month`, meta: '₹ Cr, summed over each month’s reporting days',
-      right: rxLegend([{ label: 'Fresh exposure', color: RX.model }, { label: 'Liquidated', color: RX.deduct }, { label: 'Net', color: RX.ink, kind: 'line' }]),
+      right: rxLegend([{ label: 'Fresh exposure', color: RX.model }, { label: 'Liquidated', color: RX.deduct }, { label: 'Net (right axis)', color: RX.ink, kind: 'line' }]),
       body: `<div class="rx-pb" style="padding-bottom:6px">${rxCanvas(`mtfFlowChart-${view}`)}</div>
         <div class="rx-scroll"><table class="rx-table"><thead><tr><th scope="col">Month</th><th scope="col">Days</th><th scope="col">Fresh</th>
           <th scope="col">Liquidated</th><th scope="col">Net</th><th scope="col">Month-end book</th></tr></thead>
@@ -939,7 +963,7 @@ function mtfBuildFlows(el) {
   rxChart('mtfFlows', `mtfFlowChart-${view}`, 240, {
     type: 'bar',
     data: { labels: shown.map(r => r.label + (r.partial || r.startsLate ? '*' : '')), datasets: [
-      { type: 'line', label: 'Net', data: shown.map(r => r.net), borderColor: RX.ink, borderWidth: 1.6, pointRadius: 2, tension: 0, order: 0 },
+      { type: 'line', label: 'Net', data: shown.map(r => r.net), yAxisID: 'y1', borderColor: RX.ink, borderWidth: 1.6, pointRadius: 2, tension: 0, order: 0 },
       { label: 'Fresh exposure', data: shown.map(r => r.fresh), backgroundColor: RX.model, borderRadius: { topLeft: 2, topRight: 2 }, maxBarThickness: 22, order: 1 },
       { label: 'Liquidated', data: shown.map(r => r.liquidated), backgroundColor: RX.deduct, borderRadius: { topLeft: 2, topRight: 2 }, maxBarThickness: 22, order: 1 },
     ] },
@@ -948,7 +972,10 @@ function mtfBuildFlows(el) {
       plugins: { tooltip: { callbacks: { label: c => ` ${c.dataset.label}: ${rxCr(c.raw, 0)}` } } },
       scales: {
         x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true } },
-        y: { ticks: { callback: v => fmtNum(v, 0) } },
+        y: { beginAtZero: true, ticks: { callback: v => fmtNum(v, 0) } },
+        // Net is a tenth the size of the gross flows: on their axis it would sit on zero
+        y1: { position: 'right', ticks: { color: RX.ink, callback: v => fmtNum(v, 0) },
+          grid: { drawOnChartArea: true, color: c => (c.tick && c.tick.value === 0 ? RX.grey : 'transparent') } },
       },
     },
   });
@@ -1044,8 +1071,8 @@ function mtfBrokerChgCell(p, c) {
 // The two figures before the latest, stacked in one cell (one column keeps the table within the panel)
 function mtfBrokerFigCell(...figs) {
   const shown = figs.filter(Boolean);
-  if (!shown.length) return '<td class="mtf-bk-old">—</td>';
-  return `<td class="mtf-bk-old">${shown.map(p => `<div class="mtf-bk-fig">${mtfBookText(p)}<div class="mtf-bk-sub">${rxDate(p.as_of)} · ${mtfShareText(p)}</div></div>`).join('')}</td>`;
+  if (!shown.length) return '<td class="mtf-bk-old mtf-ph-hide">—</td>';
+  return `<td class="mtf-bk-old mtf-ph-hide">${shown.map(p => `<div class="mtf-bk-fig">${mtfBookText(p)}<div class="mtf-bk-sub">${rxDate(p.as_of)} · ${mtfShareText(p)}</div></div>`).join('')}</td>`;
 }
 
 function mtfBrokerSourceCell(p, alts) {
@@ -1062,11 +1089,12 @@ function mtfBrokerLeague(doc, rows, todayIso) {
     const st = mtfBrokerStyle(doc, r.id);
     const age = p ? mtfDaysAfter(p.as_of, todayIso) : null;
     const ageChip = age != null && age > MTF_BROKER_STALE_DAYS ? ` ${rxChip(`${Math.round(age / 30.4)} months old`, 'warn')}` : '';
+    const chips = `${p ? mtfMeasureChip(p.measure) : ''}${p && MTF_BASIS_LABELS[p.basis] ? ` ${rxChip(MTF_BASIS_LABELS[p.basis])}` : ''}`;
     return `<tr>
-      <td>${i + 1}</td>
+      <td class="mtf-ph-hide">${i + 1}</td>
       <td class="rx-l mtf-bk-name"><i class="mtf-bk-sw${st.dash.length ? ' mtf-bk-sw--dash' : ''}" style="color:${st.color}"></i><b>${escHtml(r.short)}</b>
-        <div class="mtf-bk-sub">${escHtml(r.parent ? `${r.name} · ${r.parent}` : r.name)}</div></td>
-      <td class="rx-l">${p ? mtfMeasureChip(p.measure) : ''}${p && MTF_BASIS_LABELS[p.basis] ? ` ${rxChip(MTF_BASIS_LABELS[p.basis])}` : ''}</td>
+        <div class="mtf-bk-sub">${escHtml(r.parent ? `${r.name} · ${r.parent}` : r.name)}</div>${chips ? `<div class="mtf-ph-only">${chips}</div>` : ''}</td>
+      <td class="rx-l mtf-ph-hide">${chips}</td>
       <td class="rx-strong">${p ? mtfBookText(p) : '—'}<div class="mtf-bk-sub">${p ? rxDate(p.as_of) : 'no figure'}${ageChip}</div></td>
       <td class="rx-strong">${mtfShareText(p)}</td>
       ${mtfBrokerChgCell(p, p && p.chg)}
@@ -1076,9 +1104,9 @@ function mtfBrokerLeague(doc, rows, todayIso) {
     </tr>`;
   }).join('');
   return `<div class="rx-scroll"><table class="rx-table mtf-bk-table">
-    <thead><tr><th scope="col">#</th><th scope="col" class="rx-l">Broker</th><th scope="col" class="rx-l">Measure</th><th scope="col">Latest</th>
+    <thead><tr><th scope="col" class="mtf-ph-hide">#</th><th scope="col" class="rx-l">Broker</th><th scope="col" class="rx-l mtf-ph-hide">Measure</th><th scope="col">Latest</th>
       <th scope="col">Market share</th><th scope="col">vs previous</th><th scope="col">vs a year earlier</th>
-      <th scope="col" title="The two figures before the latest">Earlier figures</th><th scope="col" class="rx-l">Source</th></tr></thead>
+      <th scope="col" class="mtf-ph-hide" title="The two figures before the latest">Earlier figures</th><th scope="col" class="rx-l">Source</th></tr></thead>
     <tbody>${body}</tbody></table></div>`;
 }
 
@@ -1101,7 +1129,7 @@ function mtfBrokerQuarterTable(doc, rows) {
     return `<td>${mtfShareText(p)}${mv}</td>`;
   };
   const body = rows.map(r => `<tr><td class="rx-l"><i class="mtf-bk-sw${mtfBrokerStyle(doc, r.id).dash.length ? ' mtf-bk-sw--dash' : ''}" style="color:${
-    mtfBrokerStyle(doc, r.id).color}"></i>${escHtml(r.short)} ${mtfMeasureChip(r.primary.measure)}</td>${qs.map((q, j) => cell(r, q, j)).join('')}</tr>`).join('');
+    mtfBrokerStyle(doc, r.id).color}"></i>${escHtml(r.short)} <span class="mtf-ph-hide">${mtfMeasureChip(r.primary.measure)}</span></td>${qs.map((q, j) => cell(r, q, j)).join('')}</tr>`).join('');
   return `<div class="rx-scroll"><table class="rx-table mtf-bk-qtable">
     <thead><tr><th scope="col" class="rx-l">Broker</th>${qs.map(q => `<th scope="col">${escHtml(q.label)}<div class="mtf-bk-sub">${rxDate(q.end)}</div></th>`).join('')}</tr></thead>
     <tbody>${body}</tbody>
@@ -1167,6 +1195,9 @@ function mtfBuildBrokers(el) {
       foot: '▲ / ▼ against the previous quarter end, on the same measure; hover for the move in pp. — no figure for that date.' })}
     ${rxPanel({ title: 'Sources and method', body: mtfBrokerSourcesHTML(doc, rows) })}
   </div>`;
+  // quarters run oldest to latest: where the table scrolls (a phone), open it on the latest
+  const qWrap = el.querySelector('.mtf-bk-qtable')?.closest('.rx-scroll');
+  if (qWrap) qWrap.scrollLeft = qWrap.scrollWidth;
   const breaks = [...new Set(mtfNotesFor('combined', 'break').map(n => n.date))];
   const draw = () => {
     const metric = MTF.bMetric;
@@ -1187,7 +1218,7 @@ function mtfBuildBrokers(el) {
         plugins: {
           mtfBreakLine: { dates: breaks },
           legend: { display: true, position: 'bottom',
-            labels: { boxWidth: 18, boxHeight: 2, padding: 12, color: RX.ink2, font: { family: RX_FONT, size: 11 } } },
+            labels: { boxWidth: 26, boxHeight: 2, padding: 12, color: RX.ink2, font: { family: RX_FONT, size: 11 } } },
           tooltip: { callbacks: {
             title: items => rxDate(items[0].raw.p.as_of),
             label: c => ` ${c.dataset.label}: ${mtfShareText(c.raw.p)} · ${mtfBookText(c.raw.p)}`,

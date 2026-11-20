@@ -3429,7 +3429,7 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
 .mtf-stocks td.mtf-name { white-space: normal; min-width: 180px; }
 /* MTF Brokers tab */
 .mtf-bk-sub { font-size: 11px; font-weight: 400; color: var(--rx-muted); margin-top: 1px; white-space: nowrap; }
-.mtf-bk-sw { display: inline-block; width: 14px; height: 0; border-top: 3px solid currentColor; margin: 0 6px 3px 0; vertical-align: middle; }
+.mtf-bk-sw { display: inline-block; width: 18px; height: 0; border-top: 3px solid currentColor; margin: 0 6px 3px 0; vertical-align: middle; }
 .mtf-bk-sw--dash { border-top-style: dashed; }
 .mtf-bk-table td { vertical-align: top; }
 .mtf-bk-table td.mtf-bk-name { min-width: 150px; }
@@ -3449,9 +3449,23 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
 .mtf-bk-mv { font-size: 10px; }
 .mtf-bk-srcs td.rx-wrap { min-width: 180px; font-size: 12px; }
 .mtf-about .rx-chip { margin-right: 2px; }
+/* Phone: columns that make way for the figures (league table, By Quarter); the league table's
+   measure chips move under the broker's name, which stays pinned */
+.mtf-ph-only { display: none; margin-top: 4px; }
+.mtf-left { margin-top: 4px; }
+.mtf-left summary { cursor: pointer; color: var(--rx-muted); font-size: 12px; }
+.mtf-left ul { margin-top: 4px; gap: 2px; font-size: 12px; }
 @media (max-width: 640px) {
   .mtf-stocks .mtf-id { display: none; }
   .mtf-stocks td.mtf-name { min-width: 140px; }
+  .rx-table .mtf-ph-hide { display: none; }
+  .mtf-ph-only { display: block; }
+  .rx-scroll .mtf-bk-table th:nth-child(2),
+  .rx-scroll .mtf-bk-table td.mtf-bk-name { position: sticky; left: 0; z-index: 1; background: var(--rx-surface); box-shadow: 1px 0 0 var(--rx-rule); }
+  .mtf-bk-table td.mtf-bk-name { min-width: 128px; white-space: normal; }
+  .mtf-bk-table td.mtf-bk-name .mtf-bk-sub { max-width: 150px; }
+  /* By Quarter: the part-period chip goes under the label so QoQ / YoY fit */
+  .mtf-per-table td:first-child .rx-chip { display: block; width: max-content; margin: 2px 0 0; }
 }
 
 /* Participants tab (js/17-participants.js): category swatch and share beside each figure */
