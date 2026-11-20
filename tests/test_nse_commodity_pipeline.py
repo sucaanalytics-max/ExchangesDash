@@ -79,6 +79,15 @@ class Parse(unittest.TestCase):
         self.assertEqual(nse["crude"]["o"][2], 0.0104)
         self.assertIn("CRUDEOIL: 1 option row(s) whose derived premium is outside the day's price range", checks)
 
+    def test_cheap_option_off_its_range_by_a_few_rupees_is_flagged(self):
+        # A crude option traded at ₹1–2 whose value implies ₹6: within a tolerance
+        # scaled to the strike (₹8), but not within rounding
+        bad = [row("FUO", "CRUDEOIL", 10, 8006000.0, strike="8000.00", lo="1", hi="2")]
+        _, _, checks = com.parse_bhavcopy(bhavcopy(bad))
+        self.assertIn("CRUDEOIL: 1 option row(s) whose derived premium is outside the day's price range", checks)
+        ok = [row("FUO", "CRUDEOIL", 10, 8001500.0, strike="8000.00", lo="1", hi="2")]
+        self.assertEqual(com.parse_bhavcopy(bhavcopy(ok))[2], [])
+
     def test_unknown_multiplier_leaves_premium_null(self):
         _, nse, checks = com.parse_bhavcopy(bhavcopy([row("FUO", "GOLDM", 3, 3_000_000.0, strike="13000")]))
         self.assertEqual(nse["gold"]["o"], [3, 0.3, None])
