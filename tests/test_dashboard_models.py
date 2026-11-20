@@ -16,12 +16,56 @@ import nse_pipeline as nse
 PREDICTOR_JS = ["PREDICTOR_SEGMENTS", "predictorScenario"]
 LIVE_JS = ["INTRADAY_CHECKPOINTS", "SESSION_MINUTES", "dayFractionAt", "quantile", "revenueAt",
            "liveModelError", "shareOfDayError"]
-LIVE_CARD_JS = LIVE_JS + ["liveDefaultType", "liveDayPool", "typicalPathRange", "liveCardModel",
+LIVE_CARD_JS = LIVE_JS + ["liveDefaultType", "liveDayPool", "typicalPathRange", "shareOfDayTrack", "liveModelTrack", "liveCardModel",
                           "intradayMethodLabel", "sessionClock", "SEG_PRODUCT", "NO_FLAGS", "periodFlags"]
 
 
 def _nse_pnl():
     return json.loads((ROOT / "dashboard" / "data" / "nse_dashboard_data.json").read_text()).get("pnl") or []
+
+
+REST_MIX_JS = ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry", "EXPIRY_DATES_CACHE",
+               "computeWeekExpiryDates", "expiryDateSet", "PRE_EXPIRY_DATES_CACHE", "preExpiryDateSet",
+               "PREDICTOR_MIN_BUCKET", "PREDICTOR_BUCKETS", "quarterEndIso", "predictorNextIso", "predictorRestMix"]
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class PredictorRestMix(unittest.TestCase):
+    """Revenue Predictor's expiry-aware Base: the sessions left split by kind, each at its own average."""
+
+    @staticmethod
+    def _quarter():
+        # Q3 FY 2027 to Fri 20 Nov 2026: NSE expiry Tuesdays earn 100, Mondays (pre-expiry) 60, other days 40
+        import datetime as dt
+        rows, d = [], dt.date(2026, 10, 1)
+        while d <= dt.date(2026, 11, 20):
+            if d.weekday() < 5:
+                rev = {1: 100.0, 0: 60.0}.get(d.weekday(), 40.0)
+                rows.append({"date": d.isoformat(), "opt_rev": rev, "fut_rev": 0.0, "cash_rev": 0.0})
+            d += dt.timedelta(days=1)
+        n = len(rows)
+        adr = sum(r["opt_rev"] for r in rows) / n
+        ctx = {"segs": ["opt", "fut", "cash"], "n": n, "daily": rows, "cq": {"quarter": "Q3 FY 2027"},
+               "adr": {"opt": adr, "fut": 0, "cash": 0}}
+        return ctx, rows
+
+    def test_split_adds_up_and_weights_each_kind(self):
+        ctx, rows = self._quarter()
+        days = ctx["n"] + 29
+        got = js_eval(REST_MIX_JS, "predictorRestMix('nse', DATA.ctx, DATA.days, DATA.rows)", {"ctx": ctx, "days": days, "rows": rows})
+        mix = got["mix"]
+        self.assertEqual(mix["e"] + mix["p"] + mix["o"], 29)
+        # 23 Nov – 31 Dec: 6 Tuesdays, 6 Mondays among 29 weekdays
+        self.assertEqual((mix["e"], mix["p"]), (6, 6))
+        self.assertEqual(got["src"]["e"], "quarter to date")
+        want = (mix["e"] * 100 + mix["p"] * 60 + mix["o"] * 40) / 29
+        self.assertAlmostEqual(got["perSeg"]["opt"], want, places=9)
+
+    def test_mcx_keeps_the_flat_pace(self):
+        ctx, rows = self._quarter()
+        got = js_eval(REST_MIX_JS, "predictorRestMix('mcx', DATA.ctx, DATA.days, DATA.rows)", {"ctx": ctx, "days": ctx["n"] + 29, "rows": rows})
+        self.assertIsNone(got["mix"])
+        self.assertAlmostEqual(got["perSeg"]["opt"], ctx["adr"]["opt"], places=9)
 
 
 @unittest.skipUnless(NODE, "node not installed")
@@ -628,6 +672,9 @@ class LiveCards(unittest.TestCase):
         # shares at 14:00: .5 .6 .7 .8 .9 → 90th pct .86, 10th pct .54
         self.assertAlmostEqual(got["lo"], 43 / 0.86, places=9)
         self.assertAlmostEqual(got["hi"], 43 / 0.54, places=9)
+        # the headline estimate: revenue ÷ the median share (.7)
+        self.assertAlmostEqual(got["mid"], 43 / 0.7, places=9)
+        self.assertTrue(got["lo"] <= got["mid"] <= got["hi"])
         self.assertEqual(got["n"], 5)
         self.assertIsNone(js_eval(LIVE_CARD_JS, "typicalPathRange(43, 285, [])"))
 
@@ -641,16 +688,19 @@ class LiveCards(unittest.TestCase):
     def test_live_card(self):
         c = self.card()
         lo, hi = 43 / (0.6 + 0.8 * 0.1), 43 / (0.5 + 0.2 * 0.1)   # normal days only: shares .5 .6 .7
-        self.assertEqual((c["kind"], c["time"], c["booked"], c["pred"]), ("live", "14:00", 43.0, 70.0))
-        self.assertEqual(c["method"], "Normal days, same weekday")
+        mid = 43 / 0.6                                              # the share-of-day estimate (median share)
+        self.assertEqual((c["kind"], c["time"], c["booked"]), ("live", "14:00", 43.0))
+        self.assertAlmostEqual(c["pred"], mid, places=9)
+        self.assertEqual((c["predSource"], c["predModel"], c["poolType"]), ("share", 70.0, "normal"))
+        self.assertEqual(c["modelMethod"], "Normal days, same weekday")
         self.assertAlmostEqual(c["range"]["lo"], lo, places=9)
         self.assertAlmostEqual(c["range"]["hi"], hi, places=9)
         self.assertEqual(c["range"]["n"], 3)
         self.assertIsNone(c["outsideRange"])
-        self.assertAlmostEqual(c["pctOfClose"], 43 / 70, places=9)
-        scale = max(43, 70, hi) * 1.06
+        self.assertAlmostEqual(c["pctOfClose"], 43 / mid, places=9)
+        scale = max(43, mid, hi) * 1.06
         self.assertAlmostEqual(c["bar"]["fill"], 43 / scale * 100, places=9)
-        self.assertAlmostEqual(c["bar"]["mark"], 70 / scale * 100, places=9)
+        self.assertAlmostEqual(c["bar"]["mark"], mid / scale * 100, places=9)
         self.assertAlmostEqual(c["bar"]["lo"], lo / scale * 100, places=9)
         self.assertEqual([s[0] for s in c["segs"]], ["Options", "Futures", "Cash"])
 
@@ -665,7 +715,7 @@ class LiveCards(unittest.TestCase):
         self.assertIsNotNone(before["range"])
         after = self.card(status=self.CLOSED, daily=[{"date": "2026-10-26", "total_rev": 75.0}])
         self.assertEqual(after["actual"], 75.0)
-        self.assertAlmostEqual(after["predError"], 70 / 75 - 1, places=9)
+        self.assertAlmostEqual(after["predError"], (43 / 0.6) / 75 - 1, places=9)
         self.assertIsNone(after["range"])
         self.assertIsNone(after["pctOfClose"])
         self.assertIsNone(after["bar"]["lo"])
@@ -680,9 +730,23 @@ class LiveCards(unittest.TestCase):
         self.assertIsNone(done["range"])
         self.assertIsNone(done["outsideRange"])
         self.assertIsNone(done["bar"]["lo"])
-        self.assertEqual((done["booked"], done["pred"]), (43.0, 70.0))
-        self.assertAlmostEqual(done["pctOfClose"], 43 / 70, places=9)
+        # past 16:00 every session has reached its close: the estimate is the booked figure
+        self.assertEqual((done["booked"], done["pred"], done["predModel"]), (43.0, 43.0, 70.0))
+        self.assertAlmostEqual(done["pctOfClose"], 1.0, places=9)
         self.assertFalse(self.card(status=self.CLOSED)["sessionDone"])   # polls stopped at 14:00: range kept
+
+    def test_live_model_headline_without_history(self):
+        hourly = {"date": "2026-10-26", "day_type": "normal", "samples": [self.POLL]}
+        c = js_eval(LIVE_CARD_JS, "liveCardModel(DATA.h, {days: []}, [], DATA.st)", {"h": hourly, "st": self.LIVE})
+        self.assertEqual((c["predSource"], c["pred"]), ("model", 70.0))
+
+    def test_share_of_day_track(self):
+        # each normal day has only 2 others of its type, so its pool is every other day:
+        # .5 vs median(.6 .7 .8 .9) = .75, .6 vs median(.5 .7 .8 .9) = .75, .7 vs median(.5 .6 .8 .9) = .7
+        got = js_eval(LIVE_CARD_JS, "shareOfDayTrack(DATA, 285, 'normal')", self.NORMAL + self.EXPIRY)
+        self.assertEqual(got["n"], 3)
+        self.assertAlmostEqual(got["mae"], (abs(.5 / .75 - 1) + abs(.6 / .75 - 1) + 0) / 3, places=9)
+        self.assertIsNone(js_eval(LIVE_CARD_JS, "shareOfDayTrack([], 285, 'normal')"))
 
     def test_no_polls_and_no_feed(self):
         self.assertEqual(self.card(samples=[{"elapsed_minutes": 0, "total_revenue": 5.0}])["kind"], "none")
@@ -703,7 +767,7 @@ class LiveCards(unittest.TestCase):
         c = js_eval(LIVE_CARD_JS + ["liveStatus", "LIVE_STALE_MINUTES", "istDateOf", "parseUtcTs",
                                     "LIVE_CARD_CACHE", "liveCardFor"], expr, data)
         self.assertEqual(c["actual"], 10.30)
-        self.assertAlmostEqual(c["predError"], 70 / 10.30 - 1, places=9)
+        self.assertAlmostEqual(c["predError"], (43 / 0.6) / 10.30 - 1, places=9)   # the share-of-day estimate vs the close
 
     def banner(self, ex, card):
         return js_eval(["bannerReadingFromCard"], f"bannerReadingFromCard('{ex}', DATA)", card)

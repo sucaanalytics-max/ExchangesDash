@@ -148,11 +148,34 @@ function liveDayPool(complete, type, exclude) {
 }
 
 // Typical-path range of the close: revenue so far ÷ the 90th and 10th
-// percentile of the share of the close `pool` had reached `at` minutes in
+// percentile of the share of the close `pool` had reached `at` minutes in;
+// mid ÷ the median share is the share-of-day estimate, the headline prediction
 function typicalPathRange(revenue, at, pool) {
   const fr = pool.map(d => dayFractionAt(d, at)).filter(x => x > 0);
   if (revenue == null || !fr.length) return null;
-  return { lo: revenue / quantile(fr, 0.9), hi: revenue / quantile(fr, 0.1), n: fr.length };
+  return { lo: revenue / quantile(fr, 0.9), hi: revenue / quantile(fr, 0.1), mid: revenue / quantile(fr, 0.5), n: fr.length };
+}
+
+// How close the share-of-day estimate has come at `at` minutes in: each of the
+// last `last` complete sessions of `type` (all days when fewer than 3), its own
+// share then ÷ the median share of the others in its pool, against its close.
+// { mae, n } (mean absolute error), or null with nothing to score.
+function shareOfDayTrack(complete, at, type, last = 20) {
+  const same = type === 'all' ? complete : complete.filter(d => d.day_type === type);
+  const errs = (same.length >= 3 ? same : complete).slice(-last).map(d => {
+    const own = dayFractionAt(d, at);
+    const med = quantile(liveDayPool(complete, type, d).map(o => dayFractionAt(o, at)).filter(x => x > 0), 0.5);
+    return own != null && med ? own / med - 1 : null;
+  }).filter(e => e != null);
+  return errs.length ? { mae: errs.reduce((a, e) => a + Math.abs(e), 0) / errs.length, n: errs.length } : null;
+}
+
+// The live model's (the poller's predicted_eod) record at the checkpoint
+// nearest `at`, over the last `last` complete sessions that recorded it
+function liveModelTrack(complete, at, last = 20) {
+  const cp = INTRADAY_CHECKPOINTS.reduce((b, c) => (Math.abs(c[1] - at) < Math.abs(b[1] - at) ? c : b), INTRADAY_CHECKPOINTS[0]);
+  const errs = complete.slice(-last).map(d => liveModelError(d, cp[0])).filter(e => e != null);
+  return errs.length ? { mae: errs.reduce((a, e) => a + Math.abs(e), 0) / errs.length, n: errs.length, at: cp[0] } : null;
 }
 
 // Whether the session `date` has its official close in the view's daily rows.
@@ -176,16 +199,22 @@ function liveCardModel(hourly, history, dailyAll, status) {
 
   const at = latest.elapsed_minutes;
   const complete = ((history && history.days) || []).filter(d => dayFractionAt(d, SESSION_MINUTES) != null);
-  const range = typicalPathRange(latest.total_revenue, at, liveDayPool(complete, liveDefaultType(complete, hourly.day_type || 'normal')));
+  const poolType = liveDefaultType(complete, hourly.day_type || 'normal');
+  const range = typicalPathRange(latest.total_revenue, at, liveDayPool(complete, poolType));
   const closeRow = sessDate ? (dailyAll || []).find(r => r.date === sessDate) : null;
   const actual = closeRow && (!st.isToday || st.kind === 'closed') ? closeRow.total_rev : null;
-  const booked = latest.total_revenue, pred = latest.predicted_eod ?? null;
+  // Headline: the share-of-day estimate (the middle of the range); the poller's
+  // live model is the second opinion, and the headline when there is no range
+  const booked = latest.total_revenue, predModel = latest.predicted_eod ?? null;
+  const predSource = range && range.mid != null ? 'share' : predModel != null ? 'model' : null;
+  const pred = predSource === 'share' ? range.mid : predModel;
   // From the 16:00 close every past session has reached its full close, so the
   // range collapses to the booked figure: shown only before the close, and
   // until the actual close replaces it
   const sessionDone = at >= SESSION_MINUTES;
   const shownRange = actual == null && !sessionDone ? range : null;
-  const outsideRange = shownRange && pred != null ? (pred > shownRange.hi ? 'above' : pred < shownRange.lo ? 'below' : null) : null;
+  // The live model outside the range: the two methods disagree
+  const outsideRange = shownRange && predModel != null ? (predModel > shownRange.hi ? 'above' : predModel < shownRange.lo ? 'below' : null) : null;
 
   // Bar: booked revenue (the actual close once known) on a scale just past the furthest mark
   const end = actual ?? booked;
@@ -196,7 +225,9 @@ function liveCardModel(hourly, history, dailyAll, status) {
     kind: st.kind, age: st.age,
     time: (latest.captured_ist || '').slice(11, 16),
     elapsed: at,
-    booked, pred, method: intradayMethodLabel(latest.pred_method),
+    booked, pred, predModel, predSource, poolType,
+    method: predSource === 'share' ? `Share of the close past ${poolType === 'all' ? '' : poolType.replace('_', '-') + ' '}sessions had reached by ${sessionClock(at)} (median, n ${range.n})` : intradayMethodLabel(latest.pred_method),
+    modelMethod: intradayMethodLabel(latest.pred_method),
     segs: [['Options', latest.options_revenue], ['Futures', latest.futures_revenue], ['Cash', latest.cash_revenue]].filter(s => s[1] != null),
     range: shownRange,
     rangeAt: sessionClock(at),
@@ -212,6 +243,18 @@ function liveCardModel(hourly, history, dailyAll, status) {
       mark: pct(pred),
     },
   };
+}
+
+// Day-type filter picked on the tab, per exchange: kept across the 5-minute rebuilds
+const LIVE_VIEW = {};
+
+// A weekday past 10:00 IST whose feed still shows an earlier session: most
+// likely an exchange holiday (the feed being down reads the same, hence "likely")
+function liveLikelyHoliday(st) {
+  if (st.isToday) return false;
+  const now = new Date(Date.now() + 330 * 60000);
+  const wd = now.getUTCDay(), mins = now.getUTCHours() * 60 + now.getUTCMinutes();
+  return wd >= 1 && wd <= 5 && mins >= 600;
 }
 
 async function buildLivePredictor(ex) {
@@ -230,7 +273,9 @@ async function buildLivePredictor(ex) {
   const sessLong = sessDate ? fmtTradeDate(sessDate, true) : '';
   const dayType = hourly?.day_type || 'normal';
   const countOf = k => k === 'all' ? complete.length : complete.filter(d => d.day_type === k).length;
-  const state = { type: liveDefaultType(complete, dayType) };
+  // The day-type filter survives the 5-minute rebuilds (LIVE_VIEW), while it has days
+  const kept = LIVE_VIEW[ex];
+  const state = { type: kept && (kept === 'all' || countOf(kept)) ? kept : liveDefaultType(complete, dayType) };
   // Benchmark for the predicted close: archived days of the same type (the
   // poller's closes, at today's rates), else the quarter-to-date average
   const sameType = complete.filter(d => d.day_type === dayType && d.date !== sessDate);
@@ -241,7 +286,13 @@ async function buildLivePredictor(ex) {
   if (currentExchange !== ex) return;
   const closeRow = closeKnown ? ((todayData && todayData.daily_all) || []).find(r => r.date === sessDate) : null;
   const actualClose = closeRow && !st.isToday ? closeRow.total_rev : (closeRow && st.kind === 'closed' ? closeRow.total_rev : null);
-  const pred = latest?.predicted_eod ?? null;
+  // Headline as on the Revenue Summary card: the share-of-day estimate over the
+  // session's own day type (all days with fewer than 3); the live model beside it
+  const kpiType = liveDefaultType(complete, dayType);
+  const predModel = latest?.predicted_eod ?? null;
+  const kpiRange = latest ? typicalPathRange(latest.total_revenue, latest.elapsed_minutes, liveDayPool(complete, kpiType)) : null;
+  const pred = kpiRange && kpiRange.mid != null ? kpiRange.mid : predModel;
+  const predIsShare = !!(kpiRange && kpiRange.mid != null);
   const q = (todayData && todayData.quarterly) || [];
   const cq = q.length ? q[q.length - 1] : null;
   const qtdAvg = cq && cq.days ? cq.total_rev / cq.days : null;
@@ -254,7 +305,9 @@ async function buildLivePredictor(ex) {
     ? `<span class="rx-status rx-status--live" role="status"><span class="rx-dot" aria-hidden="true"></span>Live · last poll ${(latest.captured_ist || '').slice(11, 16)} IST</span>`
     : st.kind === 'stale'
       ? `<span class="rx-status rx-status--stale" role="status"><span class="rx-dot" aria-hidden="true"></span>Delayed · last poll ${latest ? (latest.captured_ist || '').slice(11, 16) + ' IST' : 'none yet today'}${st.age != null ? ` (${st.age} min ago)` : ''}</span>`
-      : `<span class="rx-status" role="status"><span class="rx-dot" aria-hidden="true"></span>Market closed${sessLong ? ` · showing ${sessLong}` : ''}</span>`;
+      : liveLikelyHoliday(st)
+        ? `<span class="rx-status" role="status"><span class="rx-dot" aria-hidden="true"></span>No session today: likely an exchange holiday${sessLong ? ` · showing ${sessLong}` : ''}</span>`
+        : `<span class="rx-status" role="status"><span class="rx-dot" aria-hidden="true"></span>Market closed${sessLong ? ` · showing ${sessLong}` : ''}</span>`;
 
   if (!samples.length) {
     el.innerHTML = `<div class="rx">
@@ -279,7 +332,7 @@ async function buildLivePredictor(ex) {
       ${rxPanel({ cls: 'rx-col-wide', title: 'Where the day’s revenue comes from', meta: 'by hour window',
         body: '<div class="rx-scroll"><table class="rx-table" data-rx="wins"></table></div>', foot: '<span data-rx="winNote"></span>' })}
       ${rxPanel({ cls: 'rx-col-narrow', title: 'Prediction through the day', meta: 'predicted close at each poll, ₹ Cr',
-        body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas(`rxLivePred-${ex}`)}</div>`, foot: '<span data-rx="predNote"></span>' })}
+        body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas(`rxLivePred-${ex}`)}</div><div class="rx-chart-note" data-rx="legPred"></div>`, foot: '<span data-rx="predNote"></span>' })}
     </div>
     ${rxPanel({ title: 'How early estimates have done', meta: 'archived sessions · error vs the actual close',
       body: '<div class="rx-scroll"><table class="rx-table" data-rx="arch"></table></div>',
@@ -289,21 +342,30 @@ async function buildLivePredictor(ex) {
 
   const typeDays = (t, exclude) => liveDayPool(complete, t, exclude);
 
-  function renderKpis(band) {
+  function renderKpis() {
     const at = latest.elapsed_minutes;
-    const rng = typicalPathRange(latest.total_revenue, at, typeDays(state.type));
     const when = `${(latest.captured_ist || '').slice(11, 16)} IST · ${fmtSessionProgress(at)}`;
-    const items = [
-      rxKpi(st.isToday && st.kind !== 'closed' ? 'Revenue so far' : 'Revenue at last poll', rxCr(latest.total_revenue, 2), when),
-      rxKpi(st.isToday && st.kind !== 'closed' ? 'Predicted close, 16:00' : 'Predicted close at last poll', rxCr(pred, 2),
-        `${refAvg && pred ? rxChangeHTML(pred / refAvg.value - 1) + ` vs ${refAvg.label} ${rxCr(refAvg.value, 1)} · ` : ''}${intradayMethodLabel(latest.pred_method)}`, { accent: true }),
-    ];
+    const typeLabel = kpiType === 'all' ? 'all' : kpiType.replace('_', '-');
+    const trackS = predIsShare ? shareOfDayTrack(complete, at, kpiType) : null;
+    const trackM = liveModelTrack(complete, at);
+    const live = st.isToday && st.kind !== 'closed';
+    const vsRef = refAvg && pred ? `${rxChangeHTML(pred / refAvg.value - 1)} vs ${refAvg.label} ${rxCr(refAvg.value, 1)}` : '';
+    const items = [rxKpi(live ? 'Revenue so far' : 'Revenue at last poll', rxCr(latest.total_revenue, 2), when)];
     if (actualClose != null) {
-      items.push(rxKpi(`Actual close · today's rates${flagTags(periodFlags(closeRow, 'total'))}`, rxCr(actualClose, 2), pred ? `Last prediction was ${rxSignedPct(pred / actualClose - 1)} off` : fmtTradeDate(sessDate, true)));
-    } else if (at < SESSION_MINUTES) {
-      // From the close the range collapses to the booked figure, so it is left out
-      items.push(rxKpi('Typical-path range', rng ? `₹${fmtNum(rng.lo, 1)} – ${fmtNum(rng.hi, 1)} Cr` : '—',
-        rng ? `revenue so far ÷ 10th–90th pct. share reached by ${sessionClock(at)} · n = ${rng.n}` : 'appears after the first complete archived session'));
+      items.push(rxKpi(`Actual close · today's rates${flagTags(periodFlags(closeRow, 'total'))}`, rxCr(actualClose, 2),
+        pred ? `Last estimate ${rxCr(pred, 2)} was ${rxSignedPct(pred / actualClose - 1)} off` : fmtTradeDate(sessDate, true), { accent: true }));
+    } else {
+      const sub = predIsShare
+        ? `${at < SESSION_MINUTES ? `Range ₹${fmtNum(kpiRange.lo, 1)}–${fmtNum(kpiRange.hi, 1)} Cr · ${typeLabel} days, n ${kpiRange.n}` : 'session complete'}${trackS && at < SESSION_MINUTES ? `<br>Typically within ±${fmtPct(trackS.mae)} at this hour (last ${trackS.n} sessions)` : ''}${vsRef ? `<br>${vsRef}` : ''}`
+        : `Live model: no complete archived sessions to estimate from yet${vsRef ? `<br>${vsRef}` : ''}`;
+      items.push(rxKpi(live ? 'Predicted close, 16:00' : 'Predicted close at last poll', rxCr(pred, 2), sub, { accent: true }));
+    }
+    if (predIsShare && predModel != null) {
+      const out = kpiRange && at < SESSION_MINUTES && actualClose == null && (predModel > kpiRange.hi || predModel < kpiRange.lo);
+      const sub = actualClose != null
+        ? `${rxSignedPct(predModel / actualClose - 1)} vs the actual close · ${intradayMethodLabel(latest.pred_method)}`
+        : `${intradayMethodLabel(latest.pred_method)}${trackM ? `<br>Typically within ±${fmtPct(trackM.mae)} at ${trackM.at} (last ${trackM.n} sessions)` : ''}${out ? `<br>${rxChip(`outside the range`, 'warn')}` : ''}`;
+      items.push(rxKpi('Second opinion · live model', rxCr(predModel, 2), sub));
     }
     const mixBar = `<div style="display:flex;height:10px;gap:2px;margin:9px 0 7px" role="img" aria-label="${segs.map(s => `${s[0]} ${fmtNum(s[1], 2)} crore`).join(', ')}">${segs.map(s => `<div style="flex:${Math.max(s[1], 0)} 1 0;background:${s[2]}" title="${s[0]} ${rxCr(s[1], 2)}"></div>`).join('')}</div>`;
     items.push(rxKpi('Segment mix so far', mixBar, segs.map(s => `${s[0]} ${segTotal ? fmtPct(s[1] / segTotal) : '—'}`).join(' · ')));
@@ -328,6 +390,8 @@ async function buildLivePredictor(ex) {
     const proj = [{ x: latest.elapsed_minutes, y: latest.total_revenue }, { x: SESSION_MINUTES, y: endValue }];
     if (endValue != null) ds.push({ label: actualClose != null ? 'To the close' : 'Projection', data: proj, borderColor: RX.model, borderWidth: 2, borderDash: [2, 4], pointRadius: [0, 4], pointBackgroundColor: RX.model, tension: 0 });
     ds.push({ label: sessLong || 'Session', data: [{ x: 0, y: 0 }].concat(samples.map(s => ({ x: s.elapsed_minutes, y: s.total_revenue }))), borderColor: RX.ink, borderWidth: 2, pointRadius: 0, tension: 0 });
+    // A typical close for this kind of day, as a tick at 16:00
+    if (refAvg) ds.push({ label: refAvg.label, data: [{ x: SESSION_MINUTES - 30, y: refAvg.value }, { x: SESSION_MINUTES, y: refAvg.value }], borderColor: RX.rev, borderWidth: 2, borderDash: [4, 3], pointRadius: 0, tension: 0 });
     rxChart('liveCum', `rxLiveCum-${ex}`, 300, {
       type: 'line',
       data: { datasets: ds },
@@ -359,6 +423,7 @@ async function buildLivePredictor(ex) {
       { label: sessLong || 'Session', color: RX.ink, kind: 'line' },
       { label: actualClose != null ? `To the actual close ${rxCr(actualClose, 2)}` : `Projection to ${rxCr(pred, 2)}`, color: RX.model, kind: 'dot' },
     ].concat(pool.length ? [{ label: `${typeName} path, 10th–90th pct.`, color: 'rgba(43, 92, 200, 0.22)' }] : [])
+     .concat(refAvg ? [{ label: `${refAvg.label} ${rxCr(refAvg.value, 1)}`, color: RX.rev, kind: 'dash' }] : [])
      .concat(prevDay ? [{ label: `Last ${dayType.replace('_', '-')} day, ${fmtTradeDate(prevDay.date, true)}`, color: RX.grey, kind: 'line' }] : []));
     qx('cumNote').textContent = !complete.length
       ? 'The typical-path band appears after the first complete archived session.'
@@ -379,9 +444,11 @@ async function buildLivePredictor(ex) {
       const share = today != null && endValue ? today / endValue : null;
       const diff = share != null && typ != null && !partial ? share - typ : null;
       if (diff != null && Math.abs(diff) > 0.03 && ahead == null) ahead = { label, diff };
-      return `<tr><td>${label}</td><td class="rx-l" style="width:34%"><div class="rx-meter" style="width:${typ != null ? (typ / 0.2 * 100).toFixed(1) : 0}%;max-width:100%"></div></td><td>${typ != null ? fmtPct(typ) : '—'}</td><td>${today != null ? fmtNum(today, 2) + (partial ? ` <span class="rx-foot">to ${sessionClock(last)}</span>` : '') : '—'}</td><td class="${diff == null ? '' : diff > 0.03 ? 'rx-up' : diff < -0.03 ? 'rx-dn' : ''}">${share != null ? fmtPct(share) : '—'}</td></tr>`;
+      const dCls = diff == null ? '' : diff > 0.03 ? 'rx-up' : diff < -0.03 ? 'rx-dn' : '';
+      const dTxt = diff == null ? '—' : `${diff > 0 ? '+' : diff < 0 ? '−' : ''}${fmtNum(Math.abs(diff * 100), 1)} pp`;
+      return `<tr><td>${label}</td><td class="rx-l lv-bar" style="width:30%"><div class="rx-meter" style="width:${typ != null ? (typ / 0.2 * 100).toFixed(1) : 0}%;max-width:100%"></div></td><td>${typ != null ? fmtPct(typ) : '—'}</td><td>${today != null ? fmtNum(today, 2) + (partial ? ` <span class="rx-foot">to ${sessionClock(last)}</span>` : '') : '—'}</td><td class="lv-pct">${share != null ? fmtPct(share) : '—'}</td><td class="${dCls}">${dTxt}</td></tr>`;
     }).join('');
-    qx('wins').innerHTML = `<thead><tr><th scope="col">Window</th><th scope="col" class="rx-l">Typical share of the close</th><th scope="col">Typical</th><th scope="col">${st.isToday ? 'Today' : fmtTradeDate(sessDate)}, ₹ Cr</th><th scope="col">% of ${actualClose != null ? 'close' : 'predicted close'}</th></tr></thead><tbody>${rows}</tbody>`;
+    qx('wins').innerHTML = `<thead><tr><th scope="col">Window</th><th scope="col" class="rx-l lv-bar">Typical share of the close</th><th scope="col">Typical</th><th scope="col">${st.isToday ? 'Today' : fmtTradeDate(sessDate)}, ₹ Cr</th><th scope="col" class="lv-pct">% of ${actualClose != null ? 'close' : 'predicted close'}</th><th scope="col" title="This window's share minus its typical share, finished windows only">vs typical</th></tr></thead><tbody>${rows}</tbody>`;
     qx('winNote').textContent = ahead
       ? `${ahead.label} ran ${ahead.diff > 0 ? 'busier' : 'quieter'} than usual: ${Math.abs(ahead.diff * 100).toFixed(1)} points ${ahead.diff > 0 ? 'above' : 'below'} its typical share. Green / red marks windows more than 3 points off.`
       : 'Every finished window is within 3 points of its typical share so far.';
@@ -389,31 +456,51 @@ async function buildLivePredictor(ex) {
 
   function renderPred() {
     // The first minutes' predictions extrapolate a handful of trades; leave them out
-    const pts = samples.filter(s => s.predicted_eod != null && s.elapsed_minutes >= LIVE_PRED_SETTLE_MIN).map(s => ({ x: s.elapsed_minutes, y: s.predicted_eod }));
-    const ds = [{ label: 'Predicted close', data: pts, borderColor: RX.model, borderWidth: 2, pointRadius: 0, tension: 0 }];
+    const settled = samples.filter(s => s.elapsed_minutes >= LIVE_PRED_SETTLE_MIN);
+    const pool = liveDayPool(complete, kpiType);
+    const at = s => typicalPathRange(s.total_revenue, s.elapsed_minutes, pool);
+    const sod = settled.map(s => ({ s, r: at(s) })).filter(o => o.r);
+    const model = settled.filter(s => s.predicted_eod != null).map(s => ({ x: s.elapsed_minutes, y: s.predicted_eod }));
+    const ds = [];
+    if (sod.length) ds.push(
+      { label: 'Range hi', data: sod.map(o => ({ x: o.s.elapsed_minutes, y: o.r.hi })), borderWidth: 0, pointRadius: 0, fill: '+1', backgroundColor: 'rgba(43, 92, 200, 0.12)', tension: 0 },
+      { label: 'Range lo', data: sod.map(o => ({ x: o.s.elapsed_minutes, y: o.r.lo })), borderWidth: 0, pointRadius: 0, fill: false, tension: 0 },
+      { label: 'Share-of-day estimate', data: sod.map(o => ({ x: o.s.elapsed_minutes, y: o.r.mid })), borderColor: RX.model, borderWidth: 2, pointRadius: 0, tension: 0 });
+    if (model.length) ds.push({ label: 'Live model', data: model, borderColor: RX.grey, borderWidth: 1.5, borderDash: [4, 3], pointRadius: 0, tension: 0 });
+    if (refAvg) ds.push({ label: refAvg.label, data: [{ x: 0, y: refAvg.value }, { x: SESSION_MINUTES, y: refAvg.value }], borderColor: RX.rev, borderWidth: 1, borderDash: [2, 3], pointRadius: 0 });
     if (actualClose != null) ds.push({ label: 'Actual close', data: [{ x: 0, y: actualClose }, { x: SESSION_MINUTES, y: actualClose }], borderColor: RX.ink, borderWidth: 1.5, borderDash: [5, 3], pointRadius: 0 });
-    rxChart('livePred', `rxLivePred-${ex}`, 200, {
+    // The y-axis fits the settled figures, so one wild early poll does not flatten the rest
+    // (from 10:00 when there is enough after it; earlier points stay drawn, clipped)
+    const after = ds.flatMap(d => d.data.filter(p => p.x >= 45 || d.data.length === 2).map(p => p.y));
+    const ys = (after.length >= 6 ? after : ds.flatMap(d => d.data.map(p => p.y))).filter(v => v != null && isFinite(v));
+    const lo = ys.length ? Math.min(...ys) : 0, hi = ys.length ? Math.max(...ys) : 1, pad = (hi - lo) * 0.08 || hi * 0.05 || 1;
+    rxChart('livePred', `rxLivePred-${ex}`, 220, {
       type: 'line',
       data: { datasets: ds },
       options: {
         parsing: false,
         interaction: { mode: 'nearest', axis: 'x', intersect: false },
-        plugins: { tooltip: { callbacks: { title: items => sessionClock(items[0].parsed.x), label: c => ` ${c.dataset.label}: ${rxCr(c.parsed.y, 2)}` } } },
+        plugins: { tooltip: {
+          filter: item => item.dataset.label !== 'Range hi' && item.dataset.label !== 'Range lo',
+          callbacks: { title: items => sessionClock(items[0].parsed.x), label: c => ` ${c.dataset.label}: ${rxCr(c.parsed.y, 2)}` } } },
         scales: {
           x: { type: 'linear', min: 0, max: SESSION_MINUTES, grid: { display: false },
             afterBuildTicks: axis => { axis.ticks = [0, 105, 225, 345].map(v => ({ value: v })); },
             ticks: { callback: v => sessionClock(v), maxRotation: 0 } },
-          y: { ticks: { callback: v => fmtNum(v, 0) } },
+          y: { min: Math.max(0, lo - pad), max: hi + pad, ticks: { callback: v => fmtNum(v, 0) } },
         },
       },
     });
     rxFixHeight(charts.livePred);
-    const early = pts.filter(p => p.x <= 60).map(p => p.y), late = pts.filter(p => p.x >= 180).map(p => p.y);
-    const parts = [];
-    if (early.length > 1) parts.push(`${sessionClock(LIVE_PRED_SETTLE_MIN)}–10:15: ₹${fmtNum(Math.min(...early), 1)}–${fmtNum(Math.max(...early), 1)} Cr.`);
-    if (late.length > 1) parts.push(`From 12:15: ₹${fmtNum(Math.min(...late), 1)}–${fmtNum(Math.max(...late), 1)} Cr.`);
-    if (actualClose != null) parts.push(`Dashed: actual close ${rxCr(actualClose, 2)}.`);
-    qx('predNote').textContent = parts.join(' ') || 'Too few polls yet.';
+    qx('legPred').innerHTML = rxLegend([]
+      .concat(sod.length ? [{ label: 'Share-of-day estimate', color: RX.model, kind: 'line' }, { label: 'Its range, 10th–90th pct.', color: 'rgba(43, 92, 200, 0.22)' }] : [])
+      .concat(model.length ? [{ label: 'Live model', color: RX.grey, kind: 'dash' }] : [])
+      .concat(refAvg ? [{ label: refAvg.label, color: RX.rev, kind: 'dot' }] : [])
+      .concat(actualClose != null ? [{ label: 'Actual close', color: RX.ink, kind: 'dash' }] : []));
+    const lastS = sod[sod.length - 1];
+    qx('predNote').textContent = lastS
+      ? `The range narrows as the session goes on: at ${sessionClock(lastS.s.elapsed_minutes)} it spans ±${fmtPct((lastS.r.hi - lastS.r.lo) / 2 / lastS.r.mid)} around the estimate.`
+      : model.length ? 'Live model only: no complete archived sessions to estimate from yet.' : 'Too few polls yet.';
   }
 
   function renderArchive() {
@@ -443,7 +530,7 @@ async function buildLivePredictor(ex) {
   }
 
   function renderAll() { renderKpis(); renderCum(); renderWindows(); renderPred(); renderArchive(); }
-  rxOnSeg(el, 'type', t => { state.type = t; renderAll(); });
+  rxOnSeg(el, 'type', t => { state.type = t; LIVE_VIEW[ex] = t; renderAll(); });
   renderAll();
   RX_TAB_REFRESH.intraday = () => { renderCum(); renderPred(); };
 }

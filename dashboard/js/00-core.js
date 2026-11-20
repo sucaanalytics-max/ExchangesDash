@@ -474,6 +474,99 @@ function rxCanvas(id, cls = '') {
   return `<div class="chart-wrapper ${cls}"><canvas id="${id}"></canvas></div>`;
 }
 
+// ── Side drawer (rx) ─────────────────────────────────────────────────────────
+// One drawer for the page: a dialog on the right (a full-screen sheet on phones)
+// over a scrim. openRxDrawer({ title, body, onClose }) fills and shows it;
+// rxDrawerBody() is its content element, for the caller's handlers. Esc, the
+// scrim and the X close it; Tab stays inside while it is open, and focus goes
+// back to whatever opened it. A tab or exchange switch closes it.
+let RX_DRAWER = null;
+function rxDrawerEl() {
+  if (RX_DRAWER) return RX_DRAWER;
+  const scrim = document.createElement('div');
+  scrim.className = 'rx-drawer-scrim';
+  scrim.hidden = true;
+  const box = document.createElement('aside');
+  box.className = 'rx-drawer rx';
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-modal', 'true');
+  box.setAttribute('aria-labelledby', 'rxDrawerTitle');
+  box.hidden = true;
+  box.innerHTML = `<div class="rx-drawer-head"><h2 id="rxDrawerTitle"></h2>
+      <button type="button" class="rx-drawer-x" aria-label="Close">×</button></div>
+    <div class="rx-drawer-body"></div>`;
+  document.body.append(scrim, box);
+  scrim.addEventListener('click', () => closeRxDrawer());
+  box.querySelector('.rx-drawer-x').addEventListener('click', () => closeRxDrawer());
+  box.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { e.preventDefault(); closeRxDrawer(); return; }
+    if (e.key !== 'Tab') return;
+    const f = [...box.querySelectorAll('button, [href], input, select, textarea, summary, [tabindex]:not([tabindex="-1"])')]
+      .filter(n => !n.disabled && n.offsetParent !== null);
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+  RX_DRAWER = { scrim, box, body: box.querySelector('.rx-drawer-body'), title: box.querySelector('#rxDrawerTitle'), opener: null, onClose: null };
+  return RX_DRAWER;
+}
+function rxDrawerOpen() { return !!RX_DRAWER && !RX_DRAWER.box.hidden; }
+function rxDrawerBody() { return rxDrawerEl().body; }
+function openRxDrawer({ title, body = '', onClose = null } = {}) {
+  const d = rxDrawerEl();
+  if (rxDrawerOpen() && d.onClose) d.onClose();
+  d.opener = rxDrawerOpen() ? d.opener : document.activeElement;
+  d.onClose = onClose;
+  d.title.innerHTML = title;
+  // A fresh body each time, so the last opener's listeners go with the old one
+  const nb = d.body.cloneNode(false);
+  d.body.replaceWith(nb);
+  d.body = nb;
+  d.body.innerHTML = body;
+  d.scrim.hidden = false;
+  d.box.hidden = false;
+  document.body.classList.add('rx-drawer-on');
+  requestAnimationFrame(() => {
+    d.box.classList.add('is-open');
+    d.scrim.classList.add('is-open');
+    const target = d.body.querySelector('input, select, button') || d.box.querySelector('.rx-drawer-x');
+    if (target) target.focus({ preventScroll: true });
+  });
+  return d.body;
+}
+function closeRxDrawer() {
+  if (!rxDrawerOpen()) return;
+  const d = RX_DRAWER;
+  const cb = d.onClose;
+  d.onClose = null;
+  d.box.classList.remove('is-open');
+  d.scrim.classList.remove('is-open');
+  d.box.hidden = true;
+  d.scrim.hidden = true;
+  d.body.innerHTML = '';
+  document.body.classList.remove('rx-drawer-on');
+  if (cb) cb();
+  let back = d.opener;
+  d.opener = null;
+  // The opener re-rendered while the drawer was open (the tab behind redraws on each
+  // edit): its replacement, found by the opener's first data- attribute, takes focus
+  if (back && !back.isConnected) {
+    const attr = [...back.attributes].find(a => a.name.startsWith('data-'));
+    back = attr ? [...document.querySelectorAll(`[${attr.name}]`)].find(n => n.offsetParent !== null) : null;
+  }
+  if (back && back.focus) back.focus({ preventScroll: true });
+}
+
+// Buttons that jump to another tab (e.g. "value it →" on the predictor)
+document.addEventListener('click', e => {
+  const go = e.target.closest && e.target.closest('[data-rx-goto]');
+  if (!go) return;
+  closeRxDrawer();
+  const nav = document.querySelector(`.nav-item[data-tab="${go.dataset.rxGoto}"]`);
+  if (nav) nav.click();
+});
+
 // Date `n` weekdays after `iso` (holidays not counted)
 function rxAddWeekdays(iso, n) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
@@ -543,8 +636,8 @@ const NAV_ICONS = {
 // combined: the same tab under every view that has NSE or BSE data (not MCX).
 // Participants (js/17-participants.js) is under the NSE and BSE views, each with
 // its own exchange's participant data and NSDL's market-wide FPI flows
-// Valuation Inputs (js/18-valuation-inputs.js) is the same table of BSE, MCX and
-// NSE inputs under each of their views, beside Valuation Model
+// Valuation inputs are a drawer on the Valuation Model tab (js/18-valuation-inputs.js),
+// not a tab of their own
 const EXCHANGE_TABS = {
   nse: [
     { id: 'revenue',    label: 'Revenue Summary',    icon: 'revenue' },
@@ -552,7 +645,6 @@ const EXCHANGE_TABS = {
     { id: 'intraday',   label: 'Live Predictor',      icon: 'live' },
     { id: 'share',      label: 'Regression',          icon: 'share' },
     { id: 'valuation',  label: 'Valuation Model',     icon: 'advanced' },
-    { id: 'valinputs',  label: 'Valuation Inputs',    icon: 'inputs' },
     { id: 'contracts',  label: 'Contracts to Premium', icon: 'ratio' },
     { id: 'participants', label: 'Participants',      icon: 'users' },
   ],
@@ -562,7 +654,6 @@ const EXCHANGE_TABS = {
     { id: 'intraday',   label: 'Live Predictor',       icon: 'temporal' },
     { id: 'share',      label: 'Regression',            icon: 'share' },
     { id: 'valuation',  label: 'Valuation Model',       icon: 'advanced' },
-    { id: 'valinputs',  label: 'Valuation Inputs',      icon: 'inputs' },
     { id: 'contracts',  label: 'Contracts to Premium', icon: 'ratio' },
     { id: 'participants', label: 'Participants',        icon: 'share' },
   ],
@@ -571,7 +662,6 @@ const EXCHANGE_TABS = {
     { id: 'prediction', label: 'Revenue Predictor',    icon: 'prediction' },
     { id: 'share',      label: 'Regression',            icon: 'share' },
     { id: 'valuation',  label: 'Valuation Model',       icon: 'advanced' },
-    { id: 'valinputs',  label: 'Valuation Inputs',      icon: 'inputs' },
     { id: 'competition', label: 'Competition',          icon: 'versus' },
   ],
   all: [
@@ -592,7 +682,6 @@ const TAB_TITLES = {
     intraday: 'Live Predictor',
     share: 'Regression',
     valuation: 'Valuation Model',
-    valinputs: 'Valuation Inputs — BSE, MCX and NSE',
     contracts: 'Contracts to Premium — NSE + BSE',
     participants: 'Participants — FII, DII, Pro, Client (NSE + NSDL)',
   },
@@ -602,7 +691,6 @@ const TAB_TITLES = {
     intraday: 'Live Predictor',
     share: 'Regression',
     valuation: 'Valuation Model',
-    valinputs: 'Valuation Inputs — BSE, MCX and NSE',
     contracts: 'Contracts to Premium — NSE + BSE',
     participants: 'Participants — FII, DII, Pro, Client (BSE + NSDL)',
   },
@@ -611,7 +699,6 @@ const TAB_TITLES = {
     prediction: 'Revenue Predictor',
     share: 'Regression',
     valuation: 'Valuation Model',
-    valinputs: 'Valuation Inputs — BSE, MCX and NSE',
     competition: 'Competition — NSE against MCX in commodity derivatives',
   },
   all: {
@@ -894,6 +981,7 @@ function attachTabListeners() {
         document.getElementById('glanceView').hidden = true;
         updateHeaderExchange(currentExchange);
       }
+      closeRxDrawer();
       document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
@@ -1014,6 +1102,7 @@ let shownExchange = null;  // last exchange whose views were built, for "Back to
 // to the exchange shown before, instead of spinning forever. Resolves to true
 // once the views are built.
 async function switchExchange(exchange) {
+  closeRxDrawer();
   const seq = ++switchSeq;
   const owns = () => seq === switchSeq;
   const view = viewOf(exchange);   // a broker or MTF key loads through its view
