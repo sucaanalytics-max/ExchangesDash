@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-20T01:17:02Z",
+ "updated_at": "2026-11-20T15:31:57Z",
  "unit": "INR crore",
  "notes": ["Reporting date = the trading day the book is for; each exchange publishes it the next trading day.", "NSE closing_cr = 'Net scripwise outstanding at the end of the day'; revised = NSE republished the date with late member submissions (the revised figures are used).", "BSE amount_financed_cr = sum of 'Amount Financed by Members' over all securities in BSE's file.", "combined total_cr = NSE closing_cr + BSE amount_financed_cr, only on dates both exchanges published.", "A value an exchange did not publish is null, never 0.", "detail_residual_lakh = sum of NSE's security rows − its published closing book; flag 'detail_sum' when it exceeds the rounding bound 0.005 lakh × (rows + 1).", "Security counts overlap between NSE and BSE (never add them), and include ETFs and funds, not only equities.", "Amount financed is the exchanges' disclosed MTF book, not any broker's loan book or interest income.", "flags are advisory: the day is still stored as published.", "A file listing under half an exchange's usual number of securities is a partial file: the day goes under unavailable, not into the series.", "BSE days before 2025-10-01 come from BSE's margin trading archive (bse.file = 'archive'), later days from its margin trading CSV (bse.file = 'csv'), which serves nothing earlier; the archive serves nothing later. On 2025-10-01, the one day both serve, the archive lists 3 more securities and Rs 31.7 Cr (1 %) more, and it already shows the drop from 2025-09-30 (Rs 4,588 to 3,126 Cr).", "flag 'total_mismatch' = BSE's published totals row differs from the sum of its security rows beyond rounding; flag 'spike' = a one-day move of 25 % or more that reverts the next day (left out of combined).", "flag 'arithmetic' = opening + fresh − liquidated misses the closing book: NSE by more than 1 lakh, BSE by more than 0.5 % of it (BSE's archive is off by up to 0.4 % on ordinary days); flag 'amount_vs_closing' = BSE's amount financed and its closing book differ by more than 1 %.", "A file an exchange served for more than one date goes under unavailable for each of them (BSE's files carry no date, so which date it belongs to cannot be told); they are asked for again.", "NSE's book steps up 7 % on 2025-10-01 (Rs 99,446 to 1,06,409 Cr; fresh exposure Rs 10,389 Cr against about Rs 6,000 Cr on ordinary days): from that day brokers report MTF to the exchanges on revised rules, which moved several of them to gross reporting (ICRA, 'Securities Broking', 24 Jun 2026, p.6: 'revised MTF reporting led to the shifting of several brokers to gross reporting, resulting in some optical growth').", "A BSE day re-read from a file listing fewer securities than the stored one keeps the stored copy: BSE serves smaller files for older days (its 23 and 24 Sep 2026 files listed 1,860 and 1,868 securities when published, 1,857 and 1,865 when asked again on 4 Nov). A parser upgrade still replaces the stored day."],
  "sources": {
@@ -9,8 +9,8 @@
  },
  "latest": {
   "nse": "2026-11-18",
-  "bse": "2026-11-17",
-  "combined": "2026-11-17"
+  "bse": "2026-11-18",
+  "combined": "2026-11-18"
  },
  "nse": [
   {"date": "2021-11-23", "opening_cr": 22098.019, "fresh_cr": 1005.6274, "liquidated_cr": 1174.6343, "closing_cr": 21929.0122, "securities": 1336, "detail_sum_cr": 21929.0122, "detail_residual_lakh": 0.0, "revised": false, "revised_as_of": null, "flags": [], "file": "mrg_trading_231121.zip", "sha256": "7a2d3d062d3928466668607ab3bf6a150cfa9dc549c62716a074d1b173bea992", "fetched_at": "2026-11-05T04:45:31Z"},
@@ -2626,7 +2626,8 @@
   {"date": "2026-11-12", "amount_financed_cr": 7431.1087, "securities": 1947, "opening_cr": null, "fresh_cr": null, "liquidated_cr": null, "closing_cr": null, "published_total_cr": null, "flags": [], "file": "csv", "parser": 2, "sha256": "7143e8c3beac27e22419c85400e9a429973c5c3fc09cb56afc25dd233f56a052", "fetched_at": "2026-11-20T01:17:02Z"},
   {"date": "2026-11-13", "amount_financed_cr": 7517.321, "securities": 1944, "opening_cr": null, "fresh_cr": null, "liquidated_cr": null, "closing_cr": null, "published_total_cr": null, "flags": [], "file": "csv", "parser": 2, "sha256": "c963f055c1560f9b74310a9b56c23e4fb5db1c980ffb9ed39450e951068ab347", "fetched_at": "2026-11-20T01:17:02Z"},
   {"date": "2026-11-16", "amount_financed_cr": 7718.8723, "securities": 1950, "opening_cr": null, "fresh_cr": null, "liquidated_cr": null, "closing_cr": null, "published_total_cr": null, "flags": [], "file": "csv", "parser": 2, "sha256": "15301a76655ceee2ae5fc0cc350df5ed6d43b56bbd0047617072d6edd76a6c44", "fetched_at": "2026-11-20T01:17:02Z"},
-  {"date": "2026-11-17", "amount_financed_cr": 7977.9204, "securities": 1951, "opening_cr": null, "fresh_cr": null, "liquidated_cr": null, "closing_cr": null, "published_total_cr": null, "flags": [], "file": "csv", "parser": 2, "sha256": "18b3c660f5ee750e0ff36ac5907c43ab5db4e5da80b71c1da45bf4d6f7841d28", "fetched_at": "2026-11-20T01:17:02Z"}
+  {"date": "2026-11-17", "amount_financed_cr": 7977.9204, "securities": 1951, "opening_cr": null, "fresh_cr": null, "liquidated_cr": null, "closing_cr": null, "published_total_cr": null, "flags": [], "file": "csv", "parser": 2, "sha256": "18b3c660f5ee750e0ff36ac5907c43ab5db4e5da80b71c1da45bf4d6f7841d28", "fetched_at": "2026-11-20T01:17:02Z"},
+  {"date": "2026-11-18", "amount_financed_cr": 8093.9862, "securities": 1949, "opening_cr": null, "fresh_cr": null, "liquidated_cr": null, "closing_cr": null, "published_total_cr": null, "flags": [], "file": "csv", "parser": 2, "sha256": "f722b782ce165b72b85a4e36f871a4d420c7ecb26cdbd3c9f3ad1925aa814bd8", "fetched_at": "2026-11-20T15:31:57Z"}
  ],
  "combined": [
   {"date": "2021-11-23", "nse_cr": 21929.0122, "bse_cr": 531.3546, "total_cr": 22460.3668},
@@ -3842,7 +3843,8 @@
   {"date": "2026-11-12", "nse_cr": 145526.514, "bse_cr": 7431.1087, "total_cr": 152957.6227},
   {"date": "2026-11-13", "nse_cr": 145858.0581, "bse_cr": 7517.321, "total_cr": 153375.3791},
   {"date": "2026-11-16", "nse_cr": 146722.866, "bse_cr": 7718.8723, "total_cr": 154441.7383},
-  {"date": "2026-11-17", "nse_cr": 146496.8327, "bse_cr": 7977.9204, "total_cr": 154474.7531}
+  {"date": "2026-11-17", "nse_cr": 146496.8327, "bse_cr": 7977.9204, "total_cr": 154474.7531},
+  {"date": "2026-11-18", "nse_cr": 147549.5967, "bse_cr": 8093.9862, "total_cr": 155643.5829}
  ],
  "unavailable": {
   "nse": {
