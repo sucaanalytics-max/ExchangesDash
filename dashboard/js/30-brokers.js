@@ -5,12 +5,13 @@
 // Each broker is one view in the Brokers pill (registerBrokerView, BROKERS MODE
 // in 00-core.js; docs/BROKERS_INTEGRATION.md), registered at the end of this file.
 
-// The broker views: pill id, sb_brokers.broker_id, label, and whether it has a PAT
-// Predictor tab
+// The broker views: pill id, sb_brokers.broker_id, label, whether it has a PAT
+// Predictor tab (with a Valuation tab), and whether it has a Valuation tab without one
+// (Motilal Oswal: only the consolidated P/B bands, AB 19 Nov 2026)
 const BRK_VIEWS = [
   { view: 'angel', broker: 'ANGELONE', label: 'Angel One', pat: true },
   { view: 'groww', broker: 'GROWW', label: 'Groww', pat: true },
-  { view: 'mosl', broker: 'MOSL', label: 'Motilal Oswal', pat: false },
+  { view: 'mosl', broker: 'MOSL', label: 'Motilal Oswal', pat: false, val: true },
 ];
 // The broker on show: set by its view's load()
 let BRK_BROKER = { id: 'ANGELONE', name: 'Angel One', view: 'angel' };
@@ -569,7 +570,8 @@ BRK_VIEWS.forEach(def => registerBrokerView({
     { id: 'calib', label: 'Calibration', icon: 'advanced' },
     { id: 'price', label: 'Price vs ADR', icon: 'share' },
     { id: 'fo', label: 'F&O vs Exchanges', icon: 'temporal' },
-    ...(def.pat ? [{ id: 'pat', label: 'PAT Predictor', icon: 'prediction' }, { id: 'val', label: 'Valuation', icon: 'revenue' }] : []),
+    ...(def.pat ? [{ id: 'pat', label: 'PAT Predictor', icon: 'prediction' }] : []),
+    ...(def.pat || def.val ? [{ id: 'val', label: 'Valuation', icon: 'revenue' }] : []),
   ],
   titles: { summary: `${def.label}: ADR Summary`, daily: `${def.label}: Daily ADR`, calib: `${def.label}: Calibration`, price: `${def.label}: Share price vs ADR`, fo: `${def.label}: F&O vs exchange revenue`, pat: `${def.label}: PAT Predictor`, val: `${def.label}: Valuation` },
   load: owns => brkLoad(def, BRK.mode, owns),
