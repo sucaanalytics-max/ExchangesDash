@@ -240,7 +240,7 @@ function ensureFreshMarketData(exchanges) {
 // Instead each panel records the cache fingerprints it was drawn from, and
 // checkDataFreshness, after its preload, re-draws just the panels whose cached
 // files changed. CROSS_PANELS: panel id → { sigs: { exchange: marketSig at
-// draw time }, rebuild }.
+// draw time }, rebuild, elId (the panel's container) }.
 const CROSS_PANELS = {};
 
 // `exs`' daily rows for a cross-exchange panel: a single-exchange view's own
@@ -259,11 +259,19 @@ async function loadCrossExchangeRows(exs, onWait) {
   return { rowsByEx, missing: exs.filter(e => !rowsByEx[e]), sigs: Object.fromEntries(cached.map(e => [e, marketSig(e)])) };
 }
 
-// Records that panel `id` was drawn from the cached files `sigs`; rebuild()
-// re-draws it (called again by checkDataFreshness when one of them changes,
-// including a file that failed to load and has loaded since).
-function registerCrossPanel(id, sigs, rebuild) {
-  CROSS_PANELS[id] = { sigs: { ...sigs }, rebuild };
+// Records that panel `id`, drawn into the element with id `elId`, was drawn from
+// the cached files `sigs`; rebuild() re-draws it (called again by
+// checkDataFreshness when one of them changes, including a file that failed to
+// load and has loaded since). The entry is dropped once that element is gone.
+function registerCrossPanel(id, sigs, rebuild, elId = null) {
+  CROSS_PANELS[id] = { sigs: { ...sigs }, rebuild, elId };
+}
+
+// Ids of the panels whose container element no longer exists (hasEl(elId) is
+// false), to be dropped rather than re-drawn or kept fresh; a panel registered
+// without an elId is kept
+function crossPanelsGone(panels, hasEl) {
+  return Object.keys(panels).filter(id => panels[id].elId && !hasEl(panels[id].elId));
 }
 
 // Ids of the panels whose cached files moved since they were drawn (sigOf(ex)
@@ -286,6 +294,7 @@ function checkDataFreshness() {
     const now = Date.now();
     const isStale = t => !t || now - t > DATA_MAX_AGE_MS;
     const cached = Object.keys(VIEW_BUILT_FROM);
+    crossPanelsGone(CROSS_PANELS, elId => !!document.getElementById(elId)).forEach(id => { delete CROSS_PANELS[id]; });
     const panelEx = Object.values(CROSS_PANELS).flatMap(p => Object.keys(p.sigs || {}));
     const dueCached = [...new Set([...cached, ...panelEx])].filter(e => isStale(MARKET_CHECKED_AT[e]));
     const viewDue = !!VIEW_LOADED && VIEW_LOADED.exchange === ex && isStale(VIEW_LOADED.checkedAt);

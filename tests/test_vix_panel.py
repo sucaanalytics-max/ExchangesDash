@@ -18,6 +18,10 @@ EXPIRY_JS = ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledEx
              "EXPIRY_DATES_CACHE", "expiryDateSet", "PRE_EXPIRY_DATES_CACHE", "preExpiryDateSet"]
 VIX_JS = EXPIRY_JS + ["VIX_FIT_FROM", "VIX_LEVELS", "VIX_MA", "cpWeekStart", "vixByDate", "vixFitSample", "vixOLS",
                       "vixFit", "vixBase", "vixMean", "vixSensitivityRows", "vixWeeklyRows"]
+# vixPanelModel and what it calls: a week's Total ADR is the week-on-week ADR panel's (22-weekly-adr.js)
+MODEL_JS = VIX_JS + ["VIX_EXCHANGES", "vixPanelModel", "vixWeeklyAdrTotals", "vixWeeklyFoot", "MONTHS_SHORT",
+                     "WEEKLY_ADR_EXCHANGES", "WEEKLY_NORMALISED", "weeklyAdrWeeks", "weeklyAdrContext",
+                     "weeklyAdrCell", "weeklyAdrRow"]
 
 
 def weekdays_from(start, count):
@@ -329,8 +333,8 @@ class VixSensitivity(unittest.TestCase):
         nse = synthetic_rows(count=120)
         mcx = [{"date": r["date"], "total_rev": r["total_rev"] / 4} for r in nse]
         bse = [{"date": r["date"], "total_rev": r["total_rev"] / 5} for r in nse]
-        names = VIX_JS + ["VIX_EXCHANGES", "vixPanelModel", "vixWeeklyFoot"]
-        expr = ("(globalThis.feeUnitLabelFor = () => 'basis', globalThis.escHtml = s => s, globalThis.rxDate = s => s,"
+        names = MODEL_JS
+        expr = ("(globalThis.feeUnitLabelFor = () => 'basis',"
                 " [vixPanelModel({nse: DATA.nse, bse: DATA.bse, mcx: DATA.mcx}),"
                 "  vixWeeklyFoot(vixPanelModel({nse: DATA.nse, bse: DATA.bse, mcx: DATA.mcx}))])")
         full, foot = js_eval(names, expr, {"nse": nse, "bse": bse, "mcx": mcx})
@@ -352,14 +356,12 @@ class VixSensitivity(unittest.TestCase):
         mcx = [{"date": r["date"], "total_rev": r["total_rev"] / 4} for r in nse]
         mcx.append({"date": "2025-07-19", "total_rev": 999})   # an MCX-only Saturday counts in MCX's own average
         bse = [{"date": r["date"], "total_rev": r["total_rev"] / 5} for r in nse[:-5]]   # BSE lacks the newest week (120 weekdays = 24 full weeks)
-        names = VIX_JS + ["VIX_EXCHANGES", "vixPanelModel", "vixWeeklyAdrTotals", "vixWeeklyFoot", "MONTHS_SHORT",
-                          "WEEKLY_ADR_EXCHANGES", "WEEKLY_NORMALISED", "weeklyAdrWeeks", "weeklyAdrCell", "weeklyAdrRow"]
+        names = MODEL_JS
         expr = ("(globalThis.feeUnitLabelFor = () => 'basis', (m => [m, vixWeeklyFoot(m),"
                 " m.weekly.map(w => weeklyAdrRow({nse: weeklyAdrWeeks(DATA.nse, 'nse'), bse: weeklyAdrWeeks(DATA.bse, 'bse'),"
                 " mcx: weeklyAdrWeeks(DATA.mcx, 'mcx')}, w.week, 'actual').total.avg)])"
                 "(vixPanelModel({nse: DATA.nse, bse: DATA.bse, mcx: DATA.mcx})))")
         m, foot, panel = js_eval(names, expr, {"nse": nse, "bse": bse, "mcx": mcx})
-        self.assertTrue(m["adrTotals"])
         self.assertEqual([w["totalAdr"] for w in m["weekly"]], panel)
         self.assertIn("as in the week-on-week average daily revenue panel", foot)
         newest, prev = m["weekly"][0], m["weekly"][1]
@@ -377,13 +379,40 @@ class VixSensitivity(unittest.TestCase):
         rows = js_eval(VIX_JS, "vixWeeklyRows(DATA, w => (w === '2026-11-16' ? {avg: 70, excl: ['bse']} : {avg: 80, excl: []}))", nse)
         self.assertEqual([(r["totalAdr"], r["totalExcl"]) for r in rows], [(70, ["bse"]), (80, [])])
         self.assertIsNone(rows[0]["totalPct"])
-        rows = js_eval(VIX_JS, "vixWeeklyRows(DATA, w => ({avg: w === '2026-11-16' ? 70 : 80, excl: []}))", nse)
+        expr = ("vixWeeklyRows(DATA.nse, w => ({avg: w === '2026-11-16' ? 70 : 80, excl: [], inProgress: DATA.wip}),"
+                " 8, Date.parse('2026-11-23T06:00:00Z'))")
+        rows = js_eval(VIX_JS, expr, {"nse": nse, "wip": False})
+        self.assertFalse(rows[0]["inProgress"])
         self.assertAlmostEqual(rows[0]["totalPct"], 70 / 80 - 1, places=12)
+        # an exchange's week in the Total still in progress: the row is, and has no ADR WoW %
+        rows = js_eval(VIX_JS, expr, {"nse": nse, "wip": True})
+        self.assertTrue(rows[0]["inProgress"])
+        self.assertIsNone(rows[0]["totalPct"])
+
+    def test_week_in_progress_while_bse_lags(self):
+        # NSE has Friday 20 Nov, BSE's file ends Thursday, Saturday: the week-on-week ADR panel
+        # keeps BSE's week in progress (a lagging file is not a holiday), so the VIX row is in
+        # progress too and its ADR WoW % blank; the VIX changes stay. With BSE's Friday: complete.
+        dates = weekdays_from("2026-11-09", 10)   # 9–13 and 16–20 Nov
+        nse = [{"date": d, "total_rev": 50 + i, "vix": 14 + i % 3} for i, d in enumerate(dates)]
+        mcx = [{"date": d, "total_rev": 12.0} for d in dates]
+        bse = [{"date": d, "total_rev": 10.0 + i} for i, d in enumerate(dates)]
+        expr = "vixPanelModel({nse: DATA.nse, bse: DATA.bse, mcx: DATA.mcx}, Date.parse('2026-11-21T06:00:00Z')).weekly"
+        cur, prev = js_eval(MODEL_JS, expr, {"nse": nse, "bse": bse[:-1], "mcx": mcx})
+        self.assertEqual((cur["week"], cur["sessions"]), ("2026-11-16", 5))
+        self.assertTrue(cur["inProgress"])
+        self.assertIsNone(cur["totalPct"])
+        self.assertIsNotNone(cur["totalAdr"])
+        self.assertIsNotNone(cur["chgPts"])
+        self.assertIsNotNone(cur["chgPct"])
+        self.assertFalse(prev["inProgress"])
+        cur, _ = js_eval(MODEL_JS, expr, {"nse": nse, "bse": bse, "mcx": mcx})
+        self.assertFalse(cur["inProgress"])
+        self.assertIsNotNone(cur["totalPct"])
 
     def test_panel_range_is_of_fitted_ratios(self):
         rows = synthetic_rows()
-        names = VIX_JS + ["VIX_EXCHANGES", "vixPanelModel"]
-        m = js_eval(names, "vixPanelModel({nse: DATA.rows, bse: null, mcx: null})", {"rows": rows})
+        m = js_eval(MODEL_JS, "vixPanelModel({nse: DATA.rows, bse: null, mcx: null})", {"rows": rows})
         s = js_eval(VIX_JS, "vixFitSample(DATA.rows, vixByDate(DATA.rows))", {"rows": rows})
         self.assertAlmostEqual(m["range"]["min"], min(math.exp(p["x"]) for p in s), places=12)
         self.assertAlmostEqual(m["range"]["max"], max(math.exp(p["x"]) for p in s), places=12)
@@ -407,13 +436,15 @@ class VixWeekly(unittest.TestCase):
     W2 = ["2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13"]
     W3 = ["2026-11-16", "2026-11-17"]
 
+    # each week's Total ADR (the shape vixWeeklyAdrTotals returns), keyed by Monday
+    TOTALS = {"2026-11-02": 62, "2026-11-09": 67, "2026-11-16": 70.5}
+
     def rows(self, weeks=8, extra=None, now="2026-11-17T12:00:00Z"):
         nse = (nse_week(self.W1, [12, 13, 14, 15, 16]) + nse_week(self.W2, [15, 15, 16, 16, 18])
                + nse_week(self.W3, [17, 15.5]) + (extra or []))
-        total = {d: 60 + i for i, d in enumerate(self.W1 + self.W2 + self.W3)}
-        total["2026-11-14"] = 999   # an MCX-only Saturday: not an NSE session, not in the week's ADR
-        return js_eval(VIX_JS, "vixWeeklyRows(DATA.nse, DATA.total, DATA.weeks, Date.parse(DATA.now))",
-                       {"nse": nse, "total": total, "weeks": weeks, "now": now})
+        return js_eval(VIX_JS, "vixWeeklyRows(DATA.nse, w => (w in DATA.total ? {avg: DATA.total[w], excl: []} : null),"
+                       " DATA.weeks, Date.parse(DATA.now))",
+                       {"nse": nse, "total": self.TOTALS, "weeks": weeks, "now": now})
 
     def test_weekly_rows(self):
         rows = self.rows()
@@ -426,9 +457,9 @@ class VixWeekly(unittest.TestCase):
         self.assertAlmostEqual(rows[1]["chgPts"], 2, places=12)
         self.assertAlmostEqual(rows[1]["chgPct"], 16 / 14 - 1, places=12)
         self.assertAlmostEqual(rows[0]["chgPts"], 0.25, places=12)
-        self.assertEqual(rows[2]["totalAdr"], 62)        # 60..64
-        self.assertEqual(rows[1]["totalAdr"], 67)        # 65..69, not the Saturday's 999
-        self.assertEqual(rows[0]["totalAdr"], 70.5)
+        self.assertEqual([r["totalAdr"] for r in rows], [70.5, 67, 62])
+        self.assertIsNone(rows[0]["totalPct"])   # in progress: no ADR WoW %
+        self.assertAlmostEqual(rows[1]["totalPct"], 67 / 62 - 1, places=12)
 
     def test_week_end_vix_is_the_last_session(self):
         # the week's last session has no VIX yet: blank, not an earlier day's close
@@ -452,15 +483,16 @@ class VixWeekly(unittest.TestCase):
     def test_eight_of_nine_weeks(self):
         dates = weekdays_from("2026-09-14", 45)   # nine full weeks, 14 Sep – 13 Nov
         nse = [{"date": d, "total_rev": 50, "vix": 12 + i // 5} for i, d in enumerate(dates)]
-        total = {d: 100 + i // 5 for i, d in enumerate(dates)}
-        rows = js_eval(VIX_JS, "vixWeeklyRows(DATA.nse, DATA.total)", {"nse": nse, "total": total})
+        total = {d: 100 + i // 5 for i, d in enumerate(dates) if i % 5 == 0}   # by Monday
+        expr = "vixWeeklyRows(DATA.nse, w => (w in DATA.total ? {avg: DATA.total[w], excl: []} : null))"
+        rows = js_eval(VIX_JS, expr, {"nse": nse, "total": total})
         self.assertEqual(len(rows), 8)
         self.assertEqual(rows[-1]["week"], "2026-09-21")
         self.assertAlmostEqual(rows[-1]["chgPts"], 1, places=12)
         self.assertAlmostEqual(rows[-1]["chgPct"], 13 / 12 - 1, places=12)
         self.assertAlmostEqual(rows[-1]["totalPct"], 101 / 100 - 1, places=12)
         # exactly eight weeks of data: nothing older, so the oldest row's changes are null
-        rows = js_eval(VIX_JS, "vixWeeklyRows(DATA.nse, DATA.total)", {"nse": nse[5:], "total": total})
+        rows = js_eval(VIX_JS, expr, {"nse": nse[5:], "total": total})
         self.assertEqual((len(rows), rows[-1]["week"]), (8, "2026-09-21"))
         self.assertIsNone(rows[-1]["chgPts"])
         self.assertIsNone(rows[-1]["chgPct"])
@@ -480,7 +512,7 @@ class VixWeekly(unittest.TestCase):
         self.assertFalse(self.rows(extra=extra)[0]["inProgress"])
 
     def test_label_across_months(self):
-        rows = js_eval(VIX_JS, "vixWeeklyRows(DATA, {})",
+        rows = js_eval(VIX_JS, "vixWeeklyRows(DATA, () => null)",
                        nse_week(["2026-09-28", "2026-09-29", "2026-10-01", "2026-10-02"], [14, 14, 14, 14]))
         self.assertEqual(rows[0]["label"], "28 Sep – 2 Oct")
         self.assertIsNone(rows[0]["totalAdr"])
@@ -689,6 +721,7 @@ class VixPanelLiveTick(unittest.TestCase):
 # own data moved.
 FRESHNESS_HARNESS = r"""
   globalThis.freshnessRun = null;
+  globalThis.document = { getElementById: id => ((DATA.gone || []).includes(id) ? null : {}) };
   globalThis.isViewKey = () => false;
   globalThis.currentExchange = 'nse';
   globalThis.VIEW_BUILT_FROM = DATA.viewBuiltFrom || {};
@@ -702,12 +735,13 @@ FRESHNESS_HARNESS = r"""
   let full = 0;
   globalThis.rebuildCurrentView = async () => { full++; };
   const redrawn = [];
-  registerCrossPanel('vix', { bse: 'b1', mcx: 'm1' }, () => redrawn.push('vix'));
+  registerCrossPanel('vix', { bse: 'b1', mcx: 'm1' }, () => redrawn.push('vix'), 'vixPanel');
   await checkDataFreshness();
   await new Promise(r => setTimeout(r, 0));
-  return { fetched: fetched.sort(), full, redrawn };
+  return { fetched: fetched.sort(), full, redrawn, panels: Object.keys(CROSS_PANELS) };
 """
-FRESHNESS_JS = ["DATA_MAX_AGE_MS", "CROSS_PANELS", "registerCrossPanel", "crossPanelsMoved", "checkDataFreshness"]
+FRESHNESS_JS = ["DATA_MAX_AGE_MS", "CROSS_PANELS", "registerCrossPanel", "crossPanelsGone", "crossPanelsMoved",
+                "checkDataFreshness"]
 
 
 @unittest.skipUnless(NODE, "node not installed")
@@ -720,13 +754,25 @@ class CrossExchangePanels(unittest.TestCase):
         self.assertEqual(js_eval(["crossPanelsMoved"], "crossPanelsMoved(DATA, ex => ({bse: '1', mcx: '9', nse: '3'})[ex])", panels), ["a"])
         self.assertEqual(js_eval(["crossPanelsMoved"], "crossPanelsMoved(DATA, ex => ({bse: '1', mcx: '2', nse: '3'})[ex])", panels), [])
 
+    def test_gone_ids(self):
+        panels = {"a": {"elId": "aPanel"}, "b": {"elId": "bPanel"}, "c": {}}
+        self.assertEqual(js_eval(["crossPanelsGone"], "crossPanelsGone(DATA, id => id === 'aPanel')", panels), ["b"])
+        self.assertEqual(js_eval(["crossPanelsGone"], "crossPanelsGone(DATA, () => true)", panels), [])
+        # no elId: never dropped
+        self.assertEqual(js_eval(["crossPanelsGone"], "crossPanelsGone(DATA, () => false)", panels), ["a", "b"])
+
     def test_mcx_move_redraws_only_the_panel(self):
         out = self.run_check(moves={"mcx": "m2"})
         self.assertEqual(out["fetched"], ["bse", "mcx"])   # the panel's cached files are kept fresh
-        self.assertEqual((out["full"], out["redrawn"]), (0, ["vix"]))
+        self.assertEqual((out["full"], out["redrawn"], out["panels"]), (0, ["vix"], ["vix"]))
 
     def test_nothing_moved_nothing_redrawn(self):
-        self.assertEqual(self.run_check(), {"fetched": ["bse", "mcx"], "full": 0, "redrawn": []})
+        self.assertEqual(self.run_check(), {"fetched": ["bse", "mcx"], "full": 0, "redrawn": [], "panels": ["vix"]})
+
+    def test_panel_without_container_is_dropped(self):
+        # #vixPanel is gone: its entry is dropped, not re-drawn, and its files are no longer kept fresh
+        out = self.run_check(gone=["vixPanel"], moves={"mcx": "m2"})
+        self.assertEqual(out, {"fetched": [], "full": 0, "redrawn": [], "panels": []})
 
     def test_view_rebuild_covers_the_panel(self):
         # the view's own file moved: one full rebuild (which re-draws the panel), no extra redraw
@@ -742,10 +788,6 @@ class CrossExchangePanels(unittest.TestCase):
         self.assertIn("registerCrossPanel", src)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 @unittest.skipUnless(NODE, "node not installed")
 class VixFeeBasisLabel(unittest.TestCase):
     def test_cross_exchange_label_names_mcx_source_values(self):
@@ -753,3 +795,7 @@ class VixFeeBasisLabel(unittest.TestCase):
         self.assertEqual(js_eval(names, "feeUnitLabelFor(['nse', 'bse', 'mcx'])"),
                          "NSE/BSE at today's rates · MCX source values")
         self.assertEqual(js_eval(names, "feeUnitLabelFor(['nse', 'bse'])"), "at today's rates")
+
+
+if __name__ == "__main__":
+    unittest.main()
