@@ -66,8 +66,12 @@ BYTES_PER_REQUEST = 1_000_000
 MAX_TRIES = 5            # 429 / 503 / 504 (and dropped connections), then the call fails
 MAX_WAIT_S = 60
 RETRY_STATUSES = (429, 503, 504)
-LOCK_STATUSES = (409, 423)
 TIMEOUT_S = 60
+CREATE_SESSION_TIMEOUT_S = 180   # opening a large workbook can take minutes
+
+# A Web Dashboard / WD_* sheet is rewritten only when it is empty or its A1 holds this
+# job's stamp: a sheet of the same name made by hand is left alone (an error instead)
+STAMP_PREFIX = "Written by ExchangesDash"
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -82,22 +86,17 @@ IST = timezone(timedelta(hours=5, minutes=30))
 #   d1           discount_to_fy_end_pct, as a fraction (18 % → 0.18)
 # NSE's sheet differs: its today discount sits in F10 (row "Upside - Current"; row 9,
 # "Current", divides by it), not in F11 beside "Target Price - FY27".
+# identity: the file's ticker cell (B2), checked first. BSE's and MCX's labels are the
+# same, so without it swapped target ids would write one exchange's inputs into the
+# other's file; a mismatch skips the whole file (nothing written to it).
+_PE = {"name": "P/E bear / base / bull", "label_cell": "A16", "label": "PE Ratio", "range": "B16:D16", "keys": ["pe0", "pe1", "pe2"], "scale": 1}
+_FY_END = {"name": "Discount to FY end", "label_cell": "A12", "label": "Target Price - FY28", "range": "F12", "keys": ["d1"], "scale": 0.01}
+_TODAY = {"name": "Discount to today", "label_cell": "A11", "label": "Target Price - FY27", "range": "F11", "keys": ["d2"], "scale": 0.01}
 VF_INPUT_CELLS = {
-    "nse": [
-        {"name": "P/E bear / base / bull", "label_cell": "A16", "label": "PE Ratio", "range": "B16:D16", "keys": ["pe0", "pe1", "pe2"], "scale": 1},
-        {"name": "Discount to today", "label_cell": "A10", "label": "Upside - Current", "range": "F10", "keys": ["d2"], "scale": 0.01},
-        {"name": "Discount to FY end", "label_cell": "A12", "label": "Target Price - FY28", "range": "F12", "keys": ["d1"], "scale": 0.01},
-    ],
-    "bse": [
-        {"name": "P/E bear / base / bull", "label_cell": "A16", "label": "PE Ratio", "range": "B16:D16", "keys": ["pe0", "pe1", "pe2"], "scale": 1},
-        {"name": "Discount to today", "label_cell": "A11", "label": "Target Price - FY27", "range": "F11", "keys": ["d2"], "scale": 0.01},
-        {"name": "Discount to FY end", "label_cell": "A12", "label": "Target Price - FY28", "range": "F12", "keys": ["d1"], "scale": 0.01},
-    ],
-    "mcx": [
-        {"name": "P/E bear / base / bull", "label_cell": "A16", "label": "PE Ratio", "range": "B16:D16", "keys": ["pe0", "pe1", "pe2"], "scale": 1},
-        {"name": "Discount to today", "label_cell": "A11", "label": "Target Price - FY27", "range": "F11", "keys": ["d2"], "scale": 0.01},
-        {"name": "Discount to FY end", "label_cell": "A12", "label": "Target Price - FY28", "range": "F12", "keys": ["d1"], "scale": 0.01},
-    ],
+    "nse": {"identity": {"cell": "B2", "value": "National Stock Exchange (NSE)"},
+            "inputs": [_PE, {**_TODAY, "label_cell": "A10", "label": "Upside - Current", "range": "F10"}, _FY_END]},
+    "bse": {"identity": {"cell": "B2", "value": "BSE"}, "inputs": [_PE, _TODAY, _FY_END]},
+    "mcx": {"identity": {"cell": "B2", "value": "MCX"}, "inputs": [_PE, _TODAY, _FY_END]},
 }
 
 # The inputs, in the order the Web Dashboard sheet and WD_Inputs list them
@@ -121,7 +120,19 @@ class GraphError(Exception):
 
 
 class FileLocked(GraphError):
-    """409 / 423: the file is locked (checked out, or a session conflict)."""
+    """423: the file is locked (checked out, or open for exclusive editing)."""
+
+
+class Conflict(GraphError):
+    """409: e.g. a sheet of that name already exists (an add that was applied, then retried)."""
+
+
+class SheetNotOurs(Exception):
+    """A sheet of the mirror's name that this job did not write: left alone."""
+
+
+class WrongFile(Exception):
+    """The target's identity cell names another exchange: nothing is written to it."""
 
 
 _sleep = time.sleep   # tests replace it
@@ -136,13 +147,15 @@ def _short(text, n=300):
 
 class Graph:
     """Graph calls with the app token; retries 429 / 503 / 504 (Retry-After, else
-    exponential backoff) up to MAX_TRIES. Raises GraphError, or FileLocked for 409 / 423."""
+    exponential backoff) up to MAX_TRIES. Raises GraphError, FileLocked (423) or
+    Conflict (409). retry_read_timeout=False: a call that timed out waiting for the
+    answer is not sent again (it may have been applied, e.g. a session created)."""
 
     def __init__(self, token):
         self.token = token
         self.calls = 0
 
-    def request(self, method, url, body=None, session_id=None):
+    def request(self, method, url, body=None, session_id=None, timeout=TIMEOUT_S, retry_read_timeout=True):
         headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
         if body is not None:
             headers["Content-Type"] = "application/json"
@@ -152,8 +165,10 @@ class Graph:
             self.calls += 1
             try:
                 r = requests.request(method, url, headers=headers,
-                                     data=None if body is None else json.dumps(body), timeout=TIMEOUT_S)
+                                     data=None if body is None else json.dumps(body), timeout=timeout)
             except requests.RequestException as e:
+                if isinstance(e, requests.ReadTimeout) and not retry_read_timeout:
+                    raise GraphError(0, f"no answer in {timeout} s (not retried: it may have been applied)", url)
                 if attempt == MAX_TRIES:
                     raise GraphError(0, f"no answer: {e}", url)
                 _sleep(min(MAX_WAIT_S, 2 ** attempt))
@@ -172,7 +187,7 @@ class Graph:
                     msg = r.json().get("error", {}).get("message") or msg
                 except ValueError:
                     pass
-                cls = FileLocked if r.status_code in LOCK_STATUSES else GraphError
+                cls = {423: FileLocked, 409: Conflict}.get(r.status_code, GraphError)
                 raise cls(r.status_code, _short(msg), url)
             if r.status_code == 204 or not r.content:
                 return None
@@ -210,12 +225,24 @@ def parse_range(ref):
     return parse_cell(a), parse_cell(b or a)
 
 
+def _is_number(s):
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
+
 def _cell_value(v):
-    """A JSON value as an Excel cell: None → empty, dict / list → JSON text."""
+    """A JSON value as an Excel cell: None → empty, dict / list → JSON text. Text that
+    Excel would take as a formula (=…, or +…, -…, @… when not a number) gets a leading
+    apostrophe, so it stays text."""
     if v is None:
         return ""
     if isinstance(v, (dict, list)):
-        return json.dumps(v, separators=(",", ":"))
+        v = json.dumps(v, separators=(",", ":"))
+    if isinstance(v, str) and v and (v[0] == "=" or (v[0] in "+-@" and not _is_number(v))):
+        return "'" + v
     return v
 
 
@@ -235,8 +262,12 @@ class Workbook:
     def metadata(self):
         return self.g.request("GET", self.item)
 
-    def open(self):
-        self.session = (self.g.request("POST", f"{self.base}/createSession", {"persistChanges": True}) or {}).get("id")
+    def open(self, persist=True):
+        """Opens a workbook session. Not retried after a read timeout (a retry could leave
+        an orphan session); any id received is kept, so close() closes it."""
+        got = self.g.request("POST", f"{self.base}/createSession", {"persistChanges": persist},
+                             timeout=CREATE_SESSION_TIMEOUT_S, retry_read_timeout=False) or {}
+        self.session = got.get("id")
         if not self.session:
             raise GraphError(0, "createSession returned no id")
 
@@ -253,19 +284,35 @@ class Workbook:
     def _sheet(self, name):
         return f"worksheets('{_odata(name)}')"
 
-    def add_sheet(self, name):
-        self.call("POST", "worksheets/add", {"name": name})
+    def add_sheet(self, name, names):
+        """Adds a sheet and records it in `names`. A 409 (it exists: an add applied,
+        then retried) re-reads the names, and is an error only if it is still missing."""
+        try:
+            self.call("POST", "worksheets/add", {"name": name})
+        except Conflict:
+            names[:] = self.sheet_names()
+            if name not in names:
+                raise
+            return
+        names.append(name)
 
     def read(self, sheet, address):
         """{values, formulas} of a range."""
         return self.call("GET", f"{self._sheet(sheet)}/range(address='{_odata(address)}')?$select=address,values,formulas") or {}
 
-    def clear(self, sheet):
-        """Clears the contents of the sheet's used range (formats stay)."""
+    def extent(self, sheet):
+        """(last row, last column, A1's value) of the sheet's used range; None when empty."""
         used = self.call("GET", f"{self._sheet(sheet)}/usedRange(valuesOnly=true)?$select=address") or {}
-        address = (used.get("address") or "").split("!")[-1]
-        if address:
-            self.call("POST", f"{self._sheet(sheet)}/range(address='{_odata(address)}')/clear", {"applyTo": "Contents"})
+        address = (used.get("address") or "A1").split("!")[-1]
+        _, (r1, c1) = parse_range(address)
+        a1 = ((self.read(sheet, "A1").get("values") or [[""]])[0] or [""])[0]
+        if (r1, c1) == (1, 1) and a1 in ("", None):
+            return None
+        return r1, c1, a1
+
+    def clear(self, sheet, address):
+        """Clears the contents of a range (formats stay)."""
+        self.call("POST", f"{self._sheet(sheet)}/range(address='{_odata(address)}')/clear", {"applyTo": "Contents"})
 
     def write(self, sheet, address, values):
         self.call("PATCH", f"{self._sheet(sheet)}/range(address='{_odata(address)}')", {"values": values})
@@ -297,14 +344,27 @@ class Workbook:
         return addresses
 
     def rewrite_sheet(self, sheet, rows, names):
-        """Creates the sheet if missing (names: the workbook's sheets, updated), else
-        clears it; then writes `rows` from A1."""
+        """Writes `rows` from A1 into a sheet of the mirror's: created if missing (names:
+        the workbook's sheets, updated); if it exists, only when empty or stamped by this
+        job (else SheetNotOurs, and nothing is written). The new rows are written first,
+        then only what lies beyond them (rows below, columns to the right) is cleared, so
+        a run that fails part-way leaves the old values, never a blank sheet."""
+        old = None
         if sheet in names:
-            self.clear(sheet)
+            old = self.extent(sheet)
+            if old and not str(old[2]).startswith(STAMP_PREFIX):
+                raise SheetNotOurs(f"sheet {sheet!r} was not written by this job (A1 reads {_short(old[2], 40)!r}): left alone")
         else:
-            self.add_sheet(sheet)
-            names.append(sheet)
-        return self.write_table(sheet, rows)
+            self.add_sheet(sheet, names)
+        addresses = self.write_table(sheet, rows)
+        if old:
+            n, w = len(rows), max(len(r) for r in rows)
+            r1, c1 = old[0], old[1]
+            if r1 > n:
+                self.clear(sheet, f"A{n + 1}:{col_letter(max(c1, w))}{r1}")
+            if c1 > w:
+                self.clear(sheet, f"{col_letter(w + 1)}1:{col_letter(c1)}{min(n, r1)}")
+        return addresses
 
 
 # ── Targets ─────────────────────────────────────────────────────────────────
@@ -431,7 +491,7 @@ def ist_text(iso_or_dt):
 
 
 def stamp(now, data_to, inputs_changed):
-    return (f"Written by ExchangesDash at {ist_text(now)}; data to {data_to or 'n/a'}; "
+    return (f"{STAMP_PREFIX} at {ist_text(now)}; data to {data_to or 'n/a'}; "
             f"inputs last changed {ist_text(inputs_changed) or 'never (the defaults)'}")
 
 
@@ -554,8 +614,11 @@ def feed_sheets(outputs, raw, updated, now):
             + [",".join(ex_out[ex].get("edited", [])), ist_text(updated.get(ex))] for ex in EXCHANGES]
     sheets["WD_Inputs"] = [[stamp(now, data_to, changed)], head] + rows
 
-    rows = [valuation_row(ex, ex_out[ex], ist_text(updated.get(ex))) for ex in EXCHANGES if "error" not in ex_out[ex]]
-    sheets["WD_Valuation"] = [[stamp(now, data_to, changed)], valuation_header()] + rows
+    # One row per exchange whatever happens, so the rows keep their addresses
+    head = valuation_header()
+    rows = [valuation_row(ex, ex_out[ex], ist_text(updated.get(ex))) if "error" not in ex_out[ex]
+            else [ex] + [""] * (len(head) - 1) for ex in EXCHANGES]
+    sheets["WD_Valuation"] = [[stamp(now, data_to, changed)], head] + rows
 
     for ex in ("nse", "bse", "mcx"):
         cols = _columns(daily[ex])
@@ -587,10 +650,13 @@ def feed_sheets(outputs, raw, updated, now):
 # ── One file ────────────────────────────────────────────────────────────────
 
 def label_check(wb, ex):
-    """Reads the mapped cells of "Tusk - Summary" in one range; [] when every label
-    matches and every target cell holds a value, else the problems."""
-    cells = VF_INPUT_CELLS[ex]
-    corners = [parse_cell(c["label_cell"]) for c in cells] + [p for c in cells for p in parse_range(c["range"])]
+    """Reads the identity and mapped cells of "Tusk - Summary" in one range.
+    Returns (identity problem or None, [label problems]): every label must match and
+    every target cell must hold a value, not a formula."""
+    spec = VF_INPUT_CELLS[ex]
+    cells, ident = spec["inputs"], spec["identity"]
+    corners = ([parse_cell(ident["cell"])] + [parse_cell(c["label_cell"]) for c in cells]
+               + [p for c in cells for p in parse_range(c["range"])])
     r0, c0 = min(r for r, _ in corners), min(c for _, c in corners)
     r1, c1 = max(r for r, _ in corners), max(c for _, c in corners)
     got = wb.read(SUMMARY_SHEET, f"{col_letter(c0)}{r0}:{col_letter(c1)}{r1}")
@@ -602,12 +668,15 @@ def label_check(wb, ex):
         except (IndexError, TypeError):
             return None
 
+    same = lambda a, b: str(a or "").strip().casefold() == str(b).strip().casefold()  # noqa: E731
+    seen = at(values, *parse_cell(ident["cell"]))
+    identity = None if same(seen, ident["value"]) else \
+        f"{ident['cell']} reads {str(seen or '').strip()!r}, expected {ident['value']!r}: not the {NAMES[ex]} file"
     problems = []
     for c in cells:
-        r, col = parse_cell(c["label_cell"])
-        seen = str(at(values, r, col) or "").strip()
-        if seen.casefold() != c["label"].strip().casefold():
-            problems.append(f"{c['label_cell']} reads {seen!r}, expected {c['label']!r}")
+        seen = at(values, *parse_cell(c["label_cell"]))
+        if not same(seen, c["label"]):
+            problems.append(f"{c['label_cell']} reads {str(seen or '').strip()!r}, expected {c['label']!r}")
             continue
         (ra, ca), (rb, cb) = parse_range(c["range"])
         for rr in range(ra, rb + 1):
@@ -615,47 +684,66 @@ def label_check(wb, ex):
                 f = at(formulas, rr, cc)
                 if isinstance(f, str) and f.startswith("="):
                     problems.append(f"{col_letter(cc)}{rr} holds a formula ({_short(f, 40)}), not an input")
-    return problems
+    return identity, problems
 
 
 def write_vf(wb, ex, e, now, inputs_changed, result):
     names = wb.sheet_names()
     if SUMMARY_SHEET not in names:
-        result["errors"].append(f"no sheet {SUMMARY_SHEET!r}: input cells not written")
+        raise WrongFile(f"no sheet {SUMMARY_SHEET!r}: not a vF file, nothing written")
+    identity, problems = label_check(wb, ex)
+    if identity:
+        raise WrongFile(f"identity check failed, nothing written: {identity}")
+    if problems:
+        result["errors"].append("label check failed, input cells not written: " + "; ".join(problems))
     else:
-        problems = label_check(wb, ex)
-        if problems:
-            result["errors"].append("label check failed, input cells not written: " + "; ".join(problems))
-        else:
-            for c in VF_INPUT_CELLS[ex]:
-                wb.write(SUMMARY_SHEET, c["range"], [[e["inputs"][k] * c["scale"] for k in c["keys"]]])
-            result["inputs_written"] = True
-    wb.rewrite_sheet(WEB_SHEET, web_dashboard_rows(ex, e, now, inputs_changed), names)
-    result["sheets"].append(WEB_SHEET)
+        written = 0
+        for c in VF_INPUT_CELLS[ex]["inputs"]:
+            vals = [e["inputs"].get(k) for k in c["keys"]]
+            if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in vals):
+                result["errors"].append(f"{c['range']} ({c['name']}) has no value to write: left as it is")
+                continue
+            wb.write(SUMMARY_SHEET, c["range"], [[v * c["scale"] for v in vals]])
+            written += 1
+        result["inputs_written"] = written == len(VF_INPUT_CELLS[ex]["inputs"])
+    try:
+        wb.rewrite_sheet(WEB_SHEET, web_dashboard_rows(ex, e, now, inputs_changed), names)
+        result["sheets"].append(WEB_SHEET)
+    except SheetNotOurs as err:
+        result["errors"].append(str(err))
 
 
 def write_dashboard(wb, sheets, result):
     names = wb.sheet_names()
     for sheet, rows in sheets.items():
-        wb.rewrite_sheet(sheet, rows, names)
-        result["sheets"].append(sheet)
+        try:
+            wb.rewrite_sheet(sheet, rows, names)
+            result["sheets"].append(sheet)
+        except SheetNotOurs as err:
+            result["errors"].append(str(err))
 
 
 def run_target(graph, key, target, work, dry_run):
-    """Writes one target; never raises. Returns its result for excel_sync_runs.files."""
+    """Writes one target; never raises. Returns its result for excel_sync_runs.files:
+    failed when it stopped early, partial when it finished with errors (a skipped
+    sheet or input cell, or a closeSession that failed), else success."""
     t0 = time.monotonic()
     result = {"target": key, "status": "failed", "cells": 0, "sheets": [], "errors": [], "dry_run": dry_run}
-    wb = None
+    if key in VF_TARGETS:
+        result["inputs_written"] = False
+    wb, fatal = None, True
     try:
         drive_id, item_id = resolve_target(graph, key, target)
         result["item"] = {"drive_id": drive_id, "item_id": item_id}
         wb = Workbook(graph, drive_id, item_id)
         wb.open()
         work(wb, result)
-        result["status"] = "partial" if result["errors"] else "success"
+        fatal = False
     except FileLocked as e:
         result["errors"].append(f"file locked ({e})")
-    except GraphError as e:
+    except Conflict as e:
+        result["errors"].append(f"conflict ({e})")
+    except (GraphError, WrongFile) as e:
         result["errors"].append(str(e))
     except Exception as e:   # a bug must not stop the other files
         result["errors"].append(f"{type(e).__name__}: {_short(e)}")
@@ -666,6 +754,7 @@ def run_target(graph, key, target, work, dry_run):
             except GraphError as e:
                 result["errors"].append(f"closeSession: {e}")
             result["cells"] = wb.cells
+    result["status"] = "failed" if fatal else "partial" if result["errors"] else "success"
     result["duration_s"] = round(time.monotonic() - t0, 1)
     print(f"{key}: {result['status']}, {result['cells']} cells, sheets {', '.join(result['sheets']) or '-'}"
           + (f"; {' | '.join(result['errors'])}" if result["errors"] else ""))
@@ -737,8 +826,8 @@ def check(targets):
                 if SUMMARY_SHEET not in names:
                     labels = f"no {SUMMARY_SHEET!r} sheet"
                 else:
-                    problems = label_check(wb, VF_TARGETS[key])
-                    labels = "OK" if not problems else "; ".join(problems)
+                    identity, problems = label_check(wb, VF_TARGETS[key])
+                    labels = identity or ("OK" if not problems else "; ".join(problems))
                 ok = ok and labels == "OK"
             else:
                 wd = [n for n in names if n.startswith("WD_")]

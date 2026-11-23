@@ -7,6 +7,7 @@ import json
 import os
 import re
 import unittest
+from datetime import datetime, timezone
 from unittest import mock
 from urllib.parse import unquote, urlparse
 
@@ -28,7 +29,7 @@ DRYRUN = {k: {"drive_id": "dtest", "item_id": f"test-{k}"} for k in TARGETS}
 
 def summary_sheet(ex):
     """The mapped cells of each vF file's "Tusk - Summary", as in the real files."""
-    cells = {"A16": "PE Ratio", "B16": 40, "C16": 45, "D16": 50, "A12": "Target Price - FY28", "F12": 0.18,
+    cells = {"B2": {"nse": "National Stock Exchange (NSE)", "bse": "BSE", "mcx": "MCX"}[ex], "A16": "PE Ratio", "B16": 40, "C16": 45, "D16": 50, "A12": "Target Price - FY28", "F12": 0.18,
              "A11": "Target Price - FY27", "F11": 0.09, "B11": "=B9*(1+$F$11)", "A10": "Upside - Current"}
     if ex == "nse":
         cells.update({"A9": "Current", "F10": 0.09, "B11": "=B12/(1+$F$12)"})
@@ -61,6 +62,9 @@ class FakeCloud:
         self.inputs = [{"exchange": "bse", "inputs": {"pe1": 47, "pe9": 3}, "updated_at": "2026-11-22T05:00:00Z"}]
         self.supabase_down = False
         self.n = 0
+        self.timeouts = []                  # (path, timeout) of Graph calls
+        self.raise_on = {}                  # (method, path regex) → exception raised once
+        self.add_then_conflict = set()      # sheet names whose add is applied, then answered 409
 
     # -- plumbing
     def request(self, method, url, headers=None, data=None, timeout=None):
@@ -68,6 +72,11 @@ class FakeCloud:
         u = urlparse(url)
         path = unquote(u.path) + (("?" + unquote(u.query)) if u.query else "")
         self.calls.append((method, path, body, headers or {}))
+        self.timeouts.append((path, timeout))
+        for (m, pat), exc in list(self.raise_on.items()):
+            if m == method and re.search(pat, path):
+                del self.raise_on[(m, pat)]
+                raise exc
         for (m, pat), statuses in self.fail.items():
             if m == method and re.search(pat, path) and statuses:
                 status = statuses.pop(0)
@@ -130,6 +139,8 @@ class FakeCloud:
             return FakeResponse(200, {"value": [{"name": n} for n in sheets]})
         if rest == "/workbook/worksheets/add":
             sheets[body["name"]] = {}
+            if body["name"] in self.add_then_conflict:
+                return FakeResponse(409, {"error": {"code": "ItemAlreadyExists", "message": "exists"}})
             return FakeResponse(201, {"name": body["name"]})
         m = re.match(r"/workbook/worksheets\('(.+?)'\)/(usedRange|range\(address='(.+?)'\))(/clear)?", rest)
         if not m:
@@ -185,7 +196,7 @@ def cloud():
     return FakeCloud({
         "nse": vf_item("nse"), "bse": vf_item("bse"),
         "mcx": vf_item("mcx", "/Valuations/MCX vF.xlsx"),
-        "dash": {"sheets": {"NSE": {(1, 1): "=WD_NSE_Daily!A3"}, "WD_VIX": {(1, 1): "old", (900, 2): 99}}},
+        "dash": {"sheets": {"NSE": {(1, 1): "=WD_NSE_Daily!A3"}, "WD_VIX": {(1, 1): "Written by ExchangesDash at old", (900, 2): 99}}},
         **{f"test-{k}": (vf_item(xm.VF_TARGETS[k]) if k in xm.VF_TARGETS else {"sheets": {}}) for k in TARGETS},
     })
 
@@ -352,9 +363,12 @@ class WebDashboard(MirrorTest):
 
     def test_rewritten_each_run(self):
         c = cloud()
-        c.items["nse"]["sheets"]["Web Dashboard"] = {(500, 1): "stale"}
+        c.items["nse"]["sheets"]["Web Dashboard"] = {(1, 1): "Written by ExchangesDash at old", (500, 1): "stale", (3, 9): "x"}
         self.run_main(cloud_=c)
         self.assertNotIn((500, 1), c.items["nse"]["sheets"]["Web Dashboard"])
+        self.assertNotIn((3, 9), c.items["nse"]["sheets"]["Web Dashboard"])
+        clears = [x[1].split("range(address='")[1].split("'")[0] for x in c.writes("nse") if x[1].endswith("/clear")]
+        self.assertEqual(clears, ["A70:I500", "F1:I69"])          # only beyond the new rows and columns
         self.assertFalse(any(x[1].endswith("worksheets/add") and "/items/nse/" in x[1] and x[2]["name"] == "Web Dashboard" for x in c.calls))
 
 
@@ -398,7 +412,7 @@ class FeedSheets(MirrorTest):
         self.assertIn("WD_NSE_Daily", adds)
         clears = [x for x in dash if x[1].endswith("/clear")]
         self.assertEqual(len(clears), 1)
-        self.assertIn("worksheets('WD_VIX')/range(address='A1:B900')/clear", clears[0][1])
+        self.assertIn("worksheets('WD_VIX')/range(address='A6:B900')/clear", clears[0][1])   # below the new rows only
         self.assertEqual(clears[0][2], {"applyTo": "Contents"})
 
     def test_chunking_a_1000_by_30_table(self):
@@ -577,13 +591,123 @@ class Targets(unittest.TestCase):
                     xm.parse_targets(bad)
 
     def test_mapping_matches_the_brief(self):
-        m = {ex: {c["range"]: (c["label_cell"], c["label"], c["keys"]) for c in cells} for ex, cells in xm.VF_INPUT_CELLS.items()}
+        m = {ex: {c["range"]: (c["label_cell"], c["label"], c["keys"]) for c in spec["inputs"]} for ex, spec in xm.VF_INPUT_CELLS.items()}
+        self.assertEqual({ex: (s["identity"]["cell"], s["identity"]["value"]) for ex, s in xm.VF_INPUT_CELLS.items()},
+                         {"nse": ("B2", "National Stock Exchange (NSE)"), "bse": ("B2", "BSE"), "mcx": ("B2", "MCX")})
         for ex in ("nse", "bse", "mcx"):
             self.assertEqual(m[ex]["B16:D16"], ("A16", "PE Ratio", ["pe0", "pe1", "pe2"]))
             self.assertEqual(m[ex]["F12"], ("A12", "Target Price - FY28", ["d1"]))
         self.assertEqual(m["bse"]["F11"], ("A11", "Target Price - FY27", ["d2"]))
         self.assertEqual(m["mcx"]["F11"], ("A11", "Target Price - FY27", ["d2"]))
         self.assertEqual(m["nse"]["F10"], ("A10", "Upside - Current", ["d2"]))
+
+
+class Safety(MirrorTest):
+    """The review's fixes: never overwrite a sheet this job did not write, never a blank
+    sheet on failure, never the wrong exchange's file."""
+
+    def files(self):
+        return {f["target"]: f for f in self.cloud.runs[-1]["files"]}
+
+    def test_a_sheet_not_written_by_the_job_is_left_alone(self):
+        c = cloud()
+        c.items["bse"]["sheets"]["Web Dashboard"] = {(1, 1): "My notes", (2, 2): 5}
+        c.items["dash"]["sheets"]["WD_Inputs"] = {(4, 3): "hand-made"}
+        self.run_main(cloud_=c)
+        self.assertEqual(c.items["bse"]["sheets"]["Web Dashboard"], {(1, 1): "My notes", (2, 2): 5})
+        self.assertEqual(c.items["dash"]["sheets"]["WD_Inputs"], {(4, 3): "hand-made"})
+        f = self.files()
+        self.assertEqual(f["bse_vf"]["status"], "partial")
+        self.assertIn("'Web Dashboard' was not written by this job", f["bse_vf"]["errors"][0])
+        self.assertTrue(f["bse_vf"]["inputs_written"])                      # its inputs still went in
+        self.assertEqual(c.cell("bse", "Tusk - Summary", "C16"), 47)
+        self.assertEqual(f["dashboard"]["status"], "partial")
+        self.assertNotIn("WD_Inputs", f["dashboard"]["sheets"])
+        self.assertIn("WD_Valuation", f["dashboard"]["sheets"])
+
+    def test_an_existing_empty_sheet_is_written(self):
+        c = cloud()
+        c.items["dash"]["sheets"]["WD_Inputs"] = {}
+        self.run_main(cloud_=c)
+        self.assertTrue(c.cell("dash", "WD_Inputs", "A1").startswith("Written by ExchangesDash"))
+        self.assertFalse(any("WD_Inputs" in x[1] and x[1].endswith("/clear") for x in c.calls))
+
+    def test_a_failed_write_leaves_the_old_values(self):
+        c = cloud()
+        c.fail[("PATCH", r"/items/dash/.*WD_VIX")] = [500]
+        self.run_main(cloud_=c)
+        self.assertEqual(c.cell("dash", "WD_VIX", "B900"), 99)               # nothing cleared first
+        self.assertFalse(any("WD_VIX" in x[1] and x[1].endswith("/clear") for x in c.calls))
+        self.assertEqual(self.files()["dashboard"]["status"], "failed")
+
+    def test_swapped_targets_fail_the_identity_check(self):
+        c = cloud()
+        swapped = {**TARGETS, "bse_vf": {"drive_id": "d1", "item_id": "mcx"}, "mcx_vf": {"drive_id": "d1", "item_id": "bse"}}
+        self.run_main(cloud_=c, EXCEL_TARGETS=json.dumps(swapped))
+        f = self.files()
+        for k, other in (("bse_vf", "MCX"), ("mcx_vf", "BSE")):
+            self.assertEqual(f[k]["status"], "failed")
+            self.assertIn(f"identity check failed, nothing written: B2 reads '{other}'", f[k]["errors"][0])
+        self.assertEqual(c.writes("bse"), [])
+        self.assertEqual(c.writes("mcx"), [])
+        self.assertEqual(f["nse_vf"]["status"], "success")
+
+    def test_a_409_on_add_is_idempotent(self):
+        c = cloud()
+        c.add_then_conflict = {"WD_NSE_Daily"}
+        self.run_main(cloud_=c)
+        f = self.files()["dashboard"]
+        self.assertEqual(f["status"], "success", f["errors"])
+        self.assertEqual(c.cell("dash", "WD_NSE_Daily", "A3"), "2026-11-18")
+
+    def test_create_session_waits_longer_and_is_not_retried_after_a_timeout(self):
+        c = cloud()
+        c.raise_on[("POST", r"/items/nse/workbook/createSession")] = xm.requests.ReadTimeout("slow")
+        self.run_main(cloud_=c)
+        self.assertEqual(len([x for x in c.calls if x[1].endswith("/items/nse/workbook/createSession")]), 1)
+        self.assertEqual(self.files()["nse_vf"]["status"], "failed")
+        self.assertTrue(all(t == 180 for p, t in c.timeouts if p.endswith("createSession")))
+        self.assertTrue(all(t == 60 for p, t in c.timeouts if "graph.microsoft" not in p and p.endswith("/clear")))
+
+    def test_a_failed_close_session_is_not_success(self):
+        c = cloud()
+        c.fail[("POST", r"/items/bse/workbook/closeSession")] = [500]
+        self.run_main(cloud_=c)
+        f = self.files()["bse_vf"]
+        self.assertEqual(f["status"], "partial")
+        self.assertIn("closeSession", f["errors"][0])
+        self.assertEqual(c.runs[-1]["status"], "partial")
+
+    def test_a_missing_input_skips_only_its_cells(self):
+        c = cloud()
+        c.inputs = [{"exchange": "mcx", "inputs": {"pe0": None}, "updated_at": "2026-11-22T05:00:00Z"}]
+        self.run_main(cloud_=c)
+        f = self.files()["mcx_vf"]
+        self.assertEqual(f["status"], "partial")
+        self.assertFalse(f["inputs_written"])
+        self.assertIn("B16:D16 (P/E bear / base / bull) has no value", f["errors"][0])
+        self.assertEqual(c.cell("mcx", "Tusk - Summary", "C16"), 45)        # untouched
+        self.assertAlmostEqual(c.cell("mcx", "Tusk - Summary", "F12"), 0.18)
+        self.assertIn("Web Dashboard", f["sheets"])
+
+    def test_inputs_written_is_recorded(self):
+        self.run_main()
+        f = self.files()
+        self.assertTrue(f["nse_vf"]["inputs_written"])
+        self.assertNotIn("inputs_written", f["dashboard"])
+
+    def test_text_that_looks_like_a_formula_stays_text(self):
+        self.assertEqual([xm._cell_value(v) for v in ("=1+1", "+91 22", "-x", "@sum", "-5", "+1.5", "2026-11-20", "", None, 3, True)],
+                         ["'=1+1", "'+91 22", "'-x", "'@sum", "-5", "+1.5", "2026-11-20", "", "", 3, True])
+
+    def test_an_errored_exchange_keeps_its_valuation_row(self):
+        out = FixtureData.outputs()
+        out["exchanges"]["mcx"] = {"error": "no daily rows"}
+        sheets = xm.feed_sheets(out, FixtureData.data()["raw"], {}, datetime(2026, 11, 23, tzinfo=timezone.utc))
+        rows = sheets["WD_Valuation"][2:]
+        self.assertEqual([r[0] for r in rows], ["bse", "mcx", "nse"])
+        self.assertEqual(rows[1][1:], [""] * (len(xm.valuation_header()) - 1))
+        self.assertEqual(len(rows[1]), len(rows[0]))
 
 
 class WorkflowFile(unittest.TestCase):
