@@ -1,6 +1,6 @@
 # Excel mirror
 
-`scripts/excel_mirror.py` writes the web dashboard's valuation inputs, its valuation results and its data into four workbooks on OneDrive / SharePoint, so the workbooks become outputs of the dashboard:
+`scripts/excel_mirror.py` writes the web dashboard's valuation inputs, its valuation results and its data into four workbooks in the **OneDrive of the "Tusk Invest" account**, so the workbooks become outputs of the dashboard:
 
 | Target key | Workbook | What is written |
 |---|---|---|
@@ -9,7 +9,7 @@
 
 It runs:
 
-- **daily at 01:00 IST** (19:30 UTC). Vercel Cron dispatches `.github/workflows/excel-mirror.yml` through `dashboard/api/trigger-scheduled.js`, and the workflow's own `schedule:` is GitHub's late fallback.
+- **daily at 01:00 IST** (19:30 UTC). Vercel Cron dispatches `.github/workflows/excel-mirror.yml` through `dashboard/api/trigger-scheduled.js`. The workflow's own `schedule:` is GitHub's late fallback. Its `gate` job skips that late run when a scheduled run already finished (success or partial) in the last 20 hours, so there is one daily run. Dispatched runs are never gated.
 - **on demand**, from the **Refresh Excel now** button in the Excel sync panel at the foot of the Valuation Model tab (`dashboard/js/23-excel-sync.js`). The button is shown only to a team member signed in for the shared inputs. It calls `POST /api/excel-refresh` (`dashboard/api/excel-refresh.js`), which records a queued run and dispatches the workflow with that run's id.
 
 Each run, scheduled or manual, writes the latest **saved** shared inputs. Saving an input on the dashboard does not write to Excel by itself.
@@ -24,36 +24,59 @@ Each run, scheduled or manual, writes the latest **saved** shared inputs. Saving
 3. **Writes.** Each target is written through the Excel REST API inside a persistent workbook session (`createSession` with `persistChanges: true`, then `closeSession`). Writes go range by range, so:
    - a workbook open in Excel receives them
    - formulas elsewhere are never replaced
-   Large tables are written in chunks of whole rows, at most 4,000 cells and about 1 MB per request. Graph's 429 / 503 / 504 answers are retried after `Retry-After`, or with exponential backoff, up to 5 tries. A 409 / 423 lock fails that file only; the other files are still written.
+
+   Safeguards:
+   - **Identity check.** Each vF file's `Tusk - Summary!B2` must name its exchange (`National Stock Exchange (NSE)`, `BSE`, `MCX`). BSE's and MCX's labels are otherwise identical, so this catches swapped target ids. On a mismatch nothing is written to that file, and it is `failed`.
+   - **Only its own sheets.** A `Web Dashboard` or `WD_*` sheet is written only when it is new, empty, or its `A1` holds the job's stamp ("Written by ExchangesDash …"). Any other sheet of that name is left alone, with an error for that sheet (the file is `partial`).
+   - **Never a blank sheet.** The new rows are written over the old first. Only then is the area beyond them (rows below, columns to the right) cleared. A run that fails part-way leaves the previous values, not a blank sheet.
+   - **Text stays text.** A text value starting with `=` (or `+`, `-`, `@` when not a number) is written with a leading apostrophe.
+
+   Graph limits and failures:
+   - Large tables are written in chunks of whole rows, at most 4,000 cells and about 1 MB per request.
+   - Graph's 429 / 503 / 504 answers are retried after `Retry-After`, or with exponential backoff, up to 5 tries.
+   - `createSession` waits up to 180 s and is not retried after a read timeout, since the session may have been created; any session id received is closed.
+   - A 423 lock fails that file only; the other files are still written. A 409 on adding a sheet (an add applied, then retried) re-reads the sheet names and carries on.
 4. **Log.** The run is recorded in Supabase `excel_sync_runs` (`valuation_sync_schema.sql`):
    - A manual run's row (created by the API) goes `queued` → `running` → `success` / `partial` / `failed`.
    - A scheduled run inserts its own row.
-   - `files` holds one entry per target: `target`, `status` (`success`, `partial`, `failed` or `skipped`), `cells`, `sheets`, `errors`, `duration_s`, `dry_run` and the resolved `item` ids.
+   - `files` holds one entry per target: `target`, `status` (`success`, `partial`, `failed` or `skipped`), `cells`, `sheets`, `errors`, `duration_s`, `dry_run`, the resolved `item` ids, and for vF files `inputs_written` (true only when every input cell was written; the panel's tooltip shows it).
    - `github_run_id` links the run to the Actions log.
+   - **No row stays open.** The mirror job's last step runs `if: always()` (`--finalize`) and closes the row as `failed` if the job died, timed out or was cancelled before recording a result.
+   - GitHub keeps one running and at most one pending run per concurrency group. A newer pending run cancels the older, whose job then never starts. `GET /api/excel-refresh` closes any run still `queued` or `running` 45 minutes after it was requested.
 
    Run status:
    - **success**: every configured file succeeded
    - **failed**: none was written
-   - **partial**: anything in between, including a vF file whose label check skipped its input cells while its `Web Dashboard` sheet was written
+   - **partial**: anything in between. This includes a vF file whose label check skipped its input cells while its `Web Dashboard` sheet was written, a sheet left alone because the job did not write it, and a `closeSession` that failed.
 
 ## One-time setup
 
 ### 1. Microsoft Graph access (M365 admin)
 
-Use a **dedicated app registration** for the mirror (client-credentials flow, as `scripts/excel_sync.py` uses). It needs application permission to read and write the four files in the "Tusk Invest's files – Tusk Equity" SharePoint library. Choose one:
+The four files live in the **OneDrive of the "Tusk Invest" account**. Its folder links look like `https://tuskinvest-my.sharepoint.com/:f:/p/tuskinvest/…`, and they are not in a SharePoint site library.
 
-- **`Sites.Selected`** (preferred): an admin grants the permission, then gives the app a **write** grant on that one site:
+The mirror uses an app registration with the client-credentials flow, as `scripts/excel_sync.py` does. The admin has granted it both of these:
+
+- **`Files.ReadWrite.All`** (application, admin consent). This is what reaches a user's OneDrive (`/users/{upn}/drive`).
+- **`Sites.Selected`**, with a write grant on a site:
 
   ```
   POST https://graph.microsoft.com/v1.0/sites/{site-id}/permissions
   {"roles": ["write"], "grantedToIdentities": [{"application": {"id": "<client id>", "displayName": "ExchangesDash Excel mirror"}}]}
   ```
 
-  This call is made by an admin token holding `Sites.FullControl.All`.
+  This grant applies only if the files move to a SharePoint site library. It is not needed for the OneDrive files.
 
-- **`Files.ReadWrite.All`** (application) with admin consent. This is broader: every file in the tenant.
+The app also needs a client secret.
 
-Then create a client secret for the app.
+**App-only Excel REST.** Microsoft's v1.0 pages for the workbook APIs (`createSession`, ranges, worksheets) list "Application: Not supported", although app-only calls are known to work on OneDrive for Business and SharePoint files. `--check` therefore opens and closes a session that saves nothing (`persistChanges: false`) on every file before anything is written, and reports `session OK` or `REFUSED …` per file.
+
+If the workbook calls are refused, the fallbacks are not implemented. The options are:
+
+1. **Download, edit, upload.** `scripts/excel_sync.py` already downloads the file, edits it with openpyxl and uploads it with `If-Match` on the eTag. The same approach could write the vF input cells and the `Web Dashboard` / `WD_*` sheets. The costs:
+   - a workbook open in Excel conflicts with the upload, so the run must retry later and must not overwrite
+   - openpyxl drops some features (charts, pivot caches, external-link values) on save, so test this on copies first
+2. **Delegated auth.** A service account signs in once (device-code flow), and the job keeps its refresh token as a secret. Excel REST is then supported as documented, but the token needs care: it expires after inactivity, and a password change or MFA can revoke it.
 
 ### 2. GitHub (repository settings → Secrets and variables → Actions)
 
@@ -62,7 +85,7 @@ Then create a client secret for the app.
 | secret | `MSGRAPH_TENANT_ID`, `MSGRAPH_CLIENT_ID`, `MSGRAPH_CLIENT_SECRET` | the app above. These are shared with `excel_sync.py`; if the mirror uses its own app, these are its values. |
 | secret | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | the ExchangesDash Supabase project and its service-role key. The workflow passes the key as `SUPABASE_KEY`. |
 | variable | `EXCEL_TARGETS` | the four real files (see below) |
-| variable | `EXCEL_TARGETS_DRYRUN` | copies of the four files in a test folder |
+| variable | `EXCEL_TARGETS_DRYRUN` | copies of the four files in a test folder. **It must never point at the real files**: dry runs write even while `ENABLE_EXCEL_MIRROR` is off. |
 | variable | `ENABLE_EXCEL_MIRROR` | `true` to write the real files. Leave it unset until the dry run has been checked. |
 
 ### 3. Vercel (project env)
@@ -75,31 +98,54 @@ Without Supabase or the PAT, `/api/excel-refresh` answers 503 and the panel says
 
 ### 4. Fill `EXCEL_TARGETS`
 
-`EXCEL_TARGETS` (and `EXCEL_TARGETS_DRYRUN`) is JSON with one entry per target. Each entry is either the drive item ids, or a user and path to look up:
+`EXCEL_TARGETS` (and `EXCEL_TARGETS_DRYRUN`) is JSON with one entry per target. Each entry takes one of three forms:
+
+| Form | Looked up at | Use |
+|---|---|---|
+| `{"drive_id": "b!…", "item_id": "01…"}` | `/drives/{drive_id}/items/{item_id}` | pinned: the final form |
+| `{"user": "<upn>", "path": "/folder/file.xlsx"}` | `/users/{upn}/drive/root:{path}` | a file in a user's OneDrive (these files) |
+| `{"drive_id": "b!…", "path": "/folder/file.xlsx"}` | `/drives/{drive_id}/root:{path}` | a file in any drive, such as a SharePoint library |
+
+Example:
 
 ```json
 {
-  "nse_vf":    {"drive_id": "b!…", "item_id": "01…"},
+  "nse_vf":    {"user": "tuskinvest@<tenant domain>", "path": "/Portfolio Stock Valuations - Bull Base Bear (Tusk Prop)/20250809_NSE vF.xlsx"},
   "bse_vf":    {"drive_id": "b!…", "item_id": "01…"},
-  "mcx_vf":    {"user": "research@tuskinvest.com", "path": "/Portfolio Stock Valuations - Bull Base Bear (Tusk Prop)/20250827_MCX vF.xlsx"},
-  "dashboard": {"drive_id": "b!…", "item_id": "01…"}
+  "mcx_vf":    {"user": "tuskinvest@<tenant domain>", "path": "/Portfolio Stock Valuations - Bull Base Bear (Tusk Prop)/20250827_MCX vF.xlsx"},
+  "dashboard": {"user": "tuskinvest@<tenant domain>", "path": "/Direct Equity/Exchanges-capital markets plays/Dashboard/20261027_Exchanges_Dashboard.xlsx"}
 }
 ```
 
+**Finding the UPN and path.** Open the file's folder in OneDrive on the web. The address reads `https://tuskinvest-my.sharepoint.com/personal/<upn with _ for @ and .>/Documents/<path>`:
+
+- `/personal/tuskinvest_example_com/` stands for `tuskinvest@example.com`.
+- The path is everything after `/Documents`, URL-decoded.
+
+The `/:f:/p/tuskinvest/…` sharing links redirect to that address.
+
+**Finding drive ids.** Either of these works:
+
+- Let `--check` print them (below).
+- Run `GET /users/{upn}/drive?$select=id` (OneDrive) or `GET /sites/{site-id}/drives` (SharePoint) in Graph Explorer.
+
+**Steps:**
+
 1. Start with `user` + `path` entries.
-2. Run the workflow by hand with **check_only** ticked: `python scripts/excel_mirror.py --check`, or add `--dry-run` for the test copies. It is read only. For each target it prints:
+2. Run the workflow by hand with **check_only** ticked: `python scripts/excel_mirror.py --check`, or add `--dry-run` for the test copies. It writes nothing. For each target it prints:
    - the file name and its `drive_id / item_id` (a path entry also prints `pin as {"drive_id": …, "item_id": …}`)
    - the number of sheets
-   - whether `Web Dashboard` / `WD_*` exist yet
-   - the label checks
-3. Replace each path entry with its printed ids. Ids survive renames and moves; a "Save as" copy is a new item and needs its new id.
+   - whether `Web Dashboard` / `WD_*` exist yet, and any of them the job did not write (`NOT OURS, will be skipped`)
+   - the identity and label checks
+   - whether a session opens (`OK` or `REFUSED`, see "App-only Excel REST" above)
+3. When every row passes, replace each path entry with its printed ids. Ids survive renames and moves; a "Save as" copy is a new item and needs its new id.
 
 A target left out of `EXCEL_TARGETS` is recorded as `skipped`.
 
 ## Dry run, then go live
 
-1. Copy the four files into a test folder, and put their ids in `EXCEL_TARGETS_DRYRUN`.
-2. Run the workflow with **dry_run** ticked. It writes the copies even while `ENABLE_EXCEL_MIRROR` is off, and the run appears in the panel with "dry run".
+1. Copy the four files into a test folder, and put their ids in `EXCEL_TARGETS_DRYRUN`. Check twice that every id is a copy's: **a dry run writes even while `ENABLE_EXCEL_MIRROR` is off**, so this variable must never point at the real files. Run `--check --dry-run` first: it prints each file's name and folder.
+2. Run the workflow with **dry_run** ticked. It writes the copies, and the run appears in the panel with "dry run".
 3. Check, on the copies:
    - the `Tusk - Summary` input cells
    - the `Web Dashboard` sheets against the Valuation Model tab
@@ -113,7 +159,11 @@ While `ENABLE_EXCEL_MIRROR` is not `true`, a normal run writes nothing. A manual
 
 ## vF input cells (`Tusk - Summary`)
 
-Confirmed on copies of the three files on 23 Nov 2026; the declarative table is `VF_INPUT_CELLS` in `scripts/excel_mirror.py`. Before any input write, the label cell must read the label shown (trimmed, case-insensitive), and every target cell must hold a value, not a formula. On any mismatch that file's input cells are all skipped and the error is recorded; its `Web Dashboard` sheet is still written.
+These were confirmed on copies of the three files on 23 Nov 2026. The declarative table is `VF_INPUT_CELLS` in `scripts/excel_mirror.py`.
+
+1. **Identity.** `B2` must read `National Stock Exchange (NSE)`, `BSE` or `MCX`, matching the target. On a mismatch nothing is written to the file.
+2. **Labels.** Each label cell must read the label shown (trimmed, case-insensitive), and every target cell must hold a value, not a formula. On any mismatch, all of that file's input cells are skipped and the error is recorded. Its `Web Dashboard` sheet is still written.
+3. **Missing values.** An input with no value skips only its own cells, with an error.
 
 | File | Cells | Label cell → label | Value |
 |---|---|---|---|
