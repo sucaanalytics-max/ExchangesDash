@@ -114,9 +114,9 @@ class FakeCloud:
     # -- Graph
     def graph(self, method, path, body, headers):
         p = path[len("/v1.0"):]
-        m = re.match(r"/users/([^/]+)/drive/root:(.+?)(\?|$)", p)
+        m = re.match(r"/(?:users/[^/]+/drive|drives/[^/]+)/root:(.+?)(\?|$)", p)
         if m:
-            item = next((k for k, v in self.items.items() if v.get("path") == m.group(2)), None)
+            item = next((k for k, v in self.items.items() if v.get("path") == m.group(1)), None)
             return FakeResponse(200, {"id": item, "name": "x.xlsx", "parentReference": {"driveId": "d9"}}) if item else FakeResponse(404, {})
         m = re.match(r"/drives/([^/]+)/items/([^/?]+)(.*)$", p)
         if not m or m.group(2) not in self.items:
@@ -571,10 +571,26 @@ class Check(MirrorTest):
         self.assertEqual(self.code, 1)                 # a label failed
         self.assertIn("A12 reads 'Target Price - FY29'", out)
         self.assertIn("pin as", out)                    # the path target's ids
-        self.assertTrue(re.search(r"nse_vf\s+nse\.xlsx\s+d1 / nse\s+2\s+will be created\s+OK", out), out)
-        self.assertEqual([x for x in c.calls if x[0] in ("PATCH", "POST", "DELETE", "PUT")
-                          and "login.microsoftonline" not in x[1]], [])
+        self.assertTrue(re.search(r"nse_vf\s+nse\.xlsx\s+d1 / nse\s+2\s+will be created\s+OK\s+OK", out), out)
+        self.assertEqual(c.writes(), [])
+        self.assertFalse(any(x[0] in ("PATCH", "DELETE", "PUT") for x in c.calls))
+        creates = [x for x in c.calls if x[1].endswith("createSession")]
+        self.assertEqual(len(creates), 4)                     # the write path is proved, saving nothing
+        self.assertTrue(all(x[2] == {"persistChanges": False} for x in creates))
+        self.assertEqual(sorted(c.closed), sorted(c.sessions))
         self.assertEqual(c.runs, [])
+
+    def test_check_reports_a_refused_session_and_a_foreign_sheet(self):
+        c = cloud()
+        c.fail[("POST", r"/items/bse/workbook/createSession")] = [403]
+        c.items["dash"]["sheets"]["WD_Monthly"] = {(1, 1): "hand-made"}
+        with mock.patch("builtins.print") as p:
+            self.run_main(["--check"], cloud_=c, quiet=False)
+        out = "\n".join(" ".join(map(str, a.args)) for a in p.call_args_list)
+        self.assertEqual(self.code, 1)
+        self.assertRegex(out, r"bse_vf .* OK\s+REFUSED HTTP 403")
+        self.assertIn("WD_Monthly: NOT OURS, will be skipped", out)
+        self.assertEqual(c.writes(), [])
 
     def test_check_passes_on_good_files(self):
         with mock.patch("builtins.print"):
@@ -583,8 +599,16 @@ class Check(MirrorTest):
 
 
 class Targets(unittest.TestCase):
+    def test_drive_and_path_target_is_looked_up_in_that_drive(self):
+        c = FakeCloud({"x": {"path": "/Shared/x.xlsx", "sheets": {}}})
+        with mock.patch("requests.request", c.request), mock.patch("builtins.print"):
+            got = xm.resolve_target(xm.Graph("t"), "dashboard", {"drive_id": "b!abc", "path": "Shared/x.xlsx"})
+        self.assertEqual(got, ("d9", "x"))
+        self.assertIn("/drives/b!abc/root:/Shared/x.xlsx", c.calls[0][1])
+
     def test_parse(self):
         self.assertEqual(xm.parse_targets(json.dumps(TARGETS)), TARGETS)
+        self.assertEqual(xm.parse_targets('{"nse_vf": {"drive_id": "d", "path": "/a.xlsx"}}'), {"nse_vf": {"drive_id": "d", "path": "/a.xlsx"}})
         for bad in ("", "[]", "{", json.dumps({"other": {}}), json.dumps({"nse_vf": {"drive_id": "x"}})):
             with self.subTest(bad=bad):
                 with self.assertRaises(ValueError):

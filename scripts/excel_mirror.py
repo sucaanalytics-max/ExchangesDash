@@ -28,7 +28,8 @@ Env:
                            --run-id row is closed as failed, so the panel does
                            not wait on it). --check and --dry-run run regardless.
   EXCEL_TARGETS            JSON {"nse_vf": T, "bse_vf": T, "mcx_vf": T, "dashboard": T},
-                           T = {"drive_id", "item_id"} or {"user": upn, "path": "/f/x.xlsx"}
+                           T = {"drive_id", "item_id"}, {"user": upn, "path": "/f/x.xlsx"}
+                           (that user's OneDrive) or {"drive_id", "path"} (any drive)
   EXCEL_TARGETS_DRYRUN     the same for --dry-run (copies in a test folder)
   MSGRAPH_TENANT_ID, MSGRAPH_CLIENT_ID, MSGRAPH_CLIENT_SECRET   (excel_sync.get_graph_token)
   SUPABASE_URL, SUPABASE_KEY   service-role key (the workflow passes SUPABASE_SERVICE_KEY)
@@ -36,7 +37,8 @@ Env:
 
 Usage:
   python scripts/excel_mirror.py [--trigger scheduled|manual] [--run-id N] [--dry-run]
-  python scripts/excel_mirror.py --check [--dry-run]     read only: metadata, sheets, labels
+  python scripts/excel_mirror.py --check [--dry-run]     read only: metadata, sheets, labels,
+                                                          and a session that saves nothing
 """
 
 import argparse
@@ -383,21 +385,28 @@ def parse_targets(text):
     for key, v in t.items():
         if key not in TARGET_KEYS:
             raise ValueError(f"unknown target {key!r} (expected {', '.join(TARGET_KEYS)})")
-        ok = isinstance(v, dict) and ((v.get("drive_id") and v.get("item_id")) or (v.get("user") and v.get("path")))
+        ok = isinstance(v, dict) and ((v.get("drive_id") and (v.get("item_id") or v.get("path")))
+                                      or (v.get("user") and v.get("path")))
         if not ok:
-            raise ValueError(f"{key}: needs drive_id + item_id, or user + path")
+            raise ValueError(f"{key}: needs drive_id + item_id, drive_id + path, or user + path")
         out[key] = v
     return out
 
 
 def resolve_target(graph, key, t):
-    """(drive_id, item_id); a user + path target is looked up and its ids printed for pinning."""
+    """(drive_id, item_id). A path target is looked up and its ids printed for pinning:
+    user + path in that user's OneDrive (/users/{upn}/drive/root:{path}), drive_id + path
+    in that drive, e.g. a SharePoint library (/drives/{id}/root:{path})."""
     if t.get("drive_id") and t.get("item_id"):
         return t["drive_id"], t["item_id"]
     path = "/" + t["path"].lstrip("/")
-    meta = graph.request("GET", f"{GRAPH}/users/{quote(t['user'], safe='@')}/drive/root:{quote(path)}?$select=id,name,parentReference")
+    if t.get("drive_id"):
+        where, base = f"drive {t['drive_id']}", f"{GRAPH}/drives/{quote(t['drive_id'], safe='')}"
+    else:
+        where, base = t["user"], f"{GRAPH}/users/{quote(t['user'], safe='@')}/drive"
+    meta = graph.request("GET", f"{base}/root:{quote(path)}?$select=id,name,parentReference")
     drive_id, item_id = meta["parentReference"]["driveId"], meta["id"]
-    print(f"{key}: {t['user']}:{path} → pin as {json.dumps({'drive_id': drive_id, 'item_id': item_id})}")
+    print(f"{key}: {where}:{path} → pin as {json.dumps({'drive_id': drive_id, 'item_id': item_id})}")
     return drive_id, item_id
 
 
@@ -807,14 +816,43 @@ def mirror(targets, dry_run=False, now=None, data=None):
     return status, files, None if status != "failed" else "no file was written"
 
 
+def session_probe(wb):
+    """Opens and closes a session that saves nothing (persistChanges: false): proves the
+    app may open the workbook through the Excel REST API before any write. 'OK' or why not."""
+    try:
+        wb.open(persist=False)
+    except GraphError as e:
+        return f"REFUSED {e}"
+    try:
+        wb.close()
+    except GraphError as e:
+        return f"opened, but closeSession failed: {e}"
+    return "OK"
+
+
+def ours_text(wb, sheets):
+    """How the mirror's sheets stand: missing (will be created), ours, or not ours (skipped)."""
+    out = []
+    for name in sheets:
+        try:
+            old = wb.extent(name)
+        except GraphError as e:
+            out.append(f"{name}: {e}")
+            continue
+        if old and not str(old[2]).startswith(STAMP_PREFIX):
+            out.append(f"{name}: NOT OURS, will be skipped")
+    return "; ".join(out)
+
+
 def check(targets):
-    """Read only: each target's metadata, sheets and label checks, as a table."""
+    """Read only: each target's metadata, sheets, identity and label checks, and a session
+    that saves nothing, as a table. True when every configured target passes."""
     graph = Graph(graph_token())
-    rows = [("target", "file", "drive_id / item_id", "sheets", "Web Dashboard / WD_*", "labels")]
+    rows = [("target", "file", "drive_id / item_id", "sheets", "Web Dashboard / WD_*", "identity / labels", "session")]
     ok = True
     for key in TARGET_KEYS:
         if key not in targets:
-            rows.append((key, "-", "not configured", "", "", ""))
+            rows.append((key, "-", "not configured", "", "", "", ""))
             continue
         try:
             drive_id, item_id = resolve_target(graph, key, targets[key])
@@ -822,24 +860,29 @@ def check(targets):
             meta = wb.metadata() or {}
             names = wb.sheet_names()
             if key in VF_TARGETS:
-                mine = "present" if WEB_SHEET in names else "will be created"
                 if SUMMARY_SHEET not in names:
                     labels = f"no {SUMMARY_SHEET!r} sheet"
                 else:
                     identity, problems = label_check(wb, VF_TARGETS[key])
                     labels = identity or ("OK" if not problems else "; ".join(problems))
-                ok = ok and labels == "OK"
+                mine = ([WEB_SHEET] if WEB_SHEET in names else [])
+                state = ours_text(wb, mine) or ("present" if mine else "will be created")
             else:
-                wd = [n for n in names if n.startswith("WD_")]
-                mine = f"{len(wd)} WD_* sheets" if wd else "will be created"
                 labels = "n/a"
-            rows.append((key, meta.get("name", "?"), f"{drive_id} / {item_id}", str(len(names)), mine, labels))
+                wd = [n for n in names if n.startswith("WD_")]
+                state = ours_text(wb, wd) or (f"{len(wd)} WD_* sheets" if wd else "will be created")
+            session = session_probe(wb)
+            ok = ok and labels in ("OK", "n/a") and session == "OK" and "NOT OURS" not in state
+            rows.append((key, meta.get("name", "?"), f"{drive_id} / {item_id}", str(len(names)), state, labels, session))
         except GraphError as e:
             ok = False
-            rows.append((key, "-", "", "", "", f"ERROR {e}"))
+            rows.append((key, "-", "", "", "", f"ERROR {e}", ""))
     widths = [max(len(str(r[i])) for r in rows) for i in range(len(rows[0]))]
     for r in rows:
         print("  ".join(str(c).ljust(w) for c, w in zip(r, widths)).rstrip())
+    if not ok:
+        print("Not every target passed: see docs/EXCEL_MIRROR.md (a REFUSED session means app-only Excel REST "
+              "calls are not allowed for this file; the docs describe the fallbacks).")
     return ok
 
 
