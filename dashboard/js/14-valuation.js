@@ -983,6 +983,7 @@ function valuationTabHTML(ex, defaults, c0, analysts, open) {
     ${tris}
     ${how}
     ${analystHTML}
+    ${excelSyncPanelHTML(EXCEL_SYNC, VALUATION_SHARED.signedIn)}
   </div>`;
 }
 
@@ -1022,12 +1023,14 @@ async function buildValuation(ex) {
     fillStrip();
   };
   render();
+  excelSyncLoad(60 * 1000);   // the Excel sync panel's run log (js/23-excel-sync.js)
   RX_TAB_REFRESH.valuation = render;
   el._valCtx = { ex, defaults, data, onChange: render };
   if (!el._valEditBound) {
     el._valEditBound = true;
     el.addEventListener('click', e => {
       if (e.target.closest && e.target.closest('[data-val-edit]') && el._valCtx) openValuationDrawer(el._valCtx);
+      if (e.target.closest && e.target.closest('[data-xs-refresh]')) excelSyncRefresh();
     });
   }
   // The shared inputs, once they answer, if they differ from what was drawn

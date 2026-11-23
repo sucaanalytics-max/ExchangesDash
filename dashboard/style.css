@@ -3861,3 +3861,11 @@ body.rx-drawer-on { overflow: hidden; }
   .rx-vi-pw { flex: 1 1 100%; }
   .rx-vi-pw .rx-in { flex: 1 1 auto; width: auto; min-height: 44px; }
 }
+/* Excel sync panel (js/23-excel-sync.js), at the foot of the Valuation Model tab */
+.rx-table td.xs-files { white-space: normal; min-width: 140px; }
+.xs-file { display: inline-block; margin-right: 10px; white-space: nowrap; cursor: default; font-variant-numeric: tabular-nums; }
+.xs-file.rx-warn { color: var(--rx-warn); font-weight: 600; }
+.xs-note { padding: 8px 14px 0; }
+@media (max-width: 640px) {
+  .xs-panel .rx-ph-right .rx-btn { min-height: 44px; }
+}
