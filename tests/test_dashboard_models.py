@@ -290,6 +290,36 @@ class ValuationWeights(unittest.TestCase):
         self.assertEqual(got["v"]["w2"], 60)
         self.assertEqual((got["v"]["adr"], got["v"]["g"], got["v"]["pe0"], got["v"]["w0"]), (24, 5, 40, 45))
 
+    def test_discount_rates_are_editable(self):
+        # d1 / d2 edit like any input: defaults from the file's two global rates, an
+        # override moves the discounted targets (mid, now) and leaves the next-FY-end one
+        expr = """(() => {
+          const d = valuationDefaultsFrom(DATA.file);
+          const run = o => { const { v, edited } = valuationInputsFor(d, o, 'bse');
+                             return { edited, v: [v.d1, v.d2], m: valuationAdrModel(v, 28.5, 40.7884) }; };
+          return { base: run({}), edit: run({ bse: { d1: 12, d2: 6.5 } }), zero: run({ bse: { d1: 0, d2: 0 } }),
+                   ok: [-1, 0, 18, 99.9, 100, 150, 'x', '12', null].map(x => [valuationInputOk('d1', x), valuationInputOk('d2', x)]),
+                   bad: run({ bse: { d1: -1, d2: 100 } }), str: run({ bse: { d1: 'x', d2: '9' } }) };
+        })()"""
+        got = js_eval(VALUATION_JS, expr, {"file": _valuation_inputs_file()})
+        base, edit, zero = got["base"], got["edit"], got["zero"]
+        self.assertEqual((base["v"], base["edited"]), ([18, 9], []))
+        self.assertEqual((edit["v"], edit["edited"]), ([12, 6.5], ["d1", "d2"]))
+        self.assertEqual(edit["m"]["fwd"], base["m"]["fwd"])
+        for i in range(3):
+            with self.subTest(scenario=i):
+                fwd = base["m"]["fwd"][i]
+                self.assertAlmostEqual(base["m"]["mid"][i], fwd / 1.18, places=6)
+                self.assertAlmostEqual(base["m"]["now"][i], fwd / 1.18 / 1.09, places=6)
+                self.assertAlmostEqual(edit["m"]["mid"][i], fwd / 1.12, places=6)
+                self.assertAlmostEqual(edit["m"]["now"][i], fwd / 1.12 / 1.065, places=6)
+                self.assertAlmostEqual(zero["m"]["now"][i], fwd, places=6)
+        self.assertEqual(got["ok"], [[False, False], [True, True], [True, True], [True, True], [False, False],
+                                     [False, False], [False, False], [False, False], [False, False]])
+        for bad in (got["bad"], got["str"]):   # unusable: the defaults stay
+            self.assertEqual((bad["v"], bad["edited"]), ([18, 9], []))
+        self.assertEqual(got["bad"]["m"]["now"], base["m"]["now"])
+
 
 @unittest.skipUnless(NODE, "node not installed")
 class ValuationInputs(unittest.TestCase):
@@ -417,7 +447,7 @@ class ValuationData(unittest.TestCase):
           const a = valuationAdrModel(d, 28.5637935609276, 40.7884);
           return { rows: valuationExcelRows(2028, d.d1, d.d2).map(r => r.label), cells: valuationExcelCells(a, d, 3920) };
         })()"""
-        got = js_eval(VALUATION_JS + ["fmtNum", "rxSignedPct", "valuationExcelRows", "valuationExcelCells"], expr, {"file": _valuation_inputs_file()})
+        got = js_eval(VALUATION_JS + ["fmtNum", "rxSignedPct", "valuationPct", "valuationExcelRows", "valuationExcelCells"], expr, {"file": _valuation_inputs_file()})
         self.assertEqual(got["rows"], ["ADR FY 28", "Other Income", "Total Income", "PAT Margin", "EPS", "PE",
                                        "Price Target FY 28", "Upside", "Discount 18 %", "Target Price FY 27",
                                        "Discount 9 %", "Target Price Current"])

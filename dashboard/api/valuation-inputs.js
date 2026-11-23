@@ -30,7 +30,7 @@ const { isSignedIn, clientIp, readBody } = require('./_team_auth');
 
 const NO_STORE = 'no-store';
 const EXCHANGES = ['bse', 'mcx', 'nse'];
-const EDITABLE = ['adr', 'g', 'pe0', 'pe1', 'pe2', 'w0', 'w1', 'w2', 'from'];
+const EDITABLE = ['adr', 'g', 'pe0', 'pe1', 'pe2', 'd1', 'd2', 'w0', 'w1', 'w2', 'from'];
 
 const isNum = x => typeof x === 'number' && isFinite(x);
 
@@ -52,6 +52,7 @@ function inputOk(k, x, today) {
   if (!isNum(x)) return false;
   if (k[0] === 'p') return x > 0;
   if (k[0] === 'w') return x >= 0;
+  if (k === 'd1' || k === 'd2') return x >= 0 && x < 100;
   return x > -100;
 }
 
