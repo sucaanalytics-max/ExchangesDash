@@ -180,24 +180,35 @@ function valuationDefaultsMissing(defaults) {
 // debounced, since the drawer saves on every keystroke. Until the API first answers
 // the page renders from the last shared read this browser saw (localStorage
 // VALUATION_SHARED_CACHE_KEY), then re-renders. Without the API (not configured,
-// down, or a local static server) edits are saved in this browser only
-// (VALUATION_STORAGE_KEY, never touched by the shared store), and a signed-in team
-// member can later publish them from the drawer.
+// down, not answering within VALUATION_API_TIMEOUT_MS, or a local static server) edits
+// are saved in this browser only (VALUATION_STORAGE_KEY, never touched by the shared
+// store), and a signed-in team member can later publish them from the drawer.
 //   mode: 'pending' until the API answers, then 'shared' or 'local'
-//   pending: exchanges edited here whose PUT has not yet succeeded (kept while one is
-//     in flight, so a GET answering meanwhile cannot put the old value back)
-//   edits: per exchange, a count of edits, so a PUT's success clears pending only when
-//     nothing was typed after it was sent
+//   confirmed: the overrides the server last confirmed (a GET or PUT answer); the shared
+//     cache holds these and nothing else
+//   updatedAt: per exchange, the row's updated_at those came with (null: no row), the
+//     base of the next PUT; a PUT whose base is stale answers 409 with the row as it is
+//   pending: per exchange, edits the server has not confirmed, { key: { v, n } } (set to v)
+//     or { key: { del: true, n } } (removed), n the edit's sequence number (seq). On a 409
+//     they are laid over the colleague's row and sent again; a 401 drops them.
+//   inputs: confirmed with pending laid over it: what the page shows and a PUT sends
+//   inflight: per exchange, the PUT out (one at a time per exchange)
 //   writes: bumped when a PUT is sent and when it answers; a GET that saw it change
 //     while in flight is stale and ignored
+//   notice: { text, until }, a short message for the drawer (a colleague's change merged
+//     in, or unsaved edits dropped at sign-out)
 //   status.state: 'idle' | 'saving' | 'saved' | 'error' (with status.at, status.error)
 //   version: bumped whenever the inputs in use change, so views re-render once
 const VALUATION_SHARED = {
-  mode: 'pending', inputs: {}, updatedAt: {}, signedIn: false, loading: null, version: 0,
-  pending: {}, edits: {}, writes: 0, timer: null, saving: null,
+  mode: 'pending', confirmed: {}, inputs: {}, updatedAt: {}, signedIn: false, loading: null, version: 0,
+  pending: {}, seq: 0, writes: 0, timer: null, inflight: {}, notice: null,
   status: { state: 'idle', at: null, error: null }, listeners: new Set(),
 };
 const VALUATION_SAVE_DELAY_MS = 1000;
+// No answer from the API by then: the request fails (the first GET: this-browser mode)
+const VALUATION_API_TIMEOUT_MS = 10000;
+// A PUT and its re-sends after a colleague's save (409)
+const VALUATION_PUT_ATTEMPTS = 3;
 const VALUATION_SHARED_CACHE_KEY = 'valuation_inputs_shared_v1';
 
 // x when it is a plain object, else {}
@@ -244,19 +255,68 @@ function valuationCanEdit() {
   return S.mode === 'local' || (S.mode === 'shared' && S.signedIn);
 }
 
-// Saves the overrides: shared and signed in, in use at once and sent after a pause in typing;
-// this-browser mode, in localStorage. false (nothing saved) when this viewer may not edit,
-// or the first answer is still awaited.
+const valuationSameStored = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+// One exchange's confirmed overrides with its pending edits laid over them
+function valuationOverlay(confirmed, changes) {
+  const out = { ...valuationPlainObject(confirmed) };
+  Object.entries(valuationPlainObject(changes)).forEach(([k, c]) => { if (c.del) delete out[k]; else out[k] = c.v; });
+  return out;
+}
+
+// S.inputs from S.confirmed and S.pending; true (and the version bumped) when they changed
+function valuationRecompute() {
+  const S = VALUATION_SHARED;
+  const next = {};
+  VALUATION_EXCHANGES.forEach(ex => {
+    const o = valuationOverlay(S.confirmed[ex], S.pending[ex]);
+    if (Object.keys(o).length) next[ex] = o;
+  });
+  const changed = valuationChangedExchanges(S.inputs, next).length > 0;
+  S.inputs = next;
+  if (changed) S.version++;
+  return changed;
+}
+
+// A short message for the drawer, gone after `ms`
+function valuationNotice(text, ms = 8000) {
+  const S = VALUATION_SHARED;
+  const n = { text, until: Date.now() + ms };
+  S.notice = n;
+  const t = setTimeout(() => { if (S.notice === n) { S.notice = null; valuationSharedNotify(); } }, ms);
+  if (t && t.unref) t.unref();   // Node (tests): do not hold the process open
+}
+
+// Drops the edits the server has not confirmed: the confirmed inputs show again. true when
+// there were any.
+function valuationDropPending() {
+  const S = VALUATION_SHARED;
+  const had = Object.keys(S.pending).length > 0;
+  S.pending = {};
+  valuationRecompute();
+  return had;
+}
+
+// Saves the overrides: shared and signed in, in use at once (as pending edits over the
+// confirmed ones) and sent after a pause in typing; this-browser mode, in localStorage.
+// false (nothing saved) when this viewer may not edit, or the first answer is still awaited.
 function writeValuationOverrides(o) {
   const S = VALUATION_SHARED;
   if (!valuationCanEdit()) return false;
   if (S.mode === 'local') { writeLocalValuationOverrides(o); return true; }
   const changed = valuationChangedExchanges(S.inputs, o);
-  S.inputs = o;
-  writeSharedValuationCache(o);
   if (!changed.length) return true;
-  changed.forEach(ex => { S.pending[ex] = true; S.edits[ex] = (S.edits[ex] || 0) + 1; });
-  S.version++;
+  const n = ++S.seq;
+  changed.forEach(ex => {
+    const was = valuationPlainObject(S.inputs[ex]), now = valuationPlainObject(valuationPlainObject(o)[ex]);
+    const ch = { ...valuationPlainObject(S.pending[ex]) };
+    new Set([...Object.keys(was), ...Object.keys(now)]).forEach(k => {
+      if (!(k in now)) ch[k] = { del: true, n };
+      else if (!(k in was) || !valuationSameStored(was[k], now[k])) ch[k] = { v: now[k], n };
+    });
+    S.pending[ex] = ch;
+  });
+  valuationRecompute();
   valuationScheduleSave();
   return true;
 }
@@ -306,32 +366,79 @@ function valuationUnpublished(local, shared, defaults) {
   return Object.keys(valuationUnpublishedKeys(local, shared, defaults));
 }
 
-// A shared read with this viewer's unsaved edits kept: the exchanges in `pending` keep
-// `local`'s overrides; the rest take the server's. Exchanges without overrides are left out.
-function valuationMergeShared(server, local, pending) {
-  const out = {};
-  VALUATION_EXCHANGES.forEach(ex => {
-    const src = pending && pending[ex] ? local : server;
-    const o = valuationPlainObject(valuationPlainObject(src)[ex]);
-    if (Object.keys(o).length) out[ex] = o;
-  });
-  return out;
-}
-
 function valuationSharedNotify() {
   VALUATION_SHARED.listeners.forEach(f => { try { f(); } catch (e) { console.error(e); } });
 }
 
-// Takes an API answer ({ configured: true, signed_in, inputs, updated_at }) into the store
-function valuationApplyShared(j) {
+// Whether a row stamped `incoming` is older than the one held (`held`): stamps rise strictly
+// with each save of a row, so an answer read before a later save must not replace it
+function valuationOlderStamp(incoming, held) {
+  if (!held) return false;
+  if (!incoming) return true;
+  return Date.parse(incoming) < Date.parse(held);
+}
+
+// Takes an API answer ({ configured: true, signed_in, inputs, updated_at }) as the confirmed
+// inputs (all exchanges, or only `onlyEx`; an exchange whose row is older than the one held
+// is skipped), caches them, and lays the pending edits over them
+function valuationApplyShared(j, onlyEx) {
   const S = VALUATION_SHARED;
-  const next = valuationMergeShared(valuationPlainObject(j.inputs), S.inputs, S.pending);
-  if (S.mode !== 'shared' || valuationChangedExchanges(S.inputs, next).length) S.version++;
+  const wasShared = S.mode === 'shared';
+  const inputs = valuationPlainObject(j.inputs), at = valuationPlainObject(j.updated_at);
+  const confirmed = { ...S.confirmed }, updatedAt = { ...S.updatedAt };
+  VALUATION_EXCHANGES.filter(ex => (!onlyEx || ex === onlyEx) && !(wasShared && valuationOlderStamp(at[ex], S.updatedAt[ex]))).forEach(ex => {
+    const o = valuationPlainObject(inputs[ex]);
+    if (Object.keys(o).length) confirmed[ex] = { ...o }; else delete confirmed[ex];
+    updatedAt[ex] = at[ex] || null;
+  });
   S.mode = 'shared';
-  S.inputs = next;
-  S.updatedAt = valuationPlainObject(j.updated_at);
+  S.confirmed = confirmed;
+  S.updatedAt = updatedAt;
   S.signedIn = !!j.signed_in;
-  writeSharedValuationCache(next);
+  writeSharedValuationCache(confirmed);
+  if (!valuationRecompute() && !wasShared) S.version++;
+}
+
+// A 409: someone saved `ex` since our base. Their row (`current`) becomes the confirmed one
+// and our pending edits stay laid over it, ours winning on a key both changed (it is the
+// later action); the drawer says so.
+function valuationTakeConflict(ex, current) {
+  const S = VALUATION_SHARED;
+  const before = valuationPlainObject(S.confirmed[ex]);
+  const now = valuationPlainObject(current && current.inputs);
+  const both = Object.keys(valuationPlainObject(S.pending[ex]))
+    .filter(k => (k in before) !== (k in now) || !valuationSameStored(before[k], now[k]));
+  const confirmed = { ...S.confirmed };
+  if (Object.keys(now).length) confirmed[ex] = { ...now }; else delete confirmed[ex];
+  S.confirmed = confirmed;
+  S.updatedAt = { ...S.updatedAt, [ex]: (current && current.updated_at) || null };
+  writeSharedValuationCache(confirmed);
+  valuationRecompute();
+  const labels = both.map(k => VALUATION_INPUT_LABELS[k] || k);
+  valuationNotice(`Updated with a colleague’s change${labels.length ? `; your ${labels.join(', ')} kept` : ''}.`);
+  valuationSharedNotify();   // views holding a copy of the inputs take the merged ones before the next keystroke
+}
+
+// fetch, then the answer's JSON (null without one), failing when the API has not answered
+// within VALUATION_API_TIMEOUT_MS. Resolves to { ok, status, j }.
+async function valuationFetchJson(url, opts = {}) {
+  const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+  let timer = null;
+  const late = new Promise((_, reject) => {
+    timer = setTimeout(() => { if (ctl) ctl.abort(); reject(new Error('The shared inputs did not answer in time')); }, VALUATION_API_TIMEOUT_MS);
+  });
+  const work = (async () => {
+    const r = await fetch(url, ctl ? { ...opts, signal: ctl.signal } : opts);
+    let j = null;
+    try { j = await r.json(); } catch (e) { /* no JSON body */ }
+    return { ok: r.ok, status: r.status, j };
+  })();
+  work.catch(() => {});   // after a timeout its own failure is not news
+  try {
+    return await Promise.race([late, work]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Loads the shared inputs; one request at a time (a call while one is in flight shares it).
@@ -344,10 +451,9 @@ function loadSharedValuationInputs() {
   S.loading = (async () => {
     const writes = S.writes;
     try {
-      const r = await fetch('/api/valuation-inputs', { cache: 'no-store', credentials: 'same-origin' });
-      const j = await r.json();
-      if (!r.ok || !j || j.configured !== true || !j.inputs) throw new Error(`HTTP ${r.status}`);
-      if (S.mode !== 'shared' || (S.writes === writes && !S.saving)) valuationApplyShared(j);
+      const { ok, status, j } = await valuationFetchJson('/api/valuation-inputs', { cache: 'no-store', credentials: 'same-origin' });
+      if (!ok || !j || j.configured !== true || !j.inputs) throw new Error(`HTTP ${status}`);
+      if (S.mode !== 'shared' || (S.writes === writes && !Object.keys(S.inflight).length)) valuationApplyShared(j);
     } catch (e) {
       if (S.mode === 'pending') { S.mode = 'local'; S.version++; }   // a later failure keeps the last shared read
     } finally {
@@ -367,86 +473,104 @@ function valuationScheduleSave() {
   valuationSharedNotify();
 }
 
-// One exchange's PUT. It stays pending unless the PUT succeeds with nothing typed since it
-// was sent; S.writes moves when it is sent and when it answers (loadSharedValuationInputs).
-// Resolves to null when saved, else the reason.
+// One exchange's PUT, based on the row it last read (S.updatedAt). On a 409 the colleague's
+// row is taken, our pending edits laid over it, and the PUT sent again (VALUATION_PUT_ATTEMPTS
+// in all). On success the edits it carried leave pending (edits typed while it was out stay).
+// A 401 signs out and drops the pending edits. S.writes moves when it is sent and when it
+// answers (loadSharedValuationInputs). Resolves to null when saved, else the reason.
 async function valuationPutOne(ex, opts = {}) {
   const S = VALUATION_SHARED;
-  const sent = S.edits[ex] || 0;
-  S.writes++;
-  try {
-    const r = await fetch('/api/valuation-inputs', {
-      method: 'PUT', credentials: 'same-origin', keepalive: !!opts.keepalive,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ exchange: ex, inputs: valuationPlainObject(S.inputs[ex]) }),
-    });
-    let j = null;
-    try { j = await r.json(); } catch (e) { /* no body */ }
-    if (r.status === 401) { S.signedIn = false; throw new Error('Signed out: sign in again to save'); }
-    if (!r.ok || !j || !j.inputs) throw new Error((j && j.error) || `HTTP ${r.status}`);
-    if ((S.edits[ex] || 0) === sent) delete S.pending[ex];
-    valuationApplyShared(j);
-    return null;
-  } catch (e) {
-    return (e && e.message) || 'not saved';
-  } finally {
+  for (let attempt = 1; ; attempt++) {
+    const seq = S.seq;
+    let a;
     S.writes++;
+    try {
+      a = await valuationFetchJson('/api/valuation-inputs', {
+        method: 'PUT', credentials: 'same-origin', keepalive: !!opts.keepalive,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ exchange: ex, inputs: valuationPlainObject(S.inputs[ex]), base_updated_at: S.updatedAt[ex] || null }),
+      });
+    } catch (e) {
+      return (e && e.message) || 'not saved';
+    } finally {
+      S.writes++;
+    }
+    const { ok, status, j } = a;
+    if (status === 401) {
+      S.signedIn = false;
+      if (valuationDropPending()) valuationNotice('Your sign-in ended, so the edits not yet saved were dropped. Sign in to make them again.', 20000);
+      return 'Signed out: sign in again to save';
+    }
+    if (status === 409 && j && j.current) {
+      valuationTakeConflict(ex, j.current);
+      if (attempt < VALUATION_PUT_ATTEMPTS) continue;
+      return 'A colleague kept saving the same inputs: try again';
+    }
+    if (!ok || !j || !j.inputs) return (j && j.error) || `HTTP ${status}`;
+    const ch = S.pending[ex];
+    if (ch) {
+      Object.keys(ch).forEach(k => { if (ch[k].n <= seq) delete ch[k]; });
+      if (!Object.keys(ch).length) delete S.pending[ex];
+    }
+    // While another exchange's PUT is out, this answer may predate it: take only this exchange
+    valuationApplyShared(j, Object.keys(S.inflight).some(e => e !== ex) ? ex : null);
+    valuationSharedNotify();
+    return null;
   }
 }
 
-// One save pass: a PUT for each exchange in `list`, all sent at once; S.saving while it runs.
-// Resolves to true when every one saved.
-function valuationSavePass(list, opts = {}) {
+// Starts ex's PUT; S.inflight[ex] holds it until it answers
+function valuationStartPut(ex, opts) {
   const S = VALUATION_SHARED;
-  S.status = { state: 'saving', at: S.status.at, error: null };
-  valuationSharedNotify();
-  S.saving = (async () => {
-    let error = null;
-    try {
-      const errs = await Promise.all(list.map(ex => valuationPutOne(ex, opts)));
-      error = errs.find(Boolean) || null;
-    } finally {
-      S.status = error ? { state: 'error', at: S.status.at, error } : { state: 'saved', at: new Date(), error: null };
-      S.saving = null;
-      valuationSharedNotify();
-    }
-    return !error;
-  })();
-  return S.saving;
+  const p = valuationPutOne(ex, opts).finally(() => { if (S.inflight[ex] === p) delete S.inflight[ex]; });
+  S.inflight[ex] = p;
+  return p;
 }
 
-// Saves every pending edit now (also the drawer's Retry, publishing and sign-out), waiting
-// for a pass already out and sending what was typed meanwhile. Resolves once nothing is
-// pending or saving (true), or a pass of its own fails (false: the edits stay pending).
+// Saves every pending edit now (also the debounce, the drawer's Retry, publishing, sign-out
+// and leaving the page): a PUT for each pending exchange without one out, all issued at
+// once, never a second PUT for an exchange that has one out; then waits for every PUT out
+// and sends what was typed meanwhile. Resolves once nothing is pending or saving (true), or
+// a PUT of its own fails (false: the edits stay pending).
 async function valuationFlushSaves(opts = {}) {
   const S = VALUATION_SHARED;
   clearTimeout(S.timer);
   S.timer = null;
+  let worked = false;
   for (;;) {
-    if (S.saving) { await S.saving; continue; }
-    const list = VALUATION_EXCHANGES.filter(ex => S.pending[ex]);
-    if (!list.length) return true;
-    if (!(await valuationSavePass(list, opts))) return false;
+    const mine = VALUATION_EXCHANGES.filter(ex => S.pending[ex] && !S.inflight[ex]).map(ex => valuationStartPut(ex, opts));
+    const out = Object.values(S.inflight);
+    if (!out.length) {
+      if (worked && S.status.state !== 'error') S.status = { state: 'saved', at: new Date(), error: null };
+      else if (!worked && S.status.state === 'saving') S.status = { state: 'idle', at: S.status.at, error: null };   // nothing was left to send
+      valuationSharedNotify();
+      return true;
+    }
+    worked = true;
+    if (S.status.state !== 'saving') { S.status = { state: 'saving', at: S.status.at, error: null }; valuationSharedNotify(); }
+    const error = (await Promise.all(mine)).find(Boolean);
+    await Promise.all(out);
+    if (error) {
+      S.status = { state: 'error', at: S.status.at, error };
+      valuationSharedNotify();
+      return false;
+    }
+    if (S.status.state === 'error') S.status = { state: 'saving', at: S.status.at, error: null };
   }
 }
 
-// Leaving the page: a keepalive PUT for every pending exchange, all issued at once before
-// the page goes (not chained behind a save already out, which may not finish).
+// Leaving the page (pagehide, or the page hidden: on phones often the last chance): sends
+// at once, with keepalive, each pending exchange without a PUT out. An exchange with one out
+// gets no second PUT racing it; its later edits follow when it answers, if the page is
+// still there.
 function valuationSendOnLeave() {
   const S = VALUATION_SHARED;
-  clearTimeout(S.timer);
-  S.timer = null;
-  const list = VALUATION_EXCHANGES.filter(ex => S.pending[ex]);
-  if (!list.length) return;
-  Promise.all(list.map(ex => valuationPutOne(ex, { keepalive: true }))).then(errs => {
-    const error = errs.find(Boolean);
-    S.status = error ? { state: 'error', at: S.status.at, error } : { state: 'saved', at: new Date(), error: null };
-    valuationSharedNotify();
-  });
+  if (!S.timer && !VALUATION_EXCHANGES.some(ex => S.pending[ex] && !S.inflight[ex])) return;
+  valuationFlushSaves({ keepalive: true });
 }
 
-// Registers valuationSendOnLeave for pagehide and for the page being hidden (on phones
-// often the last chance). Called once from init (99-init.js).
+// Registers valuationSendOnLeave for pagehide and for the page being hidden. Called once
+// from init (99-init.js).
 function valuationSaveOnLeave() {
   window.addEventListener('pagehide', valuationSendOnLeave);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') valuationSendOnLeave(); });
@@ -480,6 +604,27 @@ async function valuationPublishLocal(defaults) {
   return left;
 }
 
+// The one-line note for any viewer, signed in or not, whose browser holds its own edits
+// (VALUATION_STORAGE_KEY, from before the inputs were shared or while the API was down)
+// that differ from the shared inputs shown, with Discard (attribute `discardAttr`);
+// publishing them is offered to signed-in team members in the drawer. '' otherwise.
+function valuationLocalEditsNote(defaults, discardAttr) {
+  const S = VALUATION_SHARED;
+  if (S.mode !== 'shared' || !valuationUnpublished(readLocalValuationOverrides(), S.inputs, defaults).length) return '';
+  return `<span class="rx-vi-msg">This browser has older edits saved only here; the shared inputs are shown.</span>
+    <button type="button" class="rx-link" ${discardAttr}>Discard</button>`;
+}
+
+// What a drawing of the Valuation tab depends on besides the data: the inputs in use
+// (version), the mode, whether signed in (the note's Publish link, the drawer's access) and
+// this browser's own edits (the note). A view redraws when this changes.
+function valuationViewKey() {
+  const S = VALUATION_SHARED;
+  let local = '';
+  try { local = localStorage.getItem(VALUATION_STORAGE_KEY) || ''; } catch (e) { /* storage blocked */ }
+  return `${S.version}|${S.mode}|${S.signedIn ? 1 : 0}|${local}`;
+}
+
 // Clears this browser's own edits after the viewer confirms; true when cleared
 function valuationDiscardLocal() {
   if (!confirm('Discard the valuation edits saved in this browser? The shared inputs are not changed.')) return false;
@@ -492,18 +637,15 @@ function valuationDiscardLocal() {
 // Resolves to null when signed in, else the reason to show.
 async function valuationTeamSignIn(password) {
   try {
-    const r = await fetch('/api/team-login', {
+    const a = await valuationFetchJson('/api/team-login', {
       method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password }),
     });
-    if (r.status !== 204) {
-      let j = null;
-      try { j = await r.json(); } catch (e) { /* no body */ }
-      return r.status === 503 ? 'Team sign-in is not set up yet.' : (j && j.error) || `Sign-in failed (HTTP ${r.status}).`;
+    if (a.status !== 204) {
+      return a.status === 503 ? 'Team sign-in is not set up yet.' : (a.j && a.j.error) || `Sign-in failed (HTTP ${a.status}).`;
     }
-    const c = await fetch('/api/team-login', { cache: 'no-store', credentials: 'same-origin' });
-    const j = await c.json();
-    VALUATION_SHARED.signedIn = !!(j && j.signed_in);
+    const c = await valuationFetchJson('/api/team-login', { cache: 'no-store', credentials: 'same-origin' });
+    VALUATION_SHARED.signedIn = !!(c.j && c.j.signed_in);
     valuationSharedNotify();
     return VALUATION_SHARED.signedIn ? null : 'Signed in, but this browser did not keep the session (cookies blocked?).';
   } catch (e) {
@@ -512,15 +654,15 @@ async function valuationTeamSignIn(password) {
 }
 
 // Signs out after saving any edit still waiting. false (still signed in) when a save failed,
-// unless opts.force, which drops the unsaved edits and shows the shared inputs again.
+// unless opts.force, which drops the unsaved edits and shows the confirmed inputs again.
 async function valuationTeamSignOut(opts = {}) {
   const S = VALUATION_SHARED;
-  if (S.timer || S.saving || Object.keys(S.pending).length) await valuationFlushSaves();
+  if (S.timer || Object.keys(S.inflight).length || Object.keys(S.pending).length) await valuationFlushSaves();
   if (Object.keys(S.pending).length) {
     if (!opts.force) return false;
-    S.pending = {};   // the shared inputs come back with the reload below
+    valuationDropPending();
   }
-  try { await fetch('/api/team-login?logout=1', { method: 'POST', credentials: 'same-origin' }); } catch (e) { /* signed out here anyway */ }
+  try { await valuationFetchJson('/api/team-login?logout=1', { method: 'POST', credentials: 'same-origin' }); } catch (e) { /* signed out here anyway */ }
   S.signedIn = false;
   S.status = { state: 'idle', at: null, error: null };
   valuationSharedNotify();
@@ -976,8 +1118,10 @@ function valuationTabHTML(ex, defaults, c0, analysts, open) {
       foot: `Notes older than ${ANALYST_TARGET_STALE_DAYS} days are flagged. Analyst targets are their 12-month prices, not discounted.` });
   }
 
+  const localNote = valuationLocalEditsNote(defaults, 'data-val-discard');
   return `<div class="rx">
     ${valuationDefaultsNotes(defaults, c)}
+    ${localNote ? `<div class="rx-vi-access rx-vi-unpub rx-val-local">${localNote}${VALUATION_SHARED.signedIn ? ' <button type="button" class="rx-link" data-val-edit>Publish them from the inputs</button>' : ''}</div>` : ''}
     <div class="rx-val-bar">
       <span><strong>${SHARE_EXCHANGE_NAMES[ex]}</strong> · CMP ${rxRupee(cmp, 2)} <span class="rx-foot">${cmpWhen}</span></span>
       <span class="rx-foot">Targets ₹ per share for today · ADR ₹ Cr / session at today’s rates, the fits’ basis</span>
@@ -1020,27 +1164,35 @@ async function buildValuation(ex) {
     strip.innerHTML = valuationTargetTiles(list, defaults, readValuationOverrides(), ex);
   };
   // Inputs are edited in the drawer (js/18-valuation-inputs.js): each edit re-renders this
-  let shownVersion = null;
+  let shownKey = null;
   const render = () => {
-    shownVersion = VALUATION_SHARED.version;
+    shownKey = valuationViewKey();
     const open = !!el.querySelector('details.rx-val-how[open]');
     el.innerHTML = valuationTabHTML(ex, defaults, data.c, analysts, open);
     fillStrip();
   };
+  // Redraws when the inputs, sign-in or this browser's own edits changed since the last drawing
+  const refresh = () => { if (shownKey !== valuationViewKey()) render(); };
   render();
   excelSyncLoad(60 * 1000);   // the Excel sync panel's run log (js/24-excel-sync.js)
   RX_TAB_REFRESH.valuation = render;
-  el._valCtx = { ex, defaults, data, onChange: render };
+  el._valCtx = { ex, defaults, data, onChange: refresh };
   if (!el._valEditBound) {
     el._valEditBound = true;
+    // The store changed (a save, a colleague's change, sign-in or out), drawer open or not
+    VALUATION_SHARED.listeners.add(() => {
+      if (el.isConnected && el._valCtx && currentExchange === el._valCtx.ex) el._valCtx.onChange();
+    });
     el.addEventListener('click', e => {
-      if (e.target.closest && e.target.closest('[data-val-edit]') && el._valCtx) openValuationDrawer(el._valCtx);
       if (e.target.closest && e.target.closest('[data-xs-refresh]')) excelSyncRefresh();
+      if (!(e.target.closest && el._valCtx)) return;
+      if (e.target.closest('[data-val-edit]')) openValuationDrawer(el._valCtx);
+      else if (e.target.closest('[data-val-discard]') && valuationDiscardLocal()) el._valCtx.onChange();
     });
   }
   // The shared inputs, once they answer, if they differ from what was drawn
   shared.then(() => {
-    if (seq === VALUATION_BUILD_SEQ && currentExchange === ex && shownVersion !== VALUATION_SHARED.version) render();
+    if (seq === VALUATION_BUILD_SEQ && currentExchange === ex) refresh();
   });
   const rest = VALUATION_EXCHANGES.filter(e => e !== ex);
   await ensureFreshMarketData(rest.filter(e => !valuationOnShow(e)));

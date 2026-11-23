@@ -5,18 +5,27 @@
  *
  * Session: one shared team password (TEAM_PASSWORD) buys a cookie holding an
  * expiry and its HMAC-SHA256 under TEAM_SESSION_SECRET:
- *   team_session=<exp>.<base64url hmac>     exp = Unix seconds
- * Nothing else is stored, so rotating the secret signs everyone out.
+ *   team_session=<exp>.<base64url hmac of "team:<exp>:<first 16 hex of sha256(TEAM_PASSWORD)>">
+ *   exp = Unix seconds
+ * Nothing else is stored. The signed text includes a hash of the password, so
+ * changing TEAM_PASSWORD (or rotating the secret) signs everyone out.
  */
 
 const crypto = require('crypto');
 
 const COOKIE_NAME = 'team_session';
 const SESSION_MAX_AGE = 30 * 24 * 60 * 60;   // 30 days, in seconds
-const NO_STORE = 'private, no-store';
+// Cache-Control of every answer from team-login and valuation-inputs; dashboard/vercel.json
+// sets the same value for both routes (tests/test_valuation_inputs_api.py checks)
+const NO_STORE = 'no-store';
 
-function hmac(secret, exp) {
-  return crypto.createHmac('sha256', secret).update(`team:${exp}`).digest('base64url');
+// A short tag of the password, so a session signed under an earlier password is refused
+function passwordTag(password) {
+  return crypto.createHash('sha256').update(String(password)).digest('hex').slice(0, 16);
+}
+
+function hmac(secret, exp, password) {
+  return crypto.createHmac('sha256', secret).update(`team:${exp}:${passwordTag(password)}`).digest('base64url');
 }
 
 // Equal-length buffers for timingSafeEqual: compare SHA-256 digests, so neither
@@ -32,19 +41,20 @@ function passwordMatches(given, expected) {
   return safeEqual(given, expected);
 }
 
-function signSession(exp, secret) {
-  return `${exp}.${hmac(secret, exp)}`;
+function signSession(exp, secret, password) {
+  return `${exp}.${hmac(secret, exp, password)}`;
 }
 
-// True only for a well-formed, unexpired value signed with `secret`. An expiry
-// further ahead than one session (a forged or stale-format value) is refused too.
-function verifySession(value, secret, nowSec = Math.floor(Date.now() / 1000)) {
-  if (!secret || typeof value !== 'string') return false;
+// True only for a well-formed, unexpired value signed with `secret` while the team
+// password was `password`. An expiry further ahead than one session (a forged or
+// stale-format value) is refused too.
+function verifySession(value, secret, password, nowSec = Math.floor(Date.now() / 1000)) {
+  if (!secret || !password || typeof value !== 'string') return false;
   const m = /^(\d{1,12})\.([A-Za-z0-9_-]{43})$/.exec(value);
   if (!m) return false;
   const exp = Number(m[1]);
   if (!(exp > nowSec) || exp > nowSec + SESSION_MAX_AGE + 60) return false;
-  return safeEqual(m[2], hmac(secret, m[1]));
+  return safeEqual(m[2], hmac(secret, m[1], password));
 }
 
 function parseCookies(header) {
@@ -64,7 +74,7 @@ function parseCookies(header) {
 
 function isSignedIn(req) {
   const cookies = parseCookies(req.headers && req.headers.cookie);
-  return verifySession(cookies[COOKIE_NAME], process.env.TEAM_SESSION_SECRET);
+  return verifySession(cookies[COOKIE_NAME], process.env.TEAM_SESSION_SECRET, process.env.TEAM_PASSWORD);
 }
 
 function sessionCookie(value, maxAge) {

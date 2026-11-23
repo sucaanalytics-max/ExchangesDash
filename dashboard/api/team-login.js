@@ -7,11 +7,19 @@
  *   POST /api/team-login               body {"password": "…"}
  *        → 204 + Set-Cookie team_session (HttpOnly, Secure, SameSite=Strict, Path=/api, 30 days)
  *        → 401 wrong password, 429 after 5 failures from one IP in 10 minutes
+ *        A wrong password is answered after FAIL_DELAY_MS (700 ms).
  *   POST /api/team-login?logout=1      → 204 + an expired cookie
  *
  * Env: TEAM_PASSWORD, TEAM_SESSION_SECRET. Either missing → 503 (fails closed).
- * The failure count is per function instance and in memory: best effort, it
- * slows guessing but is not a lockout.
+ * Changing TEAM_PASSWORD signs every session out (_team_auth.js).
+ *
+ * TEAM_PASSWORD must be long and random (16 characters or more, e.g.
+ * `openssl rand -base64 18`): it is one shared secret, and guessing is slowed only
+ * per function instance. The failure count lives in each instance's memory, so
+ * parallel guesses spread across instances and a cold start resets it; the fixed
+ * delay caps each connection at under 1.5 guesses a second. A shared, durable
+ * limit would need a table (e.g. failures per IP in Supabase). A short configured
+ * password is not refused, which would lock the team out.
  */
 
 const {
@@ -19,6 +27,7 @@ const {
 } = require('./_team_auth');
 
 const MAX_FAILURES = 5;
+const FAIL_DELAY_MS = 700;   // before answering a wrong password
 const WINDOW_MS = 10 * 60 * 1000;
 const FAILURES = new Map();   // ip → [failure times, ms]
 
@@ -63,11 +72,14 @@ module.exports = async function handler(req, res) {
   if (!passwordMatches(readBody(req.body).password, expected)) {
     failures.push(now);
     FAILURES.set(ip, failures);
+    await new Promise(r => setTimeout(r, module.exports.FAIL_DELAY_MS));
     return res.status(401).json({ error: 'Wrong password' });
   }
 
   FAILURES.delete(ip);
   const exp = Math.floor(now / 1000) + SESSION_MAX_AGE;
-  res.setHeader('Set-Cookie', sessionCookie(signSession(exp, secret), SESSION_MAX_AGE));
+  res.setHeader('Set-Cookie', sessionCookie(signSession(exp, secret, expected), SESSION_MAX_AGE));
   return res.status(204).end();
 };
+
+module.exports.FAIL_DELAY_MS = FAIL_DELAY_MS;   // tests/test_valuation_inputs_api.py shortens it

@@ -25,6 +25,16 @@ const [dir, cfg] = [process.argv[1], JSON.parse(process.argv[2])];
 for (const k of ['TEAM_PASSWORD', 'TEAM_SESSION_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY']) delete process.env[k];
 Object.assign(process.env, cfg.env || {});
 const auth = require(dir + '/_team_auth.js');
+require(dir + '/team-login.js').FAIL_DELAY_MS = cfg.loginDelay || 0;   // 700 ms in production
+// Every Supabase fetch must carry a time limit: record the one asked for, and use a short one
+const timeouts = [], realTimeout = AbortSignal.timeout.bind(AbortSignal);
+AbortSignal.timeout = ms => {
+  timeouts.push(ms);
+  if (!cfg.hang) return realTimeout(ms);
+  const c = new AbortController();   // a timer that keeps the process alive (AbortSignal.timeout's does not)
+  setTimeout(() => c.abort(new Error('timed out')), 30);
+  return c.signal;
+};
 const db = { rows: cfg.rows || [], log: [] };
 const calls = [];
 // Like fetch's Response: json() parses the text and throws on an empty body
@@ -32,45 +42,77 @@ const reply = (status, body) => {
   const text = body === undefined ? '' : JSON.stringify(body);
   return { ok: status >= 200 && status < 300, status, text: async () => text, json: async () => JSON.parse(text) };
 };
-const minimal = (opts, status, body) => /return=minimal/.test((opts.headers || {}).Prefer || '') ? reply(status) : reply(status, body);
-global.fetch = async (url, opts = {}) => {
+const prefer = opts => (opts.headers || {}).Prefer || '';
+const answer = (opts, status, rows) => /return=representation/.test(prefer(opts)) ? reply(status, rows) : reply(status === 200 ? 204 : status);
+// PostgREST's filters col=eq.value (timestamps compared as instants); its timestamp format
+const matches = (u, r) => [...u.searchParams].every(([k, v]) => {
+  if (k === 'select' || k === 'on_conflict' || !v.startsWith('eq.')) return true;
+  const want = v.slice(3);
+  return k === 'updated_at' ? r.updated_at != null && Date.parse(r.updated_at) === Date.parse(want) : String(r[k]) === want;
+});
+const pgTime = t => new Date(t).toISOString().replace('Z', '+00:00');
+// valuation_inputs_log_change, the table's trigger (valuation_sync_schema.sql)
+const logChange = (ex, before, after, by) => {
+  const same = JSON.stringify(Object.entries(before).sort()) === JSON.stringify(Object.entries(after).sort());
+  if (!same) db.log.push({ exchange: ex, before, after, changed_by: by });
+};
+const supabase = async (url, opts = {}) => {
   const u = new URL(url), method = opts.method || 'GET';
   calls.push({ method, path: u.pathname, query: u.search, headers: opts.headers || {},
                body: opts.body ? JSON.parse(opts.body) : null });
   if (cfg.fail) return reply(500, { message: 'boom' });
+  if (cfg.hang) return new Promise((_, reject) => opts.signal.addEventListener('abort', () => reject(opts.signal.reason)));
   if (u.pathname === '/rest/v1/valuation_inputs' && method === 'GET') {
-    const eq = u.searchParams.get('exchange');
-    return reply(200, db.rows.filter(r => !eq || 'eq.' + r.exchange === eq));
+    return reply(200, db.rows.filter(r => matches(u, r)));
   }
   if (u.pathname === '/rest/v1/valuation_inputs' && method === 'POST') {
-    const body = JSON.parse(opts.body), list = Array.isArray(body) ? body : [body];
-    list.forEach(r => {
+    const body = JSON.parse(opts.body), list = Array.isArray(body) ? body : [body], done = [];
+    for (const r0 of list) {
+      const r = { ...r0, updated_at: r0.updated_at ? pgTime(r0.updated_at) : pgTime(Date.now()) };
       const i = db.rows.findIndex(x => x.exchange === r.exchange);
+      if (i >= 0 && /resolution=ignore-duplicates/.test(prefer(opts))) continue;
+      if (i >= 0 && !/resolution=merge-duplicates/.test(prefer(opts)))
+        return reply(409, { code: '23505', message: 'duplicate key value violates unique constraint' });
       const before = i >= 0 ? db.rows[i].inputs : {};
       if (i >= 0) db.rows[i] = { ...db.rows[i], ...r }; else db.rows.push(r);
-      // valuation_inputs_log_change, the table's trigger (valuation_sync_schema.sql)
-      const same = JSON.stringify(Object.entries(before).sort()) === JSON.stringify(Object.entries(r.inputs).sort());
-      if (!same) db.log.push({ exchange: r.exchange, before, after: r.inputs, changed_by: r.updated_by });
+      logChange(r.exchange, before, r.inputs, r.updated_by);
+      done.push(r);
+    }
+    return answer(opts, 201, done);
+  }
+  if (u.pathname === '/rest/v1/valuation_inputs' && method === 'PATCH') {
+    const patch = JSON.parse(opts.body), done = [];
+    db.rows.forEach((r, i) => {
+      if (!matches(u, r)) return;
+      const next = { ...r, ...patch };
+      if (patch.updated_at) next.updated_at = pgTime(patch.updated_at);
+      db.rows[i] = next;
+      logChange(r.exchange, r.inputs, next.inputs, next.updated_by);
+      done.push(next);
     });
-    return minimal(opts, 201, list);
+    return answer(opts, 200, done);
   }
   if (u.pathname === '/rest/v1/empty') return reply(Number(u.searchParams.get('status')));
   return reply(404, { message: 'no route' });
 };
+global.fetch = supabase;
 const now = Math.floor(Date.now() / 1000), secret = process.env.TEAM_SESSION_SECRET || 'x';
+const password = process.env.TEAM_PASSWORD || 'x';
 let lastSet = null;
 const cookieFor = c => {
-  if (c === 'valid') return auth.signSession(now + 3600, secret);
-  if (c === 'expired') return auth.signSession(now - 10, secret);
-  if (c === 'far') return auth.signSession(now + 40 * 86400, secret);
-  if (c === 'tampered') { const v = auth.signSession(now + 3600, secret); return v.slice(0, -1) + (v.endsWith('A') ? 'B' : 'A'); }
-  if (c === 'other-secret') return auth.signSession(now + 3600, 'not the secret');
+  if (c === 'valid') return auth.signSession(now + 3600, secret, password);
+  if (c === 'expired') return auth.signSession(now - 10, secret, password);
+  if (c === 'far') return auth.signSession(now + 40 * 86400, secret, password);
+  if (c === 'tampered') { const v = auth.signSession(now + 3600, secret, password); return v.slice(0, -1) + (v.endsWith('A') ? 'B' : 'A'); }
+  if (c === 'other-secret') return auth.signSession(now + 3600, 'not the secret', password);
+  if (c === 'old-password') return auth.signSession(now + 3600, secret, 'an earlier password');
   if (c === 'login') return /team_session=([^;]*)/.exec(lastSet)[1];
   return c;
 };
 const out = [];
 (async () => {
   for (const step of cfg.steps) {
+    if (step.env) Object.assign(process.env, step.env);
     const handler = require(dir + '/' + step.api + '.js');
     const headers = { 'x-forwarded-for': step.ip || '203.0.113.9' };
     if (step.cookie) headers.cookie = 'theme=dark; team_session=' + cookieFor(step.cookie);
@@ -80,17 +122,20 @@ const out = [];
       status(c) { this.code = c; return this; },
       json(b) { this.body = b; return this; },
       end() { return this; } };
+    const t0 = Date.now();
     await handler(req, res);
+    res.ms = Date.now() - t0;
     if (res.headers['set-cookie']) lastSet = res.headers['set-cookie'];
-    out.push({ status: res.code, body: res.body, headers: res.headers });
+    out.push({ status: res.code, body: res.body, headers: res.headers, ms: res.ms });
   }
-  process.stdout.write(JSON.stringify({ out, calls, db }));
+  process.stdout.write(JSON.stringify({ out, calls, db, timeouts }));
 })();
 """
 
 
-def run(steps, env=None, rows=None, fail=False):
-    cfg = {"env": ENV if env is None else env, "steps": steps, "rows": rows or [], "fail": fail}
+def run(steps, env=None, rows=None, fail=False, hang=False, login_delay=0):
+    cfg = {"env": ENV if env is None else env, "steps": steps, "rows": rows or [], "fail": fail, "hang": hang,
+           "loginDelay": login_delay}
     p = subprocess.run([NODE, "-e", RUNNER, str(API), json.dumps(cfg)], capture_output=True, text=True)
     if p.returncode:
         raise RuntimeError(p.stderr)
@@ -158,9 +203,46 @@ class TeamLogin(unittest.TestCase):
     def test_other_methods_are_405(self):
         self.assertEqual(run([{"api": "team-login", "method": "DELETE"}])["out"][0]["status"], 405)
 
+    def test_changing_the_password_signs_everyone_out(self):
+        new = {"TEAM_PASSWORD": "a new password"}
+        got = run([login("open sesame"),
+                   {"api": "team-login", "method": "GET", "cookie": "login"},
+                   {"api": "team-login", "method": "GET", "cookie": "login", "env": new},
+                   {**put("bse", {"pe1": 50}), "cookie": "login"},
+                   login("a new password"),
+                   {"api": "team-login", "method": "GET", "cookie": "login"}])["out"]
+        self.assertTrue(got[1]["body"]["signed_in"])
+        self.assertFalse(got[2]["body"]["signed_in"])   # the cookie was signed under the old password
+        self.assertEqual(got[3]["status"], 401)
+        self.assertTrue(got[5]["body"]["signed_in"])
+        r = run([{"api": "team-login", "method": "GET", "cookie": "old-password"}])["out"][0]
+        self.assertFalse(r["body"]["signed_in"])
 
-def put(exchange, inputs, cookie="valid"):
-    return {"api": "valuation-inputs", "method": "PUT", "body": {"exchange": exchange, "inputs": inputs}, "cookie": cookie}
+    def test_a_wrong_password_is_answered_after_a_delay(self):
+        out = run([login("guess"), login("open sesame")], login_delay=150)["out"]
+        self.assertEqual([o["status"] for o in out], [401, 204])
+        self.assertGreaterEqual(out[0]["ms"], 140)
+        self.assertLess(out[1]["ms"], 100)   # the right password is not held back
+        p = subprocess.run([NODE, "-e", f"process.stdout.write(String(require({json.dumps(str(API / 'team-login.js'))}).FAIL_DELAY_MS))"],
+                           capture_output=True, text=True, check=True)
+        self.assertEqual(p.stdout, "700")
+
+    def test_one_no_store_value(self):
+        p = subprocess.run([NODE, "-e", f"process.stdout.write(require({json.dumps(str(API / '_team_auth.js'))}).NO_STORE)"],
+                           capture_output=True, text=True, check=True)
+        value = p.stdout
+        vercel = json.loads((DASHBOARD / "vercel.json").read_text())
+        routes = {h["source"]: {x["key"]: x["value"] for x in h["headers"]} for h in vercel["headers"]}
+        for route in ("/api/team-login", "/api/valuation-inputs"):
+            self.assertEqual(routes[route]["Cache-Control"], value, route)
+        out = run([{"api": "team-login", "method": "GET"}, GET], rows=ROWS)["out"]
+        self.assertEqual([o["headers"]["cache-control"] for o in out], [value, value])
+
+
+def put(exchange, inputs, cookie="valid", base=None):
+    """A PUT of one exchange's overrides, based on the row's updated_at `base` (None: no row seen)."""
+    return {"api": "valuation-inputs", "method": "PUT", "cookie": cookie,
+            "body": {"exchange": exchange, "inputs": inputs, "base_updated_at": base}}
 
 
 GET = {"api": "valuation-inputs", "method": "GET"}
@@ -197,6 +279,14 @@ class ValuationInputsApi(unittest.TestCase):
         r = run([GET], fail=True)["out"][0]
         self.assertEqual(r["status"], 502)
 
+    def test_supabase_fetches_have_a_time_limit(self):
+        got = run([GET, put("bse", {"pe1": 50}, base="2026-11-20T10:00:00Z")], rows=json.loads(json.dumps(ROWS)))
+        self.assertEqual(len(got["timeouts"]), len(got["calls"]))
+        self.assertEqual(set(got["timeouts"]), {8000})
+        # A Supabase that never answers: 502 once the limit passes, not a hung function
+        got = run([GET, put("bse", {"pe1": 50}, base="2026-11-20T10:00:00Z")], rows=ROWS, hang=True)
+        self.assertEqual([o["status"] for o in got["out"]], [502, 502])
+
     def test_put_needs_a_session(self):
         for cookie in (None, "tampered", "expired"):
             with self.subTest(cookie=cookie):
@@ -225,25 +315,26 @@ class ValuationInputsApi(unittest.TestCase):
         self.assertEqual([c for c in got["calls"] if c["method"] != "GET"], [])
         self.assertEqual(got["db"]["rows"], ROWS)
 
-    def test_put_upserts_and_the_trigger_logs(self):
-        got = run([put("bse", {"pe1": 50, "w0": 40, "adr": None})], rows=json.loads(json.dumps(ROWS)))
+    def test_put_on_the_current_row_updates_it_and_the_trigger_logs(self):
+        got = run([put("bse", {"pe1": 50, "w0": 40, "adr": None}, base="2026-11-20T10:00:00Z")], rows=json.loads(json.dumps(ROWS)))
         r = got["out"][0]
         self.assertEqual(r["status"], 200)
         self.assertEqual(r["headers"]["cache-control"], "no-store")
         self.assertEqual(r["body"]["inputs"]["bse"], {"pe1": 50, "w0": 40, "adr": None})
         self.assertEqual(r["body"]["inputs"]["nse"], {"from": "2025-01-01"})
         self.assertIs(r["body"]["signed_in"], True)
+        self.assertGreater(r["body"]["updated_at"]["bse"], "2026-11-20T10:00:00Z")   # the next base
 
-        # One upsert, then the read for the answer: no separate before-read or log insert
+        # One conditional update, then the read for the answer: no before-read or log insert
         self.assertEqual([(c["method"], c["path"]) for c in got["calls"]],
-                         [("POST", "/rest/v1/valuation_inputs"), ("GET", "/rest/v1/valuation_inputs")])
-        upsert = got["calls"][0]
-        self.assertEqual(upsert["query"], "?on_conflict=exchange")
-        self.assertIn("resolution=merge-duplicates", upsert["headers"]["Prefer"])
-        row = upsert["body"][0] if isinstance(upsert["body"], list) else upsert["body"]
-        self.assertEqual(row["exchange"], "bse")
+                         [("PATCH", "/rest/v1/valuation_inputs"), ("GET", "/rest/v1/valuation_inputs")])
+        patch = got["calls"][0]
+        self.assertEqual(patch["query"], "?exchange=eq.bse&updated_at=eq.2026-11-20T10%3A00%3A00Z")
+        self.assertIn("return=representation", patch["headers"]["Prefer"])
+        row = patch["body"]
         self.assertEqual(row["inputs"], {"pe1": 50, "w0": 40, "adr": None})
         self.assertRegex(row["updated_by"], r"^[0-9a-f]{12}$")
+        self.assertRegex(row["updated_at"], r"^\d{4}-\d\d-\d\dT")
         self.assertEqual(got["db"]["log"], [{"exchange": "bse", "before": {"pe1": 48, "adr": None},
                                              "after": {"pe1": 50, "w0": 40, "adr": None}, "changed_by": row["updated_by"]}])
 
@@ -252,9 +343,54 @@ class ValuationInputsApi(unittest.TestCase):
         self.assertEqual(got["out"][0]["status"], 200)
         self.assertEqual(got["out"][0]["body"]["inputs"]["mcx"], {"g": 4})
         self.assertEqual(got["db"]["log"][0]["before"], {})
+        insert = got["calls"][0]
+        self.assertEqual((insert["method"], insert["query"]), ("POST", "?on_conflict=exchange"))
+        self.assertIn("resolution=ignore-duplicates", insert["headers"]["Prefer"])
+        self.assertIn("return=representation", insert["headers"]["Prefer"])
+
+    def test_a_stale_base_is_409_with_the_current_row(self):
+        """Review 4664108481: a PUT based on an older read must not replace a newer save."""
+        for base in ("2026-11-19T09:00:00Z", None):   # an older stamp; no row seen, but one exists
+            with self.subTest(base=base):
+                got = run([put("bse", {"adr": 20}, base=base)], rows=json.loads(json.dumps(ROWS)))
+                r = got["out"][0]
+                self.assertEqual(r["status"], 409)
+                self.assertEqual(r["body"]["error"], "conflict")
+                self.assertEqual(r["body"]["current"], {"inputs": {"pe1": 48, "adr": None}, "updated_at": "2026-11-20T10:00:00Z"})
+                self.assertEqual(got["db"]["rows"], ROWS)
+                self.assertEqual(got["db"]["log"], [])
+
+    def test_a_base_for_a_row_that_is_gone_is_409_with_no_row(self):
+        r = run([put("mcx", {"g": 4}, base="2026-11-20T10:00:00Z")], rows=json.loads(json.dumps(ROWS)))["out"][0]
+        self.assertEqual((r["status"], r["body"]["current"]), (409, {"inputs": {}, "updated_at": None}))
+
+    def test_each_answer_is_the_base_of_the_next_put(self):
+        """Successive saves chain on the stamps the API returns (PostgREST writes them as
+        +00:00, so the filter must be URL-encoded), and every write moves the stamp."""
+        got = run([put("bse", {"pe1": 50}, base="2026-11-20T10:00:00Z")], rows=json.loads(json.dumps(ROWS)))
+        first = got["out"][0]["body"]["updated_at"]["bse"]
+        self.assertIn("+00:00", first)
+        got2 = run([put("bse", {"pe1": 51}, base=first), put("bse", {"pe1": 52}, base=first)], rows=got["db"]["rows"])
+        self.assertEqual([o["status"] for o in got2["out"]], [200, 409])   # the second is now stale
+        self.assertEqual(got2["db"]["rows"][0]["inputs"], {"pe1": 51})
+        self.assertNotEqual(got2["out"][0]["body"]["updated_at"]["bse"], first)
+
+    def test_the_new_stamp_is_always_after_the_base(self):
+        script = (f"const {{ nextStamp }} = require({json.dumps(str(API / 'valuation-inputs.js'))});\n"
+                  "process.stdout.write(JSON.stringify([nextStamp('2026-11-20T10:00:00.500+00:00', Date.parse('2026-11-20T10:00:00.200Z')),"
+                  " nextStamp('2026-11-20T10:00:00Z', Date.parse('2026-11-21T00:00:00Z')), nextStamp(null, 0)]));")
+        p = subprocess.run([NODE, "-"], input=script, capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(p.stdout), ["2026-11-20T10:00:00.501Z", "2026-11-21T00:00:00.000Z", "1970-01-01T00:00:00.000Z"])
+
+    def test_a_bad_base_is_400(self):
+        for base in ("yesterday", 123, "x" * 50):
+            with self.subTest(base=base):
+                got = run([put("bse", {"pe1": 50}, base=base)], rows=ROWS)
+                self.assertEqual((got["out"][0]["status"], got["out"][0]["body"]["bad"]), (400, ["base_updated_at"]))
+                self.assertEqual(got["calls"], [])
 
     def test_put_accepts_discount_rates(self):
-        got = run([put("nse", {"d1": 0, "d2": 12.5})], rows=json.loads(json.dumps(ROWS)))
+        got = run([put("nse", {"d1": 0, "d2": 12.5}, base="2026-11-21T10:00:00Z")], rows=json.loads(json.dumps(ROWS)))
         self.assertEqual(got["out"][0]["status"], 200)
         self.assertEqual(got["out"][0]["body"]["inputs"]["nse"], {"d1": 0, "d2": 12.5})
 
@@ -273,7 +409,7 @@ class ValuationInputsApi(unittest.TestCase):
 
     def test_body_may_be_a_json_string(self):
         step = {"api": "valuation-inputs", "method": "PUT", "cookie": "valid",
-                "body": json.dumps({"exchange": "nse", "inputs": {}})}
+                "body": json.dumps({"exchange": "nse", "inputs": {}, "base_updated_at": "2026-11-21T10:00:00Z"})}
         got = run([step], rows=json.loads(json.dumps(ROWS)))
         self.assertEqual(got["out"][0]["status"], 200)
         self.assertEqual(got["out"][0]["body"]["inputs"]["nse"], {})
@@ -334,25 +470,73 @@ class ValidationParity(unittest.TestCase):
 # The dashboard's shared store, lifted out of js/14-valuation.js with a short
 # save delay; `body` is an async function body returning its result.
 STORE_JS = ["valuationNum", "valuationIsoDate", "valuationInputOk", "VALUATION_EXCHANGES", "VALUATION_EDITABLE",
-            "VALUATION_STORAGE_KEY", "VALUATION_SHARED_CACHE_KEY",
+            "VALUATION_INPUT_LABELS", "VALUATION_STORAGE_KEY", "VALUATION_SHARED_CACHE_KEY", "VALUATION_PUT_ATTEMPTS",
             "VALUATION_SHARED", "valuationPlainObject", "readLocalValuationOverrides", "writeLocalValuationOverrides",
             "readSharedValuationCache", "writeSharedValuationCache", "valuationCleanOverrides", "valuationSameInput",
-            "valuationUnpublishedKeys", "valuationUnpublished", "valuationPutOne", "valuationSavePass", "valuationSendOnLeave",
-            "valuationPublishLocal", "valuationDiscardLocal", "valuationTeamSignOut",
+            "valuationSameStored", "valuationOverlay", "valuationRecompute", "valuationNotice", "valuationDropPending",
+            "valuationTakeConflict", "valuationFetchJson", "valuationStartPut",
+            "valuationUnpublishedKeys", "valuationUnpublished", "valuationPutOne", "valuationSendOnLeave",
+            "valuationPublishLocal", "valuationDiscardLocal", "valuationLocalEditsNote", "valuationViewKey", "valuationTeamSignIn", "valuationTeamSignOut",
             "readValuationOverrides", "writeValuationOverrides", "valuationCanEdit", "valuationSameOverrides",
-            "valuationChangedExchanges", "valuationMergeShared", "valuationSharedNotify", "valuationApplyShared",
+            "valuationChangedExchanges", "valuationSharedNotify", "valuationOlderStamp", "valuationApplyShared",
             "loadSharedValuationInputs", "valuationScheduleSave", "valuationFlushSaves"]
 
 
-def store(body, data=None):
+def store(body, data=None, timeout_ms=10000):
     code = "\n".join(js_source(n) for n in STORE_JS)
     script = (f"const DATA = {json.dumps(data)};\nconst VALUATION_SAVE_DELAY_MS = 20;\n"
+              f"const VALUATION_API_TIMEOUT_MS = {timeout_ms};\n"
               "const mem = {};\n"
               "globalThis.localStorage = { getItem: k => (k in mem ? mem[k] : null), setItem: (k, v) => { mem[k] = String(v); }, removeItem: k => { delete mem[k]; } };\n"
               "const sleep = ms => new Promise(r => setTimeout(r, ms));\n"
               f"{code}\n"
               f"(async () => {{ {body} }})().then(r => process.stdout.write(JSON.stringify(r)));")
     p = subprocess.run([NODE, "-"], input=script, capture_output=True, text=True)
+    if p.returncode:
+        raise RuntimeError(p.stderr)
+    return json.loads(p.stdout)
+
+
+# The store against the real API handler and the in-memory Supabase of RUNNER: the
+# page's fetch('/api/…') calls the handler with a team session. `hold(method, body)`,
+# set by the body, may delay a request before it reaches the handler; `api(method,
+# name, body)` is another team member's request, straight to the handler.
+E2E = r"""
+const sessionCookie = auth.signSession(Math.floor(Date.now() / 1000) + 3600, process.env.TEAM_SESSION_SECRET, process.env.TEAM_PASSWORD);
+let hold = null;
+const api = async (method, name, body) => {
+  const handler = require(dir + '/' + name.split('?')[0] + '.js');
+  const u = new URL(name, 'https://dash.test');
+  const req = { method, headers: { cookie: 'team_session=' + sessionCookie, 'x-forwarded-for': '203.0.113.9' },
+                query: Object.fromEntries(u.searchParams), body };
+  const res = { code: 200, headers: {}, body: null, setHeader(k, v) { this.headers[k.toLowerCase()] = v; },
+                status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; }, end() { return this; } };
+  await handler(req, res);
+  return res;
+};
+globalThis.fetch = async (url, opts = {}) => {
+  if (!String(url).startsWith('/api/')) return supabase(url, opts);
+  const method = opts.method || 'GET', body = opts.body ? JSON.parse(opts.body) : undefined;
+  if (hold) await hold(method, body);
+  const res = await api(method, String(url).slice(5), body);
+  const text = res.body == null ? '' : JSON.stringify(res.body);
+  return { ok: res.code >= 200 && res.code < 300, status: res.code, json: async () => JSON.parse(text) };
+};
+const stored = ex => { const r = db.rows.find(x => x.exchange === ex); return r ? r.inputs : null; };
+"""
+
+
+def store_e2e(body, rows=None):
+    """`body` run as store() does, with the store's fetch served by the API handler."""
+    code = "\n".join(js_source(n) for n in STORE_JS)
+    prefix = RUNNER.split("const now = ")[0]
+    script = (prefix + E2E + "const VALUATION_SAVE_DELAY_MS = 20;\nconst VALUATION_API_TIMEOUT_MS = 10000;\nconst mem = {};\n"
+              "globalThis.localStorage = { getItem: k => (k in mem ? mem[k] : null), setItem: (k, v) => { mem[k] = String(v); }, removeItem: k => { delete mem[k]; } };\n"
+              "const sleep = ms => new Promise(r => setTimeout(r, ms));\n"
+              f"{code}\n"
+              f"(async () => {{ {body} }})().then(r => process.stdout.write(JSON.stringify(r)));")
+    cfg = {"env": ENV, "rows": rows or []}
+    p = subprocess.run([NODE, "-e", script, str(API), json.dumps(cfg)], capture_output=True, text=True)
     if p.returncode:
         raise RuntimeError(p.stderr)
     return json.loads(p.stdout)
@@ -406,12 +590,23 @@ class SharedStore(unittest.TestCase):
         # Signed out: read-only, the write is refused
         self.assertEqual((got["canEdit"], got["written"], got["after"]), (False, False, {"bse": {"pe1": 48}}))
 
+    def test_pending_edits_lie_over_the_confirmed_ones(self):
+        got = js_eval(["valuationPlainObject", "valuationOverlay"],
+                      "[valuationOverlay(DATA.c, DATA.p), valuationOverlay(DATA.c, {}), valuationOverlay(undefined, DATA.p)]",
+                      {"c": {"pe1": 48, "adr": 20, "g": 3}, "p": {"pe1": {"v": 52, "n": 1}, "adr": {"del": True, "n": 2}, "w0": {"v": None, "n": 2}}})
+        self.assertEqual(got, [{"pe1": 52, "g": 3, "w0": None}, {"pe1": 48, "adr": 20, "g": 3}, {"pe1": 52, "w0": None}])
+
     def test_a_fetch_keeps_edits_not_yet_saved(self):
-        got = js_eval(["VALUATION_EXCHANGES", "valuationPlainObject", "valuationMergeShared"],
-                      "valuationMergeShared(DATA.server, DATA.local, { bse: true })",
-                      {"server": {"bse": {"pe1": 48}, "mcx": {"g": 3}, "nse": {}},
-                       "local": {"bse": {"pe1": 52}, "mcx": {"g": 9}}})
-        self.assertEqual(got, {"bse": {"pe1": 52}, "mcx": {"g": 3}})
+        got = store("""
+          globalThis.fetch = async (url, opts = {}) => opts.method === 'PUT'
+            ? { ok: false, status: 500, json: async () => ({ error: 'boom' }) }
+            : { ok: true, status: 200, json: async () => ({ ...DATA, signed_in: true, inputs: { bse: { pe1: 49 }, mcx: { g: 3 }, nse: {} } }) };
+          await loadSharedValuationInputs();
+          writeValuationOverrides({ bse: { pe1: 52 }, mcx: { g: 3 } });
+          await valuationFlushSaves();                 // fails: the edit stays pending
+          await loadSharedValuationInputs();           // a colleague's mcx g 3 → still g 3; bse confirmed 49
+          return [readValuationOverrides(), VALUATION_SHARED.confirmed];""", SHARED)
+        self.assertEqual(got, [{"bse": {"pe1": 52}, "mcx": {"g": 3}}, {"bse": {"pe1": 49}, "mcx": {"g": 3}}])
 
     def test_changed_exchanges(self):
         got = js_eval(["VALUATION_EXCHANGES", "valuationPlainObject", "valuationSameOverrides", "valuationChangedExchanges"],
@@ -480,7 +675,7 @@ class SharedStore(unittest.TestCase):
             SHARED)
         self.assertEqual(got["failed"]["state"], "error")
         self.assertEqual(got["failed"]["o"], {"bse": {"pe1": 55}})
-        self.assertEqual(got["failed"]["pending"], {"bse": True})
+        self.assertEqual(list(got["failed"]["pending"]), ["bse"])
         self.assertEqual(got["failed"]["afterRefresh"], {"bse": {"pe1": 55}})
         self.assertEqual((got["puts"], got["state"], got["pending"], got["o"]), (2, "saved", {}, {"bse": {"pe1": 55}}))
 
@@ -492,9 +687,224 @@ class SharedStore(unittest.TestCase):
           await loadSharedValuationInputs();
           writeValuationOverrides({ bse: { pe1: 60 } });
           await sleep(60);
-          return { state: VALUATION_SHARED.status.state, signedIn: VALUATION_SHARED.signedIn, pending: { ...VALUATION_SHARED.pending } };""",
+          return { state: VALUATION_SHARED.status.state, signedIn: VALUATION_SHARED.signedIn, pending: { ...VALUATION_SHARED.pending },
+                   o: readValuationOverrides() };""",
             SHARED)
-        self.assertEqual((got["state"], got["signedIn"], got["pending"]), ("error", False, {"bse": True}))
+        # Signed out, and the unconfirmed edit is dropped (the drawer says so)
+        self.assertEqual((got["state"], got["signedIn"], got["pending"], got["o"]), ("error", False, {}, {"bse": {"pe1": 48}}))
+
+    def test_the_shared_cache_holds_only_confirmed_values(self):
+        """Edits live in a pending layer until the server accepts them: the shared cache
+        never holds them, and a 401 (session ended) drops them and says so."""
+        got = store("""
+          let status = 200;
+          globalThis.fetch = async (url, opts = {}) => {
+            if (opts.method === 'PUT') { await sleep(20); return status === 401
+              ? { ok: false, status: 401, json: async () => ({ error: 'Sign in to edit' }) }
+              : { ok: true, status: 200, json: async () => ({ ...DATA, signed_in: true, inputs: { ...DATA.inputs, bse: JSON.parse(opts.body).inputs } }) }; }
+            return { ok: true, status: 200, json: async () => ({ ...DATA, signed_in: true }) };
+          };
+          await loadSharedValuationInputs();
+          const out = {};
+          status = 401;
+          writeValuationOverrides({ bse: { pe1: 60 } });
+          out.shown = readValuationOverrides();
+          out.cacheBeforeAnswer = JSON.parse(mem.valuation_inputs_shared_v1);
+          await valuationFlushSaves();
+          out.afterSignOut = readValuationOverrides();
+          out.cacheAfter = JSON.parse(mem.valuation_inputs_shared_v1);
+          out.pending = { ...VALUATION_SHARED.pending };
+          out.signedIn = VALUATION_SHARED.signedIn;
+          out.notice = VALUATION_SHARED.notice && VALUATION_SHARED.notice.text;
+          return out;""", SHARED)
+        self.assertEqual(got["shown"], {"bse": {"pe1": 60}})              # shown at once
+        self.assertEqual(got["cacheBeforeAnswer"], {"bse": {"pe1": 48}})  # but not cached as shared
+        self.assertEqual(got["afterSignOut"], {"bse": {"pe1": 48}})        # dropped on the 401
+        self.assertEqual((got["cacheAfter"], got["pending"], got["signedIn"]), ({"bse": {"pe1": 48}}, {}, False))
+        self.assertRegex(got["notice"] or "", r"(?i)dropped")
+        # The next page load, before the API answers, renders the confirmed values
+        nxt = store("""
+          mem.valuation_inputs_shared_v1 = DATA;
+          return readValuationOverrides();""", json.dumps(got["cacheAfter"]))
+        self.assertEqual(nxt, {"bse": {"pe1": 48}})
+
+    def test_a_forced_sign_out_shows_the_confirmed_inputs_again(self):
+        got = store("""
+          globalThis.fetch = async (url, opts = {}) => {
+            if (opts.method === 'PUT') return { ok: false, status: 500, json: async () => ({ error: 'boom' }) };
+            if (url.startsWith('/api/team-login')) return { ok: true, status: 204, json: async () => { throw new Error('empty'); } };
+            if (VALUATION_SHARED.mode === 'shared') throw new Error('offline');   // the reload after sign-out fails
+            return { ok: true, status: 200, json: async () => ({ ...DATA, signed_in: true }) };
+          };
+          await loadSharedValuationInputs();
+          writeValuationOverrides({ bse: { pe1: 72 }, nse: { w0: 10 } });
+          const held = await valuationTeamSignOut();
+          const forced = await valuationTeamSignOut({ force: true });
+          await sleep(10);
+          return { held, forced, o: readValuationOverrides(), cache: JSON.parse(mem.valuation_inputs_shared_v1),
+                   pending: { ...VALUATION_SHARED.pending } };""", SHARED)
+        self.assertEqual((got["held"], got["forced"]), (False, True))
+        self.assertEqual(got["o"], {"bse": {"pe1": 48}})
+        self.assertEqual(got["cache"], {"bse": {"pe1": 48}})
+        self.assertEqual(got["pending"], {})
+
+    def test_concurrent_editors_both_keep_their_edits(self):
+        """Review 4664108481: A opens BSE (no row yet), B saves pe1 48, then A's ADR edit
+        is based on what A read. The server answers 409; A takes B's row, lays its own
+        edit over it and saves again: both edits are kept."""
+        got = store_e2e("""
+          await loadSharedValuationInputs();                    // A reads bse {} (10:00)
+          const seen = readValuationOverrides();
+          const b = await api('PUT', 'valuation-inputs', { exchange: 'bse', inputs: { pe1: 48 }, base_updated_at: null });   // B (10:05)
+          writeValuationOverrides({ ...seen, bse: { adr: 20 } });                 // A (10:10)
+          const ok = await valuationFlushSaves();
+          return { b: b.code, ok, stored: stored('bse'), shown: readValuationOverrides(), log: db.log.length,
+                   notice: VALUATION_SHARED.notice && VALUATION_SHARED.notice.text, pending: { ...VALUATION_SHARED.pending },
+                   cache: JSON.parse(mem.valuation_inputs_shared_v1) };""")
+        self.assertEqual((got["b"], got["ok"]), (200, True))
+        self.assertEqual(got["stored"], {"pe1": 48, "adr": 20})
+        self.assertEqual(got["shown"], {"bse": {"pe1": 48, "adr": 20}})
+        self.assertEqual(got["cache"], {"bse": {"pe1": 48, "adr": 20}})
+        self.assertEqual(got["pending"], {})
+        self.assertEqual(got["log"], 2)
+        self.assertRegex(got["notice"] or "", r"colleague")
+
+    def test_the_same_key_changed_by_both_keeps_the_latest_edit(self):
+        got = store_e2e("""
+          await loadSharedValuationInputs();
+          const b = await api('PUT', 'valuation-inputs', { exchange: 'bse', inputs: { pe1: 50, w0: 30 }, base_updated_at: VALUATION_SHARED.updatedAt.bse });
+          writeValuationOverrides({ bse: { pe1: 52 } });        // A changes the same P/E, on the older row
+          const ok = await valuationFlushSaves();
+          return { b: b.code, ok, stored: stored('bse'), notice: VALUATION_SHARED.notice && VALUATION_SHARED.notice.text };""",
+            rows=[{"exchange": "bse", "inputs": {"pe1": 48}, "updated_at": "2026-11-20T10:00:00.123456+00:00"}])
+        self.assertEqual((got["b"], got["ok"]), (200, True))
+        self.assertEqual(got["stored"], {"pe1": 52, "w0": 30})   # ours is the latest action; B's w0 kept
+        self.assertRegex(got["notice"] or "", r"colleague.*P/E")
+
+    def test_typing_during_a_conflict_resend_keeps_the_colleagues_change(self):
+        """A view that keeps a copy of the inputs (as the drawer does) and refreshes it on
+        the store's notify: after a 409 merge the copy must be refreshed before the next
+        keystroke, or the colleague's old values come back as our edits."""
+        got = store_e2e("""
+          await loadSharedValuationInputs();
+          let copy = readValuationOverrides();                       // the drawer's copy
+          VALUATION_SHARED.listeners.add(() => { copy = readValuationOverrides(); });
+          const typed = (k, v) => writeValuationOverrides({ ...copy, bse: { ...(copy.bse || {}), [k]: v } });
+          await api('PUT', 'valuation-inputs', { exchange: 'bse', inputs: { pe1: 48, w0: 30 }, base_updated_at: VALUATION_SHARED.updatedAt.bse });   // B
+          let puts = 0;
+          hold = async method => { if (method === 'PUT' && ++puts === 2) await sleep(40); };   // the re-send after the 409
+          typed('pe1', 50);
+          const flush = valuationFlushSaves();
+          await sleep(20);                                           // 409 taken, re-send out
+          typed('adr', 20);
+          await flush;
+          await valuationFlushSaves();
+          return { stored: stored('bse'), shown: readValuationOverrides() };""",
+            rows=[{"exchange": "bse", "inputs": {"pe1": 48, "w0": 10}, "updated_at": "2026-11-20T10:00:00Z"}])
+        self.assertEqual(got["stored"], {"pe1": 50, "w0": 30, "adr": 20})
+        self.assertEqual(got["shown"], {"bse": {"pe1": 50, "w0": 30, "adr": 20}})
+
+    def test_an_older_answer_does_not_replace_a_newer_row(self):
+        got = store("""
+          globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ...DATA, signed_in: true }) });
+          await loadSharedValuationInputs();
+          valuationApplyShared({ signed_in: true, inputs: { bse: { pe1: 50 } }, updated_at: { bse: '2026-11-23T09:00:02.000+00:00' } }, 'bse');
+          // an answer read before that save lands after it; nse in it is new
+          valuationApplyShared({ signed_in: true, inputs: { bse: { pe1: 49 }, nse: { w0: 5 } },
+                                 updated_at: { bse: '2026-11-23T09:00:01.000+00:00', mcx: null, nse: '2026-11-23T09:00:01.500+00:00' } });
+          return [readValuationOverrides(), VALUATION_SHARED.updatedAt, JSON.parse(mem.valuation_inputs_shared_v1)];""", SHARED)
+        self.assertEqual(got[0], {"bse": {"pe1": 50}, "nse": {"w0": 5}})
+        self.assertEqual(got[1]["bse"], "2026-11-23T09:00:02.000+00:00")
+        self.assertEqual(got[2], got[0])
+
+    def test_the_view_key_moves_with_sign_in_and_browser_edits(self):
+        got = store("""
+          globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => DATA });
+          await loadSharedValuationInputs();
+          const keys = [valuationViewKey()];
+          VALUATION_SHARED.signedIn = true;  keys.push(valuationViewKey());
+          mem.valuation_inputs_v1 = '{"bse":{"pe1":51}}';  keys.push(valuationViewKey());
+          keys.push(valuationViewKey());
+          return keys;""", SHARED)
+        self.assertEqual(len(set(got[:3])), 3)   # sign-in and this browser's edits both redraw the tab
+        self.assertEqual(got[2], got[3])
+
+    def test_a_save_after_typing_during_a_put_lands_last(self):
+        """Review 4664108506: 48 is in flight, 50 is typed and the tab is hidden. The stored
+        value must be 50, even when 48 reaches the server late."""
+        got = store_e2e("""
+          await loadSharedValuationInputs();
+          hold = async (method, body) => { if (method === 'PUT' && body.inputs.pe1 === 48) await sleep(60); };
+          writeValuationOverrides({ bse: { pe1: 48 } });
+          await sleep(30);                                       // the debounced PUT of 48 is out
+          writeValuationOverrides({ bse: { pe1: 50 } });
+          valuationSendOnLeave();                                // visibilitychange → hidden
+          await sleep(10);
+          await valuationFlushSaves();
+          return { stored: stored('bse'), shown: readValuationOverrides(), pending: { ...VALUATION_SHARED.pending } };""",
+            rows=[{"exchange": "bse", "inputs": {"pe1": 45}, "updated_at": "2026-11-20T10:00:00Z"}])
+        self.assertEqual(got["stored"], {"pe1": 50})
+        self.assertEqual(got["shown"], {"bse": {"pe1": 50}})
+        self.assertEqual(got["pending"], {})
+
+    def test_an_api_that_never_answers_falls_back_to_this_browser(self):
+        """Review 4664108529: without an answer the page leaves `pending` after the time
+        limit (shortened here), and a PUT that hangs fails and keeps its edit."""
+        got = store("""
+          mem.valuation_inputs_v1 = JSON.stringify({ mcx: { g: 7 } });
+          const aborted = [];
+          globalThis.fetch = (url, opts = {}) => new Promise((_, reject) => {
+            opts.signal.addEventListener('abort', () => { aborted.push(opts.method || 'GET'); reject(new Error('aborted')); });
+          });
+          const t0 = Date.now();
+          await loadSharedValuationInputs();
+          return { mode: VALUATION_SHARED.mode, o: readValuationOverrides(), ms: Date.now() - t0, aborted };""", timeout_ms=40)
+        self.assertEqual((got["mode"], got["o"]), ("local", {"mcx": {"g": 7}}))
+        self.assertLess(got["ms"], 1000)
+        self.assertEqual(got["aborted"], ["GET"])
+        got = store("""
+          let hang = false;
+          globalThis.fetch = (url, opts = {}) => hang
+            ? new Promise(() => {})                               // ignores the abort too
+            : Promise.resolve({ ok: true, status: 200, json: async () => ({ ...DATA, signed_in: true }) });
+          await loadSharedValuationInputs();
+          hang = true;
+          writeValuationOverrides({ bse: { pe1: 60 } });
+          const ok = await valuationFlushSaves();
+          return { ok, state: VALUATION_SHARED.status.state, error: VALUATION_SHARED.status.error, pending: Object.keys(VALUATION_SHARED.pending),
+                   inflight: Object.keys(VALUATION_SHARED.inflight), o: readValuationOverrides() };""", SHARED, timeout_ms=40)
+        self.assertEqual((got["ok"], got["state"], got["pending"], got["inflight"]), (False, "error", ["bse"], []))
+        self.assertRegex(got["error"], r"did not answer")
+        self.assertEqual(got["o"], {"bse": {"pe1": 60}})
+
+    def test_a_colleague_saving_every_time_stops_the_retries(self):
+        got = store("""
+          let puts = 0;
+          globalThis.fetch = async (url, opts = {}) => {
+            if (opts.method === 'PUT') { puts++; return { ok: false, status: 409, json: async () => ({ error: 'conflict',
+              current: { inputs: { pe1: 40 + puts }, updated_at: `2026-11-23T09:00:0${puts}Z` } }) }; }
+            return { ok: true, status: 200, json: async () => ({ ...DATA, signed_in: true }) };
+          };
+          await loadSharedValuationInputs();
+          writeValuationOverrides({ bse: { pe1: 48, adr: 20 } });
+          const ok = await valuationFlushSaves();
+          return { ok, puts, o: readValuationOverrides(), base: VALUATION_SHARED.updatedAt.bse, state: VALUATION_SHARED.status.state };""", SHARED)
+        self.assertEqual((got["ok"], got["puts"], got["state"]), (False, 3, "error"))
+        self.assertEqual(got["o"], {"bse": {"pe1": 43, "adr": 20}})   # our ADR edit stays, over the latest row
+        self.assertEqual(got["base"], "2026-11-23T09:00:03Z")
+
+    def test_two_exchanges_saving_at_once_keep_both(self):
+        got = store_e2e("""
+          await loadSharedValuationInputs();
+          hold = async (method, body) => { if (method === 'PUT') await sleep(body.exchange === 'bse' ? 40 : 5); };
+          writeValuationOverrides({ bse: { pe1: 50 }, nse: { w0: 30 } });
+          await valuationFlushSaves();
+          writeValuationOverrides({ bse: { pe1: 51 }, nse: { w0: 31 } });   // both based on the answers above
+          const ok = await valuationFlushSaves();
+          return { ok, bse: stored('bse'), nse: stored('nse'), o: readValuationOverrides(), pending: VALUATION_SHARED.pending };""",
+            rows=[{"exchange": "bse", "inputs": {"pe1": 45}, "updated_at": "2026-11-20T10:00:00Z"}])
+        self.assertEqual((got["ok"], got["bse"], got["nse"], got["pending"]), (True, {"pe1": 51}, {"w0": 31}, {}))
+        self.assertEqual(got["o"], {"bse": {"pe1": 51}, "nse": {"w0": 31}})
 
     def test_renders_from_the_shared_mirror_before_the_api_answers(self):
         got = store("""
@@ -661,11 +1071,37 @@ class SharedStore(unittest.TestCase):
           out.localAfter = mem.valuation_inputs_v1 ?? null;
           return out;""", SHARED)
         self.assertEqual(got["before"], ["mcx"])
-        self.assertEqual(got["puts"], [{"exchange": "mcx", "inputs": {"g": 9}}])
+        self.assertEqual(got["puts"], [{"exchange": "mcx", "inputs": {"g": 9}, "base_updated_at": None}])
         self.assertEqual(got["left"], [])
         self.assertEqual(got["o"], {"bse": {"pe1": 48}, "mcx": {"g": 9}})
         self.assertEqual(got["local"], {"bse": {"pe1": 48}})   # published exchanges leave this browser's store
         self.assertEqual((got["discarded"], got["localAfter"]), (True, None))
+
+    def test_any_viewer_with_older_browser_edits_gets_a_note(self):
+        """Review 4664108541: signed out too, a browser whose own edits differ from the
+        shared inputs says so, with Discard (publishing stays signed-in only)."""
+        got = store("""
+          globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => DATA });   // signed out
+          const out = {};
+          mem.valuation_inputs_v1 = JSON.stringify({ bse: { pe1: 51 } });
+          out.pending = valuationLocalEditsNote(null, 'data-x');                    // not known yet: no note
+          await loadSharedValuationInputs();
+          out.differs = valuationLocalEditsNote(null, 'data-x');
+          mem.valuation_inputs_v1 = JSON.stringify({ bse: { pe1: 48 } });
+          out.same = valuationLocalEditsNote(null, 'data-x');
+          globalThis.confirm = () => true;
+          mem.valuation_inputs_v1 = JSON.stringify({ nse: { g: 2 } });
+          out.other = valuationLocalEditsNote(null, 'data-x');
+          out.discarded = valuationDiscardLocal();
+          out.after = valuationLocalEditsNote(null, 'data-x');
+          return out;""", SHARED)
+        self.assertEqual(got["pending"], "")
+        self.assertIn("This browser has older edits saved only here; the shared inputs are shown.", got["differs"])
+        self.assertIn("data-x>Discard<", got["differs"])
+        self.assertNotIn("Publish", got["differs"])
+        self.assertEqual(got["same"], "")
+        self.assertIn("older edits", got["other"])
+        self.assertEqual((got["discarded"], got["after"]), (True, ""))
 
     def test_unpublished_compares_only_this_browsers_keys(self):
         names = ["valuationNum", "valuationIsoDate", "valuationInputOk", "VALUATION_EXCHANGES", "VALUATION_EDITABLE",
@@ -695,7 +1131,7 @@ class SharedStore(unittest.TestCase):
           const defaults = { ex: { bse: { adr: null, pe0: 40, pe1: 45 }, mcx: { g: 3, w0: 25 }, nse: {} } };
           const left = await valuationPublishLocal(defaults);
           return { left, puts, o: readValuationOverrides(), local: mem.valuation_inputs_v1 ?? null };""", SHARED)
-        self.assertEqual(got["puts"], [{"exchange": "bse", "inputs": {"adr": 20, "pe1": 51}}])
+        self.assertEqual(got["puts"], [{"exchange": "bse", "inputs": {"adr": 20, "pe1": 51}, "base_updated_at": "2026-11-20T10:00:00Z"}])
         self.assertEqual(got["left"], [])
         self.assertEqual(got["o"], {"bse": {"adr": 20, "pe1": 51}, "mcx": {"w0": 30}})
         self.assertEqual(got["local"], '{"mcx":{"g":3}}')   # published exchanges leave this browser's store
@@ -744,7 +1180,7 @@ class SharedStore(unittest.TestCase):
           writeValuationOverrides({ bse: { pe1: 61 } });
           const second = valuationFlushSaves();   // while the first pass is out
           const res = await second;
-          return { res, n, pending: { ...VALUATION_SHARED.pending }, saving: !!VALUATION_SHARED.saving, first: await first };""", SHARED)
+          return { res, n, pending: { ...VALUATION_SHARED.pending }, saving: Object.keys(VALUATION_SHARED.inflight).length > 0, first: await first };""", SHARED)
         self.assertEqual((got["res"], got["n"], got["pending"], got["saving"], got["first"]), (True, 2, {}, False, True))
 
     def test_leaving_sends_every_pending_exchange_at_once(self):

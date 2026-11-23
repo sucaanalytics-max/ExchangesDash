@@ -196,6 +196,7 @@ function openValuationDrawer(ctx) {
     title: `${name} valuation inputs`,
     body: `<p class="rx-drawer-note" data-vd-note></p>
       <div class="rx-vi-access" data-vd-access></div>
+      <div class="rx-vi-access rx-vi-unpub" data-vd-notice role="status" aria-live="polite"></div>
       <div class="rx-vi-access rx-vi-unpub" data-vd-unpub></div>
       ${body}
       <div class="rx-drawer-acts"><span data-vd-edited></span><span data-vd-out-link></span></div>`,
@@ -232,17 +233,23 @@ function openValuationDrawer(ctx) {
     }
     const st = q('[data-vd-status]');
     if (st) st.innerHTML = valuationSaveStatusHTML(S, ex);
-    // Signed in: edits this browser kept on its own (made without the API) that the shared
-    // inputs lack, offered for publishing
+    // A colleague's change merged into ours (a 409), or unsaved edits dropped at sign-out
+    const notice = S.notice && S.notice.until > Date.now() ? S.notice.text : '';
+    const nb = q('[data-vd-notice]');
+    if (nb.textContent !== notice) nb.textContent = notice;
+    // Edits this browser kept on its own (made before sharing or without the API) that the
+    // shared inputs lack: signed in, listed and offered for publishing; signed out, a note
+    // with Discard (valuationLocalEditsNote)
     const text = kind === 'in' ? valuationUnpublishedText(readLocalValuationOverrides(), S.inputs, defaults) : '';
-    const box = q('[data-vd-unpub]');
-    if (box.dataset.text !== text) {
-      box.dataset.text = text;
-      box.innerHTML = text
-        ? `<span class="rx-vi-msg">This browser has its own edits for ${escHtml(text)}.</span>
+    const html = kind === 'in'
+      ? (text ? `<span class="rx-vi-msg">This browser has its own edits for ${escHtml(text)}.</span>
           <button type="button" class="rx-btn" data-vd-publish>Publish this browser’s edits</button>
-          <button type="button" class="rx-link" data-vd-discard>Discard</button>`
-        : '';
+          <button type="button" class="rx-link" data-vd-discard>Discard</button>` : '')
+      : kind === 'out' ? valuationLocalEditsNote(defaults, 'data-vd-discard') : '';
+    const box = q('[data-vd-unpub]');
+    if (box.dataset.html !== html) {
+      box.dataset.html = html;
+      box.innerHTML = html;
     }
   }
 
@@ -303,7 +310,9 @@ function openValuationDrawer(ctx) {
       value = parseFloat(text);
     }
     if (!valuationCanEdit() || !valuationInputOk(key, value, latest())) return;
-    overrides = setValuationOverride(overrides, defaults, ex, key, value);
+    // From the inputs in use now, not this drawer's copy: a colleague's change merged since
+    // (a 409) must not come back as an edit of ours
+    overrides = setValuationOverride(readValuationOverrides(), defaults, ex, key, value);
     save();
   });
   // Leaving a field shows the value in use (an unusable entry reverts); an ADR box left
@@ -313,7 +322,7 @@ function openValuationDrawer(ctx) {
     const i = e.target.closest && e.target.closest('input[data-vd]');
     if (!i || i.type === 'date') return;
     if (i.dataset.vd === 'adr' && valuationCanEdit() && i.value.trim() === '' && !(i.validity && i.validity.badInput)) {
-      overrides = setValuationOverride(overrides, defaults, ex, 'adr', null);
+      overrides = setValuationOverride(readValuationOverrides(), defaults, ex, 'adr', null);
       save();
     }
     showInUse(i);
@@ -334,7 +343,7 @@ function openValuationDrawer(ctx) {
     if (!el.isConnected) return;
     btn.disabled = false;
     if (why) { err.textContent = why; pw.select(); return; }
-    if (Object.keys(S.pending).length) valuationFlushSaves();   // edits a lapsed session left unsaved
+    if (Object.keys(S.pending).length) valuationFlushSaves();   // edits a failed save left waiting
     const first = q('input[data-vd]');
     if (first) first.focus();
   });
@@ -372,7 +381,7 @@ function openValuationDrawer(ctx) {
   });
   el.addEventListener('click', e => {
     if (!(e.target.closest && e.target.closest('[data-vd-reset]')) || !valuationCanEdit()) return;
-    overrides = { ...overrides };
+    overrides = { ...readValuationOverrides() };
     delete overrides[ex];
     save();
     el.querySelectorAll('input[data-vd]').forEach(showInUse);

@@ -9,7 +9,7 @@ import unittest
 from helpers import DASHBOARD, NODE
 
 API = DASHBOARD / "api"
-ENV = {"TEAM_SESSION_SECRET": "s" * 32, "SUPABASE_URL": "https://example.supabase.co",
+ENV = {"TEAM_PASSWORD": "open sesame", "TEAM_SESSION_SECRET": "s" * 32, "SUPABASE_URL": "https://example.supabase.co",
        "SUPABASE_SERVICE_KEY": "service-key", "GITHUB_DISPATCH_PAT": "pat"}
 
 # One handler call per step against in-memory excel_sync_runs; GitHub answers
@@ -17,7 +17,7 @@ ENV = {"TEAM_SESSION_SECRET": "s" * 32, "SUPABASE_URL": "https://example.supabas
 # {out: [{status, body, headers}], rows, dispatches, sb: [{method, path, query}]}.
 RUNNER = r"""
 const [dir, cfg] = [process.argv[1], JSON.parse(process.argv[2])];
-for (const k of ['TEAM_SESSION_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'GITHUB_DISPATCH_PAT']) delete process.env[k];
+for (const k of ['TEAM_PASSWORD', 'TEAM_SESSION_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'GITHUB_DISPATCH_PAT']) delete process.env[k];
 Object.assign(process.env, cfg.env || {});
 const auth = require(dir + '/_team_auth.js');
 const rows = cfg.rows || [];
@@ -74,7 +74,7 @@ const now = Math.floor(Date.now() / 1000);
   for (const step of cfg.steps) {
     const handler = require(dir + '/excel-refresh.js');
     const headers = {};
-    if (step.cookie) headers.cookie = 'team_session=' + auth.signSession(now + 3600, process.env.TEAM_SESSION_SECRET || 'x');
+    if (step.cookie) headers.cookie = 'team_session=' + auth.signSession(now + 3600, process.env.TEAM_SESSION_SECRET || 'x', process.env.TEAM_PASSWORD || 'x');
     const res = { code: 200, headers: {}, body: null,
       setHeader(k, v) { this.headers[k.toLowerCase()] = v; },
       status(c) { this.code = c; return this; },
