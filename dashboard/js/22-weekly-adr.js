@@ -365,7 +365,7 @@ async function buildWeeklyAdrPanel() {
   });
   if (seq !== weeklyAdrBuildSeq) return;   // a later build took over while loading
   // Re-drawn on its own (not the whole view) when a cached file it used changes
-  registerCrossPanel('weeklyAdr', sigs, buildWeeklyAdrPanel);
+  registerCrossPanel('weeklyAdr', sigs, buildWeeklyAdrPanel, 'weeklyAdrPanel');
   const ctx = weeklyAdrContext(rowsByEx.nse);
   const byEx = {}, last = {};
   WEEKLY_ADR_EXCHANGES.forEach(ex => {
