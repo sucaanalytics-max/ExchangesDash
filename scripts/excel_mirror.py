@@ -124,10 +124,6 @@ class FileLocked(GraphError):
     """409 / 423: the file is locked (checked out, or a session conflict)."""
 
 
-class LabelMismatch(Exception):
-    pass
-
-
 _sleep = time.sleep   # tests replace it
 
 
