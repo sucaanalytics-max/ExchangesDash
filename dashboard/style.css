@@ -3592,9 +3592,10 @@ th[aria-sort="ascending"] .mtf-bk-sort::after { content: " ↑"; }
 /* Revenue Summary ₹ ADR | Contracts toggle (js/23-contracts-view.js) and the
    page in contracts (js/10-revenue-summary.js): the toggle sits after the
    segment sub-tabs (the live cards stay right); in Contracts mode Total and
-   Options add a contracts-per-₹ 1 Cr-premium column (.xl-has-ratio), which
-   widens the period table; phones scroll it inside .xl-main-row, as the
-   period table already does below ~370px, so the page never scrolls sideways. */
+   Options add a contracts-per-₹ 1 Cr-premium column (.xl-has-ratio). On
+   phones the table keeps to the screen's width with the ratio column in view
+   (no sideways scroll at 360 px and up): narrower figure columns, 13px figures
+   and headers that wrap, the period labels as wide as in ADR mode. */
 :root {
   --rev-unit-ink: #16181D;
   --rev-unit-ink-2: #3B3E46;
@@ -3674,18 +3675,24 @@ th[aria-sort="ascending"] .mtf-bk-sort::after { content: " ↑"; }
   .xl-period-table.xl-has-ratio { flex: none; width: 100%; }
 }
 @media (max-width: 640px) {
-  .xl-period-table.xl-has-ratio { min-width: 440px; }
+  /* no minimum width: the table fits the screen, ratio column included */
+  .xl-period-table.xl-has-ratio { min-width: 0; }
   .xl-has-ratio .xl-col-period,
-  .xl-exp-multi.xl-has-ratio .xl-col-period { width: 38%; }
-  .xl-has-ratio .xl-col-val,
-  .xl-exp-multi.xl-has-ratio .xl-col-val    { width: 16%; }
+  .xl-exp-multi.xl-has-ratio .xl-col-period { width: 42%; }
+  .xl-has-ratio .xl-col-val    { width: 15%; }
   .xl-has-ratio .xl-col-chg1,
-  .xl-exp-multi.xl-has-ratio .xl-col-chg1   { width: 11%; }
-  .xl-has-ratio .xl-col-chg2,
-  .xl-exp-multi.xl-has-ratio .xl-col-chg2   { width: 11%; }
-  .xl-has-ratio .xl-col-ratio  { width: 12%; }
-  .xl-has-ratio .xl-col-exp,
-  .xl-exp-multi.xl-has-ratio .xl-col-exp    { width: 12%; }
+  .xl-has-ratio .xl-col-chg2   { width: 11%; }
+  .xl-has-ratio .xl-col-ratio  { width: 13%; }
+  .xl-has-ratio .xl-col-exp    { width: 8%; }
+  /* NSE+BSE: room for the stacked N / B expiry counts */
+  .xl-exp-multi.xl-has-ratio .xl-col-val  { width: 13%; }
+  .xl-exp-multi.xl-has-ratio .xl-col-chg1,
+  .xl-exp-multi.xl-has-ratio .xl-col-chg2 { width: 10%; }
+  .xl-exp-multi.xl-has-ratio .xl-col-exp  { width: 12%; }
+  .xl-has-ratio tr.xl-col-hdr td { white-space: normal; line-height: 1.15; padding-left: 2px; padding-right: 2px; }
+  .xl-has-ratio tr:not(.xl-col-hdr) td:nth-child(n+2),
+  .xl-has-ratio .xl-chg { font-size: 13px; }
+  .xl-has-ratio tr:not(.xl-col-hdr) td:nth-child(n+2):not(:has(> .xl-chg)):not(.xl-exp) { padding-left: 2px; padding-right: 4px; }
 }
 
 /* India VIX (js/21-vix.js): the ticker after the live cards (.lvc above) and the
