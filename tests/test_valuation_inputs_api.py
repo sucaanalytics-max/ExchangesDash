@@ -25,6 +25,16 @@ const [dir, cfg] = [process.argv[1], JSON.parse(process.argv[2])];
 for (const k of ['TEAM_PASSWORD', 'TEAM_SESSION_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY']) delete process.env[k];
 Object.assign(process.env, cfg.env || {});
 const auth = require(dir + '/_team_auth.js');
+require(dir + '/team-login.js').FAIL_DELAY_MS = cfg.loginDelay || 0;   // 700 ms in production
+// Every Supabase fetch must carry a time limit: record the one asked for, and use a short one
+const timeouts = [], realTimeout = AbortSignal.timeout.bind(AbortSignal);
+AbortSignal.timeout = ms => {
+  timeouts.push(ms);
+  if (!cfg.hang) return realTimeout(ms);
+  const c = new AbortController();   // a timer that keeps the process alive (AbortSignal.timeout's does not)
+  setTimeout(() => c.abort(new Error('timed out')), 30);
+  return c.signal;
+};
 const db = { rows: cfg.rows || [], log: [] };
 const calls = [];
 // Like fetch's Response: json() parses the text and throws on an empty body
@@ -38,6 +48,7 @@ global.fetch = async (url, opts = {}) => {
   calls.push({ method, path: u.pathname, query: u.search, headers: opts.headers || {},
                body: opts.body ? JSON.parse(opts.body) : null });
   if (cfg.fail) return reply(500, { message: 'boom' });
+  if (cfg.hang) return new Promise((_, reject) => opts.signal.addEventListener('abort', () => reject(opts.signal.reason)));
   if (u.pathname === '/rest/v1/valuation_inputs' && method === 'GET') {
     const eq = u.searchParams.get('exchange');
     return reply(200, db.rows.filter(r => !eq || 'eq.' + r.exchange === eq));
@@ -58,19 +69,22 @@ global.fetch = async (url, opts = {}) => {
   return reply(404, { message: 'no route' });
 };
 const now = Math.floor(Date.now() / 1000), secret = process.env.TEAM_SESSION_SECRET || 'x';
+const password = process.env.TEAM_PASSWORD || 'x';
 let lastSet = null;
 const cookieFor = c => {
-  if (c === 'valid') return auth.signSession(now + 3600, secret);
-  if (c === 'expired') return auth.signSession(now - 10, secret);
-  if (c === 'far') return auth.signSession(now + 40 * 86400, secret);
-  if (c === 'tampered') { const v = auth.signSession(now + 3600, secret); return v.slice(0, -1) + (v.endsWith('A') ? 'B' : 'A'); }
-  if (c === 'other-secret') return auth.signSession(now + 3600, 'not the secret');
+  if (c === 'valid') return auth.signSession(now + 3600, secret, password);
+  if (c === 'expired') return auth.signSession(now - 10, secret, password);
+  if (c === 'far') return auth.signSession(now + 40 * 86400, secret, password);
+  if (c === 'tampered') { const v = auth.signSession(now + 3600, secret, password); return v.slice(0, -1) + (v.endsWith('A') ? 'B' : 'A'); }
+  if (c === 'other-secret') return auth.signSession(now + 3600, 'not the secret', password);
+  if (c === 'old-password') return auth.signSession(now + 3600, secret, 'an earlier password');
   if (c === 'login') return /team_session=([^;]*)/.exec(lastSet)[1];
   return c;
 };
 const out = [];
 (async () => {
   for (const step of cfg.steps) {
+    if (step.env) Object.assign(process.env, step.env);
     const handler = require(dir + '/' + step.api + '.js');
     const headers = { 'x-forwarded-for': step.ip || '203.0.113.9' };
     if (step.cookie) headers.cookie = 'theme=dark; team_session=' + cookieFor(step.cookie);
@@ -80,17 +94,20 @@ const out = [];
       status(c) { this.code = c; return this; },
       json(b) { this.body = b; return this; },
       end() { return this; } };
+    const t0 = Date.now();
     await handler(req, res);
+    res.ms = Date.now() - t0;
     if (res.headers['set-cookie']) lastSet = res.headers['set-cookie'];
-    out.push({ status: res.code, body: res.body, headers: res.headers });
+    out.push({ status: res.code, body: res.body, headers: res.headers, ms: res.ms });
   }
-  process.stdout.write(JSON.stringify({ out, calls, db }));
+  process.stdout.write(JSON.stringify({ out, calls, db, timeouts }));
 })();
 """
 
 
-def run(steps, env=None, rows=None, fail=False):
-    cfg = {"env": ENV if env is None else env, "steps": steps, "rows": rows or [], "fail": fail}
+def run(steps, env=None, rows=None, fail=False, hang=False, login_delay=0):
+    cfg = {"env": ENV if env is None else env, "steps": steps, "rows": rows or [], "fail": fail, "hang": hang,
+           "loginDelay": login_delay}
     p = subprocess.run([NODE, "-e", RUNNER, str(API), json.dumps(cfg)], capture_output=True, text=True)
     if p.returncode:
         raise RuntimeError(p.stderr)
@@ -158,9 +175,46 @@ class TeamLogin(unittest.TestCase):
     def test_other_methods_are_405(self):
         self.assertEqual(run([{"api": "team-login", "method": "DELETE"}])["out"][0]["status"], 405)
 
+    def test_changing_the_password_signs_everyone_out(self):
+        new = {"TEAM_PASSWORD": "a new password"}
+        got = run([login("open sesame"),
+                   {"api": "team-login", "method": "GET", "cookie": "login"},
+                   {"api": "team-login", "method": "GET", "cookie": "login", "env": new},
+                   {**put("bse", {"pe1": 50}), "cookie": "login"},
+                   login("a new password"),
+                   {"api": "team-login", "method": "GET", "cookie": "login"}])["out"]
+        self.assertTrue(got[1]["body"]["signed_in"])
+        self.assertFalse(got[2]["body"]["signed_in"])   # the cookie was signed under the old password
+        self.assertEqual(got[3]["status"], 401)
+        self.assertTrue(got[5]["body"]["signed_in"])
+        r = run([{"api": "team-login", "method": "GET", "cookie": "old-password"}])["out"][0]
+        self.assertFalse(r["body"]["signed_in"])
 
-def put(exchange, inputs, cookie="valid"):
-    return {"api": "valuation-inputs", "method": "PUT", "body": {"exchange": exchange, "inputs": inputs}, "cookie": cookie}
+    def test_a_wrong_password_is_answered_after_a_delay(self):
+        out = run([login("guess"), login("open sesame")], login_delay=150)["out"]
+        self.assertEqual([o["status"] for o in out], [401, 204])
+        self.assertGreaterEqual(out[0]["ms"], 140)
+        self.assertLess(out[1]["ms"], 100)   # the right password is not held back
+        p = subprocess.run([NODE, "-e", f"process.stdout.write(String(require({json.dumps(str(API / 'team-login.js'))}).FAIL_DELAY_MS))"],
+                           capture_output=True, text=True, check=True)
+        self.assertEqual(p.stdout, "700")
+
+    def test_one_no_store_value(self):
+        p = subprocess.run([NODE, "-e", f"process.stdout.write(require({json.dumps(str(API / '_team_auth.js'))}).NO_STORE)"],
+                           capture_output=True, text=True, check=True)
+        value = p.stdout
+        vercel = json.loads((DASHBOARD / "vercel.json").read_text())
+        routes = {h["source"]: {x["key"]: x["value"] for x in h["headers"]} for h in vercel["headers"]}
+        for route in ("/api/team-login", "/api/valuation-inputs"):
+            self.assertEqual(routes[route]["Cache-Control"], value, route)
+        out = run([{"api": "team-login", "method": "GET"}, GET], rows=ROWS)["out"]
+        self.assertEqual([o["headers"]["cache-control"] for o in out], [value, value])
+
+
+def put(exchange, inputs, cookie="valid", base=None):
+    """A PUT of one exchange's overrides, based on the row's updated_at `base` (None: no row seen)."""
+    return {"api": "valuation-inputs", "method": "PUT", "cookie": cookie,
+            "body": {"exchange": exchange, "inputs": inputs, "base_updated_at": base}}
 
 
 GET = {"api": "valuation-inputs", "method": "GET"}
@@ -196,6 +250,14 @@ class ValuationInputsApi(unittest.TestCase):
     def test_supabase_failure_is_502(self):
         r = run([GET], fail=True)["out"][0]
         self.assertEqual(r["status"], 502)
+
+    def test_supabase_fetches_have_a_time_limit(self):
+        got = run([GET, put("bse", {"pe1": 50}, base="2026-11-20T10:00:00Z")], rows=json.loads(json.dumps(ROWS)))
+        self.assertEqual(len(got["timeouts"]), len(got["calls"]))
+        self.assertEqual(set(got["timeouts"]), {8000})
+        # A Supabase that never answers: 502 once the limit passes, not a hung function
+        got = run([GET, put("bse", {"pe1": 50}, base="2026-11-20T10:00:00Z")], rows=ROWS, hang=True)
+        self.assertEqual([o["status"] for o in got["out"]], [502, 502])
 
     def test_put_needs_a_session(self):
         for cookie in (None, "tampered", "expired"):

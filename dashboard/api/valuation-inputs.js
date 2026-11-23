@@ -26,9 +26,9 @@
  */
 
 const crypto = require('crypto');
-const { isSignedIn, clientIp, readBody } = require('./_team_auth');
+const { NO_STORE, isSignedIn, clientIp, readBody } = require('./_team_auth');
 
-const NO_STORE = 'no-store';
+const SUPABASE_TIMEOUT_MS = 8000;   // a slow Supabase answers 502, not a hung function
 const EXCHANGES = ['bse', 'mcx', 'nse'];
 const EDITABLE = ['adr', 'g', 'pe0', 'pe1', 'pe2', 'd1', 'd2', 'w0', 'w1', 'w2', 'from'];
 
@@ -71,6 +71,7 @@ async function sb(path, opts = {}) {
   const key = process.env.SUPABASE_SERVICE_KEY;
   const r = await fetch(`${base}/rest/v1/${path}`, {
     ...opts,
+    signal: AbortSignal.timeout(SUPABASE_TIMEOUT_MS),
     headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', ...(opts.headers || {}) },
   });
   if (!r.ok) {
@@ -137,6 +138,7 @@ module.exports = async function handler(req, res) {
   }
 };
 
+module.exports.SUPABASE_TIMEOUT_MS = SUPABASE_TIMEOUT_MS;   // tests/test_valuation_inputs_api.py
 module.exports.sb = sb;                           // tests/test_valuation_inputs_api.py
 module.exports.validateInputs = validateInputs;   // tests/test_valuation_inputs_api.py
 module.exports.EXCHANGES = EXCHANGES;             // tests/test_valuation_inputs_api.py
