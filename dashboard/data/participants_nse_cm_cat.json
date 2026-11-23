@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-20T22:18:32Z",
+ "updated_at": "2026-11-23T00:32:22Z",
  "source": {
   "key": "nse_cm_cat",
   "name": "NSE CM - Category-wise Turnover",
@@ -787,9 +787,6 @@
   {"date": "2026-11-18", "tables": {"Category-wise turnover": {"fields": ["Buy Value in Rs.Crores", "Sell Value in Rs.Crores"], "rows": {"Bank": [396.71, 455.73], "Insurance Companies": [1758.53, 2073.83], "Mutual Funds": [8794.61, 12461.53], "AIF": [1018.53, 461.24], "PMS": [1456.01, 1198.8], "RETAIL": [38382.89, 37074.74], "OTHERS": [56534.69, 54616.09]}}, "FPI Data as reported by NSDL": {"fields": ["Buy Value in Rs.Crores", "Sell Value in Rs.Crores"], "rows": {"FPI": [18698.53, 12705.19]}}}, "fetched_at": "2026-11-20T12:32:01Z", "parser": 1, "sha256": "18f38b7107712f85ba3493902ec3081fff44cb08796ee24c5e514275c4371606"}
  ],
  "unavailable": {
-  "2026-11-16": "unreadable file: XLRDError: Unsupported format, or corrupt file: Expected BOF record; found b'\\n<!DOCTY'",
-  "2026-11-17": "unreadable file: XLRDError: Unsupported format, or corrupt file: Expected BOF record; found b'\\n<!DOCTY'",
-  "2026-11-18": "unreadable file: XLRDError: Unsupported format, or corrupt file: Expected BOF record; found b'\\n<!DOCTY'",
   "2026-11-19": "unreadable file: XLRDError: Unsupported format, or corrupt file: Expected BOF record; found b'\\n<!DOCTY'",
   "2026-11-20": "unreadable file: XLRDError: Unsupported format, or corrupt file: Expected BOF record; found b'\\n<!DOCTY'"
  },
