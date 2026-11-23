@@ -593,6 +593,17 @@ async function valuationPublishLocal(defaults) {
   return left;
 }
 
+// The one-line note for any viewer, signed in or not, whose browser holds its own edits
+// (VALUATION_STORAGE_KEY, from before the inputs were shared or while the API was down)
+// that differ from the shared inputs shown, with Discard (attribute `discardAttr`);
+// publishing them is offered to signed-in team members in the drawer. '' otherwise.
+function valuationLocalEditsNote(defaults, discardAttr) {
+  const S = VALUATION_SHARED;
+  if (S.mode !== 'shared' || !valuationUnpublished(readLocalValuationOverrides(), S.inputs, defaults).length) return '';
+  return `<span class="rx-vi-msg">This browser has older edits saved only here; the shared inputs are shown.</span>
+    <button type="button" class="rx-link" ${discardAttr}>Discard</button>`;
+}
+
 // Clears this browser's own edits after the viewer confirms; true when cleared
 function valuationDiscardLocal() {
   if (!confirm('Discard the valuation edits saved in this browser? The shared inputs are not changed.')) return false;
@@ -1086,8 +1097,10 @@ function valuationTabHTML(ex, defaults, c0, analysts, open) {
       foot: `Notes older than ${ANALYST_TARGET_STALE_DAYS} days are flagged. Analyst targets are their 12-month prices, not discounted.` });
   }
 
+  const localNote = valuationLocalEditsNote(defaults, 'data-val-discard');
   return `<div class="rx">
     ${valuationDefaultsNotes(defaults, c)}
+    ${localNote ? `<div class="rx-vi-access rx-vi-unpub rx-val-local">${localNote}${VALUATION_SHARED.signedIn ? ' <button type="button" class="rx-link" data-val-edit>Publish them from the inputs</button>' : ''}</div>` : ''}
     <div class="rx-val-bar">
       <span><strong>${SHARE_EXCHANGE_NAMES[ex]}</strong> · CMP ${rxRupee(cmp, 2)} <span class="rx-foot">${cmpWhen}</span></span>
       <span class="rx-foot">Targets ₹ per share for today · ADR ₹ Cr / session at today’s rates, the fits’ basis</span>
@@ -1142,7 +1155,9 @@ async function buildValuation(ex) {
   if (!el._valEditBound) {
     el._valEditBound = true;
     el.addEventListener('click', e => {
-      if (e.target.closest && e.target.closest('[data-val-edit]') && el._valCtx) openValuationDrawer(el._valCtx);
+      if (!(e.target.closest && el._valCtx)) return;
+      if (e.target.closest('[data-val-edit]')) openValuationDrawer(el._valCtx);
+      else if (e.target.closest('[data-val-discard]') && valuationDiscardLocal()) el._valCtx.onChange();
     });
   }
   // The shared inputs, once they answer, if they differ from what was drawn

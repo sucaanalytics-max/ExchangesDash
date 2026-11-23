@@ -237,17 +237,19 @@ function openValuationDrawer(ctx) {
     const notice = S.notice && S.notice.until > Date.now() ? S.notice.text : '';
     const nb = q('[data-vd-notice]');
     if (nb.textContent !== notice) nb.textContent = notice;
-    // Signed in: edits this browser kept on its own (made without the API) that the shared
-    // inputs lack, offered for publishing
+    // Edits this browser kept on its own (made before sharing or without the API) that the
+    // shared inputs lack: signed in, listed and offered for publishing; signed out, a note
+    // with Discard (valuationLocalEditsNote)
     const text = kind === 'in' ? valuationUnpublishedText(readLocalValuationOverrides(), S.inputs, defaults) : '';
-    const box = q('[data-vd-unpub]');
-    if (box.dataset.text !== text) {
-      box.dataset.text = text;
-      box.innerHTML = text
-        ? `<span class="rx-vi-msg">This browser has its own edits for ${escHtml(text)}.</span>
+    const html = kind === 'in'
+      ? (text ? `<span class="rx-vi-msg">This browser has its own edits for ${escHtml(text)}.</span>
           <button type="button" class="rx-btn" data-vd-publish>Publish this browser’s edits</button>
-          <button type="button" class="rx-link" data-vd-discard>Discard</button>`
-        : '';
+          <button type="button" class="rx-link" data-vd-discard>Discard</button>` : '')
+      : kind === 'out' ? valuationLocalEditsNote(defaults, 'data-vd-discard') : '';
+    const box = q('[data-vd-unpub]');
+    if (box.dataset.html !== html) {
+      box.dataset.html = html;
+      box.innerHTML = html;
     }
   }
 

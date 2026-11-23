@@ -3848,6 +3848,7 @@ body.rx-drawer-on { overflow: hidden; }
 }
 .rx-vi-access:empty { display: none; }
 .rx-vi-unpub { border-left-color: #D9A54A; }
+.rx-val-local { margin: 0 0 12px; }
 .rx-vi-status { color: var(--rx-muted); font-variant-numeric: tabular-nums; }
 .rx-vi-login { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; width: 100%; }
 .rx-vi-login[hidden], .rx-vi-access [hidden] { display: none; }

@@ -476,7 +476,7 @@ STORE_JS = ["valuationNum", "valuationIsoDate", "valuationInputOk", "VALUATION_E
             "valuationSameStored", "valuationOverlay", "valuationRecompute", "valuationNotice", "valuationDropPending",
             "valuationTakeConflict", "valuationFetchJson", "valuationStartPut",
             "valuationUnpublishedKeys", "valuationUnpublished", "valuationPutOne", "valuationSendOnLeave",
-            "valuationPublishLocal", "valuationDiscardLocal", "valuationTeamSignIn", "valuationTeamSignOut",
+            "valuationPublishLocal", "valuationDiscardLocal", "valuationLocalEditsNote", "valuationTeamSignIn", "valuationTeamSignOut",
             "readValuationOverrides", "writeValuationOverrides", "valuationCanEdit", "valuationSameOverrides",
             "valuationChangedExchanges", "valuationSharedNotify", "valuationApplyShared",
             "loadSharedValuationInputs", "valuationScheduleSave", "valuationFlushSaves"]
@@ -1028,6 +1028,32 @@ class SharedStore(unittest.TestCase):
         self.assertEqual(got["o"], {"bse": {"pe1": 48}, "mcx": {"g": 9}})
         self.assertEqual(got["local"], {"bse": {"pe1": 48}})   # published exchanges leave this browser's store
         self.assertEqual((got["discarded"], got["localAfter"]), (True, None))
+
+    def test_any_viewer_with_older_browser_edits_gets_a_note(self):
+        """Review 4664108541: signed out too, a browser whose own edits differ from the
+        shared inputs says so, with Discard (publishing stays signed-in only)."""
+        got = store("""
+          globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => DATA });   // signed out
+          const out = {};
+          mem.valuation_inputs_v1 = JSON.stringify({ bse: { pe1: 51 } });
+          out.pending = valuationLocalEditsNote(null, 'data-x');                    // not known yet: no note
+          await loadSharedValuationInputs();
+          out.differs = valuationLocalEditsNote(null, 'data-x');
+          mem.valuation_inputs_v1 = JSON.stringify({ bse: { pe1: 48 } });
+          out.same = valuationLocalEditsNote(null, 'data-x');
+          globalThis.confirm = () => true;
+          mem.valuation_inputs_v1 = JSON.stringify({ nse: { g: 2 } });
+          out.other = valuationLocalEditsNote(null, 'data-x');
+          out.discarded = valuationDiscardLocal();
+          out.after = valuationLocalEditsNote(null, 'data-x');
+          return out;""", SHARED)
+        self.assertEqual(got["pending"], "")
+        self.assertIn("This browser has older edits saved only here; the shared inputs are shown.", got["differs"])
+        self.assertIn("data-x>Discard<", got["differs"])
+        self.assertNotIn("Publish", got["differs"])
+        self.assertEqual(got["same"], "")
+        self.assertIn("older edits", got["other"])
+        self.assertEqual((got["discarded"], got["after"]), (True, ""))
 
     def test_unpublished_compares_only_this_browsers_keys(self):
         names = ["valuationNum", "valuationIsoDate", "valuationInputOk", "VALUATION_EXCHANGES", "VALUATION_EDITABLE",
