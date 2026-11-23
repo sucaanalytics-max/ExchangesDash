@@ -112,8 +112,11 @@ function monthEndExpiryWeekdayLabel(exchange, dailyAll) {
 // day per EXPIRY_RULES (last Tuesday for NSE since Sep 2025, last Thursday
 // before; see the table for BSE); if that exact date isn't an actual trading
 // day (holiday), walk back one calendar day at a time until landing on one that is.
+// Rows that leave some sessions out carry every session's date as tradingDates
+// (the contracts view, 23-contracts-view.js, drops days without contract counts),
+// so a session without figures is never taken for a holiday; likewise below.
 function computeMonthExpiryDates(dailyAll, exchange) {
-  const tradingDates = new Set(dailyAll.map(r => r.date));
+  const tradingDates = dailyAll.tradingDates || new Set(dailyAll.map(r => r.date));
   const monthsSet = new Set(dailyAll.map(r => r.date.slice(0, 7)));
   const lastDataDate = dailyAll.reduce((mx, r) => (r.date > mx ? r.date : mx), '');
   const pad2 = n => String(n).padStart(2, '0');
@@ -153,7 +156,7 @@ function computeMonthExpiryDates(dailyAll, exchange) {
 // that's a holiday — bounded to not walk back past that week's own Monday (a
 // holiday-shift never borrows from last week).
 function computeWeekExpiryDates(dailyAll, exchange) {
-  const tradingDates = new Set(dailyAll.map(r => r.date));
+  const tradingDates = dailyAll.tradingDates || new Set(dailyAll.map(r => r.date));
   const pad2 = n => String(n).padStart(2, '0');
   const toStr = d => `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
   const parseUTC = s => new Date(s + 'T00:00:00Z');
@@ -231,7 +234,7 @@ function preExpiryDateSet(dailyAll, exchange) {
   const out = new Set();
   byEx[exchange] = out;
   if (!EXPIRY_RULES.some(r => r.exchange === exchange)) return out;
-  const trading = new Set(dailyAll.map(r => r.date));
+  const trading = dailyAll.tradingDates || new Set(dailyAll.map(r => r.date));
   const lastDataDate = dailyAll.reduce((mx, r) => (r.date > mx ? r.date : mx), '');
   const expiryByWeek = new Map(computeWeekExpiryDates(dailyAll, exchange).map(e => [e.weekStart, e.expiryDate]));
   const day = (iso, n) => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
@@ -519,7 +522,7 @@ function revenueSources() {
 }
 
 // The exchanges behind segment segKey's figures. In the NSE+BSE contracts view
-// Futures are NSE's alone (fut_note: BSE has no futures contracts), so its
+// Futures are NSE's alone (fut_note: BSE's one F&O contract count is all under Options), so its
 // expiry counts and "Last 5 Days" breakdown leave BSE out; otherwise every source.
 function segSources(segKey) {
   const srcs = revenueSources();
@@ -1054,7 +1057,7 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
   const unitText = u.key === 'adr' ? `${u.unit} · daily avg · ${feeUnitLabel()}`
     : `${u.unit} · daily avg${showRatio ? ' · Ctr/₹Cr = contracts per ₹ 1 Cr of option premium' : ''}`;
   const futNote = u.key !== 'adr' && segKey === 'futures' && rsView()?.fut_note
-    ? ' <span class="rs-unit-note">NSE only: BSE has no futures contracts</span>' : '';
+    ? ' <span class="rs-unit-note">NSE only: BSE publishes one F&amp;O contract count, all under Options</span>' : '';
 
   return `
     <div class="xl-segment">
@@ -1191,10 +1194,10 @@ function buildRevenueSummary() {
   ].forEach(({ key, data, label }) => {
     const el = document.getElementById('subtab-rev-' + key);
     if (!el) return;
-    // BSE has no futures contracts: "—" rather than an empty tab (Cash is hidden in Contracts)
+    // BSE's one F&O contract count is all under Options: "—" rather than an empty tab (Cash is hidden in Contracts)
     if (!data && u.key !== 'adr' && key === 'futures') {
       el.innerHTML = `<div class="xl-segment"><div class="xl-seg-header">${label} <span class="xl-seg-unit">${u.unit} · daily avg</span></div>
-        <p class="rs-unit-empty">— ${currentExchange.toUpperCase()} has no futures contracts: all its F&amp;O contracts are options.</p></div>`;
+        <p class="rs-unit-empty">— ${currentExchange.toUpperCase()} publishes one F&amp;O contract count, futures and options together, so all of it is under Options.</p></div>`;
       return;
     }
     if (!data) { el.innerHTML = ''; return; }

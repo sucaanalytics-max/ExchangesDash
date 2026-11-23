@@ -211,6 +211,17 @@ class DailyRows(unittest.TestCase):
         got = run("contractsDailyRows(DATA, 'bse').map(r => r.date)", rows)
         self.assertEqual(got, ["2023-04-19", "2023-05-15"])
 
+    def test_expiries_placed_on_every_trading_date(self):
+        # BSE's Friday expiry of 28 Apr 2023 has no contract count: its row is dropped,
+        # but the month-end and weekly expiries stay on it rather than moving to Thursday
+        rows = [bse_row(d, 1e6, 1.0) for d in ("2023-04-24", "2023-04-25", "2023-04-26", "2023-04-27")]
+        rows += [bse_row("2023-04-28", 0, 0), bse_row("2023-05-09", 1e6, 1.0)]
+        names = CV_JS + ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry",
+                         "computeMonthExpiryDates", "computeWeekExpiryDates", "EXPIRY_DATES_CACHE", "expiryDateSet"]
+        got = js_eval(names, "(c => [c.map(r => r.date), computeMonthExpiryDates(c, 'bse').map(e => e.expiryDate),"
+                             " [...expiryDateSet(c, 'bse')]])(contractsDailyRows(DATA, 'bse'))", rows)
+        self.assertEqual(got, [["2023-04-24", "2023-04-25", "2023-04-26", "2023-04-27", "2023-05-09"], ["2023-04-28"], ["2023-04-28"]])
+
     def test_nse_rows_without_segment_contracts_dropped(self):
         rows = [nse_row("2026-07-01", 3e7, 1e7, 2e6, 3e6), {**nse_row("2026-07-02", 3e7, 1e7, 2e6, 3e6), "so_contracts": None},
                 {k: v for k, v in nse_row("2026-07-03", 3e7, 1e7, 2e6, 3e6).items() if k != "if_contracts"},

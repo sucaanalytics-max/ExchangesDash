@@ -3571,6 +3571,8 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
   .xl-has-ratio .xl-col-ratio  { width: 12%; }
   .xl-has-ratio .xl-col-exp,
   .xl-exp-multi.xl-has-ratio .xl-col-exp    { width: 12%; }
+}
+
 /* India VIX (js/21-vix.js): the ticker after the live cards (.lvc above) and the
    VIX panel below the Revenue Summary sub-tabs. Dark values for any theme but
    data-theme="light", under the OS setting and an explicit dark theme. */

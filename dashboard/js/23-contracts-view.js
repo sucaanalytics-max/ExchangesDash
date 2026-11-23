@@ -16,10 +16,12 @@
 //
 // Fields, all in crore of contracts:
 //   NSE: options = io + so contracts, futures = if + sf, total = both;
-//   BSE: options = total_contracts (all options), futures = null, total = options.
+//   BSE: options = total_contracts (BSE publishes one F&O contract count, its
+//        few futures contracts included, so all of it counts as options),
+//        futures = null, total = options.
 // Rows without the exchange's contract figures (BSE before 2023-04-19) are
 // left out, not counted as 0. Contracts are volumes, not fees: no fee-basis
-// label travels with them, and they are the same under either Fees setting.
+// label travels with them.
 // Contracts per ₹ 1 Cr of option premium (contractsRatio) is Σ contracts ÷
 // Σ premium over a period's days, the Contracts to Premium tab's method.
 // ========================
@@ -94,6 +96,10 @@ function contractsDailyRows(rows, exchange) {
       opt_premium: premium,
     });
   });
+  // Every session's date (with or without contract counts), for placing expiries
+  // (computeWeekExpiryDates, 10-revenue-summary.js): BSE's Friday expiries of 21 and
+  // 28 Apr 2023 have no counts, and are expiries all the same, not holidays
+  Object.defineProperty(out, 'tradingDates', { value: new Set((rows || []).map(r => r.date)) });
   return out;
 }
 
@@ -313,7 +319,7 @@ function contractsRatio(rows, filter) {
 // combineEnrichedData in 01-data.js): period rows sum each exchange's own
 // daily average (days = 1), FY / weekday × quarter / 125-day figures come from
 // `components`, and an exchange without a period or segment adds nothing.
-// Futures are NSE's alone (BSE has none), flagged by fut_note.
+// Futures are NSE's alone (BSE's one contract count is all under Options), flagged by fut_note.
 function contractsCombined(viewNse, viewBse) {
   const views = [viewNse, viewBse].filter(Boolean);
   const data = combineRawData(views.map(v => ({ exchange: v.exchange, raw: v.data })));
