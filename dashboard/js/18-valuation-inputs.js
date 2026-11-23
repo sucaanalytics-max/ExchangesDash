@@ -134,6 +134,21 @@ function valuationClock(t) {
   return new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
 }
 
+// This browser's own edits the shared inputs lack, as the drawer lists them:
+// "BSE (P/E base 51 vs shared 48), NSE (…)"; '' when there are none
+function valuationUnpublishedText(local, shared, defaults) {
+  const diff = valuationUnpublishedKeys(local, shared, defaults);
+  const val = x => x === null ? 'blank' : typeof x === 'number' ? String(Math.round(x * 100) / 100) : String(x);
+  return Object.entries(diff).map(([ex, keys]) => {
+    const sh = valuationPlainObject(valuationPlainObject(shared)[ex]), d = defaults && defaults.ex && defaults.ex[ex];
+    const parts = keys.map(k => {
+      const cur = k in sh ? sh[k] : d ? d[k] : undefined;
+      return `${VALUATION_INPUT_LABELS[k]} ${val(local[ex][k])} vs ${cur === undefined ? 'the default' : `shared ${val(cur)}`}`;
+    });
+    return `${SHARE_EXCHANGE_NAMES[ex]} (${parts.slice(0, 3).join('; ')}${parts.length > 3 ? '; …' : ''})`;
+  }).join(', ');
+}
+
 // The drawer's access line: who may edit and, signed in, the save status (VALUATION_SHARED)
 // kind: 'pending' | 'local' | 'out' (shared, signed out) | 'in' (shared, signed in)
 function valuationAccessKind(S) {
@@ -221,12 +236,12 @@ function openValuationDrawer(ctx) {
     if (st) st.innerHTML = valuationSaveStatusHTML(S, ex);
     // Signed in: edits this browser kept on its own (made without the API) that the shared
     // inputs lack, offered for publishing
-    const unpub = kind === 'in' ? valuationUnpublished(readLocalValuationOverrides(), S.inputs) : [];
-    const box = q('[data-vd-unpub]'), names = unpub.map(e => SHARE_EXCHANGE_NAMES[e]).join(', ');
-    if (box.dataset.names !== names) {
-      box.dataset.names = names;
-      box.innerHTML = unpub.length
-        ? `<span class="rx-vi-msg">This browser has its own edits for ${escHtml(names)} that differ from the shared inputs.</span>
+    const text = kind === 'in' ? valuationUnpublishedText(readLocalValuationOverrides(), S.inputs, defaults) : '';
+    const box = q('[data-vd-unpub]');
+    if (box.dataset.text !== text) {
+      box.dataset.text = text;
+      box.innerHTML = text
+        ? `<span class="rx-vi-msg">This browser has its own edits for ${escHtml(text)}.</span>
           <button type="button" class="rx-btn" data-vd-publish>Publish this browser’s edits</button>
           <button type="button" class="rx-link" data-vd-discard>Discard</button>`
         : '';
@@ -351,7 +366,7 @@ function openValuationDrawer(ctx) {
     if (t.closest('[data-vd-publish]')) {
       const b = t.closest('[data-vd-publish]');
       b.disabled = true;
-      valuationPublishLocal().finally(() => { if (b.isConnected) b.disabled = false; });
+      valuationPublishLocal(defaults).finally(() => { if (b.isConnected) b.disabled = false; });
       return;
     }
     if (t.closest('[data-vd-discard]')) { valuationDiscardLocal(); return; }

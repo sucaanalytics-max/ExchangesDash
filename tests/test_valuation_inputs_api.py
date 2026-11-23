@@ -328,7 +328,8 @@ class ValidationParity(unittest.TestCase):
 STORE_JS = ["valuationNum", "valuationIsoDate", "valuationInputOk", "VALUATION_EXCHANGES", "VALUATION_EDITABLE",
             "VALUATION_STORAGE_KEY", "VALUATION_SHARED_CACHE_KEY",
             "VALUATION_SHARED", "valuationPlainObject", "readLocalValuationOverrides", "writeLocalValuationOverrides",
-            "readSharedValuationCache", "writeSharedValuationCache", "valuationCleanOverrides", "valuationUnpublished",
+            "readSharedValuationCache", "writeSharedValuationCache", "valuationCleanOverrides", "valuationSameInput",
+            "valuationUnpublishedKeys", "valuationUnpublished", "valuationPutOne", "valuationSavePass", "valuationSendOnLeave",
             "valuationPublishLocal", "valuationDiscardLocal", "valuationTeamSignOut",
             "readValuationOverrides", "writeValuationOverrides", "valuationCanEdit", "valuationSameOverrides",
             "valuationChangedExchanges", "valuationMergeShared", "valuationSharedNotify", "valuationApplyShared",
@@ -621,7 +622,8 @@ class SharedStore(unittest.TestCase):
 
     def test_unpublished_browser_edits(self):
         got = js_eval(["valuationNum", "valuationIsoDate", "valuationInputOk", "VALUATION_EXCHANGES", "VALUATION_EDITABLE",
-                       "valuationPlainObject", "valuationSameOverrides", "valuationCleanOverrides", "valuationUnpublished"],
+                       "valuationPlainObject", "valuationSameOverrides", "valuationCleanOverrides", "valuationSameInput",
+                       "valuationUnpublishedKeys", "valuationUnpublished"],
                       "[valuationUnpublished(DATA.local, DATA.shared), valuationCleanOverrides(DATA.local.mcx)]",
                       {"local": {"bse": {"pe1": 48}, "mcx": {"g": 9, "days": 300, "pe0": -1}, "nse": {}},
                        "shared": {"bse": {"pe1": 48}, "nse": {"w0": 40}}})
@@ -656,6 +658,113 @@ class SharedStore(unittest.TestCase):
         self.assertEqual(got["o"], {"bse": {"pe1": 48}, "mcx": {"g": 9}})
         self.assertEqual(got["local"], {"bse": {"pe1": 48}})   # published exchanges leave this browser's store
         self.assertEqual((got["discarded"], got["localAfter"]), (True, None))
+
+    def test_unpublished_compares_only_this_browsers_keys(self):
+        names = ["valuationNum", "valuationIsoDate", "valuationInputOk", "VALUATION_EXCHANGES", "VALUATION_EDITABLE",
+                 "valuationPlainObject", "valuationCleanOverrides", "valuationSameInput", "valuationUnpublishedKeys"]
+        got = js_eval(names, "valuationUnpublishedKeys(DATA.local, DATA.shared, DATA.defaults)", {
+            "local": {"bse": {"pe1": 51}, "mcx": {"g": 3}, "nse": {"adr": 70}},
+            "shared": {"bse": {"adr": 20, "pe1": 48}, "nse": {"adr": 70, "w0": 40}},
+            "defaults": {"ex": {"bse": {"pe1": 45, "adr": None}, "mcx": {"g": 3}, "nse": {"adr": None}}}})
+        # mcx: equal to the default the shared inputs leave in place; nse: the one local key matches
+        self.assertEqual(got, {"bse": ["pe1"]})
+
+    def test_publish_merges_onto_the_shared_exchange(self):
+        got = store("""
+          mem.valuation_inputs_v1 = JSON.stringify({ bse: { pe1: 51, pe0: 40 }, mcx: { g: 3 } });
+          const puts = [];
+          let server = { bse: { adr: 20 }, mcx: { w0: 30 }, nse: {} };
+          globalThis.fetch = async (url, opts = {}) => {
+            if (opts.method === 'PUT') {
+              const b = JSON.parse(opts.body);
+              puts.push(b);
+              server = { ...server, [b.exchange]: b.inputs };
+            }
+            return { ok: true, status: 200, json: async () => ({ ...DATA, signed_in: true, inputs: server }) };
+          };
+          await loadSharedValuationInputs();
+          // pe0 40 is the default: it adds nothing to the shared exchange; mcx g 3 is the default too
+          const defaults = { ex: { bse: { adr: null, pe0: 40, pe1: 45 }, mcx: { g: 3, w0: 25 }, nse: {} } };
+          const left = await valuationPublishLocal(defaults);
+          return { left, puts, o: readValuationOverrides(), local: mem.valuation_inputs_v1 ?? null };""", SHARED)
+        self.assertEqual(got["puts"], [{"exchange": "bse", "inputs": {"adr": 20, "pe1": 51}}])
+        self.assertEqual(got["left"], [])
+        self.assertEqual(got["o"], {"bse": {"adr": 20, "pe1": 51}, "mcx": {"w0": 30}})
+        self.assertEqual(got["local"], '{"mcx":{"g":3}}')   # published exchanges leave this browser's store
+
+    def test_sign_out_while_a_put_is_in_flight(self):
+        """Signing out within a second of typing, while the first PUT is still out:
+        the second edit is sent after it, then the sign-out, with no false failure."""
+        got = store("""
+          const calls = [];
+          globalThis.fetch = async (url, opts = {}) => {
+            const m = opts.method || 'GET';
+            if (m === 'PUT') {
+              const b = JSON.parse(opts.body);
+              calls.push(`PUT ${b.inputs.pe1}`);
+              await sleep(40);
+              return { ok: true, status: 200, json: async () => ({ ...DATA, signed_in: true, inputs: { ...DATA.inputs, bse: b.inputs } }) };
+            }
+            if (url.startsWith('/api/team-login')) { calls.push('logout'); return { ok: true, status: 204, json: async () => { throw new Error('empty'); } }; }
+            return { ok: true, status: 200, json: async () => ({ ...DATA, signed_in: true }) };
+          };
+          await loadSharedValuationInputs();
+          writeValuationOverrides({ bse: { pe1: 60 } });
+          await sleep(30);                                   // the debounced PUT (20 ms) is in flight
+          writeValuationOverrides({ bse: { pe1: 61 } });
+          const ok = await valuationTeamSignOut();
+          return { ok, calls, signedIn: VALUATION_SHARED.signedIn, pending: { ...VALUATION_SHARED.pending } };""", SHARED)
+        self.assertEqual(got["calls"], ["PUT 60", "PUT 61", "logout"])
+        self.assertEqual((got["ok"], got["signedIn"], got["pending"]), (True, False, {}))
+
+    def test_flush_resolves_only_when_quiet(self):
+        got = store("""
+          let n = 0;
+          globalThis.fetch = async (url, opts = {}) => {
+            if (opts.method === 'PUT') {
+              n++;
+              await sleep(20);
+              const b = JSON.parse(opts.body);
+              return { ok: true, status: 200, json: async () => ({ ...DATA, signed_in: true, inputs: { ...DATA.inputs, [b.exchange]: b.inputs } }) };
+            }
+            return { ok: true, status: 200, json: async () => ({ ...DATA, signed_in: true }) };
+          };
+          await loadSharedValuationInputs();
+          writeValuationOverrides({ bse: { pe1: 60 } });
+          const first = valuationFlushSaves();
+          await sleep(5);
+          writeValuationOverrides({ bse: { pe1: 61 } });
+          const second = valuationFlushSaves();   // while the first pass is out
+          const res = await second;
+          return { res, n, pending: { ...VALUATION_SHARED.pending }, saving: !!VALUATION_SHARED.saving, first: await first };""", SHARED)
+        self.assertEqual((got["res"], got["n"], got["pending"], got["saving"], got["first"]), (True, 2, {}, False, True))
+
+    def test_leaving_sends_every_pending_exchange_at_once(self):
+        got = store("""
+          const puts = [];
+          globalThis.fetch = async (url, opts = {}) => {
+            if (opts.method === 'PUT') { puts.push([JSON.parse(opts.body).exchange, !!opts.keepalive]); await sleep(10);
+              return { ok: true, status: 200, json: async () => ({ ...DATA, signed_in: true, inputs: { ...DATA.inputs } }) }; }
+            return { ok: true, status: 200, json: async () => ({ ...DATA, signed_in: true }) };
+          };
+          await loadSharedValuationInputs();
+          writeValuationOverrides({ bse: { pe1: 60 }, mcx: { g: 5 }, nse: { w0: 30 } });
+          valuationSendOnLeave();
+          const sync = puts.slice();   // issued before anything awaited
+          await sleep(60);
+          return { sync, total: puts.length };""", SHARED)
+        self.assertEqual(got["sync"], [["bse", True], ["mcx", True], ["nse", True]])
+        self.assertEqual(got["total"], 3)   # the debounce timer was cancelled
+
+    def test_unpublished_notice_lists_the_keys(self):
+        names = ["valuationNum", "valuationIsoDate", "valuationInputOk", "VALUATION_EXCHANGES", "VALUATION_EDITABLE",
+                 "VALUATION_INPUT_LABELS", "SHARE_EXCHANGE_NAMES", "valuationPlainObject", "valuationCleanOverrides",
+                 "valuationSameInput", "valuationUnpublishedKeys", "valuationUnpublishedText"]
+        got = js_eval(names, "valuationUnpublishedText(DATA.local, DATA.shared, DATA.defaults)", {
+            "local": {"bse": {"pe1": 51, "adr": None}, "nse": {"g": 4}},
+            "shared": {"bse": {"pe1": 48, "adr": 20}},
+            "defaults": {"ex": {"bse": {"pe1": 45, "adr": None}, "nse": {"g": 3}}}})
+        self.assertEqual(got, "BSE (ADR estimate blank vs shared 20; P/E base 51 vs shared 48), NSE (QoQ ADR growth 4 vs shared 3)")
 
 
 if __name__ == "__main__":
