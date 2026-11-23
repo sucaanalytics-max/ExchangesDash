@@ -127,6 +127,8 @@
           <button class="sub-tab" data-subtab="rev-futures">Futures</button>
           <button class="sub-tab" data-subtab="rev-cash">Cash</button>
         </div>
+        <!-- ₹ ADR | Contracts (NSE, BSE and NSE+BSE views; syncRevUnitControls in js/23-contracts-view.js) -->
+        <div id="revUnitToggle" class="rev-unit" hidden></div>
         <div id="liveCards" class="live-cards" aria-live="polite"></div>
       </div>
       <div class="sub-content active" id="subtab-rev-total"></div>
@@ -251,7 +253,8 @@
 <script src="./js/20-reports.js"></script>
 <script src="./js/21-vix.js"></script>
 <script src="./js/22-weekly-adr.js"></script>
-<script src="./js/23-excel-sync.js"></script>
+<script src="./js/23-contracts-view.js"></script>
+<script src="./js/24-excel-sync.js"></script>
 <script src="./js/30-brokers.js"></script>
 <script src="./js/31-brokers-price.js"></script>
 <script src="./js/32-brokers-fo-drivers.js"></script>

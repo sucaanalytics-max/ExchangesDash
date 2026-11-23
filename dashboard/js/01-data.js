@@ -240,7 +240,7 @@ function ensureFreshMarketData(exchanges) {
 // Instead each panel records the cache fingerprints it was drawn from, and
 // checkDataFreshness, after its preload, re-draws just the panels whose cached
 // files changed. CROSS_PANELS: panel id → { sigs: { exchange: marketSig at
-// draw time }, rebuild }.
+// draw time }, rebuild, elId (the panel's container) }.
 const CROSS_PANELS = {};
 
 // `exs`' daily rows for a cross-exchange panel: a single-exchange view's own
@@ -259,11 +259,19 @@ async function loadCrossExchangeRows(exs, onWait) {
   return { rowsByEx, missing: exs.filter(e => !rowsByEx[e]), sigs: Object.fromEntries(cached.map(e => [e, marketSig(e)])) };
 }
 
-// Records that panel `id` was drawn from the cached files `sigs`; rebuild()
-// re-draws it (called again by checkDataFreshness when one of them changes,
-// including a file that failed to load and has loaded since).
-function registerCrossPanel(id, sigs, rebuild) {
-  CROSS_PANELS[id] = { sigs: { ...sigs }, rebuild };
+// Records that panel `id`, drawn into the element with id `elId`, was drawn from
+// the cached files `sigs`; rebuild() re-draws it (called again by
+// checkDataFreshness when one of them changes, including a file that failed to
+// load and has loaded since). The entry is dropped once that element is gone.
+function registerCrossPanel(id, sigs, rebuild, elId = null) {
+  CROSS_PANELS[id] = { sigs: { ...sigs }, rebuild, elId };
+}
+
+// Ids of the panels whose container element no longer exists (hasEl(elId) is
+// false), to be dropped rather than re-drawn or kept fresh; a panel registered
+// without an elId is kept
+function crossPanelsGone(panels, hasEl) {
+  return Object.keys(panels).filter(id => panels[id].elId && !hasEl(panels[id].elId));
 }
 
 // Ids of the panels whose cached files moved since they were drawn (sigOf(ex)
@@ -286,6 +294,7 @@ function checkDataFreshness() {
     const now = Date.now();
     const isStale = t => !t || now - t > DATA_MAX_AGE_MS;
     const cached = Object.keys(VIEW_BUILT_FROM);
+    crossPanelsGone(CROSS_PANELS, elId => !!document.getElementById(elId)).forEach(id => { delete CROSS_PANELS[id]; });
     const panelEx = Object.values(CROSS_PANELS).flatMap(p => Object.keys(p.sigs || {}));
     const dueCached = [...new Set([...cached, ...panelEx])].filter(e => isStale(MARKET_CHECKED_AT[e]));
     const viewDue = !!VIEW_LOADED && VIEW_LOADED.exchange === ex && isStale(VIEW_LOADED.checkedAt);
@@ -473,8 +482,13 @@ function monthSortKey(label) {
 }
 
 function buildCombinedRawData(exList) {
-  const present = exList.filter(ex => MARKET_RAW[ex]);
-  const raws = present.map(ex => MARKET_RAW[ex]);
+  return combineRawData(exList.filter(ex => MARKET_RAW[ex]).map(ex => ({ exchange: ex, raw: MARKET_RAW[ex] })));
+}
+
+// The combined raw data of [{ exchange, raw }] (raw: a dashboard data file, or
+// the same shape built elsewhere, e.g. the contracts view, 23-contracts-view.js)
+function combineRawData(entries) {
+  const raws = entries.map(e => e.raw);
   if (!raws.length) return { quarterly: [], monthly: [], daily: [], daily_all: [], components: [] };
 
   const segFields = ['total_rev', 'opt_rev', 'fut_rev', 'cash_rev'];
@@ -518,11 +532,11 @@ function buildCombinedRawData(exList) {
   // summed rows above: FY, weekday × quarter and 125-day averages (see
   // revenueSources), the header's last trading date, and the fee-basis /
   // modelled-history labels (periodFlags), which travel with each exchange.
-  const components = present.map(ex => ({
-    exchange:  ex,
-    quarterly: MARKET_RAW[ex].quarterly || [],
-    monthly:   MARKET_RAW[ex].monthly || [],
-    daily_all: MARKET_RAW[ex].daily_all || [],
+  const components = entries.map(({ exchange, raw }) => ({
+    exchange,
+    quarterly: raw.quarterly || [],
+    monthly:   raw.monthly || [],
+    daily_all: raw.daily_all || [],
   }));
 
   return { quarterly, monthly, daily: [], daily_all: [], components };
@@ -530,8 +544,14 @@ function buildCombinedRawData(exList) {
 
 // ── Build combined ENRICHED_DATA from pre-loaded enriched JSONs ───────────────
 function buildCombinedEnrichedData(exList) {
+  return combineEnrichedData(exList.map(ex => MARKET_DATA[ex]));
+}
+
+// The combined enriched data of a list of enriched objects; an exchange
+// without a segment (null) adds nothing to it
+function combineEnrichedData(enrList) {
   const combineOneSeg = (segKey) => {
-    const sts = exList.map(ex => MARKET_DATA[ex]?.[segKey]).filter(Boolean);
+    const sts = enrList.map(enr => enr?.[segKey]).filter(Boolean);
     if (!sts.length) return null;
     const sum  = (...vals) => vals.reduce((a, v) => a + (v || 0), 0);
     const chg  = (cur, prev) => prev ? (cur - prev) / prev : null;

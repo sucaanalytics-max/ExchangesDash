@@ -10,7 +10,7 @@
 It runs:
 
 - **daily at 01:00 IST** (19:30 UTC). Vercel Cron dispatches `.github/workflows/excel-mirror.yml` through `dashboard/api/trigger-scheduled.js`. The workflow's own `schedule:` is GitHub's late fallback. Its `gate` job skips that late run when a scheduled run already finished (success or partial) in the last 20 hours, so there is one daily run. Dispatched runs are never gated.
-- **on demand**, from the **Refresh Excel now** button in the Excel sync panel at the foot of the Valuation Model tab (`dashboard/js/23-excel-sync.js`). The button is shown only to a team member signed in for the shared inputs. It calls `POST /api/excel-refresh` (`dashboard/api/excel-refresh.js`), which records a queued run and dispatches the workflow with that run's id.
+- **on demand**, from the **Refresh Excel now** button in the Excel sync panel at the foot of the Valuation Model tab (`dashboard/js/24-excel-sync.js`). The button is shown only to a team member signed in for the shared inputs. It calls `POST /api/excel-refresh` (`dashboard/api/excel-refresh.js`), which records a queued run and dispatches the workflow with that run's id.
 
 Each run, scheduled or manual, writes the latest **saved** shared inputs. Saving an input on the dashboard does not write to Excel by itself.
 
@@ -236,7 +236,7 @@ The daily, quarterly and monthly columns follow the data files. A field added to
 | `.github/workflows/excel-mirror.yml` | the workflow. Inputs: `trigger`, `run_id`, `dry_run`, `check_only`. Runs queue in the `excel-mirror` concurrency group. |
 | `dashboard/api/excel-refresh.js` | the button and the run list |
 | `dashboard/api/_github_dispatch.js` | workflow dispatch, shared with the cron triggers |
-| `dashboard/js/23-excel-sync.js` | the panel |
+| `dashboard/js/24-excel-sync.js` | the panel |
 
 Tests:
 

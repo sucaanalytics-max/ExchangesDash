@@ -1,4 +1,4 @@
-// dashboard/js/23-excel-sync.js — Excel sync panel at the foot of the Valuation Model tab.
+// dashboard/js/24-excel-sync.js — Excel sync panel at the foot of the Valuation Model tab.
 // index.html loads dashboard/js/*.js in name order as classic scripts sharing one global scope.
 
 // ========================

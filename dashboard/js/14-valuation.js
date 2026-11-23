@@ -1028,7 +1028,7 @@ async function buildValuation(ex) {
     fillStrip();
   };
   render();
-  excelSyncLoad(60 * 1000);   // the Excel sync panel's run log (js/23-excel-sync.js)
+  excelSyncLoad(60 * 1000);   // the Excel sync panel's run log (js/24-excel-sync.js)
   RX_TAB_REFRESH.valuation = render;
   el._valCtx = { ex, defaults, data, onChange: render };
   if (!el._valEditBound) {

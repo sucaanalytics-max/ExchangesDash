@@ -1,4 +1,4 @@
-"""The Excel sync panel on the Valuation Model tab (dashboard/js/23-excel-sync.js):
+"""The Excel sync panel on the Valuation Model tab (dashboard/js/24-excel-sync.js):
 what it shows for each API answer, who sees the Refresh button, and the refresh
 flow (POST, then GET every 10 s until the run finishes or 10 minutes pass) with
 fetch and the timers stubbed in Node."""

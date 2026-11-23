@@ -1,4 +1,4 @@
-// dashboard/js/34-brokers-valuation.js — Brokers → Valuation (Angel One, Groww): the
+// dashboard/js/34-brokers-valuation.js — Brokers → Valuation (Angel One, Groww; Motilal Oswal's P/B): the
 // valuation the brokers-dashboard engine publishes after each ADR run
 // (src/engine/valuation.py there; table sb_valuation_lines, read through
 // /api/brokers?view=valuation). Three methods, triangulated by weight:
@@ -75,8 +75,11 @@ function brkValQuarter(iso) {
 }
 
 function brkValIndex(rows) {
-  const sum = {}, inputs = {}, common = {}, weight = {}, series = {}, pe = [], bands = {};
+  const sum = {}, inputs = {}, common = {}, weight = {}, series = {}, pe = [], bands = {}, pbDays = {}, pbBands = {}, pbBook = {};
   rows.forEach(r => {
+    if (r.section === 'pb') { (pbDays[r.period_key] = pbDays[r.period_key] || { date: r.period_key })[r.line] = r.value; if (r.line === 'pb') pbDays[r.period_key].rule = r.rule; return; }
+    if (r.section === 'pb_bands') { (pbBands[r.period_key] = pbBands[r.period_key] || {})[r.line] = r; return; }
+    if (r.section === 'pb_book') { (pbBook[r.period_key] = pbBook[r.period_key] || { quarter: r.period_key })[r.line] = r; return; }
     if (r.section === 'weights') weight[r.period_key] = r;
     else if (r.section === 'summary') ((sum[r.period_key] = sum[r.period_key] || {})[r.line] = sum[r.period_key][r.line] || {})[r.scenario] = r;
     else if (r.section === 'inputs') (inputs[r.period_key] = inputs[r.period_key] || {})[r.line] = r;
@@ -87,7 +90,9 @@ function brkValIndex(rows) {
   });
   const days = Object.values(series).sort((a, b) => (a.date < b.date ? -1 : 1));
   pe.sort((a, b) => (a.date < b.date ? -1 : 1));
-  return { sum, inputs, common, weight, days, pe, bands };
+  const pb = Object.values(pbDays).filter(r => r.pb != null).sort((a, b) => (a.date < b.date ? -1 : 1));
+  const book = Object.values(pbBook).sort((a, b) => quarterSortKey(a.quarter) - quarterSortKey(b.quarter));
+  return { sum, inputs, common, weight, days, pe, bands, pb, pbBands, book };
 }
 
 // The weighted net value and upside per scenario, with the ADR method's values replaced by
@@ -240,6 +245,113 @@ function brkValWeightInputs(root, { W, wst, vals, S, ovr, close, patOn, patLive,
   });
 }
 
+// a time axis of dates: month ticks, no grid
+function brkValXTicks(dates) {
+  return { grid: { display: false }, afterBuildTicks: brkMonthTicks(dates, 6), ticks: { maxTicksLimit: 6, maxRotation: 0, autoSkip: true } };
+}
+
+// mean ± 1 / 2 SD bands, drawn from a published mean and SD; returns the legend's HTML
+function brkValBandChart(key, canvasId, dates, values, m, sd, fmt, tipLabel, { legendDigits = 1, tickDigits = 0 } = {}) {
+  const xTicks = brkValXTicks;
+  const flat = x => dates.map(() => x);
+  const band = (lbl, x, fill, bg) => ({ label: lbl, data: flat(x), borderWidth: 0, pointRadius: 0, fill, backgroundColor: bg, tension: 0 });
+  rxChart(key, canvasId, 260, {
+    type: 'line',
+    data: { labels: dates.map(fmtChartDate), datasets: [
+      band('+2 SD', m + 2 * sd, { target: 4 }, 'rgba(43, 92, 200, 0.07)'),
+      band('+1 SD', m + sd, { target: 3 }, 'rgba(43, 92, 200, 0.12)'),
+      { label: 'Mean', data: flat(m), borderColor: RX.muted, borderWidth: 1, borderDash: [4, 3], pointRadius: 0, fill: false },
+      band('−1 SD', m - sd, false, 'transparent'),
+      band('−2 SD', m - 2 * sd, false, 'transparent'),
+      { label: tipLabel, data: values, borderColor: RX.ink, borderWidth: 1.75, pointRadius: 0, tension: 0, fill: false },
+    ] },
+    options: {
+      interaction: { mode: 'index', intersect: false },
+      plugins: { tooltip: { filter: i => i.datasetIndex === 5, callbacks: {
+        title: items => rxDate(dates[items[0].dataIndex]),
+        label: c => { const z = (c.raw - m) / sd; return ` ${tipLabel} ${fmt(c.raw)} (${z >= 0 ? '+' : '−'}${Math.abs(z).toFixed(1)} SD)`; } } } },
+      scales: { x: xTicks(dates), y: { ticks: { callback: x => fmtNum(x, tickDigits) } } },
+    },
+  });
+  const d = legendDigits;
+  return rxLegend([
+    { label: tipLabel, color: RX.ink, kind: 'line' },
+    { label: `± 1 SD (${fmtNum(m - sd, d)}–${fmtNum(m + sd, d)})`, color: 'rgba(43, 92, 200, 0.19)' },
+    { label: `± 2 SD (${fmtNum(m - 2 * sd, d)}–${fmtNum(m + 2 * sd, d)})`, color: 'rgba(43, 92, 200, 0.07)', style: 'box-shadow:inset 0 0 0 1px #DCE5F7' },
+    { label: `Mean ${fmtNum(m, d)}`, color: RX.muted, kind: 'dash' }]);
+}
+
+// ── Consolidated P/B (Motilal Oswal; AB, 19 Nov 2026) ──
+// close ÷ book value per share, the book value of the quarter in force (consolidated net worth ÷ shares, from the
+// day ACE Equity switches to it: AB matched ACE), with mean ± 1 / 2 SD bands (sample SD) over
+// the period picked on the chart's toggle. The engine publishes the daily P/B ('pb'), each period's band
+// ('pb_bands': pb_mean, pb_sd, pb_current) and each quarter's book ('pb_book'); the page only draws them.
+const BRK_PB_WINDOWS = BRK_VAL_WINDOWS.filter(([k]) => k !== 'all');
+const BRK_PB_DEFAULT = '3y';
+
+// The period to show: the one picked (if published), else 3Y, else the longest published
+function brkValPbWin(pick, bands) {
+  if (bands[pick]) return pick;
+  if (bands[BRK_PB_DEFAULT]) return BRK_PB_DEFAULT;
+  const ok = BRK_PB_WINDOWS.map(([k]) => k).filter(k => bands[k]);
+  return ok.length ? ok[ok.length - 1] : null;
+}
+
+// The P/B panel's HTML: KPIs, a period toggle over the chart, and the quarters' book values under "How"
+function brkValPbHtml(X, k, canvasId) {
+  const lbl = BRK_PB_WINDOWS.find(w => w[0] === k)[1], last = X.pb[X.pb.length - 1];
+  const seg = `<div class="rx-seg" role="group" aria-label="P/B period" data-rx-seg="brkValPb">${BRK_PB_WINDOWS.map(([w, l]) =>
+    `<button type="button" data-value="${w}" aria-pressed="${w === k}"${X.pbBands[w] ? '' : ` disabled title="${escHtml(BRK_BROKER.name)}'s book values do not cover ${l}"`}>${l}</button>`).join('')}</div>`;
+  const q = last.rule && /\((Q\d FY \d{4}):/.exec(last.rule);
+  const close = last.pb * last.bvps;
+  const kpis = [
+    rxKpi('P/B now', `${fmtNum(last.pb, 2)}×`, `close ${rxRupee(close, 2)} on ${escHtml(fmtLongDate(last.date))}`, { accent: true }),
+    rxKpi('Book value per share', rxRupee(last.bvps, 2), q ? `${escHtml(q[1])}, consolidated` : 'consolidated'),
+    rxKpi(`<span data-pbk="mean-lbl">Mean · ${escHtml(lbl)}</span>`, '<span data-pbk="mean"></span>', '<span data-pbk="range"></span>'),
+    rxKpi('Now vs the mean', '<span data-pbk="z"></span>', '<span data-pbk="z-s"></span>'),
+  ].join('');
+  const fmtQ = (r, d) => (r ? fmtNum(r.value, d) : '—');
+  const book = X.book.map(b => `<tr><td class="rx-l">${escHtml(b.quarter)}</td><td>${escHtml(fmtLongDate((/in force from (\d{4}-\d{2}-\d{2})/.exec(b.net_worth?.rule || '') || [])[1] || ''))}</td>
+    <td>${fmtQ(b.net_worth, 1)}</td><td>${fmtQ(b.shares, 4)}</td><td>${fmtQ(b.bvps, 2)}</td></tr>`).join('');
+  return `<section class="rx-kpis" aria-label="Price to book">${kpis}</section>
+    ${rxPanel({
+    title: `Consolidated P/B · <span data-pbk="title">${escHtml(lbl)}</span>`, meta: '<span data-pbk="meta"></span>', attrs: 'data-val-chart="pb"',
+    body: `<div class="brk-price-controls"><div><div class="rx-lbl">Period</div>${seg}</div></div>
+      <div class="rx-pb">${rxCanvas(canvasId)}<div data-brk-leg="pb"></div></div>`,
+    foot: `P/B = close ÷ book value per share; book value per share = consolidated net worth ÷ equity shares, on today's bonus-adjusted basis (as the closes are). Each quarter's book is in force from the day ACE Equity switches to it (the quarter end, or the first trading day after it), so the series matches ACE's Cons P/BV, within about 0.2 % (ACE also moves its share count inside a quarter).
+      The mean and the ± 1 / 2 SD bands (sample SD) are over the period picked, so they move with it. Hover a day for its P/B, its distance from the mean and the arithmetic.`,
+    how: rxHow('Book value by quarter and its source', `<div class="rx-scroll"><table class="rx-table">
+      <thead><tr><th scope="col" class="rx-l">Quarter</th><th scope="col">In force from</th><th scope="col">Net worth, ₹ Cr</th><th scope="col">Shares, Cr</th><th scope="col">BVPS, ₹</th></tr></thead>
+      <tbody>${book}</tbody></table></div>
+      <p class="rx-foot">Net worth and share counts are reviewed rows of <code>sb_disclosure_facts</code> (metrics <code>net_worth</code>, <code>shares_period_end_cr</code>), each with its filing; the day each comes in is the <code>val_pb_dates</code> row of <code>sb_assumptions</code>, in the brokers-dashboard project.</p>`),
+  })}`;
+}
+
+// Draw the P/B chart for period k and fill the KPIs that depend on it
+function brkValPbDraw(root, X, k, chartKey, canvasId) {
+  const b = X.pbBands[k], lbl = BRK_PB_WINDOWS.find(w => w[0] === k)[1];
+  const from = brkValSince(b.pb_mean), P = X.pb.filter(r => r.date >= from);
+  const m = b.pb_mean.value, sd = b.pb_sd.value, now = b.pb_current.value, z = (now - m) / sd;
+  const set = (n, h) => { const e = root.querySelector(`[data-pbk="${n}"]`); if (e) e.innerHTML = h; };
+  set('title', escHtml(lbl));
+  set('meta', `${escHtml(fmtLongDate(P[0].date))} – ${escHtml(fmtLongDate(P[P.length - 1].date))} · ${fmtNum(P.length, 0)} days · mean ${fmtNum(m, 2)}× ± 1 SD ${fmtNum(sd, 2)}`);
+  set('mean-lbl', `Mean · ${escHtml(lbl)}`);
+  set('mean', `${fmtNum(m, 2)}×`);
+  set('range', `± 1 SD ${fmtNum(m - sd, 2)}–${fmtNum(m + sd, 2)}× · ± 2 SD ${fmtNum(m - 2 * sd, 2)}–${fmtNum(m + 2 * sd, 2)}×`);
+  set('z', `${z >= 0 ? '+' : '−'}${fmtNum(Math.abs(z), 2)} SD`);
+  set('z-s', `${fmtNum(now, 2)}× vs ${fmtNum(m, 2)}× (${escHtml(lbl)})`);
+  const leg = root.querySelector('[data-brk-leg="pb"]');
+  leg.innerHTML = brkValBandChart(chartKey, canvasId, P.map(r => r.date), P.map(r => r.pb), m, sd, x => fmtNum(x, 2) + '×', 'Consolidated P/B', { legendDigits: 2, tickDigits: 1 });
+}
+
+// The P/B panel, wired: draws the period in BRK.valView.pb (3Y by default) and redraws on the toggle
+function brkValPbWire(root, X, st) {
+  const view = BRK_BROKER.view, canvasId = `brk-${view}-val-pb`, chartKey = `brk-${view}-val-pb`;
+  const k = brkValPbWin(st.pb, X.pbBands);
+  brkValPbDraw(root, X, k, chartKey, canvasId);
+  rxOnSeg(root, 'brkValPb', w => { st.pb = w; brkValPbDraw(root, X, w, chartKey, canvasId); });
+}
+
 // The window's first date, from its fit or P/E-band rule ("2026-08-06 to …")
 function brkValSince(r) { return (/^(\d{4}-\d{2}-\d{2})/.exec(r?.rule || '') || [])[1] || ''; }
 
@@ -274,6 +386,20 @@ async function buildBrokersValuation() {
   }
 
   const X = brkValIndex(val.rows), st = BRK.valView;
+  // a broker with only the P/B lines (no ADR valuation or PAT model: Motilal Oswal)
+  const pbWin = X.pb.length ? brkValPbWin(st.pb, X.pbBands) : null;
+  if (!Object.keys(X.sum).length) {
+    if (!pbWin) {
+      el.innerHTML = `<div class="brk-wrap">${summary.run ? brkRunBar({ legend: false }) : ''}<div class="chart-panel brk-norun" role="status"><b>No valuation published for ${name} yet.</b></div></div>`;
+      return;
+    }
+    el.innerHTML = `<div class="brk-wrap">${summary.run ? brkRunBar({ legend: false }) : ''}<div class="rx">
+      ${rxAlert(`<strong>Price to book, as the engine published it</strong> for ${name} (run <code title="${escHtml(val.run.run_id)}">${escHtml(val.run.run_id.slice(0, 8))}</code>, as of ${escHtml(fmtLongDate(val.run.as_of_date))}). Every figure is the engine's; the page only draws the bands from the published mean and SD.`, 'info')}
+      ${brkValPbHtml(X, pbWin, `brk-${BRK_BROKER.view}-val-pb`)}
+    </div></div>`;
+    brkValPbWire(el.firstElementChild, X, st);
+    return;
+  }
   const avail = BRK_VAL_WINDOWS.filter(([k]) => X.sum[k] || X.bands[k]).map(([k]) => k);
   if (!avail.includes(st.win)) st.win = 'all';
   const win = st.win, fitWin = X.sum[win] ? win : 'all';   // a window only the P/E history covers keeps the All fit
@@ -404,12 +530,13 @@ async function buildBrokersValuation() {
     <section class="rx-kpis" aria-label="Valuation summary">${kpis}</section>
     ${adrPanel}${triangulation}
     <div class="rx-row">${charts.join('')}</div>
+    ${pbWin ? brkValPbHtml(X, pbWin, `brk-${view}-val-pb`) : ''}
   </div></div>`;
   const root = el.firstElementChild;
   rxOnSeg(root, 'brkValWin', k => { st.win = k; st.chart = {}; buildBrokersValuation(); });
   if (wst) brkValWeightInputs(root, { W, wst, vals, S, ovr, close, patOn, patLive, runId: val.run.run_id, broker: BRK_BROKER.id, ast, adr0, fit, adrQ, dmaNow, basisLbl, basisVal, adrSub });
 
-  const xTicks = dates => ({ grid: { display: false }, afterBuildTicks: brkMonthTicks(dates, 6), ticks: { maxTicksLimit: 6, maxRotation: 0, autoSkip: true } });
+  const xTicks = brkValXTicks;
   const rupee = { ticks: { callback: x => '₹' + fmtNum(x, 0) } };
   // a window's days (every day with a 45-day ADR and a close, from the window's first fitted day) and its fit
   const daysOf = k => { const from = k === 'all' ? '' : brkValSince(X.inputs[k]?.fit_days); return X.days.filter(d => d.dma != null && d.price != null && d.date >= from); };
@@ -421,34 +548,7 @@ async function buildBrokersValuation() {
   };
   const span = (D, k) => `${winLabel(k)}: ${fmtTradeDate(D[0].date)} – ${fmtTradeDate(D[D.length - 1].date)}`;
 
-  // mean ± 1 / 2 SD bands, drawn from a published mean and SD
-  const bandChart = (key, canvasId, dates, values, m, sd, fmt, tipLabel) => {
-    const flat = x => dates.map(() => x);
-    const band = (lbl, x, fill, bg) => ({ label: lbl, data: flat(x), borderWidth: 0, pointRadius: 0, fill, backgroundColor: bg, tension: 0 });
-    rxChart(key, canvasId, 260, {
-      type: 'line',
-      data: { labels: dates.map(fmtChartDate), datasets: [
-        band('+2 SD', m + 2 * sd, { target: 4 }, 'rgba(43, 92, 200, 0.07)'),
-        band('+1 SD', m + sd, { target: 3 }, 'rgba(43, 92, 200, 0.12)'),
-        { label: 'Mean', data: flat(m), borderColor: RX.muted, borderWidth: 1, borderDash: [4, 3], pointRadius: 0, fill: false },
-        band('−1 SD', m - sd, false, 'transparent'),
-        band('−2 SD', m - 2 * sd, false, 'transparent'),
-        { label: tipLabel, data: values, borderColor: RX.ink, borderWidth: 1.75, pointRadius: 0, tension: 0, fill: false },
-      ] },
-      options: {
-        interaction: { mode: 'index', intersect: false },
-        plugins: { tooltip: { filter: i => i.datasetIndex === 5, callbacks: {
-          title: items => rxDate(dates[items[0].dataIndex]),
-          label: c => { const z = (c.raw - m) / sd; return ` ${tipLabel} ${fmt(c.raw)} (${z >= 0 ? '+' : '−'}${Math.abs(z).toFixed(1)} SD)`; } } } },
-        scales: { x: xTicks(dates), y: { ticks: { callback: x => fmtNum(x, 0) } } },
-      },
-    });
-    return rxLegend([
-      { label: tipLabel, color: RX.ink, kind: 'line' },
-      { label: `± 1 SD (${fmtNum(m - sd, 1)}–${fmtNum(m + sd, 1)})`, color: 'rgba(43, 92, 200, 0.19)' },
-      { label: `± 2 SD (${fmtNum(m - 2 * sd, 1)}–${fmtNum(m + 2 * sd, 1)})`, color: 'rgba(43, 92, 200, 0.07)', style: 'box-shadow:inset 0 0 0 1px #DCE5F7' },
-      { label: `Mean ${fmtNum(m, 1)}`, color: RX.muted, kind: 'dash' }]);
-  };
+  const bandChart = brkValBandChart;
   const legOf = name => root.querySelector(`[data-brk-leg="${name}"]`);
 
   const draw = {
@@ -526,6 +626,7 @@ async function buildBrokersValuation() {
   const drawChart = (name, k) => (name.startsWith('pe') ? draw.pe(name, k) : draw[name](name, k));
   ADR_CHARTS.forEach(([n]) => drawChart(n, pick(n, fitWin, fitOk)));
   peKeys.forEach((k0, i) => drawChart(`pe${i}`, pick(`pe${i}`, k0, peOk)));
+  if (pbWin) brkValPbWire(root, X, st);
   root.querySelectorAll('[data-val-cw]').forEach(sel => sel.addEventListener('change', () => {
     chartWin[sel.dataset.valCw] = sel.value;
     drawChart(sel.dataset.valCw, sel.value);
