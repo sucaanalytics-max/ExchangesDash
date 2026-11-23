@@ -12,6 +12,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from dashboard_js import (  # noqa: E402,F401  (re-exported for the tests)
+from dashboard_js import (  # noqa: E402  (re-exported for the tests: __all__)
     APP_JS, DASHBOARD, JS_FILES, NODE, _block_end, js_closure, js_eval, js_source,
 )
+
+__all__ = ["APP_JS", "DASHBOARD", "JS_FILES", "NODE", "ROOT", "_block_end", "js_closure", "js_eval", "js_source"]
