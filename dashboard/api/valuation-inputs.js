@@ -8,9 +8,14 @@
  *
  *   GET  (anyone)       → 200 {configured: true, signed_in, inputs: {bse: {…}, mcx: {…}, nse: {…}},
  *                              updated_at: {bse: iso | null, …}}
- *   PUT  (team session, /api/team-login) body {exchange, inputs}
- *        → replaces that exchange's overrides (an upsert; the table's trigger logs
- *          before and after to `valuation_inputs_log`), and answers as GET
+ *   PUT  (team session, /api/team-login) body {exchange, inputs, base_updated_at}
+ *        → replaces that exchange's overrides, only if the row is still the one the
+ *          edit was based on: base_updated_at is the updated_at the client last read
+ *          for it (null when it saw no row). The table's trigger logs before and
+ *          after to `valuation_inputs_log`. Answers as GET.
+ *        → 409 {error: 'conflict', current: {inputs, updated_at}} when someone saved
+ *          the exchange since (or a row now exists): the client lays its own changes
+ *          over `current` and sends again with current.updated_at as the base
  *        → 401 signed out; 400 {error, bad: [keys]} for an unknown exchange or
  *          key, or a value the dashboard would not accept
  *
@@ -99,14 +104,49 @@ async function readAll(signedIn) {
   return { configured: true, signed_in: signedIn, inputs, updated_at: updated };
 }
 
-// Replaces one exchange's overrides. The table's trigger (valuation_inputs_log_change in
-// valuation_sync_schema.sql) logs before and after in the same transaction.
-async function writeOne(req, exchange, inputs) {
-  await sb('valuation_inputs?on_conflict=exchange', {
-    method: 'POST',
-    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-    body: JSON.stringify([{ exchange, inputs, updated_at: new Date().toISOString(), updated_by: changedBy(req) }]),
-  });
+// One exchange's stored overrides and updated_at ({inputs: {}, updated_at: null} without a row)
+async function readOne(exchange) {
+  const rows = await sb(`valuation_inputs?select=inputs,updated_at&exchange=eq.${exchange}`) || [];
+  const r = rows[0];
+  const inputs = r && r.inputs && typeof r.inputs === 'object' && !Array.isArray(r.inputs) ? r.inputs : {};
+  return { inputs, updated_at: (r && r.updated_at) || null };
+}
+
+// The updated_at a write stores: now, but always later than the base it replaces, so each
+// successful write moves the row to a stamp no earlier edit was based on (instances' clocks
+// may differ by a few ms)
+function nextStamp(base, now = Date.now()) {
+  const b = Date.parse(base);
+  return new Date(isFinite(b) ? Math.max(now, b + 1) : now).toISOString();
+}
+
+// A usable base_updated_at: null / absent (no row seen) or a timestamp
+function baseOk(base) {
+  return base == null || (typeof base === 'string' && base.length <= 40 && isFinite(Date.parse(base)));
+}
+
+// Replaces one exchange's overrides if the row is still at `base` (no row, when base is
+// null): a conditional PATCH, or an insert that does nothing when a row exists. Resolves to
+// null when written, else the row as it now is (the conflict). The table's trigger
+// (valuation_inputs_log_change in valuation_sync_schema.sql) logs before and after in the
+// same transaction.
+async function writeOne(req, exchange, inputs, base) {
+  const by = changedBy(req);
+  let rows;
+  if (base) {
+    rows = await sb(`valuation_inputs?exchange=eq.${exchange}&updated_at=eq.${encodeURIComponent(base)}`, {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({ inputs, updated_at: nextStamp(base), updated_by: by }),
+    });
+  } else {
+    rows = await sb('valuation_inputs?on_conflict=exchange', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=ignore-duplicates,return=representation' },
+      body: JSON.stringify([{ exchange, inputs, updated_at: nextStamp(null), updated_by: by }]),
+    });
+  }
+  return Array.isArray(rows) && rows.length ? null : readOne(exchange);
 }
 
 module.exports = async function handler(req, res) {
@@ -128,9 +168,11 @@ module.exports = async function handler(req, res) {
     const bad = [];
     if (!EXCHANGES.includes(body.exchange)) bad.push('exchange');
     bad.push(...validateInputs(body.inputs));
+    if (!baseOk(body.base_updated_at)) bad.push('base_updated_at');
     if (bad.length) return res.status(400).json({ error: `Not accepted: ${bad.join(', ')}`, bad });
 
-    await writeOne(req, body.exchange, body.inputs);
+    const current = await writeOne(req, body.exchange, body.inputs, body.base_updated_at || null);
+    if (current) return res.status(409).json({ error: 'conflict', configured: true, signed_in: true, current });
     return res.status(200).json(await readAll(true));
   } catch (e) {
     console.error('valuation-inputs:', e.message);
@@ -139,6 +181,7 @@ module.exports = async function handler(req, res) {
 };
 
 module.exports.SUPABASE_TIMEOUT_MS = SUPABASE_TIMEOUT_MS;   // tests/test_valuation_inputs_api.py
+module.exports.nextStamp = nextStamp;               // tests/test_valuation_inputs_api.py
 module.exports.sb = sb;                           // tests/test_valuation_inputs_api.py
 module.exports.validateInputs = validateInputs;   // tests/test_valuation_inputs_api.py
 module.exports.EXCHANGES = EXCHANGES;             // tests/test_valuation_inputs_api.py

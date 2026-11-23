@@ -196,6 +196,7 @@ function openValuationDrawer(ctx) {
     title: `${name} valuation inputs`,
     body: `<p class="rx-drawer-note" data-vd-note></p>
       <div class="rx-vi-access" data-vd-access></div>
+      <div class="rx-vi-access rx-vi-unpub" data-vd-notice role="status" aria-live="polite"></div>
       <div class="rx-vi-access rx-vi-unpub" data-vd-unpub></div>
       ${body}
       <div class="rx-drawer-acts"><span data-vd-edited></span><span data-vd-out-link></span></div>`,
@@ -232,6 +233,10 @@ function openValuationDrawer(ctx) {
     }
     const st = q('[data-vd-status]');
     if (st) st.innerHTML = valuationSaveStatusHTML(S, ex);
+    // A colleague's change merged into ours (a 409), or unsaved edits dropped at sign-out
+    const notice = S.notice && S.notice.until > Date.now() ? S.notice.text : '';
+    const nb = q('[data-vd-notice]');
+    if (nb.textContent !== notice) nb.textContent = notice;
     // Signed in: edits this browser kept on its own (made without the API) that the shared
     // inputs lack, offered for publishing
     const text = kind === 'in' ? valuationUnpublishedText(readLocalValuationOverrides(), S.inputs, defaults) : '';
@@ -334,7 +339,7 @@ function openValuationDrawer(ctx) {
     if (!el.isConnected) return;
     btn.disabled = false;
     if (why) { err.textContent = why; pw.select(); return; }
-    if (Object.keys(S.pending).length) valuationFlushSaves();   // edits a lapsed session left unsaved
+    if (Object.keys(S.pending).length) valuationFlushSaves();   // edits a failed save left waiting
     const first = q('input[data-vd]');
     if (first) first.focus();
   });
