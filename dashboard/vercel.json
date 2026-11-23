@@ -87,6 +87,24 @@
       ]
     },
     {
+      "source": "/api/team-login",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
+      ]
+    },
+    {
+      "source": "/api/valuation-inputs",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
+      ]
+    },
+    {
       "source": "/data/(nse|bse)_live.json",
       "headers": [
         {

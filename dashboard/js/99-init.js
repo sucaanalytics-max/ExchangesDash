@@ -10,6 +10,7 @@ async function init() {
   initExchangeSwitcher();
   initActiveAria();   // aria-current / aria-pressed follow .active
   initModeSwitch();   // Exchanges | Brokers, shown once a broker view has registered
+  loadSharedValuationInputs();   // the shared valuation inputs (14-valuation.js), ready before their tabs open
   updateHeaderExchange('nse');
   buildSidebarNav('nse');
   toggleExchangeContent('nse');

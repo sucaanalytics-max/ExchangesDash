@@ -5,18 +5,21 @@
 // VALUATION INPUTS — a side drawer on the Valuation Model tab (js/14-valuation.js)
 // ========================
 // The editable inputs of the exchange on show (ADR estimate, QoQ ADR growth, P/E,
-// method weights, the regression's data-from date), saved in this browser over the
-// shared defaults in dashboard/data/valuation_inputs.json; under them, folded, what
-// they feed (the ADR reference, the fixed inputs, the fit from that date). Each
-// edit re-renders the Valuation Model behind the drawer. The model is
-// valuationModel in js/14-valuation.js.
+// method weights, the regression's data-from date), over the defaults in
+// dashboard/data/valuation_inputs.json; under them, folded, what they feed (the ADR
+// reference, the fixed inputs, the fit from that date). Each edit re-renders the
+// Valuation Model behind the drawer. The model is valuationModel in js/14-valuation.js.
+// The edits are shared by every viewer (/api/valuation-inputs, the SHARED INPUTS store
+// in js/14-valuation.js): read-only until a team member signs in with the shared
+// password, then saved for everyone a second after typing stops. Without the API
+// they are saved in this browser only, as the drawer says.
 
 // Table rows: sec = section heading; key = editable input (a number, or a date with
 // type 'date'); out = read-only figure (valuationInputsCell); note = the line under the label
 function valuationInputsRows(qLabel, fy) {
   const y1 = valuationFYShort(fy), y0 = valuationFYShort(fy - 1);
   return [
-    { sec: 'Inputs · saved in this browser' },
+    { sec: 'Inputs · <span data-vd-where>saved in this browser</span>' },
     { key: 'adr', label: 'ADR estimate, ₹ Cr / session', step: 0.1, note: 'Regression and Ratio in the estimate model; blank = the 45 DMA' },
     { key: 'g', label: 'QoQ ADR growth, %', step: 0.5, note: `each quarter from ${qLabel} to Q4 ${y1}, ADR model` },
     { out: 'gA', label: 'Implied annual growth', note: '(1 + QoQ)⁴ − 1' },
@@ -39,7 +42,7 @@ function valuationInputsRows(qLabel, fy) {
     { out: 'shares', label: 'Shares outstanding, Cr' },
     { out: 'd1', label: `Discount ${y1} → ${y0}` },
     { out: 'd2', label: `Discount ${y0} → today` },
-    { sec: 'Regression and ratio · 45-session fit · saved in this browser' },
+    { sec: 'Regression and ratio · 45-session fit' },
     { key: 'from', type: 'date', label: 'Regression data from', note: 'revenue and prices from this date, the 45 DMA built from it; blank = the published fit (its own start, MA over all revenue)' },
     { out: 'first', label: 'First point in the fit', note: 'the close after the 45th session from the date' },
     { out: 'n', label: 'Sessions in the fit' },
@@ -120,6 +123,31 @@ function valuationTargetTiles(list, defaults, overrides, shownEx) {
   }).join('');
 }
 
+// Where the edits are kept, for the drawer's headings, and the line under its title
+function valuationWhere(mode) {
+  return mode === 'shared' ? 'shared' : mode === 'local' ? 'saved in this browser' : 'loading…';
+}
+
+// IST clock time of a Date or ISO timestamp, "14:05"
+function valuationClock(t) {
+  return new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+}
+
+// The drawer's access line: who may edit and, signed in, the save status (VALUATION_SHARED)
+// kind: 'pending' | 'local' | 'out' (shared, signed out) | 'in' (shared, signed in)
+function valuationAccessKind(S) {
+  return S.mode === 'shared' ? (S.signedIn ? 'in' : 'out') : S.mode;
+}
+
+function valuationSaveStatusHTML(S, ex) {
+  const st = S.status;
+  if (st.state === 'saving' || Object.keys(S.pending).length && st.state !== 'error') return 'Saving…';
+  if (st.state === 'error') return `<span class="rx-dn" title="${escHtml(st.error || '')}">Couldn’t save</span> <button type="button" class="rx-link" data-vd-retry>Retry</button>`;
+  if (st.state === 'saved' && st.at) return `Saved · ${valuationClock(st.at)}`;
+  const at = S.updatedAt && S.updatedAt[ex];
+  return at ? `Last changed ${new Date(at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })}` : '';
+}
+
 // Opens the drawer on one exchange's inputs. ctx: { ex, defaults, data (its
 // valuationExchange result), onChange (re-renders the Valuation Model) }
 function openValuationDrawer(ctx) {
@@ -143,17 +171,64 @@ function openValuationDrawer(ctx) {
     const shown = g.rows.filter(r => gi === 0 || r.key);
     const folded = g.rows.filter(r => gi !== 0 && !r.key);
     const title = gi === 3 ? 'Regression and ratio fit' : g.sec;
-    return (shown.length ? `<div class="rx-drawer-sec">${gi === 3 ? 'Regression data from · saved in this browser' : g.sec}</div>${shown.map(row).join('')}` : '')
+    return (shown.length ? `<div class="rx-drawer-sec">${gi === 3 ? 'Regression data from · <span data-vd-where>saved in this browser</span>' : g.sec}</div>${shown.map(row).join('')}` : '')
       + (folded.length ? `<details class="rx-how"><summary>${title}</summary>${folded.map(row).join('')}</details>` : '');
   }).join('');
 
+  const S = VALUATION_SHARED;
+  let shownKind = null, seenVersion = S.version;
+  const listener = () => refresh();
   const el = openRxDrawer({
     title: `${name} valuation inputs`,
-    body: `<p class="rx-drawer-note">Saved in this browser over the shared defaults; the tables behind update as you type. Light-blue boxes are inputs; an amber edge marks one edited from the default.</p>
+    body: `<p class="rx-drawer-note" data-vd-note></p>
+      <div class="rx-vi-access" data-vd-access></div>
       ${body}
-      <div class="rx-drawer-acts"><span data-vd-edited></span></div>`,
+      <div class="rx-drawer-acts"><span data-vd-edited></span><span data-vd-out-link></span></div>`,
+    onClose: () => S.listeners.delete(listener),
   });
   const q = sel => el.querySelector(sel);
+
+  // Who may edit: the note, the access line (sign-in, or the save status), the inputs'
+  // disabled state. The access line is redrawn only when its kind changes, so a
+  // password being typed survives a status update.
+  function access() {
+    const kind = valuationAccessKind(S), can = valuationCanEdit();
+    el.querySelectorAll('[data-vd-where]').forEach(n => { n.textContent = valuationWhere(S.mode); });
+    el.querySelectorAll('input[data-vd]').forEach(i => { i.disabled = !can; });
+    if (kind !== shownKind) {
+      shownKind = kind;
+      q('[data-vd-note]').textContent = kind === 'local'
+        ? 'Saved in this browser over the shared defaults; the tables behind update as you type. Light-blue boxes are inputs; an amber edge marks one edited from the default.'
+        : 'Shared by everyone who opens the dashboard, over the defaults in valuation_inputs.json; the tables behind update as you type. Light-blue boxes are inputs; an amber edge marks one edited from the default.';
+      q('[data-vd-access]').innerHTML = {
+        pending: '<span class="rx-foot">Loading the shared inputs…</span>',
+        local: '<span class="rx-vi-msg">Edits are saved in this browser only (shared inputs unavailable).</span>',
+        out: `<span class="rx-vi-msg">Read-only: sign in with the team password to change the shared inputs.</span>
+          <button type="button" class="rx-btn rx-btn--primary" data-vd-signin>Sign in to edit</button>
+          <form class="rx-vi-login" data-vd-login hidden>
+            <label class="rx-vi-pw"><span>Team password</span><input type="password" class="rx-in" autocomplete="current-password" data-vd-pw required></label>
+            <button type="submit" class="rx-btn rx-btn--primary">Sign in</button>
+            <button type="button" class="rx-link" data-vd-cancel>Cancel</button>
+            <span class="rx-vi-err" data-vd-err role="alert"></span>
+          </form>`,
+        in: '<span class="rx-vi-msg">Signed in: your edits save for everyone.</span> <span class="rx-vi-status" data-vd-status role="status" aria-live="polite"></span>',
+      }[kind];
+      q('[data-vd-out-link]').innerHTML = kind === 'in' ? '<button type="button" class="rx-link" data-vd-signout>Sign out</button>' : '';
+    }
+    const st = q('[data-vd-status]');
+    if (st) st.innerHTML = valuationSaveStatusHTML(S, ex);
+  }
+
+  // The store changed (a load, a save, sign-in or out): show its inputs and access, and
+  // re-render the tab behind when the inputs in use changed
+  function refresh() {
+    if (!el.isConnected) { S.listeners.delete(listener); return; }
+    if (saving) return;   // save() shows its own write
+    overrides = readValuationOverrides();
+    update();
+    access();
+    if (seenVersion !== S.version) { seenVersion = S.version; if (onChange) onChange(); }
+  }
 
   function update() {
     const { v, edited } = valuationInputsFor(defaults, overrides, ex, latest());
@@ -171,10 +246,21 @@ function openValuationDrawer(ctx) {
       if (k === 'adr') i.placeholder = data.c ? fmtNum(data.c.adr45, 2) : '45 DMA';
     });
     q('[data-vd-edited]').innerHTML = edited.length
-      ? `${rxChip(`Edited: ${edited.map(k => VALUATION_INPUT_LABELS[k]).join(', ')}`, 'edit')} <button type="button" class="rx-btn" data-vd-reset>Reset ${name} to the defaults</button>`
-      : '<span class="rx-foot">All inputs at the shared defaults.</span>';
+      ? `${rxChip(`Edited: ${edited.map(k => VALUATION_INPUT_LABELS[k]).join(', ')}`, 'edit')} <button type="button" class="rx-btn" data-vd-reset${valuationCanEdit() ? '' : ' disabled title="Sign in to edit"'}>Reset ${name} to the defaults</button>`
+      : '<span class="rx-foot">All inputs at the defaults.</span>';
   }
-  const save = () => { writeValuationOverrides(overrides); update(); if (onChange) onChange(); };
+  // A refused write (signed out) shows the inputs in use again
+  let saving = false;
+  const save = () => {
+    saving = true;
+    try {
+      if (!writeValuationOverrides(overrides)) overrides = readValuationOverrides();
+    } finally { saving = false; }
+    seenVersion = S.version;
+    update();
+    access();
+    if (onChange) onChange();
+  };
   const showInUse = i => { i.value = valuationInputShown(valuationInputsFor(defaults, overrides, ex, latest()).v, i.dataset.vd); };
 
   el.addEventListener('input', e => {
@@ -189,7 +275,7 @@ function openValuationDrawer(ctx) {
       if (text === '') return;   // cleared to retype, or not a number yet: decided when the field is left
       value = parseFloat(text);
     }
-    if (!valuationInputOk(key, value, latest())) return;
+    if (!valuationCanEdit() || !valuationInputOk(key, value, latest())) return;
     overrides = setValuationOverride(overrides, defaults, ex, key, value);
     save();
   });
@@ -199,7 +285,7 @@ function openValuationDrawer(ctx) {
   el.addEventListener('change', e => {
     const i = e.target.closest && e.target.closest('input[data-vd]');
     if (!i || i.type === 'date') return;
-    if (i.dataset.vd === 'adr' && i.value.trim() === '' && !(i.validity && i.validity.badInput)) {
+    if (i.dataset.vd === 'adr' && valuationCanEdit() && i.value.trim() === '' && !(i.validity && i.validity.badInput)) {
       overrides = setValuationOverride(overrides, defaults, ex, 'adr', null);
       save();
     }
@@ -209,12 +295,50 @@ function openValuationDrawer(ctx) {
     const i = e.target.closest && e.target.closest('input[data-vd]');
     if (i && i.type === 'date') showInUse(i);
   });
+  // Sign in / out and Retry
+  el.addEventListener('submit', async e => {
+    const form = e.target.closest && e.target.closest('[data-vd-login]');
+    if (!form) return;
+    e.preventDefault();
+    const pw = q('[data-vd-pw]'), err = q('[data-vd-err]'), btn = form.querySelector('[type="submit"]');
+    btn.disabled = true;
+    err.textContent = '';
+    const why = await valuationTeamSignIn(pw.value);
+    if (!el.isConnected) return;
+    btn.disabled = false;
+    if (why) { err.textContent = why; pw.select(); return; }
+    if (Object.keys(S.pending).length) valuationFlushSaves();   // edits a lapsed session left unsaved
+    const first = q('input[data-vd]');
+    if (first) first.focus();
+  });
   el.addEventListener('click', e => {
-    if (!(e.target.closest && e.target.closest('[data-vd-reset]'))) return;
+    const t = e.target.closest ? e.target : null;
+    if (!t) return;
+    if (t.closest('[data-vd-signin]')) {
+      const form = q('[data-vd-login]');
+      form.hidden = false;
+      t.closest('[data-vd-signin]').hidden = true;
+      q('[data-vd-pw]').focus();
+      return;
+    }
+    if (t.closest('[data-vd-cancel]')) {
+      q('[data-vd-login]').hidden = true;
+      q('[data-vd-signin]').hidden = false;
+      q('[data-vd-signin]').focus();
+      return;
+    }
+    if (t.closest('[data-vd-signout]')) { valuationTeamSignOut(); return; }
+    if (t.closest('[data-vd-retry]')) { valuationFlushSaves(); return; }
+  });
+  el.addEventListener('click', e => {
+    if (!(e.target.closest && e.target.closest('[data-vd-reset]')) || !valuationCanEdit()) return;
     overrides = { ...overrides };
     delete overrides[ex];
     save();
     el.querySelectorAll('input[data-vd]').forEach(showInUse);
   });
   update();
+  access();
+  S.listeners.add(listener);
+  loadSharedValuationInputs();   // the latest shared inputs and sign-in state; refresh() shows them
 }

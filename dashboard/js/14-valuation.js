@@ -97,8 +97,10 @@ function safeHttpUrl(u) {
 // (blank = the 45-session ADR). The ADR model row is the same in both. Every ADR
 // is at today's rates, the basis the fits are built on (the whole dashboard is).
 // Inputs: the shared defaults in dashboard/data/valuation_inputs.json (hand-edited;
-// without it the tabs say so and show no targets), with this browser's edits from
-// the inputs drawer (js/18-valuation-inputs.js) on top.
+// without it the tabs say so and show no targets), with the edits from the inputs
+// drawer (js/18-valuation-inputs.js) on top: shared by every viewer through
+// /api/valuation-inputs (team members edit), or this browser's own without it
+// (SHARED INPUTS below).
 
 
 // The workbook's column order
@@ -166,16 +168,207 @@ function valuationDefaultsMissing(defaults) {
   return `<div class="rx">${rxAlert(`<strong>Valuation inputs not loaded</strong> (dashboard/data/valuation_inputs.json: ${escHtml(defaults.error)}), so there are no targets. Reload the page to try again.`)}</div>`;
 }
 
-// This browser's edits, { bse: { pe1: 48, adr: null }, … }: only the keys typed over
-function readValuationOverrides() {
+// ========================
+// SHARED INPUTS — /api/valuation-inputs (Supabase), falling back to this browser
+// ========================
+// The edits over the defaults, { bse: { pe1: 48, adr: null }, … } (only the keys typed
+// over), are shared by every viewer: GET /api/valuation-inputs is public, and a team
+// member signed in with the shared password (/api/team-login) saves them with PUT,
+// debounced, since the drawer saves on every keystroke. Until the API first answers
+// the page renders from this browser's copy (localStorage, which mirrors the last
+// shared read), then re-renders. Without the API (not configured, down, or a local
+// static server) edits are saved in this browser only, as before.
+//   mode: 'pending' until the API answers, then 'shared' or 'local'
+//   pending: exchanges edited here whose PUT has not yet succeeded
+//   status.state: 'idle' | 'saving' | 'saved' | 'error' (with status.at, status.error)
+//   version: bumped whenever the shared inputs in use change, so views re-render once
+const VALUATION_SHARED = {
+  mode: 'pending', inputs: {}, updatedAt: {}, signedIn: false, loading: null, version: 0,
+  pending: {}, timer: null, saving: null, again: false,
+  status: { state: 'idle', at: null, error: null }, listeners: new Set(),
+};
+const VALUATION_SAVE_DELAY_MS = 1000;
+
+// x when it is a plain object, else {}
+function valuationPlainObject(x) {
+  return x && typeof x === 'object' && !Array.isArray(x) ? x : {};
+}
+
+// This browser's copy of the overrides
+function readLocalValuationOverrides() {
   try {
-    const o = JSON.parse(localStorage.getItem(VALUATION_STORAGE_KEY) || 'null');
-    return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+    return valuationPlainObject(JSON.parse(localStorage.getItem(VALUATION_STORAGE_KEY) || 'null'));
   } catch (e) { return {}; }   // storage blocked or unreadable: no edits
 }
 
-function writeValuationOverrides(o) {
+function writeLocalValuationOverrides(o) {
   try { localStorage.setItem(VALUATION_STORAGE_KEY, JSON.stringify(o)); } catch (e) { /* storage blocked: not remembered */ }
+}
+
+// The overrides in use: the shared ones once the API has answered, else this browser's
+function readValuationOverrides() {
+  return VALUATION_SHARED.mode === 'shared' ? VALUATION_SHARED.inputs : readLocalValuationOverrides();
+}
+
+// Whether this viewer may change the inputs: always in this-browser mode, signed in when shared
+// (and not while the first answer is awaited, when it is not yet known which)
+function valuationCanEdit() {
+  const S = VALUATION_SHARED;
+  return S.mode === 'local' || (S.mode === 'shared' && S.signedIn);
+}
+
+// Saves the overrides: shared and signed in, in use at once and sent after a pause in typing;
+// this-browser mode, in localStorage. false (nothing changed) when this viewer may not edit.
+function writeValuationOverrides(o) {
+  const S = VALUATION_SHARED;
+  if (!valuationCanEdit() && S.mode !== 'pending') return false;
+  if (S.mode !== 'shared') { writeLocalValuationOverrides(o); return true; }
+  const changed = valuationChangedExchanges(S.inputs, o);
+  S.inputs = o;
+  writeLocalValuationOverrides(o);
+  if (!changed.length) return true;
+  changed.forEach(ex => { S.pending[ex] = true; });
+  S.version++;
+  valuationScheduleSave();
+  return true;
+}
+
+// Same overrides for one exchange, whatever the key order
+function valuationSameOverrides(a, b) {
+  const key = o => JSON.stringify(Object.keys(valuationPlainObject(o)).sort().map(k => [k, o[k]]));
+  return key(a) === key(b);
+}
+
+// Exchanges whose overrides differ between a and b
+function valuationChangedExchanges(a, b) {
+  return VALUATION_EXCHANGES.filter(ex => !valuationSameOverrides(valuationPlainObject(a)[ex], valuationPlainObject(b)[ex]));
+}
+
+// A shared read with this viewer's unsaved edits kept: the exchanges in `pending` keep
+// `local`'s overrides; the rest take the server's. Exchanges without overrides are left out.
+function valuationMergeShared(server, local, pending) {
+  const out = {};
+  VALUATION_EXCHANGES.forEach(ex => {
+    const src = pending && pending[ex] ? local : server;
+    const o = valuationPlainObject(valuationPlainObject(src)[ex]);
+    if (Object.keys(o).length) out[ex] = o;
+  });
+  return out;
+}
+
+function valuationSharedNotify() {
+  VALUATION_SHARED.listeners.forEach(f => { try { f(); } catch (e) { console.error(e); } });
+}
+
+// Takes an API answer ({ configured: true, signed_in, inputs, updated_at }) into the store
+function valuationApplyShared(j) {
+  const S = VALUATION_SHARED;
+  const next = valuationMergeShared(valuationPlainObject(j.inputs), S.inputs, S.pending);
+  if (S.mode !== 'shared' || valuationChangedExchanges(S.inputs, next).length) S.version++;
+  S.mode = 'shared';
+  S.inputs = next;
+  S.updatedAt = valuationPlainObject(j.updated_at);
+  S.signedIn = !!j.signed_in;
+  writeLocalValuationOverrides(next);
+}
+
+// Loads the shared inputs; one request at a time (a call while one is in flight shares it).
+// Never rejects: without an answer the page keeps (or falls back to) this browser's edits.
+function loadSharedValuationInputs() {
+  const S = VALUATION_SHARED;
+  if (S.loading) return S.loading;
+  S.loading = (async () => {
+    try {
+      const r = await fetch('/api/valuation-inputs', { cache: 'no-store', credentials: 'same-origin' });
+      const j = await r.json();
+      if (!r.ok || !j || j.configured !== true || !j.inputs) throw new Error(`HTTP ${r.status}`);
+      valuationApplyShared(j);
+    } catch (e) {
+      if (S.mode === 'pending') { S.mode = 'local'; S.version++; }   // a later failure keeps the last shared read
+    } finally {
+      S.loading = null;
+      valuationSharedNotify();
+    }
+  })();
+  return S.loading;
+}
+
+// Sends the pending edits after VALUATION_SAVE_DELAY_MS without another
+function valuationScheduleSave() {
+  const S = VALUATION_SHARED;
+  clearTimeout(S.timer);
+  S.status = { state: 'saving', at: S.status.at, error: null };
+  S.timer = setTimeout(() => { S.timer = null; valuationFlushSaves(); }, VALUATION_SAVE_DELAY_MS);
+  valuationSharedNotify();
+}
+
+// PUTs each pending exchange's overrides now (also the drawer's Retry). An edit made
+// while a save is in flight is sent when it ends. A failure keeps the edit, pending.
+async function valuationFlushSaves() {
+  const S = VALUATION_SHARED;
+  if (S.saving) { S.again = true; return S.saving; }
+  const list = VALUATION_EXCHANGES.filter(ex => S.pending[ex]);
+  if (!list.length) return;
+  S.status = { state: 'saving', at: S.status.at, error: null };
+  valuationSharedNotify();
+  S.saving = (async () => {
+    let error = null;
+    for (const ex of list) {
+      delete S.pending[ex];
+      try {
+        const r = await fetch('/api/valuation-inputs', {
+          method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ exchange: ex, inputs: valuationPlainObject(S.inputs[ex]) }),
+        });
+        let j = null;
+        try { j = await r.json(); } catch (e) { /* no body */ }
+        if (r.status === 401) { S.signedIn = false; throw new Error('Signed out: sign in again to save'); }
+        if (!r.ok || !j || !j.inputs) throw new Error((j && j.error) || `HTTP ${r.status}`);
+        valuationApplyShared(j);
+      } catch (e) {
+        S.pending[ex] = true;
+        error = (e && e.message) || 'not saved';
+      }
+    }
+    S.status = error ? { state: 'error', at: S.status.at, error } : { state: 'saved', at: new Date(), error: null };
+  })();
+  try { await S.saving; } finally {
+    S.saving = null;
+    valuationSharedNotify();
+  }
+  if (S.again) {
+    S.again = false;
+    if (S.status.state !== 'error') await valuationFlushSaves();
+  }
+}
+
+// Team sign-in for the shared inputs: POST /api/team-login, then asks whether it took.
+// Resolves to null when signed in, else the reason to show.
+async function valuationTeamSignIn(password) {
+  try {
+    const r = await fetch('/api/team-login', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    if (r.status !== 204) {
+      let j = null;
+      try { j = await r.json(); } catch (e) { /* no body */ }
+      return r.status === 503 ? 'Team sign-in is not set up yet.' : (j && j.error) || `Sign-in failed (HTTP ${r.status}).`;
+    }
+    const c = await fetch('/api/team-login', { cache: 'no-store', credentials: 'same-origin' });
+    const j = await c.json();
+    VALUATION_SHARED.signedIn = !!(j && j.signed_in);
+    valuationSharedNotify();
+    return VALUATION_SHARED.signedIn ? null : 'Signed in, but this browser did not keep the session (cookies blocked?).';
+  } catch (e) {
+    return 'Could not reach the sign-in service.';
+  }
+}
+
+async function valuationTeamSignOut() {
+  try { await fetch('/api/team-login?logout=1', { method: 'POST', credentials: 'same-origin' }); } catch (e) { /* signed out here anyway */ }
+  VALUATION_SHARED.signedIn = false;
+  valuationSharedNotify();
 }
 
 const valuationSameInput = (a, b) => (a === null || b === null || typeof a === 'string' || typeof b === 'string') ? a === b : Math.abs(a - b) < 1e-9;
@@ -192,7 +385,7 @@ function valuationInputOk(k, x, latest) {
   return x > -100;
 }
 
-// The inputs in use for one exchange: { v: defaults with this browser's edits on top,
+// The inputs in use for one exchange: { v: defaults with the edits (readValuationOverrides) on top,
 // edited: the keys that differ from the defaults }. Unusable saved values are ignored
 // (latest: the latest data date, which a data-from date may not pass).
 function valuationInputsFor(defaults, overrides, ex, latest) {
@@ -645,6 +838,7 @@ async function buildValuation(ex) {
   const el = document.getElementById(`${ex}ValuationContent`);
   if (!el) return;
   const seq = ++VALUATION_BUILD_SEQ;
+  const shared = loadSharedValuationInputs();   // rendered from this browser's copy until it answers
   const [defaults, data, analysts] = await Promise.all([
     loadValuationDefaults(), valuationExchange(ex), ex === 'bse' ? loadBSEAnalystTargets() : [],
   ]);
@@ -666,7 +860,9 @@ async function buildValuation(ex) {
     strip.innerHTML = valuationTargetTiles(list, defaults, readValuationOverrides(), ex);
   };
   // Inputs are edited in the drawer (js/18-valuation-inputs.js): each edit re-renders this
+  let shownVersion = null;
   const render = () => {
+    shownVersion = VALUATION_SHARED.version;
     const open = !!el.querySelector('details.rx-val-how[open]');
     el.innerHTML = valuationTabHTML(ex, defaults, data.c, analysts, open);
     fillStrip();
@@ -680,6 +876,10 @@ async function buildValuation(ex) {
       if (e.target.closest && e.target.closest('[data-val-edit]') && el._valCtx) openValuationDrawer(el._valCtx);
     });
   }
+  // The shared inputs, once they answer, if they differ from what was drawn
+  shared.then(() => {
+    if (seq === VALUATION_BUILD_SEQ && currentExchange === ex && shownVersion !== VALUATION_SHARED.version) render();
+  });
   const rest = VALUATION_EXCHANGES.filter(e => e !== ex);
   await ensureFreshMarketData(rest.filter(e => !valuationOnShow(e)));
   const got = await Promise.all(rest.map(valuationExchange));

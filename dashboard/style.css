@@ -3817,3 +3817,46 @@ body.rx-drawer-on { overflow: hidden; }
 @media (max-width: 640px) {
   .rx-table.rx-scen th:first-child, .rx-table.rx-scen td:first-child { position: sticky; left: 0; z-index: 1; background: var(--rx-surface); box-shadow: inset -1px 0 0 var(--rx-rule); }
 }
+
+/* Valuation inputs drawer (js/18-valuation-inputs.js): who may edit the shared inputs,
+   the team sign-in and the save status; read-only inputs while signed out. Dark values
+   for any theme but data-theme="light", under the OS setting and an explicit dark theme. */
+:root {
+  --vi-locked-bg: #F1F1EE;
+  --vi-locked-ink: #62656D;
+  --vi-access-bg: #F6F8FC;
+  --vi-access-rule: #B9C9EE;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --vi-locked-bg: #24262B;
+    --vi-locked-ink: #9A9DA4;
+    --vi-access-bg: #1C2430;
+    --vi-access-rule: #3E5A8C;
+  }
+}
+:root[data-theme="dark"] {
+  --vi-locked-bg: #24262B;
+  --vi-locked-ink: #9A9DA4;
+  --vi-access-bg: #1C2430;
+  --vi-access-rule: #3E5A8C;
+}
+.rx-vi-access {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px;
+  margin: 10px 16px 4px; padding: 8px 10px; font-size: 12.5px; line-height: 1.4;
+  background: var(--vi-access-bg); border-left: 3px solid var(--vi-access-rule); color: var(--rx-ink-2);
+}
+.rx-vi-access:empty { display: none; }
+.rx-vi-status { color: var(--rx-muted); font-variant-numeric: tabular-nums; }
+.rx-vi-login { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; width: 100%; }
+.rx-vi-login[hidden], .rx-vi-access [hidden] { display: none; }
+.rx-vi-pw { display: flex; align-items: center; gap: 8px; }
+.rx-vi-pw .rx-in { width: 180px; text-align: left; }
+.rx-vi-err { flex-basis: 100%; color: var(--rx-neg); }
+.rx-vi-err:empty { display: none; }
+.rx-drawer .rx-in:disabled { background: var(--vi-locked-bg); color: var(--vi-locked-ink); cursor: not-allowed; }
+.rx-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+@media (max-width: 640px) {
+  .rx-vi-pw { flex: 1 1 100%; }
+  .rx-vi-pw .rx-in { flex: 1 1 auto; width: auto; min-height: 44px; }
+}

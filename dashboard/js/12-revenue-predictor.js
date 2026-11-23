@@ -757,7 +757,10 @@ function buildRevenuePredictor(ex) {
         const vd = await loadValuationDefaults();
         const out = body.querySelector('[data-rp-sent]');
         if (vd.error) { out.textContent = `Valuation inputs not loaded (${vd.error}).`; return; }
-        writeValuationOverrides(setValuationOverride(readValuationOverrides(), vd, ex, 'adr', adr));
+        if (!writeValuationOverrides(setValuationOverride(readValuationOverrides(), vd, ex, 'adr', adr))) {
+          out.innerHTML = `The valuation inputs are shared: sign in to edit them in the inputs on the <button type="button" class="rx-link" data-rx-goto="valuation">Valuation Model →</button>`;
+          return;
+        }
         out.innerHTML = `Set: ${name}’s ADR estimate is ₹${fmtNum(adr, 2)} Cr. <button type="button" class="rx-link" data-rx-goto="valuation">Open Valuation Model →</button>`;
       }
     });
