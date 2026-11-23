@@ -118,7 +118,8 @@ class PredictorMirrorsPipeline(unittest.TestCase):
 
 VALUATION_JS = ["valuationNum", "valuationIsoDate", "VALUATION_EXCHANGES", "VALUATION_METHODS", "VALUATION_EDITABLE", "VALUATION_STORAGE_KEY",
                 "valuationDefaultsFrom", "valuationSameInput", "valuationInputOk", "VALUATION_SHARED",
-                "valuationPlainObject", "readLocalValuationOverrides", "readValuationOverrides",
+                "valuationPlainObject", "readLocalValuationOverrides", "VALUATION_SHARED_CACHE_KEY",
+                "readSharedValuationCache", "readValuationOverrides",
                 "valuationInputsFor", "setValuationOverride", "valuationAdrPath", "valuationAdrModel",
                 "valuationRegression", "valuationRatio", "valuationTriangulate", "valuationModel"]
 SHARE_FIT_JS = ["computeRollingMA", "SHARE_GATE", "shareOlsStats", "shareHoldout", "shareGateReasons", "shareFitFrom",

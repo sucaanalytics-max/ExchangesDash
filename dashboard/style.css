@@ -3847,6 +3847,7 @@ body.rx-drawer-on { overflow: hidden; }
   background: var(--vi-access-bg); border-left: 3px solid var(--vi-access-rule); color: var(--rx-ink-2);
 }
 .rx-vi-access:empty { display: none; }
+.rx-vi-unpub { border-left-color: #D9A54A; }
 .rx-vi-status { color: var(--rx-muted); font-variant-numeric: tabular-nums; }
 .rx-vi-login { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; width: 100%; }
 .rx-vi-login[hidden], .rx-vi-access [hidden] { display: none; }

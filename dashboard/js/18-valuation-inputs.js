@@ -12,7 +12,8 @@
 // The edits are shared by every viewer (/api/valuation-inputs, the SHARED INPUTS store
 // in js/14-valuation.js): read-only until a team member signs in with the shared
 // password, then saved for everyone a second after typing stops. Without the API
-// they are saved in this browser only, as the drawer says.
+// they are saved in this browser only, as the drawer says; signed in later, the drawer
+// offers to publish them (or discard them) when they differ from the shared inputs.
 
 // Table rows: sec = section heading; key = editable input (a number, or a date with
 // type 'date'); out = read-only figure (valuationInputsCell); note = the line under the label
@@ -182,6 +183,7 @@ function openValuationDrawer(ctx) {
     title: `${name} valuation inputs`,
     body: `<p class="rx-drawer-note" data-vd-note></p>
       <div class="rx-vi-access" data-vd-access></div>
+      <div class="rx-vi-access rx-vi-unpub" data-vd-unpub></div>
       ${body}
       <div class="rx-drawer-acts"><span data-vd-edited></span><span data-vd-out-link></span></div>`,
     onClose: () => S.listeners.delete(listener),
@@ -217,6 +219,18 @@ function openValuationDrawer(ctx) {
     }
     const st = q('[data-vd-status]');
     if (st) st.innerHTML = valuationSaveStatusHTML(S, ex);
+    // Signed in: edits this browser kept on its own (made without the API) that the shared
+    // inputs lack, offered for publishing
+    const unpub = kind === 'in' ? valuationUnpublished(readLocalValuationOverrides(), S.inputs) : [];
+    const box = q('[data-vd-unpub]'), names = unpub.map(e => SHARE_EXCHANGE_NAMES[e]).join(', ');
+    if (box.dataset.names !== names) {
+      box.dataset.names = names;
+      box.innerHTML = unpub.length
+        ? `<span class="rx-vi-msg">This browser has its own edits for ${escHtml(names)} that differ from the shared inputs.</span>
+          <button type="button" class="rx-btn" data-vd-publish>Publish this browser’s edits</button>
+          <button type="button" class="rx-link" data-vd-discard>Discard</button>`
+        : '';
+    }
   }
 
   // The store changed (a load, a save, sign-in or out): show its inputs and access, and
@@ -327,7 +341,20 @@ function openValuationDrawer(ctx) {
       q('[data-vd-signin]').focus();
       return;
     }
-    if (t.closest('[data-vd-signout]')) { valuationTeamSignOut(); return; }
+    if (t.closest('[data-vd-signout]')) {
+      // Unsaved edits are sent first; when that fails, signing out drops them, so ask
+      valuationTeamSignOut().then(done => {
+        if (!done && confirm('Some edits could not be saved and will be lost if you sign out. Sign out anyway?')) valuationTeamSignOut({ force: true });
+      });
+      return;
+    }
+    if (t.closest('[data-vd-publish]')) {
+      const b = t.closest('[data-vd-publish]');
+      b.disabled = true;
+      valuationPublishLocal().finally(() => { if (b.isConnected) b.disabled = false; });
+      return;
+    }
+    if (t.closest('[data-vd-discard]')) { valuationDiscardLocal(); return; }
     if (t.closest('[data-vd-retry]')) { valuationFlushSaves(); return; }
   });
   el.addEventListener('click', e => {

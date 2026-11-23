@@ -9,8 +9,8 @@
  *   GET  (anyone)       → 200 {configured: true, signed_in, inputs: {bse: {…}, mcx: {…}, nse: {…}},
  *                              updated_at: {bse: iso | null, …}}
  *   PUT  (team session, /api/team-login) body {exchange, inputs}
- *        → replaces that exchange's overrides, logs before and after to
- *          `valuation_inputs_log`, and answers as GET
+ *        → replaces that exchange's overrides (an upsert; the table's trigger logs
+ *          before and after to `valuation_inputs_log`), and answers as GET
  *        → 401 signed out; 400 {error, bad: [keys]} for an unknown exchange or
  *          key, or a value the dashboard would not accept
  *
@@ -79,7 +79,9 @@ async function sb(path, opts = {}) {
     err.status = r.status;
     throw err;
   }
-  return r.status === 204 ? null : r.json();
+  // return=minimal writes (201) and 204s have no body: null, not a JSON error
+  const text = await r.text();
+  return text ? JSON.parse(text) : null;
 }
 
 // Every exchange's overrides and last change, from the table's rows
@@ -95,25 +97,14 @@ async function readAll(signedIn) {
   return { configured: true, signed_in: signedIn, inputs, updated_at: updated };
 }
 
-// Key-order-independent equality of two override objects
-const canonical = o => JSON.stringify(Object.keys(o || {}).sort().map(k => [k, o[k]]));
-
+// Replaces one exchange's overrides. The table's trigger (valuation_inputs_log_change in
+// valuation_sync_schema.sql) logs before and after in the same transaction.
 async function writeOne(req, exchange, inputs) {
-  const before = await sb(`valuation_inputs?select=inputs&exchange=eq.${exchange}`);
-  const prev = (before && before[0] && before[0].inputs) || {};
-  const by = changedBy(req);
   await sb('valuation_inputs?on_conflict=exchange', {
     method: 'POST',
-    headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
-    body: JSON.stringify([{ exchange, inputs, updated_at: new Date().toISOString(), updated_by: by }]),
+    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify([{ exchange, inputs, updated_at: new Date().toISOString(), updated_by: changedBy(req) }]),
   });
-  if (canonical(prev) !== canonical(inputs)) {
-    await sb('valuation_inputs_log', {
-      method: 'POST',
-      headers: { Prefer: 'return=minimal' },
-      body: JSON.stringify([{ exchange, before: prev, after: inputs, changed_by: by }]),
-    });
-  }
 }
 
 module.exports = async function handler(req, res) {
@@ -145,6 +136,7 @@ module.exports = async function handler(req, res) {
   }
 };
 
+module.exports.sb = sb;                           // tests/test_valuation_inputs_api.py
 module.exports.validateInputs = validateInputs;   // tests/test_valuation_inputs_api.py
 module.exports.EXCHANGES = EXCHANGES;             // tests/test_valuation_inputs_api.py
 module.exports.EDITABLE = EDITABLE;               // tests/test_valuation_inputs_api.py

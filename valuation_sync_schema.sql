@@ -7,7 +7,8 @@
 --   valuation_inputs      one row per exchange: the sparse overrides of
 --                         dashboard/data/valuation_inputs.json, the same shape the
 --                         browser kept, e.g. {"pe1": 48, "adr": null}
---   valuation_inputs_log  every change, before and after, for audit
+--   valuation_inputs_log  every change, before and after, for audit: written by
+--                         the trigger below in the same transaction as the change
 --   excel_sync_runs       runs of the Excel mirror (scheduled or from the
 --                         dashboard's Refresh Excel button); created now, used
 --                         from the Excel mirror PR on
@@ -70,12 +71,34 @@ comment on table public.excel_sync_runs is
 create index if not exists excel_sync_runs_latest
   on public.excel_sync_runs (requested_at desc);
 
+-- The audit log, atomic with the change: one row per insert or update that changes
+-- the inputs (an insert's "before" is {}); changed_by is the writer's updated_by.
+create or replace function public.valuation_inputs_log_change()
+returns trigger language plpgsql set search_path = public as $$
+declare
+  prev jsonb := case when tg_op = 'UPDATE' then old.inputs else '{}'::jsonb end;
+begin
+  if new.inputs is not distinct from prev then
+    return new;
+  end if;
+  insert into public.valuation_inputs_log (exchange, before, after, changed_by)
+  values (new.exchange, prev, new.inputs, new.updated_by);
+  return new;
+end;
+$$;
+
+drop trigger if exists valuation_inputs_log_change on public.valuation_inputs;
+create trigger valuation_inputs_log_change
+  after insert or update on public.valuation_inputs
+  for each row execute function public.valuation_inputs_log_change();
+
 -- Service role only: RLS on with no policies, nothing granted to the public roles
 alter table public.valuation_inputs     enable row level security;
 alter table public.valuation_inputs_log enable row level security;
 alter table public.excel_sync_runs      enable row level security;
 revoke all on public.valuation_inputs, public.valuation_inputs_log, public.excel_sync_runs from anon, authenticated;
 revoke all on sequence public.valuation_inputs_log_id_seq, public.excel_sync_runs_id_seq from anon, authenticated;
+revoke all on function public.valuation_inputs_log_change() from public, anon, authenticated;
 
 commit;
 
