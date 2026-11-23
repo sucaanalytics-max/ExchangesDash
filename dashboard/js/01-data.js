@@ -482,8 +482,13 @@ function monthSortKey(label) {
 }
 
 function buildCombinedRawData(exList) {
-  const present = exList.filter(ex => MARKET_RAW[ex]);
-  const raws = present.map(ex => MARKET_RAW[ex]);
+  return combineRawData(exList.filter(ex => MARKET_RAW[ex]).map(ex => ({ exchange: ex, raw: MARKET_RAW[ex] })));
+}
+
+// The combined raw data of [{ exchange, raw }] (raw: a dashboard data file, or
+// the same shape built elsewhere, e.g. the contracts view, 23-contracts-view.js)
+function combineRawData(entries) {
+  const raws = entries.map(e => e.raw);
   if (!raws.length) return { quarterly: [], monthly: [], daily: [], daily_all: [], components: [] };
 
   const segFields = ['total_rev', 'opt_rev', 'fut_rev', 'cash_rev'];
@@ -527,11 +532,11 @@ function buildCombinedRawData(exList) {
   // summed rows above: FY, weekday × quarter and 125-day averages (see
   // revenueSources), the header's last trading date, and the fee-basis /
   // modelled-history labels (periodFlags), which travel with each exchange.
-  const components = present.map(ex => ({
-    exchange:  ex,
-    quarterly: MARKET_RAW[ex].quarterly || [],
-    monthly:   MARKET_RAW[ex].monthly || [],
-    daily_all: MARKET_RAW[ex].daily_all || [],
+  const components = entries.map(({ exchange, raw }) => ({
+    exchange,
+    quarterly: raw.quarterly || [],
+    monthly:   raw.monthly || [],
+    daily_all: raw.daily_all || [],
   }));
 
   return { quarterly, monthly, daily: [], daily_all: [], components };
@@ -539,8 +544,14 @@ function buildCombinedRawData(exList) {
 
 // ── Build combined ENRICHED_DATA from pre-loaded enriched JSONs ───────────────
 function buildCombinedEnrichedData(exList) {
+  return combineEnrichedData(exList.map(ex => MARKET_DATA[ex]));
+}
+
+// The combined enriched data of a list of enriched objects; an exchange
+// without a segment (null) adds nothing to it
+function combineEnrichedData(enrList) {
   const combineOneSeg = (segKey) => {
-    const sts = exList.map(ex => MARKET_DATA[ex]?.[segKey]).filter(Boolean);
+    const sts = enrList.map(enr => enr?.[segKey]).filter(Boolean);
     if (!sts.length) return null;
     const sum  = (...vals) => vals.reduce((a, v) => a + (v || 0), 0);
     const chg  = (cur, prev) => prev ? (cur - prev) / prev : null;

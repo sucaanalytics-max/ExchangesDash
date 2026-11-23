@@ -3589,6 +3589,105 @@ th[aria-sort="ascending"] .mtf-bk-sort::after { content: " ↑"; }
   :where(.cc-ctl) div.rx-seg button { background: var(--rx-surface); }   /* below :hover and the pressed state */
 }
 
+/* Revenue Summary ₹ ADR | Contracts toggle (js/23-contracts-view.js) and the
+   page in contracts (js/10-revenue-summary.js): the toggle sits after the
+   segment sub-tabs (the live cards stay right); in Contracts mode Total and
+   Options add a contracts-per-₹ 1 Cr-premium column (.xl-has-ratio), which
+   widens the period table; phones scroll it inside .xl-main-row, as the
+   period table already does below ~370px, so the page never scrolls sideways. */
+:root {
+  --rev-unit-ink: #16181D;
+  --rev-unit-ink-2: #3B3E46;
+  --rev-unit-rule: #CFCFC8;
+  --rev-unit-surface: #FFFFFF;
+  --rev-unit-hover: #F1F1EE;
+  --rev-unit-on-ink: #FFFFFF;
+  --rev-unit-focus: #2B5CC8;
+  --rev-unit-note: #7A4A00;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --rev-unit-ink: #F2F2F0;
+    --rev-unit-ink-2: #C9CAC5;
+    --rev-unit-rule: #4A4D55;
+    --rev-unit-surface: #1C1E23;
+    --rev-unit-hover: #2A2D33;
+    --rev-unit-on-ink: #16181D;
+    --rev-unit-focus: #8FB0F5;
+    --rev-unit-note: #F0C27A;
+  }
+}
+:root[data-theme="dark"] {
+  --rev-unit-ink: #F2F2F0;
+  --rev-unit-ink-2: #C9CAC5;
+  --rev-unit-rule: #4A4D55;
+  --rev-unit-surface: #1C1E23;
+  --rev-unit-hover: #2A2D33;
+  --rev-unit-on-ink: #16181D;
+  --rev-unit-focus: #8FB0F5;
+  --rev-unit-note: #F0C27A;
+}
+.rev-unit {
+  margin-right: auto;   /* beside the sub-tabs; the live cards keep the right edge */
+  --rx-ink: var(--rev-unit-ink);
+  --rx-ink-2: var(--rev-unit-ink-2);
+  --rx-rule-2: var(--rev-unit-rule);
+  --rx-surface: var(--rev-unit-surface);
+  --rx-model: var(--rev-unit-focus);
+}
+.rev-unit[hidden],
+.sub-tab[hidden] { display: none; }
+.rev-unit .rx-seg button:hover { background: var(--rev-unit-hover); }
+.rev-unit .rx-seg button[aria-pressed="true"] { background: var(--rev-unit-ink); color: var(--rev-unit-on-ink); }
+
+/* NSE+BSE Futures in contracts: NSE only */
+.rs-unit-note {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--rev-unit-note);
+}
+/* BSE Futures in contracts: none, shown as "—" */
+.rs-unit-empty {
+  margin: var(--space-3) 0 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* Contracts per ₹ 1 Cr of option premium column */
+.xl-period-table.xl-has-ratio { flex: 0 0 40%; width: 40%; }
+.xl-has-ratio .xl-col-period { width: 33%; }
+.xl-has-ratio .xl-col-val    { width: 17%; }
+.xl-has-ratio .xl-col-chg1   { width: 12%; }
+.xl-has-ratio .xl-col-chg2   { width: 12%; }
+.xl-has-ratio .xl-col-ratio  { width: 13%; }
+.xl-has-ratio .xl-col-exp    { width: 13%; }
+.xl-exp-multi.xl-has-ratio .xl-col-period { width: 31%; }
+.xl-exp-multi.xl-has-ratio .xl-col-val    { width: 16%; }
+.xl-exp-multi.xl-has-ratio .xl-col-chg1   { width: 11%; }
+.xl-exp-multi.xl-has-ratio .xl-col-chg2   { width: 12%; }
+.xl-exp-multi.xl-has-ratio .xl-col-exp    { width: 17%; }
+.xl-has-ratio tr.xl-col-hdr td { padding-left: 3px; padding-right: 3px; }
+.xl-period-table td.xl-ratio { padding-left: 3px; padding-right: 6px; }
+@media (max-width: 900px) {
+  .xl-period-table.xl-has-ratio { flex: none; width: 100%; }
+}
+@media (max-width: 640px) {
+  .xl-period-table.xl-has-ratio { min-width: 440px; }
+  .xl-has-ratio .xl-col-period,
+  .xl-exp-multi.xl-has-ratio .xl-col-period { width: 38%; }
+  .xl-has-ratio .xl-col-val,
+  .xl-exp-multi.xl-has-ratio .xl-col-val    { width: 16%; }
+  .xl-has-ratio .xl-col-chg1,
+  .xl-exp-multi.xl-has-ratio .xl-col-chg1   { width: 11%; }
+  .xl-has-ratio .xl-col-chg2,
+  .xl-exp-multi.xl-has-ratio .xl-col-chg2   { width: 11%; }
+  .xl-has-ratio .xl-col-ratio  { width: 12%; }
+  .xl-has-ratio .xl-col-exp,
+  .xl-exp-multi.xl-has-ratio .xl-col-exp    { width: 12%; }
+}
+
 /* India VIX (js/21-vix.js): the ticker after the live cards (.lvc above) and the
    VIX panel below the Revenue Summary sub-tabs. Dark values for any theme but
    data-theme="light", under the OS setting and an explicit dark theme. */
