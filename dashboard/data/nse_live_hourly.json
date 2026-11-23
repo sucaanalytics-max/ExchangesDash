@@ -243,14 +243,24 @@
       "futures_revenue": 4.02,
       "predicted_eod": 127.1,
       "pred_method": "historical/pre_expiry/wd0"
+    },
+    {
+      "captured_ist": "2026-11-23T11:15:26",
+      "elapsed_minutes": 120,
+      "total_revenue": 49.65,
+      "cash_revenue": 3.28,
+      "options_revenue": 42.25,
+      "futures_revenue": 4.12,
+      "predicted_eod": 126.63,
+      "pred_method": "historical/pre_expiry/wd0"
     }
   ],
   "india_vix": {
-    "last": 18.17,
+    "last": 18.26,
     "previous_close": 17.32,
-    "change": 0.85,
-    "pct_change": 4.87,
-    "as_of": "2026-11-23T05:40:29Z",
+    "change": 0.94,
+    "pct_change": 5.41,
+    "as_of": "2026-11-23T05:45:26Z",
     "source": "nse",
     "trade_date": "2026-11-23"
   }
