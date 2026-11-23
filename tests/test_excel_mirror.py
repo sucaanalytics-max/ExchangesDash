@@ -586,5 +586,33 @@ class Targets(unittest.TestCase):
         self.assertEqual(m["nse"]["F10"], ("A10", "Upside - Current", ["d2"]))
 
 
+class WorkflowFile(unittest.TestCase):
+    """.github/workflows/excel-mirror.yml (CI has no YAML parser: text checks)."""
+
+    def setUp(self):
+        self.text = (helpers.ROOT / ".github" / "workflows" / "excel-mirror.yml").read_text()
+
+    def test_runs_queue_and_never_cancel(self):
+        self.assertIn("group: excel-mirror", self.text)
+        self.assertIn("cancel-in-progress: false", self.text)
+
+    def test_declares_the_dispatch_inputs(self):
+        for name in ("trigger", "run_id", "dry_run", "check_only"):
+            self.assertRegex(self.text, rf"\n      {name}:\n")
+        self.assertIn("- cron: '30 19 * * *'", self.text)
+
+    def test_env_and_secrets(self):
+        for line in ("ENABLE_EXCEL_MIRROR: ${{ vars.ENABLE_EXCEL_MIRROR }}", "EXCEL_TARGETS: ${{ vars.EXCEL_TARGETS }}",
+                     "EXCEL_TARGETS_DRYRUN: ${{ vars.EXCEL_TARGETS_DRYRUN }}", "SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}",
+                     "MSGRAPH_CLIENT_SECRET: ${{ secrets.MSGRAPH_CLIENT_SECRET }}", "uses: actions/setup-node@"):
+            self.assertIn(line, self.text)
+
+    def test_inputs_reach_the_shell_only_through_env(self):
+        for line in self.text.splitlines():
+            if "inputs." in line and "${{" in line:
+                with self.subTest(line=line.strip()):
+                    self.assertRegex(line.strip(), r"^[A-Z_]+: \$\{\{ inputs\.")
+
+
 if __name__ == "__main__":
     unittest.main()

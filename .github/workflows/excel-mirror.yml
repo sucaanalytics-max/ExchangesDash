@@ -1,0 +1,104 @@
+name: Excel Mirror
+
+# Writes the shared valuation inputs, the dashboard's valuation results and its data
+# into the four workbooks on OneDrive / SharePoint: scripts/excel_mirror.py
+# (docs/EXCEL_MIRROR.md has the setup, the cell mapping and the sheet layouts).
+#
+# Daily at 01:00 IST: Vercel Cron dispatches it on time (dashboard/api/trigger-scheduled.js,
+# trigger: scheduled); the schedule below is GitHub's late fallback, and a repeat run
+# rewrites the same values. On demand: the dashboard's Refresh Excel button
+# (dashboard/api/excel-refresh.js) creates a queued excel_sync_runs row and dispatches
+# this with trigger: manual and its run_id.
+#
+# Writes nothing unless the repository variable ENABLE_EXCEL_MIRROR is 'true' (a manual
+# run's row is then closed as failed, so the dashboard does not wait on it).
+# dry_run writes to the test copies in EXCEL_TARGETS_DRYRUN instead; check_only reads
+# each target's metadata, sheets and label cells and writes nothing (both run whatever
+# the variable says). Commits nothing, so Vercel never builds for it.
+
+on:
+  schedule:
+    # 19:30 UTC = 01:00 IST, every day. Keep equal to the excel-mirror slot in
+    # dashboard/api/trigger-scheduled.js and dashboard/vercel.json.
+    - cron: '30 19 * * *'
+  workflow_dispatch:
+    inputs:
+      trigger:
+        description: 'scheduled (the daily run) or manual'
+        required: false
+        default: 'manual'
+        type: choice
+        options:
+          - scheduled
+          - manual
+      run_id:
+        description: 'Set by /api/excel-refresh: the excel_sync_runs row of this run. Leave empty by hand.'
+        required: false
+        default: ''
+        type: string
+      dry_run:
+        description: 'Write to the test copies (EXCEL_TARGETS_DRYRUN)'
+        required: false
+        default: false
+        type: boolean
+      check_only:
+        description: 'Read only: metadata, sheets and label checks of each target'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# Runs queue (a button press during the daily run waits for it), never cancel each other
+concurrency:
+  group: excel-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ENABLE_EXCEL_MIRROR: ${{ vars.ENABLE_EXCEL_MIRROR }}
+      EXCEL_TARGETS: ${{ vars.EXCEL_TARGETS }}
+      EXCEL_TARGETS_DRYRUN: ${{ vars.EXCEL_TARGETS_DRYRUN }}
+      MSGRAPH_TENANT_ID: ${{ secrets.MSGRAPH_TENANT_ID }}
+      MSGRAPH_CLIENT_ID: ${{ secrets.MSGRAPH_CLIENT_ID }}
+      MSGRAPH_CLIENT_SECRET: ${{ secrets.MSGRAPH_CLIENT_SECRET }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main      # the latest committed data, whichever run this is
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # The valuation results come from the dashboard's own JS, run in Node
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: pip install --quiet requests openpyxl python-dotenv
+
+      # Inputs reach the shell only through env
+      - name: Mirror to Excel
+        env:
+          TRIGGER: ${{ inputs.trigger || 'scheduled' }}
+          RUN_ID: ${{ inputs.run_id }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          CHECK_ONLY: ${{ inputs.check_only }}
+        run: |
+          args=(--trigger "$TRIGGER")
+          if [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then args+=(--run-id "$RUN_ID"); fi
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          if [ "$CHECK_ONLY" = "true" ]; then args+=(--check); fi
+          python scripts/excel_mirror.py "${args[@]}"

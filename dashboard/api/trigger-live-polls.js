@@ -33,9 +33,8 @@
  */
 
 const crypto = require('crypto');
+const { dispatchWorkflow } = require('./_github_dispatch');
 
-const REPO = 'sucaanalytics-max/ExchangesDash';
-const GITHUB_API = `https://api.github.com/repos/${REPO}/actions/workflows`;
 const WORKFLOWS = ['nse-live.yml', 'bse-live.yml', 'mcx-live.yml'];
 
 const SESSION_START_MIN = 8 * 60 + 55;
@@ -74,25 +73,10 @@ module.exports = async function handler(req, res) {
     return res.status(500).json({ error: 'GITHUB_DISPATCH_PAT env var not set' });
   }
 
-  const results = await Promise.allSettled(
-    WORKFLOWS.map(async (wf) => {
-      const ghRes = await fetch(`${GITHUB_API}/${wf}/dispatches`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${pat}`,
-          'Accept':        'application/vnd.github+json',
-          'User-Agent':    'nse-cloud-pipeline-cron-trigger',
-        },
-        body: JSON.stringify({ ref: 'main' }),
-      });
-      // GitHub returns 204 No Content on a successful dispatch
-      return { workflow: wf, status: ghRes.status, ok: ghRes.ok };
-    })
-  );
-
-  const summary = results.map((r) =>
-    r.status === 'fulfilled' ? r.value : { error: r.reason?.message || String(r.reason) }
-  );
+  // dispatchWorkflow never rejects: a network error comes back as ok: false
+  const summary = (await Promise.all(
+    WORKFLOWS.map((wf) => dispatchWorkflow(pat, wf, null, 'nse-cloud-pipeline-cron-trigger'))
+  )).map(({ workflow, status, ok, detail }) => (status ? { workflow, status, ok } : { workflow, ok, error: detail }));
   const allOk = summary.every((s) => s.ok);
   console.log(`trigger-live-polls: ${caller}, dispatch ${summary.map((s) => `${s.workflow || '?'}=${s.status || s.error}`).join(' ')}`);
 
