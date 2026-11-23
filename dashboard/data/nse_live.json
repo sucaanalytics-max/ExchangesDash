@@ -1,16 +1,16 @@
 {
-  "updated_at": "2026-11-23T03:30:23Z",
+  "updated_at": "2026-11-23T03:35:30Z",
   "market_status": {
     "marketState": [
       {
         "market": "Capital Market",
         "marketStatus": "Open",
-        "tradeDate": "20-Nov-2026 15:30",
+        "tradeDate": "23-Nov-2026 09:05",
         "index": "NIFTY 50",
-        "last": 25800.6,
-        "variation": 286.2999999999993,
-        "percentChange": 1.12,
-        "marketStatusMessage": "Normal Market has Closed"
+        "last": 25960.1,
+        "variation": 159.5,
+        "percentChange": 0.62,
+        "marketStatusMessage": "Market in Pre-Open session"
       },
       {
         "market": "Currency",
@@ -20,7 +20,7 @@
         "last": "",
         "variation": "",
         "percentChange": "",
-        "marketStatusMessage": "Market is Closed"
+        "marketStatusMessage": "Market is Open"
       },
       {
         "market": "Commodity",
@@ -30,7 +30,7 @@
         "last": "",
         "variation": "",
         "percentChange": "",
-        "marketStatusMessage": "Market is Closed"
+        "marketStatusMessage": "Market is Open"
       },
       {
         "market": "Debt",
@@ -40,28 +40,28 @@
         "last": "",
         "variation": "",
         "percentChange": "",
-        "marketStatusMessage": "Market is Closed"
+        "marketStatusMessage": "Market is Open"
       },
       {
         "index": "NIFTY50 USD",
-        "last": 9646.45,
-        "change": 170.5,
-        "percentChange": 1.79,
-        "timestamp": "20-Nov-2026 15:40"
+        "last": 9721.7,
+        "change": 75.31000000000131,
+        "percentChange": 0.78,
+        "timestamp": "23-Nov-2026 09:05"
       },
       {
         "market": "currencyfuture",
         "marketStatus": "Open",
         "tradeDate": "23-Nov-2026",
         "index": "",
-        "last": "92.6400",
+        "last": "92.4700",
         "variation": "",
         "percentChange": "",
-        "marketStatusMessage": "Market is Closed",
+        "marketStatusMessage": "Market is Open",
         "expiryDate": "26-Nov-2026",
         "underlying": "USDINR",
-        "updated_time": "20-Nov-2026 17:05",
-        "tradeDateFormatted": "20-Nov-2026 17:05",
+        "updated_time": "23-Nov-2026 09:05",
+        "tradeDateFormatted": "23-Nov-2026 09:05",
         "slickclass": "slick-item"
       }
     ],
@@ -88,24 +88,24 @@
       "status": "CLOSE"
     },
     "giftnifty": {
-      "CONTRACTSTRADED": 4981,
-      "DAYCHANGE": 157,
+      "CONTRACTSTRADED": 5384,
+      "DAYCHANGE": 151.5,
       "EXPIRYDATE": "29-Dec-2026",
       "INSTRUMENTTYPE": "FUTIDX",
-      "LASTPRICE": 26112,
+      "LASTPRICE": 26106.5,
       "OPTIONTYPE": "-",
-      "PERCHANGE": 0.6,
+      "PERCHANGE": 0.58,
       "STRIKEPRICE": 0,
       "SYMBOL": "NIFTY",
-      "TIMESTMP": "23-Nov-2026 08:57",
+      "TIMESTMP": "23-Nov-2026 09:03",
       "id": "0/NIFTYFUTIDX29-Dec-2026--"
     },
     "niftyusd": {
       "index": "NIFTY50 USD",
-      "last": 9646.45,
-      "change": 170.5,
-      "percentChange": 1.79,
-      "timestamp": "20-Nov-2026 15:40"
+      "last": 9721.7,
+      "change": 75.31000000000131,
+      "percentChange": 0.78,
+      "timestamp": "23-Nov-2026 09:05"
     }
   },
   "revenue": {
@@ -445,12 +445,12 @@
     "pct_change": 1.2
   },
   "india_vix": {
-    "last": 17.33,
-    "previous_close": 16.11,
-    "change": 1.22,
-    "pct_change": 7.54,
-    "as_of": "2026-11-23T03:30:23Z",
+    "last": 17.32,
+    "previous_close": 17.32,
+    "change": 0.0,
+    "pct_change": 7.51,
+    "as_of": "2026-11-23T03:35:30Z",
     "source": "nse",
-    "trade_date": "2026-11-20"
+    "trade_date": "2026-11-23"
   }
 }
