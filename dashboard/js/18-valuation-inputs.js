@@ -5,7 +5,7 @@
 // VALUATION INPUTS — a side drawer on the Valuation Model tab (js/14-valuation.js)
 // ========================
 // The editable inputs of the exchange on show (ADR estimate, QoQ ADR growth, P/E,
-// method weights, the regression's data-from date), over the defaults in
+// discount rates, method weights, the regression's data-from date), over the defaults in
 // dashboard/data/valuation_inputs.json; under them, folded, what they feed (the ADR
 // reference, the fixed inputs, the fit from that date). Each edit re-renders the
 // Valuation Model behind the drawer. The model is valuationModel in js/14-valuation.js.
@@ -27,6 +27,8 @@ function valuationInputsRows(qLabel, fy) {
     { key: 'pe0', label: 'P/E bear, ×', step: 1, note: `on ${y1}E EPS` },
     { key: 'pe1', label: 'P/E base, ×', step: 1 },
     { key: 'pe2', label: 'P/E bull, ×', step: 1 },
+    { key: 'd1', label: `Discount ${y1} → ${y0} end, %`, step: 0.5, note: 'ADR model targets' },
+    { key: 'd2', label: `Discount ${y0} end → today, %`, step: 0.5 },
     { key: 'w0', label: 'Weight · Regression, %', step: 5 },
     { key: 'w1', label: 'Weight · Ratio Analysis, %', step: 5 },
     { key: 'w2', label: 'Weight · ADR model, %', step: 5 },
@@ -41,8 +43,6 @@ function valuationInputsRows(qLabel, fy) {
     { out: 'margin', label: 'PAT margin' },
     { out: 'days', label: `Sessions in ${y1}` },
     { out: 'shares', label: 'Shares outstanding, Cr' },
-    { out: 'd1', label: `Discount ${y1} → ${y0}` },
-    { out: 'd2', label: `Discount ${y0} → today` },
     { sec: 'Regression and ratio · 45-session fit' },
     { key: 'from', type: 'date', label: 'Regression data from', note: 'revenue and prices from this date, the 45 DMA built from it; blank = the published fit (its own start, MA over all revenue)' },
     { out: 'first', label: 'First point in the fit', note: 'the close after the 45th session from the date' },
@@ -73,8 +73,6 @@ function valuationInputsCell(key, d, v, m) {
     case 'margin': return `${fmtNum(v.margin, 0)} %`;
     case 'days': return fmtNum(v.days, 0);
     case 'shares': return fmtNum(SHARES_OUTSTANDING_CR[d.ex].value, 2);
-    case 'd1': return `${fmtNum(v.d1, 0)} %`;
-    case 'd2': return `${fmtNum(v.d2, 0)} %`;
   }
   if (!c) return dash;
   switch (key) {

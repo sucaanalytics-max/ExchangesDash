@@ -211,6 +211,8 @@ class ValuationInputsApi(unittest.TestCase):
             ({"exchange": "bse", "inputs": {"pe1": 0, "w0": -1, "g": -100, "adr": 0}}, ["adr", "g", "pe1", "w0"]),
             ({"exchange": "bse", "inputs": {"pe2": "48", "from": "2025-02-30"}}, ["from", "pe2"]),
             ({"exchange": "bse", "inputs": {"from": "2999-01-01"}}, ["from"]),
+            ({"exchange": "bse", "inputs": {"d1": -1, "d2": 100}}, ["d1", "d2"]),
+            ({"exchange": "nse", "inputs": {"d1": "x", "d2": 9}}, ["d1"]),
             ({"exchange": "bse", "inputs": [1, 2]}, ["inputs"]),
             ({"exchange": "bse"}, ["inputs"]),
         ]
@@ -250,6 +252,11 @@ class ValuationInputsApi(unittest.TestCase):
         self.assertEqual(got["out"][0]["status"], 200)
         self.assertEqual(got["out"][0]["body"]["inputs"]["mcx"], {"g": 4})
         self.assertEqual(got["db"]["log"][0]["before"], {})
+
+    def test_put_accepts_discount_rates(self):
+        got = run([put("nse", {"d1": 0, "d2": 12.5})], rows=json.loads(json.dumps(ROWS)))
+        self.assertEqual(got["out"][0]["status"], 200)
+        self.assertEqual(got["out"][0]["body"]["inputs"]["nse"], {"d1": 0, "d2": 12.5})
 
     def test_an_empty_supabase_answer_is_not_an_error(self):
         """PostgREST answers return=minimal writes 201 and deletes 204 with no body:
@@ -295,6 +302,7 @@ PARITY = [("adr", v) for v in (None, 0, -1, 0.01, 72.5, "70", True)] \
     + [("g", v) for v in (-100, -99.9, 0, 4.5, None, "3")] \
     + [(k, v) for k in ("pe0", "pe1", "pe2") for v in (0, -5, 0.1, 48, None, "48")] \
     + [(k, v) for k in ("w0", "w1", "w2") for v in (-0.01, 0, 45, 100, None)] \
+    + [(k, v) for k in ("d1", "d2") for v in (-1, -0.01, 0, 9, 18.5, 99.99, 100, 150, None, "x", "18", True)] \
     + [("from", v) for v in (None, "2025-01-01", "1899-12-31", "1900-01-01", "2025-02-30", "2025-1-1", "", 20250101, "2024-02-29")]
 
 

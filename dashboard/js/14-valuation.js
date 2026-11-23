@@ -107,11 +107,14 @@ function safeHttpUrl(u) {
 const VALUATION_EXCHANGES = ['bse', 'mcx', 'nse'];
 // Row keys and labels of the 3 × 3 tables, in the order of the weights w0 / w1 / w2
 const VALUATION_METHODS = [['reg', 'Regression'], ['ratio', 'Ratio Analysis'], ['adr', 'ADR model']];
-// The inputs the drawer edits; the rest (oi, margin, days, d1, d2) are fixed.
+// The inputs the drawer edits, in its order; the rest (oi, margin, days) are fixed.
+// d1 / d2: the discount rates, % (next-FY-end target → this FY's end → today; their
+// defaults are valuation_inputs.json's two global rates, edited per exchange).
 // from: the "Regression data from" date (ISO, null = all the share file's data).
-const VALUATION_EDITABLE = ['adr', 'g', 'pe0', 'pe1', 'pe2', 'w0', 'w1', 'w2', 'from'];
+const VALUATION_EDITABLE = ['adr', 'g', 'pe0', 'pe1', 'pe2', 'd1', 'd2', 'w0', 'w1', 'w2', 'from'];
 const VALUATION_INPUT_LABELS = {
   adr: 'ADR estimate', g: 'QoQ ADR growth', pe0: 'P/E bear', pe1: 'P/E base', pe2: 'P/E bull',
+  d1: 'Discount to FY end', d2: 'Discount to today',
   w0: 'Regression weight', w1: 'Ratio weight', w2: 'ADR model weight', from: 'Regression data from',
 };
 const VALUATION_STORAGE_KEY = 'valuation_inputs_v1';
@@ -528,14 +531,16 @@ async function valuationTeamSignOut(opts = {}) {
 const valuationSameInput = (a, b) => (a === null || b === null || typeof a === 'string' || typeof b === 'string') ? a === b : Math.abs(a - b) < 1e-9;
 
 // A usable value for an editable input: a blank (null) or positive ADR estimate, a P/E above
-// zero, a weight of zero or more, QoQ growth above −100 %, a blank (null) data-from date or
-// a real YYYY-MM-DD date not after `latest` (the latest data date, when known)
+// zero, a weight of zero or more, a discount rate of zero or more and below 100 %, QoQ
+// growth above −100 %, a blank (null) data-from date or a real YYYY-MM-DD date not after
+// `latest` (the latest data date, when known)
 function valuationInputOk(k, x, latest) {
   if (k === 'adr') return x === null || (valuationNum(x) && x > 0);
   if (k === 'from') return x === null || (valuationIsoDate(x) && !(latest && x > latest));
   if (!valuationNum(x)) return false;
   if (k[0] === 'p') return x > 0;
   if (k[0] === 'w') return x >= 0;
+  if (k === 'd1' || k === 'd2') return x >= 0 && x < 100;
   return x > -100;
 }
 
@@ -835,9 +840,9 @@ function valuationExcelRows(fy, d1, d2) {
     { key: 'pe', label: 'PE', block: 0, tint: 'green' },
     { key: 'fwd', label: `Price Target ${y1}`, block: 0, bold: true, boxed: true },
     { key: 'up', label: 'Upside', block: 0, tint: 'peach' },
-    { key: 'd1', label: `Discount ${fmtNum(d1, 0)} %`, block: 1 },
+    { key: 'd1', label: `Discount ${valuationPct(d1)}`, block: 1 },
     { key: 'mid', label: `Target Price ${y0}`, block: 1, bold: true },
-    { key: 'd2', label: `Discount ${fmtNum(d2, 0)} %`, block: 2 },
+    { key: 'd2', label: `Discount ${valuationPct(d2)}`, block: 2 },
     { key: 'now', label: 'Target Price Current', block: 2, bold: true },
   ];
 }
@@ -856,9 +861,9 @@ function valuationExcelCells(a, v, cmp) {
     pe: each(i => `${fmtNum(a.pe[i], 0)}×`),
     fwd: each(i => n0(a.fwd[i])),
     up: each(i => a.fwd[i] != null && cmp ? rxSignedPct(a.fwd[i] / cmp - 1, 0) : '—'),
-    d1: each(() => `÷ ${fmtNum(1 + v.d1 / 100, 2)}`),
+    d1: each(() => `÷ ${fmtNum(1 + v.d1 / 100, Number.isInteger(v.d1) ? 2 : 3)}`),
     mid: each(i => n0(a.mid[i])),
-    d2: each(() => `÷ ${fmtNum(1 + v.d2 / 100, 2)}`),
+    d2: each(() => `÷ ${fmtNum(1 + v.d2 / 100, Number.isInteger(v.d2) ? 2 : 3)}`),
     now: each(i => n0(a.now[i])),
   };
 }
@@ -928,7 +933,7 @@ function valuationTabHTML(ex, defaults, c0, analysts, open) {
       <div class="rx-col-half">
         <h3 class="rx-lbl rx-val-h3">ADR model · ${fy1}E · same in both tables</h3>
         <div class="rx-scroll">${valuationExcelTable(m, v, cmp)}</div>
-        <p class="rx-foot rx-val-p">ADR ₹ Cr / session × ${fmtNum(v.days, 0)} sessions + other income ₹${fmtNum(v.oi, 0)} Cr = total income; × PAT margin ÷ ${fmtNum(shares, 2)} Cr shares ${sharesChip(ex)} = EPS; × P/E = the ${fy1}-end target, discounted ${fmtNum(v.d1, 0)} % to ${valuationFYShort(m.path.fy - 1)} end and ${fmtNum(v.d2, 0)} % to today. Upside: the ${fy1}-end target vs CMP (${cmpWhen}).</p>
+        <p class="rx-foot rx-val-p">ADR ₹ Cr / session × ${fmtNum(v.days, 0)} sessions + other income ₹${fmtNum(v.oi, 0)} Cr = total income; × PAT margin ÷ ${fmtNum(shares, 2)} Cr shares ${sharesChip(ex)} = EPS; × P/E = the ${fy1}-end target, discounted ${valuationPct(v.d1)} to ${valuationFYShort(m.path.fy - 1)} end and ${valuationPct(v.d2)} to today. Upside: the ${fy1}-end target vs CMP (${cmpWhen}).</p>
       </div>
       <div class="rx-col-half">
         <h3 class="rx-lbl rx-val-h3">ADR path · ₹ Cr / session at today’s rates</h3>
