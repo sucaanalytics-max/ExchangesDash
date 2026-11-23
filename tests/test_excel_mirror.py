@@ -1,0 +1,590 @@
+"""scripts/excel_mirror.py against a fake Microsoft Graph and Supabase, mocked at
+the HTTP level (requests.request / requests.post): a fake workbook model keeps
+cells, sheets and sessions, so the tests check what lands in which cell."""
+
+import contextlib
+import json
+import os
+import re
+import unittest
+from unittest import mock
+from urllib.parse import unquote, urlparse
+
+import helpers  # noqa: F401  (puts scripts/ on sys.path)
+
+import excel_mirror as xm
+
+GRAPH = "https://graph.microsoft.com/v1.0"
+SB = "https://sb.example.co"
+
+TARGETS = {
+    "nse_vf": {"drive_id": "d1", "item_id": "nse"},
+    "bse_vf": {"drive_id": "d1", "item_id": "bse"},
+    "mcx_vf": {"user": "research@example.com", "path": "/Valuations/MCX vF.xlsx"},
+    "dashboard": {"drive_id": "d1", "item_id": "dash"},
+}
+DRYRUN = {k: {"drive_id": "dtest", "item_id": f"test-{k}"} for k in TARGETS}
+
+
+def summary_sheet(ex):
+    """The mapped cells of each vF file's "Tusk - Summary", as in the real files."""
+    cells = {"A16": "PE Ratio", "B16": 40, "C16": 45, "D16": 50, "A12": "Target Price - FY28", "F12": 0.18,
+             "A11": "Target Price - FY27", "F11": 0.09, "B11": "=B9*(1+$F$11)", "A10": "Upside - Current"}
+    if ex == "nse":
+        cells.update({"A9": "Current", "F10": 0.09, "B11": "=B12/(1+$F$12)"})
+        del cells["F11"]
+    return cells
+
+
+class FakeResponse:
+    def __init__(self, status, body=None, headers=None):
+        self.status_code = status
+        self.headers = headers or {}
+        self._text = "" if body is None else json.dumps(body)
+        self.content = self._text.encode()
+        self.text = self._text
+
+    def json(self):
+        return json.loads(self._text)
+
+
+class FakeCloud:
+    """Graph workbooks (cells per sheet, sessions) and Supabase tables in memory."""
+
+    def __init__(self, items=None):
+        self.items = items or {}            # item_id → {"sheets": {name: {(r, c): value}}, "name": ...}
+        self.sessions = {}                  # session id → item id
+        self.closed = []
+        self.calls = []                     # (method, path, body, headers)
+        self.fail = {}                      # (method, path regex) → [status, …] consumed in order
+        self.runs = []                      # excel_sync_runs rows
+        self.inputs = [{"exchange": "bse", "inputs": {"pe1": 47, "pe9": 3}, "updated_at": "2026-11-22T05:00:00Z"}]
+        self.supabase_down = False
+        self.n = 0
+
+    # -- plumbing
+    def request(self, method, url, headers=None, data=None, timeout=None):
+        body = json.loads(data) if data else None
+        u = urlparse(url)
+        path = unquote(u.path) + (("?" + unquote(u.query)) if u.query else "")
+        self.calls.append((method, path, body, headers or {}))
+        for (m, pat), statuses in self.fail.items():
+            if m == method and re.search(pat, path) and statuses:
+                status = statuses.pop(0)
+                return FakeResponse(status, {"error": {"message": f"fake {status}"}}, {"Retry-After": "2"} if status == 429 else {})
+        if url.startswith(SB):
+            return self.supabase(method, path, body)
+        return self.graph(method, path, body, headers or {})
+
+    def post(self, url, data=None, timeout=None, **kw):
+        self.calls.append(("POST", url, data, {}))
+        return FakeResponse(200, {"access_token": "token"})
+
+    # -- Supabase
+    def supabase(self, method, path, body):
+        if self.supabase_down:
+            raise xm.requests.ConnectionError("refused")
+        if path.startswith("/rest/v1/valuation_inputs"):
+            return FakeResponse(200, self.inputs)
+        if path.startswith("/rest/v1/excel_sync_runs"):
+            if method == "POST":
+                self.n += 1
+                row = {"id": 100 + self.n, **body}
+                self.runs.append(row)
+                return FakeResponse(201, [row])
+            if method == "PATCH":
+                rid = int(re.search(r"id=eq\.(\d+)", path).group(1))
+                row = next((r for r in self.runs if r["id"] == rid), None)
+                if row is None:
+                    row = {"id": rid}
+                    self.runs.append(row)
+                row.update(body)
+                return FakeResponse(204)
+        return FakeResponse(404, {"message": "no route"})
+
+    # -- Graph
+    def graph(self, method, path, body, headers):
+        p = path[len("/v1.0"):]
+        m = re.match(r"/users/([^/]+)/drive/root:(.+?)(\?|$)", p)
+        if m:
+            item = next((k for k, v in self.items.items() if v.get("path") == m.group(2)), None)
+            return FakeResponse(200, {"id": item, "name": "x.xlsx", "parentReference": {"driveId": "d9"}}) if item else FakeResponse(404, {})
+        m = re.match(r"/drives/([^/]+)/items/([^/?]+)(.*)$", p)
+        if not m or m.group(2) not in self.items:
+            return FakeResponse(404, {"error": {"message": "itemNotFound"}})
+        item_id, rest = m.group(2), m.group(3)
+        wb = self.items[item_id]
+        if rest == "":
+            return FakeResponse(200, {"name": wb.get("name", f"{item_id}.xlsx"), "id": item_id})
+        if rest == "/workbook/createSession":
+            sid = f"s-{item_id}-{len(self.sessions)}"
+            self.sessions[sid] = item_id
+            return FakeResponse(201, {"id": sid, "persistChanges": body["persistChanges"]})
+        if rest == "/workbook/closeSession":
+            self.closed.append(headers.get("workbook-session-id"))
+            return FakeResponse(204)
+        if method != "GET" and headers.get("workbook-session-id") not in self.sessions:
+            return FakeResponse(400, {"error": {"message": "no session"}})
+        sheets = wb["sheets"]
+        if rest.startswith("/workbook/worksheets?"):
+            return FakeResponse(200, {"value": [{"name": n} for n in sheets]})
+        if rest == "/workbook/worksheets/add":
+            sheets[body["name"]] = {}
+            return FakeResponse(201, {"name": body["name"]})
+        m = re.match(r"/workbook/worksheets\('(.+?)'\)/(usedRange|range\(address='(.+?)'\))(/clear)?", rest)
+        if not m:
+            return FakeResponse(400, {"error": {"message": f"no route {rest}"}})
+        name = m.group(1).replace("''", "'")
+        if name not in sheets:
+            return FakeResponse(404, {"error": {"message": "ItemNotFound"}})
+        cells = sheets[name]
+        if m.group(2) == "usedRange":
+            if not cells:
+                return FakeResponse(200, {"address": f"{name}!A1"})
+            r1, c1 = max(r for r, _ in cells), max(c for _, c in cells)
+            return FakeResponse(200, {"address": f"'{name}'!A1:{xm.col_letter(c1)}{r1}"})
+        (r0, c0), (r1, c1) = xm.parse_range(m.group(3))
+        if m.group(4):
+            for k in [k for k in cells if r0 <= k[0] <= r1 and c0 <= k[1] <= c1]:
+                del cells[k]
+            return FakeResponse(200, {})
+        if method == "GET":
+            vals = [[cells.get((r, c), "") for c in range(c0, c1 + 1)] for r in range(r0, r1 + 1)]
+            values = [["" if isinstance(v, str) and v.startswith("=") else v for v in row] for row in vals]
+            return FakeResponse(200, {"address": m.group(3), "values": values, "formulas": vals})
+        if method == "PATCH":
+            vals = body["values"]
+            assert len(vals) == r1 - r0 + 1 and all(len(r) == c1 - c0 + 1 for r in vals), (m.group(3), len(vals))
+            for i, row in enumerate(vals):
+                for j, v in enumerate(row):
+                    if v == "":
+                        cells.pop((r0 + i, c0 + j), None)
+                    else:
+                        cells[(r0 + i, c0 + j)] = v
+            return FakeResponse(200, {})
+        return FakeResponse(405, {})
+
+    # -- helpers for assertions
+    def cell(self, item, sheet, ref):
+        return self.items[item]["sheets"][sheet].get(xm.parse_cell(ref))
+
+    def writes(self, item=None):
+        return [c for c in self.calls if c[0] in ("PATCH", "POST") and "/workbook/" in c[1]
+                and not c[1].endswith(("createSession", "closeSession"))
+                and (item is None or f"/items/{item}/" in c[1])]
+
+
+def vf_item(ex, path=None):
+    d = {"sheets": {"Tusk - Summary": {xm.parse_cell(k): v for k, v in summary_sheet(ex).items()}, "Model": {(1, 1): 7}}}
+    if path:
+        d["path"] = path
+    return d
+
+
+def cloud():
+    return FakeCloud({
+        "nse": vf_item("nse"), "bse": vf_item("bse"),
+        "mcx": vf_item("mcx", "/Valuations/MCX vF.xlsx"),
+        "dash": {"sheets": {"NSE": {(1, 1): "=WD_NSE_Daily!A3"}, "WD_VIX": {(1, 1): "old", (900, 2): 99}}},
+        **{f"test-{k}": (vf_item(xm.VF_TARGETS[k]) if k in xm.VF_TARGETS else {"sheets": {}}) for k in TARGETS},
+    })
+
+
+def env(**kw):
+    e = {"ENABLE_EXCEL_MIRROR": "true", "EXCEL_TARGETS": json.dumps(TARGETS), "EXCEL_TARGETS_DRYRUN": json.dumps(DRYRUN),
+         "SUPABASE_URL": SB, "SUPABASE_KEY": "service", "GITHUB_RUN_ID": "777",
+         "MSGRAPH_TENANT_ID": "t", "MSGRAPH_CLIENT_ID": "c", "MSGRAPH_CLIENT_SECRET": "s"}
+    e.update(kw)
+    return e
+
+
+class FixtureData:
+    """A small valuation output and data set, so these tests need neither Node nor the real files."""
+
+    @staticmethod
+    def outputs(overrides=None):
+        def ex_out(ex, pe):
+            v = {"adr": None, "g": 5, "pe0": pe - 5, "pe1": pe, "pe2": pe + 5, "w0": 40, "w1": 20, "w2": 40, "from": None,
+                 "oi": 100, "margin": 50, "days": 250, "d1": 18, "d2": 9}
+            o = (overrides or {}).get(ex, {})
+            v.update({k: o[k] for k in o if k in v})
+            three = [1.0, 2.0, 3.0]
+            tri = {"adr": 12.0, "regression": three, "ratio": None, "adr_model": three, "avg": three, "used": ["reg", "adr"],
+                   "dropped": ["ratio"], "w_used": 80, "w_total": 100, "upside": [-0.5, 0, 0.5]}
+            return {"inputs": v, "defaults": {**v, "pe1": pe}, "edited": [k for k in o if k in v], "overrides": o, "shares_cr": 40.79,
+                    "context": {"q_label": "Q3 FY 2027", "q_adr": 12.0, "q_n": 30, "adr45": 11.5, "n45": 45, "last_date": "2026-11-20", "flags": {}},
+                    "adr_path": {"quarters": [{"label": f"Q{q} FY27", "q": q, "fy": 2027, "adr": 12.0} for q in (3, 4)], "fy": 2028, "adr": 14.0},
+                    "adr_model": {"adr_fy": 14.0, "txn": 3500, "oi": 100, "total": 3600, "margin": 50, "pat": 1800, "eps": 44.1,
+                                  "pe": [v["pe0"], v["pe1"], v["pe2"]], "fy_next_end": three, "fy_end": three, "today": three},
+                    "dma": tri, "est": tri, "est_is_dma": True, "target": {"values": [10.0, 20.0, 30.0], "upside": [-0.5, 0, 0.5]},
+                    "cmp": 20.0, "cmp_date": "2026-11-20", "cmp_live": False, "ticker": "X.NS",
+                    "fit": {"intercept": 1.0, "slope": 2.0, "se": 0.5, "n": 100, "r2": 0.8}, "fit_why": "", "ratio": None, "ratio_why": "x",
+                    "window": {"from": None, "from_ignored": "", "ma_window": 45, "fit_start": "2025-01-01", "first_point": "2025-03-05",
+                               "n": 100, "modelled_out": 0, "published_start": "2025-01-01", "published_n": 100},
+                    "data_from": "2025-01-01", "fy_mismatch": False}
+        return {"fy": 2028, "labels": {}, "exchanges": {"bse": ex_out("bse", 45), "mcx": ex_out("mcx", 46), "nse": ex_out("nse", 47)}}
+
+    @staticmethod
+    def data():
+        days = [f"2026-11-{d:02d}" for d in (18, 19, 20)]
+        raw = {
+            "nse": {"daily_all": [{"date": d, "total_rev": 90.0 + i, "vix": 15 + i, "io_contracts": 10, "so_contracts": 1,
+                                   "if_contracts": 2, "sf_contracts": 3, "io_premium": 100.0, "so_premium": 5.0} for i, d in enumerate(reversed(days))],
+                    "quarterly": [{"quarter": "Q3 FY 2027", "total_rev": 2000}], "monthly": [{"month": "FY 2027 November", "total_rev": 900}]},
+            "bse": {"daily_all": [{"date": d, "total_rev": 8.0, "total_contracts": 50, "options_premium_turnover": 12.0} for d in days[1:]],
+                    "quarterly": [{"quarter": "Q3 FY 2027", "total_rev": 700, "options_premium_turnover": 1.0}], "monthly": []},
+            "mcx": {"daily_all": [{"date": d, "total_rev": 20.0, "modelled": False} for d in days],
+                    "quarterly": [{"quarter": "Q3 FY 2027", "total_rev": 480, "modelled_days": 0}], "monthly": []},
+        }
+        return {"inputs": {}, "raw": raw, "share": {}}
+
+
+class MirrorTest(unittest.TestCase):
+    def run_main(self, args=(), cloud_=None, quiet=True, **env_kw):
+        self.cloud = cloud_ or cloud()
+        seen = {}
+
+        def compute(inputs, raw, share, overrides):
+            seen["overrides"] = overrides
+            return FixtureData.outputs(overrides)
+
+        with mock.patch.dict(os.environ, env(**env_kw), clear=False), \
+                mock.patch("requests.request", self.cloud.request), mock.patch("requests.post", self.cloud.post), \
+                mock.patch.object(xm.valuation_outputs, "compute", compute), \
+                mock.patch.object(xm.valuation_outputs, "load_data", FixtureData.data), \
+                mock.patch.object(xm, "_sleep", lambda s: self.sleeps.append(s)), \
+                mock.patch("excel_sync.MSGRAPH_TENANT_ID", "t"), \
+                (mock.patch("builtins.print") if quiet else contextlib.nullcontext()):
+            self.sleeps = []
+            self.code = xm.main(list(args))
+        self.overrides_seen = seen.get("overrides")
+        return self.cloud
+
+
+class Sessions(MirrorTest):
+    def test_each_file_writes_in_a_persistent_session_that_is_closed(self):
+        c = self.run_main()
+        self.assertEqual(self.code, 0)
+        creates = [x for x in c.calls if x[1].endswith("/workbook/createSession")]
+        self.assertEqual(len(creates), 4)
+        self.assertTrue(all(x[2] == {"persistChanges": True} for x in creates))
+        self.assertEqual(sorted(c.closed), sorted(c.sessions))
+        for method, path, body, headers in c.writes():
+            self.assertIn(headers.get("workbook-session-id"), c.sessions, path)
+
+    def test_user_and_path_target_is_resolved(self):
+        c = self.run_main()
+        self.assertTrue(any("/users/research@example.com/drive/root:/Valuations/MCX vF.xlsx" in x[1] for x in c.calls))
+        self.assertEqual(c.cell("mcx", "Tusk - Summary", "C16"), 46)
+
+
+class InputCells(MirrorTest):
+    def test_pe_and_discounts_land_in_the_mapped_cells(self):
+        c = self.run_main()
+        self.assertEqual([c.cell("bse", "Tusk - Summary", r) for r in ("B16", "C16", "D16")], [40, 47, 50])   # shared pe1 = 47
+        self.assertEqual([c.cell("nse", "Tusk - Summary", r) for r in ("B16", "C16", "D16")], [42, 47, 52])
+        for item in ("bse", "mcx"):
+            self.assertAlmostEqual(c.cell(item, "Tusk - Summary", "F11"), 0.09)
+            self.assertAlmostEqual(c.cell(item, "Tusk - Summary", "F12"), 0.18)
+        self.assertAlmostEqual(c.cell("nse", "Tusk - Summary", "F10"), 0.09)
+        self.assertAlmostEqual(c.cell("nse", "Tusk - Summary", "F12"), 0.18)
+        self.assertIsNone(c.cell("nse", "Tusk - Summary", "F11"))
+        # formulas and other sheets untouched
+        self.assertEqual(c.cell("bse", "Tusk - Summary", "B11"), "=B9*(1+$F$11)")
+        self.assertEqual(c.cell("bse", "Model", "A1"), 7)
+
+    def test_overrides_come_from_supabase(self):
+        self.run_main()
+        self.assertEqual(self.overrides_seen, {"bse": {"pe1": 47, "pe9": 3}})
+
+    def test_label_mismatch_skips_only_that_files_input_writes(self):
+        c = cloud()
+        c.items["bse"]["sheets"]["Tusk - Summary"][xm.parse_cell("A16")] = "PB Ratio"
+        self.run_main(cloud_=c)
+        self.assertEqual(c.cell("bse", "Tusk - Summary", "C16"), 45)           # untouched
+        self.assertAlmostEqual(c.cell("bse", "Tusk - Summary", "F11"), 0.09)
+        self.assertFalse(any("Tusk - Summary" in x[1] for x in c.writes("bse")))
+        self.assertEqual(c.cell("bse", "Web Dashboard", "C8"), 40)            # its Web Dashboard still written
+        self.assertEqual(c.cell("mcx", "Tusk - Summary", "C16"), 46)           # other files written
+        run = c.runs[-1]
+        files = {f["target"]: f for f in run["files"]}
+        self.assertEqual(files["bse_vf"]["status"], "partial")
+        self.assertIn("A16 reads 'PB Ratio'", files["bse_vf"]["errors"][0])
+        self.assertEqual(run["status"], "partial")
+        self.assertEqual(self.code, 0)
+
+    def test_label_check_is_trimmed_and_case_insensitive(self):
+        c = cloud()
+        c.items["mcx"]["sheets"]["Tusk - Summary"][xm.parse_cell("A16")] = "  pe ratio "
+        self.run_main(cloud_=c)
+        self.assertEqual(c.cell("mcx", "Tusk - Summary", "C16"), 46)
+
+    def test_a_formula_in_an_input_cell_is_not_overwritten(self):
+        c = cloud()
+        c.items["mcx"]["sheets"]["Tusk - Summary"][xm.parse_cell("F12")] = "=F11*2"
+        self.run_main(cloud_=c)
+        self.assertEqual(c.cell("mcx", "Tusk - Summary", "F12"), "=F11*2")
+        self.assertEqual(c.cell("mcx", "Tusk - Summary", "C16"), 45)       # P/E not written either (46 in use)
+        self.assertFalse(any("Tusk - Summary" in x[1] for x in c.writes("mcx")))
+
+
+class WebDashboard(MirrorTest):
+    def test_layout_and_fixed_addresses(self):
+        c = self.run_main()
+        cell = lambda ref: c.cell("bse", "Web Dashboard", ref)  # noqa: E731
+        self.assertRegex(cell("A1"), r"^Written by ExchangesDash at \d+ \w{3} \d{4} \d\d:\d\d IST; ")
+        self.assertIn("data to 2026-11-20", cell("A1"))
+        self.assertIn("inputs last changed 22 Nov 2026 10:30 IST", cell("A1"))
+        self.assertEqual([cell(f"A{6 + i}") for i in range(14)], xm.INPUT_KEYS)
+        self.assertEqual(cell("C9"), 47)       # pe1, shared
+        self.assertEqual(cell("D9"), 45)       # its default
+        self.assertIs(cell("E9"), True)
+        a = xm.WEB_ADDRESSES
+        self.assertEqual(cell(a["cmp"]), 20.0)
+        self.assertEqual(cell(a["cmp_date"]), "2026-11-20")
+        (r, c0), _ = xm.parse_range(a["target"])
+        self.assertEqual(cell(a["target"].split(":")[0]), 10.0)
+        self.assertEqual(c.items["bse"]["sheets"]["Web Dashboard"][(r, c0 + 1)], 20.0)
+        self.assertEqual(cell(f"A{r}"), "Triangulated target (ADR estimate)")
+        self.assertEqual(cell(f"A{xm.parse_cell(a['upside'].split(':')[0])[0]}"), "Upside vs CMP")
+        self.assertEqual(cell(f"A{xm.parse_cell(a['adr_model_today'].split(':')[0])[0]}"), "ADR model, today")
+        self.assertEqual(cell(a["adr_path"]), "ADR path")
+
+    def test_rewritten_each_run(self):
+        c = cloud()
+        c.items["nse"]["sheets"]["Web Dashboard"] = {(500, 1): "stale"}
+        self.run_main(cloud_=c)
+        self.assertNotIn((500, 1), c.items["nse"]["sheets"]["Web Dashboard"])
+        self.assertFalse(any(x[1].endswith("worksheets/add") and "/items/nse/" in x[1] and x[2]["name"] == "Web Dashboard" for x in c.calls))
+
+
+class FeedSheets(MirrorTest):
+    def test_dashboard_feed_sheets(self):
+        c = self.run_main()
+        sheets = c.items["dash"]["sheets"]
+        for name in ("WD_Inputs", "WD_Valuation", "WD_NSE_Daily", "WD_BSE_Daily", "WD_MCX_Daily",
+                     "WD_Quarterly", "WD_Monthly", "WD_VIX", "WD_Contracts"):
+            self.assertIn(name, sheets)
+            self.assertTrue(str(c.cell("dash", name, "A1")).startswith("Written by ExchangesDash"), name)
+        # daily: every field, oldest first, dates as ISO text
+        self.assertEqual(c.cell("dash", "WD_NSE_Daily", "A2"), "date")
+        self.assertEqual([c.cell("dash", "WD_NSE_Daily", f"A{r}") for r in (3, 4, 5)], ["2026-11-18", "2026-11-19", "2026-11-20"])
+        head = [c.cell("dash", "WD_MCX_Daily", f"{xm.col_letter(i)}2") for i in range(1, 4)]
+        self.assertEqual(head, ["date", "total_rev", "modelled"])
+        self.assertIs(c.cell("dash", "WD_MCX_Daily", "C3"), False)
+        # stacked, with an exchange column
+        self.assertEqual([c.cell("dash", "WD_Quarterly", f"A{r}") for r in (2, 3, 4, 5)], ["exchange", "nse", "bse", "mcx"])
+        self.assertEqual(c.cell("dash", "WD_Quarterly", "B2"), "quarter")
+        # VIX, old rows cleared
+        self.assertEqual([c.cell("dash", "WD_VIX", r) for r in ("A3", "B3", "B5")], ["2026-11-18", 17, 15])
+        self.assertIsNone(c.cell("dash", "WD_VIX", "B900"))
+        # Contracts: union of dates, BSE blank where it has none
+        self.assertEqual([c.cell("dash", "WD_Contracts", f"{x}3") for x in "ABCDEF"], ["2026-11-18", 11, 5, 105.0, None, None])
+        self.assertEqual([c.cell("dash", "WD_Contracts", f"{x}5") for x in "ABCDEF"], ["2026-11-20", 11, 5, 105.0, 50, 12.0])
+        # inputs and valuation: one row per exchange
+        self.assertEqual([c.cell("dash", "WD_Inputs", f"A{r}") for r in (3, 4, 5)], ["bse", "mcx", "nse"])
+        self.assertEqual(c.cell("dash", "WD_Inputs", "E3"), 47)   # bse pe1
+        self.assertEqual(c.cell("dash", "WD_Valuation", "A2"), "exchange")
+        col = {c.cell("dash", "WD_Valuation", f"{xm.col_letter(i)}2"): i for i in range(1, 80)}
+        self.assertEqual(c.items["dash"]["sheets"]["WD_Valuation"][(3, col["target_base"])], 20.0)
+        # the analysis sheet is not touched
+        self.assertEqual(c.cell("dash", "NSE", "A1"), "=WD_NSE_Daily!A3")
+
+    def test_existing_sheet_cleared_missing_sheet_added(self):
+        c = self.run_main()
+        dash = [x for x in c.calls if "/items/dash/" in x[1]]
+        adds = [x[2]["name"] for x in dash if x[1].endswith("worksheets/add")]
+        self.assertNotIn("WD_VIX", adds)
+        self.assertIn("WD_NSE_Daily", adds)
+        clears = [x for x in dash if x[1].endswith("/clear")]
+        self.assertEqual(len(clears), 1)
+        self.assertIn("worksheets('WD_VIX')/range(address='A1:B900')/clear", clears[0][1])
+        self.assertEqual(clears[0][2], {"applyTo": "Contents"})
+
+    def test_chunking_a_1000_by_30_table(self):
+        c = FakeCloud({"x": {"sheets": {"S": {}}}})
+        with mock.patch("requests.request", c.request):
+            wb = xm.Workbook(xm.Graph("t"), "d", "x")
+            wb.open()
+            rows = [[r * 100 + k for k in range(30)] for r in range(1000)]
+            addresses = wb.write_table("S", rows)
+        patches = [x for x in c.calls if x[0] == "PATCH"]
+        self.assertEqual(len(patches), 8)          # 4000 cells ÷ 30 columns = 133 rows a request
+        self.assertEqual(addresses, ["A1:AD133", "A134:AD266", "A267:AD399", "A400:AD532",
+                                     "A533:AD665", "A666:AD798", "A799:AD931", "A932:AD1000"])
+        self.assertTrue(all(len(x[2]["values"]) * 30 <= 4000 for x in patches))
+        self.assertEqual(c.cell("x", "S", "AD1000"), 99929)
+        self.assertEqual(wb.cells, 30000)
+
+    def test_chunking_keeps_requests_under_a_megabyte(self):
+        c = FakeCloud({"x": {"sheets": {"S": {}}}})
+        with mock.patch("requests.request", c.request):
+            wb = xm.Workbook(xm.Graph("t"), "d", "x")
+            wb.open()
+            wb.write_table("S", [["y" * 20000] * 2 for _ in range(100)])
+        sizes = [len(json.dumps(x[2])) for x in c.calls if x[0] == "PATCH"]
+        self.assertGreater(len(sizes), 3)
+        self.assertTrue(all(s < 1_100_000 for s in sizes), sizes)
+
+
+class Retries(MirrorTest):
+    def test_429_is_retried_after_retry_after(self):
+        c = cloud()
+        c.fail[("PATCH", r"/items/bse/.*Tusk - Summary")] = [429, 429]
+        self.run_main(cloud_=c)
+        self.assertEqual(self.sleeps[:2], [2.0, 2.0])
+        self.assertEqual(c.cell("bse", "Tusk - Summary", "C16"), 47)
+        self.assertEqual(c.runs[-1]["status"], "success")
+
+    def test_gives_up_after_five_tries(self):
+        c = cloud()
+        c.fail[("PATCH", r"/items/bse/.*Tusk - Summary")] = [503] * 10
+        self.run_main(cloud_=c)
+        self.assertEqual(len([x for x in c.calls if x[0] == "PATCH" and "/items/bse/" in x[1] and "Tusk - Summary" in x[1]]), 5)
+        files = {f["target"]: f for f in c.runs[-1]["files"]}
+        self.assertEqual(files["bse_vf"]["status"], "failed")
+        self.assertEqual(c.runs[-1]["status"], "partial")
+
+    def test_a_locked_file_fails_alone(self):
+        c = cloud()
+        c.fail[("POST", r"/items/nse/workbook/createSession")] = [423]
+        self.run_main(cloud_=c)
+        files = {f["target"]: f for f in c.runs[-1]["files"]}
+        self.assertEqual(files["nse_vf"]["status"], "failed")
+        self.assertIn("locked", files["nse_vf"]["errors"][0])
+        for k in ("bse_vf", "mcx_vf", "dashboard"):
+            self.assertEqual(files[k]["status"], "success", k)
+        self.assertEqual(c.cell("bse", "Tusk - Summary", "C16"), 47)
+        self.assertEqual(c.runs[-1]["status"], "partial")
+        self.assertEqual(self.sleeps, [])     # a lock is not retried
+
+    def test_a_lock_mid_file_still_closes_its_session(self):
+        c = cloud()
+        c.fail[("POST", r"/items/dash/.*worksheets/add")] = [409]
+        self.run_main(cloud_=c)
+        dash_sessions = [s for s, item in c.sessions.items() if item == "dash"]
+        self.assertTrue(dash_sessions and all(s in c.closed for s in dash_sessions))
+
+
+class RunLogging(MirrorTest):
+    def test_manual_run_updates_its_row(self):
+        c = cloud()
+        c.runs.append({"id": 42, "trigger": "manual", "status": "queued"})
+        self.run_main(["--trigger", "manual", "--run-id", "42"], cloud_=c)
+        self.assertEqual(len(c.runs), 1)
+        run = c.runs[0]
+        self.assertEqual((run["trigger"], run["status"], run["github_run_id"]), ("manual", "success", 777))
+        self.assertTrue(run["started_at"] and run["finished_at"])
+        statuses = [x[2]["status"] for x in c.calls if x[0] == "PATCH" and "excel_sync_runs" in x[1]]
+        self.assertEqual(statuses, ["running", "success"])
+        files = {f["target"]: f for f in run["files"]}
+        self.assertEqual(set(files), set(xm.TARGET_KEYS))
+        self.assertGreater(files["dashboard"]["cells"], 0)
+        self.assertIn("WD_NSE_Daily", files["dashboard"]["sheets"])
+        self.assertIn("duration_s", files["nse_vf"])
+        self.assertIsNone(run["error"])
+
+    def test_scheduled_run_inserts_a_row(self):
+        c = self.run_main()
+        self.assertEqual(len(c.runs), 1)
+        self.assertEqual((c.runs[0]["trigger"], c.runs[0]["status"]), ("scheduled", "success"))
+        inserts = [x for x in c.calls if x[0] == "POST" and "excel_sync_runs" in x[1]]
+        self.assertEqual(inserts[0][2]["status"], "running")
+        self.assertEqual(inserts[0][3]["Prefer"], "return=representation")
+
+    def test_all_files_failing_fails_the_run(self):
+        c = cloud()
+        for item in ("nse", "bse", "mcx", "dash"):
+            c.fail[("POST", rf"/items/{item}/workbook/createSession")] = [423]
+        c.fail[("GET", r"/users/")] = [423]
+        self.run_main(cloud_=c)
+        self.assertEqual(c.runs[-1]["status"], "failed")
+        self.assertEqual(self.code, 1)
+
+    def test_supabase_down_fails_without_writing(self):
+        c = cloud()
+        c.supabase_down = True
+        self.run_main(cloud_=c)
+        self.assertEqual(self.code, 1)
+        self.assertEqual([x for x in c.calls if "graph.microsoft.com" in x[1] or "login.microsoftonline" in x[1]], [])
+
+    def test_supabase_inputs_unreadable_fails_the_logged_run(self):
+        c = cloud()
+        c.fail[("GET", r"/rest/v1/valuation_inputs")] = [500]
+        c.runs.append({"id": 9, "status": "queued", "trigger": "manual"})
+        self.run_main(["--run-id", "9", "--trigger", "manual"], cloud_=c)
+        self.assertEqual(c.runs[0]["status"], "failed")
+        self.assertIn("shared inputs not read", c.runs[0]["error"])
+        self.assertFalse(any("graph.microsoft.com" in x[1] for x in c.calls))
+
+    def test_missing_targets_fail_the_run(self):
+        c = self.run_main(EXCEL_TARGETS="")
+        self.assertEqual(c.runs[-1]["status"], "failed")
+        self.assertIn("EXCEL_TARGETS not set", c.runs[-1]["error"])
+
+    def test_dry_run_uses_the_dry_run_targets(self):
+        c = self.run_main(["--dry-run"], ENABLE_EXCEL_MIRROR="")
+        self.assertEqual(c.cell("test-bse_vf", "Tusk - Summary", "C16"), 47)
+        self.assertEqual(c.cell("bse", "Tusk - Summary", "C16"), 45)
+        self.assertFalse(any("/items/bse/" in x[1] or "/items/dash/" in x[1] for x in c.calls))
+        self.assertTrue(all(f["dry_run"] for f in c.runs[-1]["files"]))
+
+
+class Gating(MirrorTest):
+    def test_off_means_no_calls(self):
+        for value in ("", "false", "1"):
+            with self.subTest(value=value):
+                c = self.run_main(ENABLE_EXCEL_MIRROR=value)
+                self.assertEqual(self.code, 0)
+                self.assertEqual(c.calls, [])
+
+    def test_off_closes_a_manual_runs_row(self):
+        c = cloud()
+        c.runs.append({"id": 5, "status": "queued", "trigger": "manual"})
+        self.run_main(["--run-id", "5", "--trigger", "manual"], cloud_=c, ENABLE_EXCEL_MIRROR="false")
+        self.assertEqual(c.runs[0]["status"], "failed")
+        self.assertIn("switched off", c.runs[0]["error"])
+        self.assertFalse(any("graph.microsoft.com" in x[1] for x in c.calls))
+
+
+class Check(MirrorTest):
+    def test_check_reads_and_writes_nothing(self):
+        c = cloud()
+        c.items["bse"]["sheets"]["Tusk - Summary"][xm.parse_cell("A12")] = "Target Price - FY29"
+        with mock.patch("builtins.print") as p:
+            self.run_main(["--check"], cloud_=c, quiet=False, ENABLE_EXCEL_MIRROR="")
+        out = "\n".join(" ".join(map(str, a.args)) for a in p.call_args_list)
+        self.assertEqual(self.code, 1)                 # a label failed
+        self.assertIn("A12 reads 'Target Price - FY29'", out)
+        self.assertIn("pin as", out)                    # the path target's ids
+        self.assertTrue(re.search(r"nse_vf\s+nse\.xlsx\s+d1 / nse\s+2\s+will be created\s+OK", out), out)
+        self.assertEqual([x for x in c.calls if x[0] in ("PATCH", "POST", "DELETE", "PUT")
+                          and "login.microsoftonline" not in x[1]], [])
+        self.assertEqual(c.runs, [])
+
+    def test_check_passes_on_good_files(self):
+        with mock.patch("builtins.print"):
+            self.run_main(["--check"])
+        self.assertEqual(self.code, 0)
+
+
+class Targets(unittest.TestCase):
+    def test_parse(self):
+        self.assertEqual(xm.parse_targets(json.dumps(TARGETS)), TARGETS)
+        for bad in ("", "[]", "{", json.dumps({"other": {}}), json.dumps({"nse_vf": {"drive_id": "x"}})):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    xm.parse_targets(bad)
+
+    def test_mapping_matches_the_brief(self):
+        m = {ex: {c["range"]: (c["label_cell"], c["label"], c["keys"]) for c in cells} for ex, cells in xm.VF_INPUT_CELLS.items()}
+        for ex in ("nse", "bse", "mcx"):
+            self.assertEqual(m[ex]["B16:D16"], ("A16", "PE Ratio", ["pe0", "pe1", "pe2"]))
+            self.assertEqual(m[ex]["F12"], ("A12", "Target Price - FY28", ["d1"]))
+        self.assertEqual(m["bse"]["F11"], ("A11", "Target Price - FY27", ["d2"]))
+        self.assertEqual(m["mcx"]["F11"], ("A11", "Target Price - FY27", ["d2"]))
+        self.assertEqual(m["nse"]["F10"], ("A10", "Upside - Current", ["d2"]))
+
+
+if __name__ == "__main__":
+    unittest.main()

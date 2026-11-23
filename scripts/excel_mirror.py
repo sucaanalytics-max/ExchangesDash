@@ -1,0 +1,809 @@
+"""Excel mirror: the shared valuation inputs, the dashboard's valuation results and
+its data, written into four workbooks on OneDrive / SharePoint.
+
+    nse_vf, bse_vf, mcx_vf   the house vF valuation files: the P/E and discount input
+                             cells on "Tusk - Summary" (label-checked first), and a
+                             "Web Dashboard" sheet of inputs and results
+    dashboard                the Exchanges Dashboard workbook: plain-value WD_* feed
+                             sheets its analysis sheets read from
+
+Runs daily at 01:00 IST and on demand from the dashboard's Refresh Excel button
+(.github/workflows/excel-mirror.yml; docs/EXCEL_MIRROR.md has the setup, the cell
+mapping and the sheet layouts). Writes go through the Excel REST API in a workbook
+session, range by range, so a workbook open in Excel takes the writes and its
+formulas elsewhere are never touched (scripts/excel_sync.py instead re-uploads a
+whole file).
+
+Inputs: the shared overrides from Supabase `valuation_inputs` (a run fails rather
+than write the defaults when Supabase does not answer) over
+dashboard/data/valuation_inputs.json; results from scripts/valuation_outputs.py,
+which runs the dashboard's own JS, so the workbooks show the web figures.
+
+Each run is logged to Supabase `excel_sync_runs` (valuation_sync_schema.sql):
+with --run-id (a manual run /api/excel-refresh created) that row goes running →
+success / partial / failed; otherwise a new row is inserted.
+
+Env:
+  ENABLE_EXCEL_MIRROR      'true' to write; otherwise the run does nothing (a
+                           --run-id row is closed as failed, so the panel does
+                           not wait on it). --check and --dry-run run regardless.
+  EXCEL_TARGETS            JSON {"nse_vf": T, "bse_vf": T, "mcx_vf": T, "dashboard": T},
+                           T = {"drive_id", "item_id"} or {"user": upn, "path": "/f/x.xlsx"}
+  EXCEL_TARGETS_DRYRUN     the same for --dry-run (copies in a test folder)
+  MSGRAPH_TENANT_ID, MSGRAPH_CLIENT_ID, MSGRAPH_CLIENT_SECRET   (excel_sync.get_graph_token)
+  SUPABASE_URL, SUPABASE_KEY   service-role key (the workflow passes SUPABASE_SERVICE_KEY)
+  GITHUB_RUN_ID            recorded on the run row
+
+Usage:
+  python scripts/excel_mirror.py [--trigger scheduled|manual] [--run-id N] [--dry-run]
+  python scripts/excel_mirror.py --check [--dry-run]     read only: metadata, sheets, labels
+"""
+
+import argparse
+import json
+import os
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
+
+import requests
+
+import valuation_outputs
+
+GRAPH = "https://graph.microsoft.com/v1.0"
+EXCHANGES = ("bse", "mcx", "nse")
+NAMES = {"bse": "BSE", "mcx": "MCX", "nse": "NSE"}
+VF_TARGETS = {"nse_vf": "nse", "bse_vf": "bse", "mcx_vf": "mcx"}
+TARGET_KEYS = ("nse_vf", "bse_vf", "mcx_vf", "dashboard")
+
+SUMMARY_SHEET = "Tusk - Summary"
+WEB_SHEET = "Web Dashboard"
+
+# Per request: at most this many cells, and about this many bytes of JSON
+CELLS_PER_REQUEST = 4000
+BYTES_PER_REQUEST = 1_000_000
+MAX_TRIES = 5            # 429 / 503 / 504 (and dropped connections), then the call fails
+MAX_WAIT_S = 60
+RETRY_STATUSES = (429, 503, 504)
+LOCK_STATUSES = (409, 423)
+TIMEOUT_S = 60
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+# ── The vF input cells on "Tusk - Summary" ──────────────────────────────────
+# Confirmed on copies of the three files (20250809_NSE vF, 20260718_BSE VF,
+# 20250827_MCX vF, 23 Nov 2026). Each write is label-checked: the label cell must
+# read `label` (trimmed, case-insensitive), and the target cells must hold plain
+# values, not formulas; any mismatch skips all of that file's input writes.
+# keys: effective inputs (scripts/valuation_outputs.py) written left to right, × scale.
+#   pe0/pe1/pe2  P/E bear / base / bull
+#   d2           discount_to_today_pct (valuation_inputs.json), as a fraction (9 % → 0.09)
+#   d1           discount_to_fy_end_pct, as a fraction (18 % → 0.18)
+# NSE's sheet differs: its today discount sits in F10 (row "Upside - Current"; row 9,
+# "Current", divides by it), not in F11 beside "Target Price - FY27".
+VF_INPUT_CELLS = {
+    "nse": [
+        {"name": "P/E bear / base / bull", "label_cell": "A16", "label": "PE Ratio", "range": "B16:D16", "keys": ["pe0", "pe1", "pe2"], "scale": 1},
+        {"name": "Discount to today", "label_cell": "A10", "label": "Upside - Current", "range": "F10", "keys": ["d2"], "scale": 0.01},
+        {"name": "Discount to FY end", "label_cell": "A12", "label": "Target Price - FY28", "range": "F12", "keys": ["d1"], "scale": 0.01},
+    ],
+    "bse": [
+        {"name": "P/E bear / base / bull", "label_cell": "A16", "label": "PE Ratio", "range": "B16:D16", "keys": ["pe0", "pe1", "pe2"], "scale": 1},
+        {"name": "Discount to today", "label_cell": "A11", "label": "Target Price - FY27", "range": "F11", "keys": ["d2"], "scale": 0.01},
+        {"name": "Discount to FY end", "label_cell": "A12", "label": "Target Price - FY28", "range": "F12", "keys": ["d1"], "scale": 0.01},
+    ],
+    "mcx": [
+        {"name": "P/E bear / base / bull", "label_cell": "A16", "label": "PE Ratio", "range": "B16:D16", "keys": ["pe0", "pe1", "pe2"], "scale": 1},
+        {"name": "Discount to today", "label_cell": "A11", "label": "Target Price - FY27", "range": "F11", "keys": ["d2"], "scale": 0.01},
+        {"name": "Discount to FY end", "label_cell": "A12", "label": "Target Price - FY28", "range": "F12", "keys": ["d1"], "scale": 0.01},
+    ],
+}
+
+# The inputs, in the order the Web Dashboard sheet and WD_Inputs list them
+INPUT_KEYS = ["adr", "g", "pe0", "pe1", "pe2", "w0", "w1", "w2", "from", "oi", "margin", "days", "d1", "d2"]
+EDITABLE_KEYS = INPUT_KEYS[:9]
+INPUT_LABELS = {
+    "adr": "ADR estimate, ₹ Cr / session (blank = 45 DMA)", "g": "QoQ ADR growth, %",
+    "pe0": "P/E bear", "pe1": "P/E base", "pe2": "P/E bull",
+    "w0": "Regression weight, %", "w1": "Ratio weight, %", "w2": "ADR model weight, %",
+    "from": "Regression data from (blank = all data)",
+    "oi": "Other income next FY, ₹ Cr", "margin": "PAT margin, %", "days": "Sessions next FY",
+    "d1": "Discount to this FY's end, %", "d2": "Discount to today, %",
+}
+
+
+class GraphError(Exception):
+    def __init__(self, status, message, url=""):
+        super().__init__(f"HTTP {status}: {message}")
+        self.status = status
+        self.url = url
+
+
+class FileLocked(GraphError):
+    """409 / 423: the file is locked (checked out, or a session conflict)."""
+
+
+class LabelMismatch(Exception):
+    pass
+
+
+_sleep = time.sleep   # tests replace it
+
+
+def _short(text, n=300):
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= n else text[:n - 1] + "…"
+
+
+# ── Microsoft Graph ─────────────────────────────────────────────────────────
+
+class Graph:
+    """Graph calls with the app token; retries 429 / 503 / 504 (Retry-After, else
+    exponential backoff) up to MAX_TRIES. Raises GraphError, or FileLocked for 409 / 423."""
+
+    def __init__(self, token):
+        self.token = token
+        self.calls = 0
+
+    def request(self, method, url, body=None, session_id=None):
+        headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        if session_id:
+            headers["workbook-session-id"] = session_id
+        for attempt in range(1, MAX_TRIES + 1):
+            self.calls += 1
+            try:
+                r = requests.request(method, url, headers=headers,
+                                     data=None if body is None else json.dumps(body), timeout=TIMEOUT_S)
+            except requests.RequestException as e:
+                if attempt == MAX_TRIES:
+                    raise GraphError(0, f"no answer: {e}", url)
+                _sleep(min(MAX_WAIT_S, 2 ** attempt))
+                continue
+            if r.status_code in RETRY_STATUSES and attempt < MAX_TRIES:
+                wait = r.headers.get("Retry-After")
+                try:
+                    wait = float(wait)
+                except (TypeError, ValueError):
+                    wait = 2 ** attempt
+                _sleep(min(MAX_WAIT_S, max(0.0, wait)))
+                continue
+            if r.status_code >= 400:
+                msg = r.text
+                try:
+                    msg = r.json().get("error", {}).get("message") or msg
+                except ValueError:
+                    pass
+                cls = FileLocked if r.status_code in LOCK_STATUSES else GraphError
+                raise cls(r.status_code, _short(msg), url)
+            if r.status_code == 204 or not r.content:
+                return None
+            try:
+                return r.json()
+            except ValueError:
+                return None
+
+
+def _odata(s):
+    return quote(str(s).replace("'", "''"), safe="")
+
+
+def col_letter(n):
+    """1 → A, 27 → AA."""
+    s = ""
+    while n:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def parse_cell(ref):
+    """'B16' → (16, 2)."""
+    letters = "".join(c for c in ref if c.isalpha()).upper()
+    col = 0
+    for c in letters:
+        col = col * 26 + ord(c) - 64
+    return int("".join(c for c in ref if c.isdigit())), col
+
+
+def parse_range(ref):
+    """'B16:D16' → ((16, 2), (16, 4)); a single cell → the same corner twice."""
+    a, _, b = ref.partition(":")
+    return parse_cell(a), parse_cell(b or a)
+
+
+def _cell_value(v):
+    """A JSON value as an Excel cell: None → empty, dict / list → JSON text."""
+    if v is None:
+        return ""
+    if isinstance(v, (dict, list)):
+        return json.dumps(v, separators=(",", ":"))
+    return v
+
+
+class Workbook:
+    """One workbook through the Excel REST API, inside a persistent session."""
+
+    def __init__(self, graph, drive_id, item_id):
+        self.g = graph
+        self.item = f"{GRAPH}/drives/{quote(drive_id, safe='')}/items/{quote(item_id, safe='')}"
+        self.base = f"{self.item}/workbook"
+        self.session = None
+        self.cells = 0
+
+    def call(self, method, path, body=None):
+        return self.g.request(method, f"{self.base}/{path}", body, self.session)
+
+    def metadata(self):
+        return self.g.request("GET", self.item)
+
+    def open(self):
+        self.session = (self.g.request("POST", f"{self.base}/createSession", {"persistChanges": True}) or {}).get("id")
+        if not self.session:
+            raise GraphError(0, "createSession returned no id")
+
+    def close(self):
+        if self.session:
+            try:
+                self.g.request("POST", f"{self.base}/closeSession", {}, self.session)
+            finally:
+                self.session = None
+
+    def sheet_names(self):
+        return [w.get("name") for w in (self.call("GET", "worksheets?$select=name") or {}).get("value", [])]
+
+    def _sheet(self, name):
+        return f"worksheets('{_odata(name)}')"
+
+    def add_sheet(self, name):
+        self.call("POST", "worksheets/add", {"name": name})
+
+    def read(self, sheet, address):
+        """{values, formulas} of a range."""
+        return self.call("GET", f"{self._sheet(sheet)}/range(address='{_odata(address)}')?$select=address,values,formulas") or {}
+
+    def clear(self, sheet):
+        """Clears the contents of the sheet's used range (formats stay)."""
+        used = self.call("GET", f"{self._sheet(sheet)}/usedRange(valuesOnly=true)?$select=address") or {}
+        address = (used.get("address") or "").split("!")[-1]
+        if address:
+            self.call("POST", f"{self._sheet(sheet)}/range(address='{_odata(address)}')/clear", {"applyTo": "Contents"})
+
+    def write(self, sheet, address, values):
+        self.call("PATCH", f"{self._sheet(sheet)}/range(address='{_odata(address)}')", {"values": values})
+        self.cells += sum(len(r) for r in values)
+
+    def write_table(self, sheet, rows, top=1, left=1):
+        """Writes `rows` (padded to one width) from row `top`, column `left`, in
+        chunks of whole rows: at most CELLS_PER_REQUEST cells and about
+        BYTES_PER_REQUEST of JSON each. Returns the addresses written."""
+        if not rows:
+            return []
+        width = max(len(r) for r in rows)
+        rows = [[_cell_value(v) for v in r] + [""] * (width - len(r)) for r in rows]
+        per = max(1, CELLS_PER_REQUEST // width)
+        addresses, i = [], 0
+        while i < len(rows):
+            chunk, size = [], 0
+            while i < len(rows) and len(chunk) < per:
+                n = len(json.dumps(rows[i])) + 1
+                if chunk and size + n > BYTES_PER_REQUEST:
+                    break
+                chunk.append(rows[i])
+                size += n
+                i += 1
+            r0 = top + i - len(chunk)
+            address = f"{col_letter(left)}{r0}:{col_letter(left + width - 1)}{r0 + len(chunk) - 1}"
+            self.write(sheet, address, chunk)
+            addresses.append(address)
+        return addresses
+
+    def rewrite_sheet(self, sheet, rows, names):
+        """Creates the sheet if missing (names: the workbook's sheets, updated), else
+        clears it; then writes `rows` from A1."""
+        if sheet in names:
+            self.clear(sheet)
+        else:
+            self.add_sheet(sheet)
+            names.append(sheet)
+        return self.write_table(sheet, rows)
+
+
+# ── Targets ─────────────────────────────────────────────────────────────────
+
+def parse_targets(text):
+    """EXCEL_TARGETS JSON → {key: target}; raises ValueError when unusable."""
+    if not text or not text.strip():
+        raise ValueError("not set")
+    try:
+        t = json.loads(text)
+    except ValueError as e:
+        raise ValueError(f"not JSON ({e})")
+    if not isinstance(t, dict):
+        raise ValueError("not a JSON object")
+    out = {}
+    for key, v in t.items():
+        if key not in TARGET_KEYS:
+            raise ValueError(f"unknown target {key!r} (expected {', '.join(TARGET_KEYS)})")
+        ok = isinstance(v, dict) and ((v.get("drive_id") and v.get("item_id")) or (v.get("user") and v.get("path")))
+        if not ok:
+            raise ValueError(f"{key}: needs drive_id + item_id, or user + path")
+        out[key] = v
+    return out
+
+
+def resolve_target(graph, key, t):
+    """(drive_id, item_id); a user + path target is looked up and its ids printed for pinning."""
+    if t.get("drive_id") and t.get("item_id"):
+        return t["drive_id"], t["item_id"]
+    path = "/" + t["path"].lstrip("/")
+    meta = graph.request("GET", f"{GRAPH}/users/{quote(t['user'], safe='@')}/drive/root:{quote(path)}?$select=id,name,parentReference")
+    drive_id, item_id = meta["parentReference"]["driveId"], meta["id"]
+    print(f"{key}: {t['user']}:{path} → pin as {json.dumps({'drive_id': drive_id, 'item_id': item_id})}")
+    return drive_id, item_id
+
+
+# ── Supabase ────────────────────────────────────────────────────────────────
+
+class SupabaseError(Exception):
+    pass
+
+
+def sb(method, path, body=None, prefer=None):
+    base, key = os.environ.get("SUPABASE_URL", "").rstrip("/"), os.environ.get("SUPABASE_KEY", "")
+    if not base or not key:
+        raise SupabaseError("SUPABASE_URL / SUPABASE_KEY not set")
+    headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    if prefer:
+        headers["Prefer"] = prefer
+    try:
+        r = requests.request(method, f"{base}/rest/v1/{path}", headers=headers,
+                             data=None if body is None else json.dumps(body), timeout=30)
+    except requests.RequestException as e:
+        raise SupabaseError(f"no answer: {e}")
+    if r.status_code >= 400:
+        raise SupabaseError(f"HTTP {r.status_code}: {_short(r.text, 200)}")
+    return r.json() if r.content else None
+
+
+def read_shared_inputs():
+    """({ex: overrides}, {ex: updated_at}) from Supabase valuation_inputs."""
+    rows = sb("GET", "valuation_inputs?select=exchange,inputs,updated_at") or []
+    overrides, updated = {}, {}
+    for r in rows:
+        ex = r.get("exchange")
+        if ex in EXCHANGES:
+            if isinstance(r.get("inputs"), dict):
+                overrides[ex] = r["inputs"]
+            updated[ex] = r.get("updated_at")
+    return overrides, updated
+
+
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+class RunLog:
+    """The excel_sync_runs row of this run. Logging failures are printed, not fatal,
+    except where the caller needs the row."""
+
+    def __init__(self, run_id=None, trigger="scheduled"):
+        self.id = run_id
+        self.trigger = trigger
+        gh = os.environ.get("GITHUB_RUN_ID", "")
+        self.github_run_id = int(gh) if gh.isdigit() else None
+
+    def start(self):
+        fields = {"status": "running", "started_at": _now_iso(), "github_run_id": self.github_run_id}
+        try:
+            if self.id:
+                sb("PATCH", f"excel_sync_runs?id=eq.{int(self.id)}", fields, "return=minimal")
+            else:
+                rows = sb("POST", "excel_sync_runs", {"trigger": self.trigger, **fields}, "return=representation")
+                self.id = rows[0]["id"] if rows else None
+        except SupabaseError as e:
+            print(f"WARNING: could not log the run start: {e}")
+
+    def finish(self, status, files=None, error=None):
+        if not self.id:
+            return
+        try:
+            sb("PATCH", f"excel_sync_runs?id=eq.{int(self.id)}",
+               {"status": status, "finished_at": _now_iso(), "files": files, "error": _short(error, 500) if error else None,
+                "github_run_id": self.github_run_id}, "return=minimal")
+        except SupabaseError as e:
+            print(f"WARNING: could not log the run result: {e}")
+
+
+# ── What gets written ───────────────────────────────────────────────────────
+
+def ist_text(iso_or_dt):
+    """'2026-11-23T19:30:00Z' or a datetime → '24 Nov 2026 01:00 IST'; '' for none."""
+    if not iso_or_dt:
+        return ""
+    dt = iso_or_dt
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+        except ValueError:
+            return dt
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(IST).strftime("%-d %b %Y %H:%M IST")
+
+
+def stamp(now, data_to, inputs_changed):
+    return (f"Written by ExchangesDash at {ist_text(now)}; data to {data_to or 'n/a'}; "
+            f"inputs last changed {ist_text(inputs_changed) or 'never (the defaults)'}")
+
+
+def _latest(*isos):
+    xs = [x for x in isos if x]
+    return max(xs) if xs else None
+
+
+def _three(x):
+    return list(x) if x else ["", "", ""]
+
+
+def web_dashboard_rows(ex, e, now, inputs_changed):
+    """The vF file's "Web Dashboard" sheet, five columns A–E, fixed addresses
+    (docs/EXCEL_MIRROR.md lists them; WEB_ADDRESSES below names the main ones)."""
+    v, d = e["inputs"], e["defaults"]
+    ctx, a, fit, ratio, win = e["context"], e["adr_model"], e["fit"] or {}, e["ratio"] or {}, e["window"]
+    rows = [
+        [stamp(now, ctx["last_date"], inputs_changed)],
+        [f"{NAMES[ex]}: the web dashboard's Valuation Model inputs and results. Plain values, rewritten on every run: link to these cells, do not type here."],
+        [],
+        ["Inputs"],
+        ["Key", "Input", "Value", "Default", "Edited"],
+    ]
+    for k in INPUT_KEYS:
+        rows.append([k, INPUT_LABELS[k], v.get(k), d.get(k), (k in e["edited"]) if k in EDITABLE_KEYS else ""])
+    rows += [[], ["Market and fit"], ["Item", "Value"]]
+    items = [
+        ("CMP, ₹", e["cmp"]), ("CMP date (last close)", e["cmp_date"]), ("Data to", ctx["last_date"]),
+        ("Current quarter", ctx["q_label"]), ("Quarter ADR to date, ₹ Cr", ctx["q_adr"]), ("Quarter sessions", ctx["q_n"]),
+        ("45 DMA ADR, ₹ Cr", ctx["adr45"]), ("ADR in the estimate table, ₹ Cr", e["est"]["adr"]),
+        ("Next FY", f"FY{str(e['adr_path']['fy'])[-2:]}"), ("Next-FY average ADR, ₹ Cr", a["adr_fy"]),
+        ("Total income next FY, ₹ Cr", a["total"]), ("PAT next FY, ₹ Cr", a["pat"]), ("EPS next FY, ₹", a["eps"]),
+        ("Shares, Cr", e["shares_cr"]), ("Fit sessions (n)", win["n"]), ("Regression data from", e["data_from"]),
+        ("Fit first point", win["first_point"]), ("Fit intercept, ₹", fit.get("intercept")), ("Fit slope", fit.get("slope")),
+        ("Fit standard error, ₹", fit.get("se")), ("Fit R²", fit.get("r2")), ("Price ÷ MA mean", ratio.get("mean")),
+        ("Price ÷ MA σ", ratio.get("sd")), ("Fit note", e["fit_why"]), ("Ratio note", e["ratio_why"]),
+    ]
+    rows += [[k, val] for k, val in items]
+    rows += [[], ["Targets, ₹ per share (upside as a fraction of CMP)", "Bear", "Base", "Bull"]]
+    tri = lambda label, x: [label] + _three(x)  # noqa: E731
+    rows += [
+        tri("Triangulated target (ADR estimate)", e["target"]["values"]),
+        tri("Upside vs CMP", e["target"]["upside"]),
+        tri("ADR model, next FY-end target", a["fy_next_end"]),
+        tri("ADR model, this FY-end target", a["fy_end"]),
+        tri("ADR model, today", a["today"]),
+    ]
+    for key, name in (("dma", "45 DMA"), ("est", "ADR estimate")):
+        t = e[key]
+        rows += [
+            tri(f"{name}: Regression", t["regression"]), tri(f"{name}: Ratio", t["ratio"]),
+            tri(f"{name}: ADR model", t["adr_model"]), tri(f"{name}: Weighted average", t["avg"]),
+            tri(f"{name}: Upside vs CMP", t["upside"]),
+        ]
+    rows += [[], ["ADR path", "ADR, ₹ Cr / session"]]
+    rows += [[p["label"], p["adr"]] for p in e["adr_path"]["quarters"]]
+    rows.append([f"FY{str(e['adr_path']['fy'])[-2:]} average", e["adr_path"]["adr"]])
+    return rows
+
+
+# Main fixed addresses of the Web Dashboard sheet (a test checks them against the layout)
+WEB_ADDRESSES = {
+    "stamp": "A1", "inputs": "C6:C19", "cmp": "B23", "cmp_date": "B24",
+    "target": "B50:D50", "upside": "B51:D51", "adr_model_today": "B54:D54", "adr_path": "A66",
+}
+
+
+def valuation_row(ex, e, inputs_changed):
+    a, fit, ratio = e["adr_model"], e["fit"] or {}, e["ratio"] or {}
+    row = [ex, e["cmp"], e["cmp_date"], e["context"]["last_date"], e["context"]["q_label"], e["context"]["q_adr"],
+           e["context"]["adr45"], e["est"]["adr"], e["est_is_dma"], e["adr_path"]["fy"], a["adr_fy"], a["eps"]]
+    for x in (e["target"]["values"], e["target"]["upside"], a["fy_next_end"], a["fy_end"], a["today"]):
+        row += _three(x)
+    for key in ("dma", "est"):
+        for x in ("regression", "ratio", "adr_model", "avg"):
+            row += _three(e[key][x])
+    row += [e["window"]["n"], e["data_from"], e["window"]["first_point"], fit.get("intercept"), fit.get("slope"),
+            fit.get("se"), fit.get("r2"), ratio.get("mean"), ratio.get("sd"), e["shares_cr"], inputs_changed]
+    return row
+
+
+def valuation_header():
+    h = ["exchange", "cmp", "cmp_date", "data_to", "quarter", "quarter_adr", "adr45", "adr_estimate_used", "estimate_is_45dma",
+         "next_fy", "next_fy_adr", "eps_next_fy"]
+    for p in ("target", "upside", "adr_model_fy_next_end", "adr_model_fy_end", "adr_model_today"):
+        h += [f"{p}_bear", f"{p}_base", f"{p}_bull"]
+    for t in ("dma", "est"):
+        for x in ("regression", "ratio", "adr_model", "avg"):
+            h += [f"{t}_{x}_bear", f"{t}_{x}_base", f"{t}_{x}_bull"]
+    return h + ["fit_n", "data_from", "fit_first_point", "fit_intercept", "fit_slope", "fit_se", "fit_r2",
+                "ratio_mean", "ratio_sd", "shares_cr", "inputs_changed_at"]
+
+
+def _columns(rows, first=("date",)):
+    cols = [c for c in first if any(c in r for r in rows)]
+    for r in rows:
+        for k in r:
+            if k not in cols:
+                cols.append(k)
+    return cols
+
+
+def table(rows, cols):
+    return [[r.get(c) for c in cols] for r in rows]
+
+
+def feed_sheets(outputs, raw, updated, now):
+    """{sheet: rows} for the Exchanges Dashboard workbook: row 1 stamp, row 2 headers,
+    data from row 3."""
+    sheets = {}
+    ex_out = outputs["exchanges"]
+    changed = _latest(*updated.values())
+    daily = {ex: sorted((raw.get(ex) or {}).get("daily_all") or [], key=lambda r: r.get("date") or "") for ex in EXCHANGES}
+    last = {ex: (daily[ex][-1]["date"] if daily[ex] else None) for ex in EXCHANGES}
+    data_to = _latest(*last.values())
+
+    head = ["exchange"] + INPUT_KEYS + ["edited", "inputs_changed_at"]
+    rows = [[ex] + [ex_out[ex].get("inputs", {}).get(k) for k in INPUT_KEYS]
+            + [",".join(ex_out[ex].get("edited", [])), ist_text(updated.get(ex))] for ex in EXCHANGES]
+    sheets["WD_Inputs"] = [[stamp(now, data_to, changed)], head] + rows
+
+    rows = [valuation_row(ex, ex_out[ex], ist_text(updated.get(ex))) for ex in EXCHANGES if "error" not in ex_out[ex]]
+    sheets["WD_Valuation"] = [[stamp(now, data_to, changed)], valuation_header()] + rows
+
+    for ex in ("nse", "bse", "mcx"):
+        cols = _columns(daily[ex])
+        sheets[f"WD_{NAMES[ex]}_Daily"] = [[stamp(now, last[ex], changed)], cols] + table(daily[ex], cols)
+
+    for key, sheet, first in (("quarterly", "WD_Quarterly", ("quarter",)), ("monthly", "WD_Monthly", ("month",))):
+        stacked = [{"exchange": ex, **r} for ex in ("nse", "bse", "mcx") for r in (raw.get(ex) or {}).get(key) or []]
+        cols = _columns(stacked, ("exchange",) + first)
+        sheets[sheet] = [[stamp(now, data_to, changed)], cols] + table(stacked, cols)
+
+    vix = [[r["date"], r["vix"]] for r in daily["nse"] if r.get("vix") is not None]
+    sheets["WD_VIX"] = [[stamp(now, last["nse"], changed)], ["date", "vix"]] + vix
+
+    nse = {r["date"]: r for r in daily["nse"]}
+    bse = {r["date"]: r for r in daily["bse"]}
+    contracts = []
+    for date in sorted(set(nse) | set(bse)):
+        n, b = nse.get(date), bse.get(date)
+        add = lambda r, *ks: sum(r.get(k) or 0 for k in ks) if r else None  # noqa: E731
+        contracts.append([date, add(n, "io_contracts", "so_contracts"), add(n, "if_contracts", "sf_contracts"),
+                          add(n, "io_premium", "so_premium"), b.get("total_contracts") if b else None,
+                          b.get("options_premium_turnover") if b else None])
+    sheets["WD_Contracts"] = [[stamp(now, _latest(last["nse"], last["bse"]), changed)],
+                              ["date", "nse_option_contracts", "nse_futures_contracts", "nse_option_premium_cr",
+                               "bse_contracts", "bse_option_premium_cr"]] + contracts
+    return sheets
+
+
+# ── One file ────────────────────────────────────────────────────────────────
+
+def label_check(wb, ex):
+    """Reads the mapped cells of "Tusk - Summary" in one range; [] when every label
+    matches and every target cell holds a value, else the problems."""
+    cells = VF_INPUT_CELLS[ex]
+    corners = [parse_cell(c["label_cell"]) for c in cells] + [p for c in cells for p in parse_range(c["range"])]
+    r0, c0 = min(r for r, _ in corners), min(c for _, c in corners)
+    r1, c1 = max(r for r, _ in corners), max(c for _, c in corners)
+    got = wb.read(SUMMARY_SHEET, f"{col_letter(c0)}{r0}:{col_letter(c1)}{r1}")
+    values, formulas = got.get("values") or [], got.get("formulas") or []
+
+    def at(grid, r, c):
+        try:
+            return grid[r - r0][c - c0]
+        except (IndexError, TypeError):
+            return None
+
+    problems = []
+    for c in cells:
+        r, col = parse_cell(c["label_cell"])
+        seen = str(at(values, r, col) or "").strip()
+        if seen.casefold() != c["label"].strip().casefold():
+            problems.append(f"{c['label_cell']} reads {seen!r}, expected {c['label']!r}")
+            continue
+        (ra, ca), (rb, cb) = parse_range(c["range"])
+        for rr in range(ra, rb + 1):
+            for cc in range(ca, cb + 1):
+                f = at(formulas, rr, cc)
+                if isinstance(f, str) and f.startswith("="):
+                    problems.append(f"{col_letter(cc)}{rr} holds a formula ({_short(f, 40)}), not an input")
+    return problems
+
+
+def write_vf(wb, ex, e, now, inputs_changed, result):
+    names = wb.sheet_names()
+    if SUMMARY_SHEET not in names:
+        result["errors"].append(f"no sheet {SUMMARY_SHEET!r}: input cells not written")
+    else:
+        problems = label_check(wb, ex)
+        if problems:
+            result["errors"].append("label check failed, input cells not written: " + "; ".join(problems))
+        else:
+            for c in VF_INPUT_CELLS[ex]:
+                wb.write(SUMMARY_SHEET, c["range"], [[e["inputs"][k] * c["scale"] for k in c["keys"]]])
+            result["inputs_written"] = True
+    wb.rewrite_sheet(WEB_SHEET, web_dashboard_rows(ex, e, now, inputs_changed), names)
+    result["sheets"].append(WEB_SHEET)
+
+
+def write_dashboard(wb, sheets, result):
+    names = wb.sheet_names()
+    for sheet, rows in sheets.items():
+        wb.rewrite_sheet(sheet, rows, names)
+        result["sheets"].append(sheet)
+
+
+def run_target(graph, key, target, work, dry_run):
+    """Writes one target; never raises. Returns its result for excel_sync_runs.files."""
+    t0 = time.monotonic()
+    result = {"target": key, "status": "failed", "cells": 0, "sheets": [], "errors": [], "dry_run": dry_run}
+    wb = None
+    try:
+        drive_id, item_id = resolve_target(graph, key, target)
+        result["item"] = {"drive_id": drive_id, "item_id": item_id}
+        wb = Workbook(graph, drive_id, item_id)
+        wb.open()
+        work(wb, result)
+        result["status"] = "partial" if result["errors"] else "success"
+    except FileLocked as e:
+        result["errors"].append(f"file locked ({e})")
+    except GraphError as e:
+        result["errors"].append(str(e))
+    except Exception as e:   # a bug must not stop the other files
+        result["errors"].append(f"{type(e).__name__}: {_short(e)}")
+    finally:
+        if wb is not None:
+            try:
+                wb.close()
+            except GraphError as e:
+                result["errors"].append(f"closeSession: {e}")
+            result["cells"] = wb.cells
+    result["duration_s"] = round(time.monotonic() - t0, 1)
+    print(f"{key}: {result['status']}, {result['cells']} cells, sheets {', '.join(result['sheets']) or '-'}"
+          + (f"; {' | '.join(result['errors'])}" if result["errors"] else ""))
+    return result
+
+
+def run_status(files):
+    done = [f for f in files if f["status"] != "skipped"]
+    if not done or all(f["status"] == "failed" for f in done):
+        return "failed"
+    return "success" if all(f["status"] == "success" for f in done) else "partial"
+
+
+def graph_token():
+    """excel_sync.get_graph_token, which exits on failure: a GraphError here instead."""
+    import excel_sync
+    try:
+        return excel_sync.get_graph_token()
+    except SystemExit:
+        raise GraphError(401, "Microsoft Graph sign-in failed (MSGRAPH_TENANT_ID / CLIENT_ID / CLIENT_SECRET)")
+
+
+def mirror(targets, dry_run=False, now=None, data=None):
+    """The write run. Returns (status, files, error)."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        overrides, updated = read_shared_inputs()
+    except SupabaseError as e:
+        return "failed", [], f"shared inputs not read from Supabase ({e}); nothing written"
+    data = data or valuation_outputs.load_data()
+    outputs = valuation_outputs.compute(data["inputs"], data["raw"], data["share"], overrides)
+    graph = Graph(graph_token())
+    files = []
+    for key in TARGET_KEYS:
+        if key not in targets:
+            files.append({"target": key, "status": "skipped", "cells": 0, "sheets": [], "errors": ["no target configured"], "dry_run": dry_run})
+            continue
+        if key in VF_TARGETS:
+            ex = VF_TARGETS[key]
+            e = outputs["exchanges"][ex]
+            if "error" in e:
+                files.append({"target": key, "status": "failed", "cells": 0, "sheets": [], "errors": [f"no valuation: {e['error']}"], "dry_run": dry_run})
+                continue
+            work = lambda wb, res, ex=ex, e=e: write_vf(wb, ex, e, now, updated.get(ex), res)  # noqa: E731
+        else:
+            sheets = feed_sheets(outputs, data["raw"], updated, now)
+            work = lambda wb, res, sheets=sheets: write_dashboard(wb, sheets, res)  # noqa: E731
+        files.append(run_target(graph, key, targets[key], work, dry_run))
+    status = run_status(files)
+    return status, files, None if status != "failed" else "no file was written"
+
+
+def check(targets):
+    """Read only: each target's metadata, sheets and label checks, as a table."""
+    graph = Graph(graph_token())
+    rows = [("target", "file", "drive_id / item_id", "sheets", "Web Dashboard / WD_*", "labels")]
+    ok = True
+    for key in TARGET_KEYS:
+        if key not in targets:
+            rows.append((key, "-", "not configured", "", "", ""))
+            continue
+        try:
+            drive_id, item_id = resolve_target(graph, key, targets[key])
+            wb = Workbook(graph, drive_id, item_id)
+            meta = wb.metadata() or {}
+            names = wb.sheet_names()
+            if key in VF_TARGETS:
+                mine = "present" if WEB_SHEET in names else "will be created"
+                if SUMMARY_SHEET not in names:
+                    labels = f"no {SUMMARY_SHEET!r} sheet"
+                else:
+                    problems = label_check(wb, VF_TARGETS[key])
+                    labels = "OK" if not problems else "; ".join(problems)
+                ok = ok and labels == "OK"
+            else:
+                wd = [n for n in names if n.startswith("WD_")]
+                mine = f"{len(wd)} WD_* sheets" if wd else "will be created"
+                labels = "n/a"
+            rows.append((key, meta.get("name", "?"), f"{drive_id} / {item_id}", str(len(names)), mine, labels))
+        except GraphError as e:
+            ok = False
+            rows.append((key, "-", "", "", "", f"ERROR {e}"))
+    widths = [max(len(str(r[i])) for r in rows) for i in range(len(rows[0]))]
+    for r in rows:
+        print("  ".join(str(c).ljust(w) for c, w in zip(r, widths)).rstrip())
+    return ok
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Mirror the dashboard's inputs, results and data into the Excel workbooks.")
+    ap.add_argument("--trigger", choices=("scheduled", "manual"), default="scheduled")
+    ap.add_argument("--run-id", help="excel_sync_runs id of a manual run created by /api/excel-refresh")
+    ap.add_argument("--dry-run", action="store_true", help="write to EXCEL_TARGETS_DRYRUN (test copies)")
+    ap.add_argument("--check", action="store_true", help="read only: metadata, sheets and label checks of each target")
+    args = ap.parse_args(argv)
+    run_id = args.run_id if args.run_id and str(args.run_id).strip() else None
+
+    if not (args.check or args.dry_run) and os.environ.get("ENABLE_EXCEL_MIRROR", "").strip().lower() != "true":
+        print("Excel mirror is off (repository variable ENABLE_EXCEL_MIRROR is not 'true'): nothing written.")
+        if run_id:
+            RunLog(run_id, args.trigger).finish("failed", [], "Excel mirror is switched off (ENABLE_EXCEL_MIRROR)")
+        return 0
+
+    env = "EXCEL_TARGETS_DRYRUN" if args.dry_run else "EXCEL_TARGETS"
+    try:
+        targets = parse_targets(os.environ.get(env, ""))
+    except ValueError as e:
+        targets, bad = None, f"{env} {e}"
+
+    if args.check:
+        if targets is None:
+            print(f"ERROR: {bad}")
+            return 1
+        try:
+            return 0 if check(targets) else 1
+        except GraphError as e:
+            print(f"ERROR: {e}")
+            return 1
+
+    log = RunLog(run_id, args.trigger)
+    log.start()
+    if targets is None:
+        status, files, error = "failed", [], bad
+    else:
+        try:
+            status, files, error = mirror(targets, dry_run=args.dry_run)
+        except Exception as e:   # outputs, sign-in: the run fails as a whole
+            status, files, error = "failed", [], f"{type(e).__name__}: {_short(e)}"
+    log.finish(status, files, error)
+    print(f"Excel mirror{' (dry run)' if args.dry_run else ''}: {status}" + (f": {error}" if error else ""))
+    if status == "partial":
+        print("::warning::Excel mirror finished with errors on some files")
+    return 1 if status == "failed" else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

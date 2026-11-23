@@ -56,7 +56,7 @@ JS_EXPR = r"""(() => {
     const m = valuationModel(c, v, shares);
     const a = m.adrModel, win = c.win;
     exchanges[ex] = {
-      inputs: v, edited, overrides: valuationCleanOverrides(overrides[ex]),
+      inputs: v, defaults: defaults.ex[ex], edited, overrides: valuationCleanOverrides(overrides[ex]),
       shares_cr: shares,
       context: { q_label: c.qLabel, q_adr: c.qAdr, q_n: c.qN, adr45: c.adr45, n45: c.n45, last_date: c.lastDate, flags: c.flags },
       adr_path: { quarters: m.path.path.map(p => ({ label: p.label, q: p.q, fy: p.fy, adr: p.adr })), fy: m.path.fy, adr: m.path.adr },
@@ -110,7 +110,7 @@ def compute(inputs, raw, share, overrides=None):
     overrides ({ex: {key: value}}; unusable keys and values are ignored, as on the tab).
 
     Returns {fy, labels, exchanges: {ex: {...} | {error}}}; per exchange: inputs (the
-    effective inputs), edited, overrides, shares_cr, context, adr_path, adr_model
+    effective inputs), defaults, edited, overrides, shares_cr, context, adr_path, adr_model
     (bear/base/bull at next-FY end, this FY's end and today), dma and est (the two
     triangulations: regression, ratio and ADR model rows, weighted average, upside),
     target (the headline: the estimate triangulation), cmp / cmp_date / cmp_live, fit,
