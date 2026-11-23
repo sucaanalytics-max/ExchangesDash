@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-23T10:35:27Z",
+  "updated_at": "2026-11-23T10:40:28Z",
   "sensex": {
     "last": 82435.99,
     "change": -1483.72,
@@ -21,7 +21,7 @@
     "unchanged": 265
   },
   "revenue": {
-    "trade_date": "23-11-26",
+    "trade_date": "23/11/26",
     "equity_turnover": 15405.04,
     "derivatives_notional": 3820084.26,
     "options_premium": 12917.34,
