@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-23T07:57:49Z",
+ "updated_at": "2026-11-23T12:32:02Z",
  "note": "Readings of figures brokers keep updating on their web pages (scripts/broker_mtf_register.py LIVE_FEEDS), one per weekday page date (a later run that day replaces it), written by scripts/mtf_pipeline.py on each MTF run; mtf_brokers.json lists them under basis 'live'.",
  "readings": {
   "groww": [
@@ -13,7 +13,7 @@
    {"date": "2026-11-18", "book_cr": 4099.0, "quote": "Our Metrics as of 18 Nov 2026 … MTF Net Book ₹40.99 Bn … MTF Net Book, MF Assets and Stock Assets are platform-level figures based on the latest available data.", "url": "https://groww.in/investor-relations", "fetched_at": "2026-11-18T12:32:25Z"},
    {"date": "2026-11-19", "book_cr": 4046.0, "quote": "Our Metrics as of 19 Nov 2026 … MTF Net Book ₹40.46 Bn … MTF Net Book, MF Assets and Stock Assets are platform-level figures based on the latest available data.", "url": "https://groww.in/investor-relations", "fetched_at": "2026-11-19T12:32:06Z"},
    {"date": "2026-11-20", "book_cr": 4000.0, "quote": "Our Metrics as of 20 Nov 2026 … MTF Net Book ₹40.00 Bn … MTF Net Book, MF Assets and Stock Assets are platform-level figures based on the latest available data.", "url": "https://groww.in/investor-relations", "fetched_at": "2026-11-20T12:32:07Z"},
-   {"date": "2026-11-23", "book_cr": 4048.0, "quote": "Our Metrics as of 23 Nov 2026 … MTF Net Book ₹40.48 Bn … MTF Net Book, MF Assets and Stock Assets are platform-level figures based on the latest available data.", "url": "https://groww.in/investor-relations", "fetched_at": "2026-11-23T07:57:49Z"}
+   {"date": "2026-11-23", "book_cr": 4090.0, "quote": "Our Metrics as of 23 Nov 2026 … MTF Net Book ₹40.90 Bn … MTF Net Book, MF Assets and Stock Assets are platform-level figures based on the latest available data.", "url": "https://groww.in/investor-relations", "fetched_at": "2026-11-23T12:32:02Z"}
   ]
  }
 }
