@@ -372,3 +372,33 @@ class Markup(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class BrokerValuationPriceToBook(unittest.TestCase):
+    """Motilal Oswal's P/B lines (AB, 19 Nov 2026): brkValIndex reads them, brkValPbWin picks the period."""
+    NAMES = ["quarterSortKey", "brkValIndex", "BRK_VAL_WINDOWS", "BRK_PB_WINDOWS", "BRK_PB_DEFAULT", "brkValPbWin"]
+    ROWS = [
+        {"section": "pb_bands", "period_key": "3y", "line": "pb_mean", "value": 3.96, "rule": "2023-11-20 to 2026-11-18, 744 days"},
+        {"section": "pb_bands", "period_key": "3y", "line": "pb_sd", "value": 0.71, "rule": ""},
+        {"section": "pb_bands", "period_key": "1y", "line": "pb_mean", "value": 3.92, "rule": ""},
+        {"section": "pb_book", "period_key": "Q2 FY 2027", "line": "bvps", "value": 257.73, "rule": ""},
+        {"section": "pb_book", "period_key": "Q4 FY 2026", "line": "bvps", "value": 211.09, "rule": ""},
+        {"section": "pb", "period_key": "2026-11-18", "line": "pb", "value": 4.77, "rule": "close …"},
+        {"section": "pb", "period_key": "2026-11-18", "line": "bvps", "value": 257.73, "rule": ""},
+        {"section": "pb", "period_key": "2026-11-17", "line": "pb", "value": 4.81, "rule": "close …"},
+    ]
+
+    def test_index(self):
+        out = js_eval(self.NAMES, "(() => { const X = brkValIndex(DATA); return [X.pb, Object.keys(X.pbBands).sort(), X.book.map(b => b.quarter), Object.keys(X.sum)]; })()", self.ROWS)
+        self.assertEqual([r["date"] for r in out[0]], ["2026-11-17", "2026-11-18"])
+        self.assertEqual(out[0][1]["bvps"], 257.73)
+        self.assertEqual(out[1], ["1y", "3y"])
+        self.assertEqual(out[2], ["Q4 FY 2026", "Q2 FY 2027"])
+        self.assertEqual(out[3], [])          # no ADR valuation: the tab shows only the P/B
+
+    def test_period(self):
+        self.assertEqual(js_eval(self.NAMES, "brkValPbWin(undefined, { '1y': {}, '3y': {} })"), "3y")
+        self.assertEqual(js_eval(self.NAMES, "brkValPbWin('1y', { '1y': {}, '3y': {} })"), "1y")
+        self.assertEqual(js_eval(self.NAMES, "brkValPbWin('3m', { '6m': {}, '1y': {} })"), "1y")
+        self.assertIsNone(js_eval(self.NAMES, "brkValPbWin('3y', {})"))

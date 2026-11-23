@@ -84,7 +84,11 @@ The shell lives in `dashboard/js/00-core.js` ("BROKERS MODE"). It handles the re
   slope × ADR by ∓ the band) and `valuation.ratio` ((mean ∓ 1 SD) × ADR) on the window's published fit. At the
   published ADR (`adr_now`) it must reproduce the published regression and ratio lines, checked on load
   (`brkValAdrCheck`, to ₹0.005); if it doesn't, the input is not offered and the page shows the published figures only.
-  `tests/test_broker_pat.py` runs it on a published Groww run. These edits are never saved. The summary view also returns each
+  `tests/test_broker_pat.py` runs it on a published Groww run. These edits are never saved. Motilal Oswal has a Valuation
+  tab without a PAT model (`val: true` in `BRK_VIEWS`): it shows only the consolidated P/B the engine publishes in
+  `sb_valuation_lines` (sections `pb`, `pb_bands`, `pb_book`), with mean ± 1 / 2 SD bands per period (3M, 6M, 1Y, 2Y, 3Y,
+  since Apr 2025; a toggle over the chart, 3Y by default); the page draws the bands from the published mean and SD and
+  computes nothing else. A broker with both draws the P/B panel under its other charts. The summary view also returns each
   panel's last data day (`through`); the run bar shows MTF's, and a panel whose data ends before the
   run's as-of date is flagged (the engine has published runs whose MTF stopped days early). Use the Indian FY (Apr–Mar),
   ₹ Cr, and `quarterSortKey` to sort quarters.
