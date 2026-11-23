@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 import re
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from unittest import mock
@@ -258,6 +259,10 @@ class FixtureData:
 class MirrorTest(unittest.TestCase):
     def run_main(self, args=(), cloud_=None, quiet=True, **env_kw):
         self.cloud = cloud_ or cloud()
+        if "RUNNER_TEMP" not in env_kw:   # the run-id note goes to a fresh directory per test
+            tmp = tempfile.TemporaryDirectory()
+            self.addCleanup(tmp.cleanup)
+            env_kw["RUNNER_TEMP"] = tmp.name
         seen = {}
 
         def compute(inputs, raw, share, overrides):
@@ -714,6 +719,7 @@ class Safety(MirrorTest):
         f = self.files()["mcx_vf"]
         self.assertEqual(f["status"], "partial")
         self.assertFalse(f["inputs_written"])
+        self.assertEqual(f["input_cells"], {"B16:D16": False, "F11": True, "F12": True})
         self.assertIn("B16:D16 (P/E bear / base / bull) has no value", f["errors"][0])
         self.assertEqual(c.cell("mcx", "Tusk - Summary", "C16"), 45)        # untouched
         self.assertAlmostEqual(c.cell("mcx", "Tusk - Summary", "F12"), 0.18)
@@ -723,6 +729,7 @@ class Safety(MirrorTest):
         self.run_main()
         f = self.files()
         self.assertTrue(f["nse_vf"]["inputs_written"])
+        self.assertEqual(f["nse_vf"]["input_cells"], {"B16:D16": True, "F10": True, "F12": True})
         self.assertNotIn("inputs_written", f["dashboard"])
 
     def test_text_that_looks_like_a_formula_stays_text(self):
@@ -749,6 +756,15 @@ class Lifecycle(MirrorTest):
             path = os.path.join(d, "id")
             c = self.run_main(EXCEL_RUN_ID_FILE=path)
             self.assertEqual(open(path).read(), str(c.runs[0]["id"]))
+
+    def test_the_run_id_note_defaults_to_the_runner_temp_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = self.run_main(RUNNER_TEMP=d, EXCEL_RUN_ID_FILE="")
+            with open(os.path.join(d, "excel_run_id")) as f:
+                self.assertEqual(f.read(), str(c.runs[0]["id"]))
+            c.runs[0]["status"] = "running"                       # as if the job died after starting
+            self.run_main(["--finalize", "--conclusion", "failure"], cloud_=c, RUNNER_TEMP=d, EXCEL_RUN_ID_FILE="")
+            self.assertEqual(c.runs[0]["status"], "failed")
 
     def test_finalize_closes_a_row_left_running(self):
         c = cloud()
@@ -839,7 +855,7 @@ class WorkflowFile(unittest.TestCase):
         self.assertIn("if: ${{ always() }}", last)
         self.assertIn("--finalize", last)
         self.assertIn("CONCLUSION: ${{ job.status }}", last)
-        self.assertIn("EXCEL_RUN_ID_FILE: ${{ runner.temp }}/excel_run_id", mirror)
+        self.assertNotIn("${{ runner.", mirror[:mirror.index("steps:")])   # not allowed in a job's env
 
     def test_declares_the_dispatch_inputs(self):
         for name in ("trigger", "run_id", "dry_run", "check_only"):

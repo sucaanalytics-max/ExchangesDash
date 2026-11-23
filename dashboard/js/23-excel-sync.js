@@ -31,12 +31,24 @@ function excelSyncWhen(iso) {
   return d.toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' });
 }
 
+// A vF file's input cells: all written, some not (which), none; '' for the dashboard file
+function excelSyncInputsText(f) {
+  const cells = f.input_cells && typeof f.input_cells === 'object' ? Object.entries(f.input_cells) : null;
+  if (cells && cells.length) {
+    const missed = cells.filter(([, ok]) => !ok).map(([k]) => k);
+    if (!missed.length) return ' · input cells written';
+    if (missed.length < cells.length) return ` · some input cells not written (${missed.join(', ')})`;
+    return ' · input cells NOT written';
+  }
+  return f.inputs_written === true ? ' · input cells written' : f.inputs_written === false ? ' · input cells NOT written' : '';
+}
+
 // One file's mark: ✓ written, ! written with an error (e.g. a label check skipped its
 // input cells), ✗ failed, – not configured; the error on hover
 function excelSyncFileMark(f, label) {
   if (!f) return `<span class="rx-foot" title="${escHtml(label)}: not in this run">${escHtml(label)} –</span>`;
   const [mark, cls] = f.status === 'success' ? ['✓', 'rx-up'] : f.status === 'partial' ? ['!', 'rx-warn'] : f.status === 'skipped' ? ['–', 'rx-foot'] : ['✗', 'rx-dn'];
-  const inputs = f.inputs_written === true ? ' · input cells written' : f.inputs_written === false ? ' · input cells NOT written' : '';
+  const inputs = excelSyncInputsText(f);
   const tip = `${label}: ${f.status}${f.cells ? ` · ${fmtNum(f.cells, 0)} cells` : ''}${inputs}${f.error ? ` · ${f.error}` : ''}`;
   return `<span class="xs-file ${cls}" title="${escHtml(tip)}">${escHtml(label)} ${mark}</span>`;
 }

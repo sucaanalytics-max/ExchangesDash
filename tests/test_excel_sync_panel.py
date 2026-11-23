@@ -42,6 +42,16 @@ class PanelHTML(unittest.TestCase):
         self.assertIn("shared inputs not read from Supabase", html)   # a run without files shows its error
         self.assertIn('href="https://github.com/x/y/actions/runs/9"', html)
 
+    def test_input_cells_tooltip(self):
+        def text(f):
+            return js_eval(["excelSyncInputsText"], "excelSyncInputsText(DATA)", f, closure=True)
+        self.assertEqual(text({"inputs_written": False, "input_cells": {"B16:D16": False, "F11": True, "F12": True}}),
+                         " · some input cells not written (B16:D16)")
+        self.assertEqual(text({"inputs_written": False, "input_cells": {"B16:D16": False, "F11": False}}), " · input cells NOT written")
+        self.assertEqual(text({"inputs_written": True, "input_cells": {"B16:D16": True}}), " · input cells written")
+        self.assertEqual(text({"inputs_written": False}), " · input cells NOT written")
+        self.assertEqual(text({"inputs_written": None}), "")
+
     def test_button_only_when_signed_in(self):
         self.assertIn("data-xs-refresh", panel("ok", True))
         out = panel("ok", False)

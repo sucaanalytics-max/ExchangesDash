@@ -45,6 +45,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
@@ -471,8 +472,8 @@ class RunLog:
         except SupabaseError as e:
             print(f"WARNING: could not log the run start: {e}")
         # The workflow's always() step (--finalize) closes this row if the job dies first
-        path = os.environ.get("EXCEL_RUN_ID_FILE")
-        if path and self.id:
+        path = run_id_file()
+        if self.id:
             try:
                 with open(path, "w") as f:
                     f.write(str(self.id))
@@ -490,14 +491,21 @@ class RunLog:
             print(f"WARNING: could not log the run result: {e}")
 
 
+def run_id_file():
+    """Where this job notes its run row's id for --finalize: EXCEL_RUN_ID_FILE, else
+    excel_run_id in the runner's temp directory (RUNNER_TEMP, emptied per job; the
+    `runner` context cannot be used in a job-level env: in the workflow)."""
+    return os.environ.get("EXCEL_RUN_ID_FILE") or os.path.join(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir(), "excel_run_id")
+
+
 def finalize(run_id, conclusion):
     """The workflow's last step, run whatever happened: a row still queued or running
     (the job failed, was cancelled or timed out before recording a result) is closed as
     failed. A row the run finished is not touched (the PATCH filters on its status)."""
     if not run_id:
-        path = os.environ.get("EXCEL_RUN_ID_FILE")
         try:
-            run_id = open(path).read().strip() if path else None
+            with open(run_id_file()) as f:
+                run_id = f.read().strip()
         except OSError:
             run_id = None
     if not run_id or not str(run_id).isdigit():
@@ -777,18 +785,19 @@ def write_vf(wb, ex, e, now, inputs_changed, result):
     identity, problems = label_check(wb, ex)
     if identity:
         raise WrongFile(f"identity check failed, nothing written: {identity}")
+    # input_cells: per mapped range, whether it was written (the panel says "some" vs none)
+    cells = result["input_cells"] = {c["range"]: False for c in VF_INPUT_CELLS[ex]["inputs"]}
     if problems:
         result["errors"].append("label check failed, input cells not written: " + "; ".join(problems))
     else:
-        written = 0
         for c in VF_INPUT_CELLS[ex]["inputs"]:
             vals = [e["inputs"].get(k) for k in c["keys"]]
             if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in vals):
                 result["errors"].append(f"{c['range']} ({c['name']}) has no value to write: left as it is")
                 continue
             wb.write(SUMMARY_SHEET, c["range"], [[v * c["scale"] for v in vals]])
-            written += 1
-        result["inputs_written"] = written == len(VF_INPUT_CELLS[ex]["inputs"])
+            cells[c["range"]] = True
+    result["inputs_written"] = all(cells.values())
     try:
         wb.rewrite_sheet(WEB_SHEET, web_dashboard_rows(ex, e, now, inputs_changed), names)
         result["sheets"].append(WEB_SHEET)

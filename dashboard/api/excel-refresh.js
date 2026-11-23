@@ -13,7 +13,8 @@
  *                    without the workflow's closing step
  *                    each run {id, trigger, status, requested_at, started_at,
  *                    finished_at, error, run_url, files: [{target, status, cells,
- *                    sheets, duration_s, dry_run, inputs_written, error}]}; errors cut short
+ *                    sheets, duration_s, dry_run, inputs_written, input_cells, error}]};
+ *                    errors cut short
  *   POST (team session, /api/team-login) → Refresh Excel now:
  *        1. a run queued or running, requested in the last 15 minutes, is returned
  *           as it is (200 {run, dispatched: false}): runs queue, so a second press
@@ -65,6 +66,8 @@ function publicRun(r) {
       duration_s: Number.isFinite(f.duration_s) ? f.duration_s : null,
       dry_run: !!f.dry_run,
       inputs_written: typeof f.inputs_written === 'boolean' ? f.inputs_written : null,
+      input_cells: f.input_cells && typeof f.input_cells === 'object' && !Array.isArray(f.input_cells)
+        ? Object.fromEntries(Object.entries(f.input_cells).slice(0, 10).map(([k, v]) => [String(k).slice(0, 20), !!v])) : null,
       error: short(Array.isArray(f.errors) ? f.errors.join(' | ') : f.error),
     })),
   };
@@ -104,7 +107,8 @@ module.exports = async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      await closeStaleRuns();
+      // The sweep is housekeeping: if it fails, the panel still gets the runs
+      try { await closeStaleRuns(); } catch (e) { console.error('excel-refresh: stale-run sweep:', e.message); }
       const runs = await latestRuns();
       return res.status(200).json({ configured: true, signed_in: signedIn, schedule: SCHEDULE, runs: runs.map(publicRun) });
     }

@@ -37,6 +37,7 @@ global.fetch = async (url, opts = {}) => {
   }
   sbCalls.push({ method, path: u.pathname, query: decodeURIComponent(u.search) });
   if (cfg.sbFail) return reply(500, { message: 'boom' });
+  if (cfg.patchFail && method === 'PATCH') return reply(500, { message: 'boom' });
   if (u.pathname !== '/rest/v1/excel_sync_runs') return reply(404, { message: 'no route' });
   const q = u.searchParams;
   if (method === 'GET') {
@@ -211,6 +212,20 @@ class ExcelRefresh(unittest.TestCase):
                     self.assertEqual(out["status"], 503)
                     self.assertEqual(out["body"]["configured"], False)
                 self.assertEqual(r["dispatches"], [])
+
+    def test_a_failed_stale_sweep_still_lists_the_runs(self):
+        rows = [{"id": 1, "trigger": "manual", "status": "queued", "requested_at": iso_ago(50), "files": None, "error": None}]
+        r = run([GET], rows=rows, patchFail=True)
+        out = r["out"][0]
+        self.assertEqual(out["status"], 200)
+        self.assertEqual([x["id"] for x in out["body"]["runs"]], [1])
+
+    def test_input_cells_are_passed_through(self):
+        rows = [{"id": 1, "trigger": "manual", "status": "partial", "requested_at": iso_ago(5),
+                 "files": [{"target": "mcx_vf", "status": "partial", "inputs_written": False,
+                            "input_cells": {"B16:D16": False, "F11": True}}]}]
+        f = run([GET], rows=rows)["out"][0]["body"]["runs"][0]["files"][0]
+        self.assertEqual(f["input_cells"], {"B16:D16": False, "F11": True})
 
     def test_supabase_down_is_502(self):
         r = run([GET, POST], sbFail=True)

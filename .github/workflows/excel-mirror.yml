@@ -90,7 +90,8 @@ jobs:
     # One mirror at a time. GitHub keeps one running and at most one pending: a newer
     # pending run replaces (cancels) the older one, whose job then never starts. Its
     # row is closed as failed by /api/excel-refresh once it is 45 minutes old; a job
-    # that starts but dies is closed by the last step below.
+    # that starts but dies is closed by the last step below (the script notes its row id
+    # in $RUNNER_TEMP/excel_run_id: the `runner` context is not allowed in a job's env).
     concurrency:
       group: excel-mirror
       cancel-in-progress: false
@@ -103,7 +104,6 @@ jobs:
       MSGRAPH_CLIENT_SECRET: ${{ secrets.MSGRAPH_CLIENT_SECRET }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-      EXCEL_RUN_ID_FILE: ${{ runner.temp }}/excel_run_id
 
     steps:
       - name: Checkout repository
