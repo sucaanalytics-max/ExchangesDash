@@ -470,6 +470,14 @@ class RunLog:
                 self.id = rows[0]["id"] if rows else None
         except SupabaseError as e:
             print(f"WARNING: could not log the run start: {e}")
+        # The workflow's always() step (--finalize) closes this row if the job dies first
+        path = os.environ.get("EXCEL_RUN_ID_FILE")
+        if path and self.id:
+            try:
+                with open(path, "w") as f:
+                    f.write(str(self.id))
+            except OSError as e:
+                print(f"WARNING: could not note the run id: {e}")
 
     def finish(self, status, files=None, error=None):
         if not self.id:
@@ -480,6 +488,72 @@ class RunLog:
                 "github_run_id": self.github_run_id}, "return=minimal")
         except SupabaseError as e:
             print(f"WARNING: could not log the run result: {e}")
+
+
+def finalize(run_id, conclusion):
+    """The workflow's last step, run whatever happened: a row still queued or running
+    (the job failed, was cancelled or timed out before recording a result) is closed as
+    failed. A row the run finished is not touched (the PATCH filters on its status)."""
+    if not run_id:
+        path = os.environ.get("EXCEL_RUN_ID_FILE")
+        try:
+            run_id = open(path).read().strip() if path else None
+        except OSError:
+            run_id = None
+    if not run_id or not str(run_id).isdigit():
+        print("No run row to close.")
+        return
+    try:
+        sb("PATCH", f"excel_sync_runs?id=eq.{int(run_id)}&status=in.(queued,running)",
+           {"status": "failed", "finished_at": _now_iso(),
+            "error": f"the workflow job ended ({conclusion or 'unknown'}) before the run recorded a result"},
+           "return=minimal")
+    except SupabaseError as e:
+        print(f"WARNING: could not close run {run_id}: {e}")
+
+
+# ── The daily slot's gate ───────────────────────────────────────────────────
+# Vercel Cron dispatches the 01:00 IST run on time; GitHub's own `schedule:` fires the
+# same slot hours late. That late run is skipped when a scheduled run already
+# succeeded (or partly) in the last SCHEDULED_SKIP_HOURS, so there is one a day.
+SCHEDULED_SKIP_HOURS = 20
+
+
+def _parse_ts(x):
+    try:
+        dt = datetime.fromisoformat(str(x).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def scheduled_run_due(rows, now, hours=SCHEDULED_SKIP_HOURS):
+    """False when one of `rows` (excel_sync_runs) is a scheduled run that finished with
+    success or partial within `hours` before `now`; else True."""
+    cutoff = now - timedelta(hours=hours)
+    for r in rows or []:
+        t = _parse_ts(r.get("finished_at")) if r.get("finished_at") else None
+        if r.get("trigger") == "scheduled" and r.get("status") in ("success", "partial") and t and cutoff <= t <= now + timedelta(minutes=5):
+            return False
+    return True
+
+
+def gate(event_name, now=None):
+    """(run?, why) for the workflow's gate job. Only GitHub's own schedule is gated; a
+    dispatched run (Vercel Cron's slot, the button, by hand) always runs. When the log
+    cannot be read the run goes ahead: a repeat is harmless, a missed day is not."""
+    if event_name != "schedule":
+        return True, f"{event_name or 'manual'} run: not gated"
+    now = now or datetime.now(timezone.utc)
+    since = (now - timedelta(hours=SCHEDULED_SKIP_HOURS)).isoformat(timespec="seconds").replace("+00:00", "Z")
+    try:
+        rows = sb("GET", "excel_sync_runs?select=trigger,status,finished_at&trigger=eq.scheduled"
+                         f"&status=in.(success,partial)&finished_at=gte.{since}&order=finished_at.desc&limit=5")
+    except SupabaseError as e:
+        return True, f"run log not read ({e}): running"
+    if scheduled_run_due(rows, now):
+        return True, f"no scheduled run finished in the last {SCHEDULED_SKIP_HOURS} h"
+    return False, f"a scheduled run already finished in the last {SCHEDULED_SKIP_HOURS} h: skipped"
 
 
 # ── What gets written ───────────────────────────────────────────────────────
@@ -892,8 +966,23 @@ def main(argv=None):
     ap.add_argument("--run-id", help="excel_sync_runs id of a manual run created by /api/excel-refresh")
     ap.add_argument("--dry-run", action="store_true", help="write to EXCEL_TARGETS_DRYRUN (test copies)")
     ap.add_argument("--check", action="store_true", help="read only: metadata, sheets and label checks of each target")
+    ap.add_argument("--gate", action="store_true", help="the workflow's gate: run=true|false to GITHUB_OUTPUT")
+    ap.add_argument("--finalize", action="store_true", help="close this job's run row if it is still queued or running")
+    ap.add_argument("--conclusion", default="", help="with --finalize: the job's status")
     args = ap.parse_args(argv)
     run_id = args.run_id if args.run_id and str(args.run_id).strip() else None
+
+    if args.gate:
+        run, why = gate(os.environ.get("GITHUB_EVENT_NAME", ""))
+        print(f"Gate: {'run' if run else 'skip'} ({why})")
+        out = os.environ.get("GITHUB_OUTPUT")
+        if out:
+            with open(out, "a") as f:
+                f.write(f"run={'true' if run else 'false'}\n")
+        return 0
+    if args.finalize:
+        finalize(run_id, args.conclusion)
+        return 0
 
     if not (args.check or args.dry_run) and os.environ.get("ENABLE_EXCEL_MIRROR", "").strip().lower() != "true":
         print("Excel mirror is off (repository variable ENABLE_EXCEL_MIRROR is not 'true'): nothing written.")

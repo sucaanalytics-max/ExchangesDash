@@ -13,7 +13,7 @@ RUNS = [
     {"id": 3, "trigger": "manual", "status": "partial", "requested_at": "2026-11-23T05:00:00Z", "started_at": "2026-11-23T05:01:00Z",
      "finished_at": "2026-11-23T05:03:00Z", "error": None, "run_url": "https://github.com/x/y/actions/runs/9",
      "files": [{"target": "nse_vf", "status": "success", "cells": 400, "sheets": ["Web Dashboard"], "error": None, "dry_run": False},
-               {"target": "bse_vf", "status": "partial", "cells": 300, "sheets": ["Web Dashboard"], "error": "label check failed: A16 reads 'PB Ratio'", "dry_run": False},
+               {"target": "bse_vf", "status": "partial", "cells": 300, "sheets": ["Web Dashboard"], "error": "label check failed: A16 reads 'PB Ratio'", "dry_run": False, "inputs_written": False},
                {"target": "mcx_vf", "status": "failed", "cells": 0, "sheets": [], "error": "file locked (HTTP 423: <locked>)", "dry_run": False},
                {"target": "dashboard", "status": "success", "cells": 90000, "sheets": ["WD_Inputs"], "error": None, "dry_run": False}]},
     {"id": 2, "trigger": "scheduled", "status": "failed", "requested_at": "2026-11-22T19:30:00Z", "started_at": None,
@@ -36,7 +36,7 @@ class PanelHTML(unittest.TestCase):
         self.assertIn("rx-chip--warn\">Partial", html)
         self.assertIn("rx-chip--bad\">Failed", html)
         self.assertIn('class="xs-file rx-up" title="NSE vF: success · 400 cells">NSE vF ✓', html)
-        self.assertIn("title=\"BSE vF: partial · 300 cells · label check failed: A16 reads &#39;PB Ratio&#39;\"", html.replace("'", "&#39;"))
+        self.assertIn("title=\"BSE vF: partial · 300 cells · input cells NOT written · label check failed: A16 reads &#39;PB Ratio&#39;\"", html.replace("'", "&#39;"))
         self.assertIn("MCX vF ✗", html)
         self.assertIn("&lt;locked&gt;", html)                  # errors are escaped
         self.assertIn("shared inputs not read from Supabase", html)   # a run without files shows its error

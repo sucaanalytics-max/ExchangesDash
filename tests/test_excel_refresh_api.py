@@ -55,10 +55,14 @@ global.fetch = async (url, opts = {}) => {
     return reply(201, [row]);
   }
   if (method === 'PATCH') {
-    const id = Number(q.get('id').replace('eq.', ''));
-    const row = rows.find(r => r.id === id);
-    Object.assign(row, JSON.parse(opts.body));
-    return /return=representation/.test((opts.headers || {}).Prefer || '') ? reply(200, [row]) : reply(204);
+    let hit = rows.slice();
+    if (q.get('id')) hit = hit.filter(r => r.id === Number(q.get('id').replace('eq.', '')));
+    const st = q.get('status');
+    if (st) { const list = st.replace(/^in\.\(|\)$/g, '').split(','); hit = hit.filter(r => list.includes(r.status)); }
+    const lt = q.get('requested_at');
+    if (lt) hit = hit.filter(r => r.requested_at < lt.replace(/^lt\./, ''));
+    hit.forEach(r => Object.assign(r, JSON.parse(opts.body)));
+    return /return=representation/.test((opts.headers || {}).Prefer || '') ? reply(200, hit) : reply(204);
   }
   return reply(405, {});
 };
@@ -172,7 +176,26 @@ class ExcelRefresh(unittest.TestCase):
         self.assertLessEqual(len(body["runs"][0]["error"]), 200)
         self.assertEqual(body["runs"][0]["run_url"], "https://github.com/sucaanalytics-max/ExchangesDash/actions/runs/123")
         self.assertFalse(body["signed_in"])
-        self.assertIn("limit=10", r["sb"][0]["query"])
+        self.assertIn("limit=10", r["sb"][1]["query"])          # after the stale-run sweep
+
+    def test_get_closes_runs_that_never_finished(self):
+        rows = [{"id": 1, "trigger": "manual", "status": "queued", "requested_at": iso_ago(50), "files": None, "error": None},
+                {"id": 2, "trigger": "scheduled", "status": "running", "requested_at": iso_ago(46), "files": None, "error": None},
+                {"id": 3, "trigger": "manual", "status": "running", "requested_at": iso_ago(10), "files": None, "error": None},
+                {"id": 4, "trigger": "manual", "status": "success", "requested_at": iso_ago(90), "files": None, "error": None}]
+        r = run([GET], rows=rows)
+        by = {x["id"]: x for x in r["out"][0]["body"]["runs"]}
+        self.assertEqual((by[1]["status"], by[2]["status"]), ("failed", "failed"))
+        self.assertIn("never finished", by[1]["error"])
+        self.assertEqual(by[3]["status"], "running")
+        self.assertEqual((by[4]["status"], by[4]["error"]), ("success", None))
+        self.assertTrue(r["rows"][0]["finished_at"])
+
+    def test_get_passes_inputs_written(self):
+        rows = [{"id": 1, "trigger": "manual", "status": "partial", "requested_at": iso_ago(5),
+                 "files": [{"target": "bse_vf", "status": "partial", "inputs_written": False}, {"target": "dashboard", "status": "success"}]}]
+        files = run([GET], rows=rows)["out"][0]["body"]["runs"][0]["files"]
+        self.assertEqual([f["inputs_written"] for f in files], [False, None])
 
     def test_get_with_a_session_says_signed_in(self):
         r = run([{"method": "GET", "cookie": True}])

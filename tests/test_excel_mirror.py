@@ -101,12 +101,17 @@ class FakeCloud:
                 row = {"id": 100 + self.n, **body}
                 self.runs.append(row)
                 return FakeResponse(201, [row])
+            if method == "GET":
+                return FakeResponse(200, self.runs)
             if method == "PATCH":
                 rid = int(re.search(r"id=eq\.(\d+)", path).group(1))
                 row = next((r for r in self.runs if r["id"] == rid), None)
                 if row is None:
                     row = {"id": rid}
                     self.runs.append(row)
+                only = re.search(r"status=in\.\(([^)]*)\)", path)
+                if only and row.get("status") not in only.group(1).split(","):
+                    return FakeResponse(204)
                 row.update(body)
                 return FakeResponse(204)
         return FakeResponse(404, {"message": "no route"})
@@ -734,15 +739,107 @@ class Safety(MirrorTest):
         self.assertEqual(len(rows[1]), len(rows[0]))
 
 
+class Lifecycle(MirrorTest):
+    """Rows never stay queued or running: the run id is noted for the workflow's
+    always() step, which closes a row the job did not finish."""
+
+    def test_the_run_id_is_noted_for_finalize(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "id")
+            c = self.run_main(EXCEL_RUN_ID_FILE=path)
+            self.assertEqual(open(path).read(), str(c.runs[0]["id"]))
+
+    def test_finalize_closes_a_row_left_running(self):
+        c = cloud()
+        c.runs.append({"id": 42, "trigger": "manual", "status": "running"})
+        self.run_main(["--finalize", "--run-id", "42", "--conclusion", "cancelled"], cloud_=c)
+        self.assertEqual(c.runs[0]["status"], "failed")
+        self.assertIn("ended (cancelled)", c.runs[0]["error"])
+        self.assertFalse(any("graph.microsoft" in x[1] for x in c.calls))
+
+    def test_finalize_leaves_a_finished_row(self):
+        import tempfile
+        c = cloud()
+        c.runs.append({"id": 43, "trigger": "scheduled", "status": "success", "error": None})
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "id")
+            open(path, "w").write("43")
+            self.run_main(["--finalize", "--conclusion", "failure"], cloud_=c, EXCEL_RUN_ID_FILE=path)
+        self.assertEqual((c.runs[0]["status"], c.runs[0]["error"]), ("success", None))
+
+    def test_finalize_without_a_row_does_nothing(self):
+        c = self.run_main(["--finalize", "--conclusion", "failure"], EXCEL_RUN_ID_FILE="")
+        self.assertEqual(c.calls, [])
+
+
+class Gate(MirrorTest):
+    NOW = datetime(2026, 11, 24, 2, 0, tzinfo=timezone.utc)
+
+    def test_decision(self):
+        due = lambda rows: xm.scheduled_run_due(rows, self.NOW)  # noqa: E731
+        run = lambda **kw: {"trigger": "scheduled", "status": "success", "finished_at": "2026-11-23T19:35:00Z", **kw}  # noqa: E731
+        self.assertTrue(due([]))
+        self.assertFalse(due([run()]))                                       # Vercel's 19:30 run went through
+        self.assertFalse(due([run(status="partial")]))
+        self.assertTrue(due([run(status="failed")]))                         # a failed run is retried
+        self.assertTrue(due([run(trigger="manual")]))                        # a button press is not the daily run
+        self.assertTrue(due([run(finished_at="2026-11-23T05:00:00Z")]))      # 21 h ago
+        self.assertTrue(due([run(finished_at=None)]))
+
+    def test_only_githubs_schedule_is_gated(self):
+        for event in ("workflow_dispatch", ""):
+            self.assertEqual(xm.gate(event, self.NOW)[0], True)
+
+    def test_gate_writes_its_output(self):
+        import tempfile
+        c = cloud()
+        c.runs.append({"id": 1, "trigger": "scheduled", "status": "success",
+                       "finished_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")})
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "out")
+            self.run_main(["--gate"], cloud_=c, GITHUB_EVENT_NAME="schedule", GITHUB_OUTPUT=out)
+            self.assertEqual(open(out).read(), "run=false\n")
+            self.run_main(["--gate"], cloud_=c, GITHUB_EVENT_NAME="workflow_dispatch", GITHUB_OUTPUT=out)
+            self.assertEqual(open(out).read(), "run=false\nrun=true\n")
+        self.assertFalse(any("graph.microsoft" in x[1] for x in c.calls))
+
+    def test_gate_runs_when_the_log_cannot_be_read(self):
+        c = cloud()
+        c.supabase_down = True
+        with mock.patch("requests.request", c.request):
+            with mock.patch.dict(os.environ, env()):
+                self.assertEqual(xm.gate("schedule", self.NOW)[0], True)
+
+
 class WorkflowFile(unittest.TestCase):
     """.github/workflows/excel-mirror.yml (CI has no YAML parser: text checks)."""
 
     def setUp(self):
         self.text = (helpers.ROOT / ".github" / "workflows" / "excel-mirror.yml").read_text()
 
-    def test_runs_queue_and_never_cancel(self):
-        self.assertIn("group: excel-mirror", self.text)
-        self.assertIn("cancel-in-progress: false", self.text)
+    def job(self, name):
+        m = re.search(rf"^  {name}:\n(.*?)(?=^  [\w-]+:\n|\Z)", self.text, re.M | re.S)
+        return m.group(1)
+
+    def test_one_mirror_at_a_time_and_the_gate_outside_the_group(self):
+        top = self.text[:self.text.index("\njobs:")]
+        self.assertNotIn("concurrency:", top)
+        gate, mirror = self.job("gate"), self.job("mirror")
+        self.assertNotIn("concurrency", gate)
+        self.assertIn("--gate", gate)
+        self.assertIn("run: ${{ steps.gate.outputs.run }}", gate)
+        self.assertIn("needs: gate", mirror)
+        self.assertIn("if: ${{ needs.gate.outputs.run == 'true' }}", mirror)
+        self.assertRegex(mirror, r"concurrency:\n\s+group: excel-mirror\n\s+cancel-in-progress: false")
+
+    def test_the_last_step_always_closes_an_unfinished_row(self):
+        mirror = self.job("mirror")
+        last = mirror[mirror.rindex("- name:"):]
+        self.assertIn("if: ${{ always() }}", last)
+        self.assertIn("--finalize", last)
+        self.assertIn("CONCLUSION: ${{ job.status }}", last)
+        self.assertIn("EXCEL_RUN_ID_FILE: ${{ runner.temp }}/excel_run_id", mirror)
 
     def test_declares_the_dispatch_inputs(self):
         for name in ("trigger", "run_id", "dry_run", "check_only"):

@@ -7,9 +7,13 @@
  * workbooks, daily at 01:00 IST and on demand.
  *
  *   GET  (anyone)  → 200 {configured: true, signed_in, schedule, runs: [latest 10]}
+ *                    first closing as failed any run still queued or running 45 minutes
+ *                    after it was requested: its job never started (GitHub keeps one
+ *                    pending run per concurrency group and cancels the older) or died
+ *                    without the workflow's closing step
  *                    each run {id, trigger, status, requested_at, started_at,
  *                    finished_at, error, run_url, files: [{target, status, cells,
- *                    sheets, duration_s, dry_run, error}]}; errors cut short
+ *                    sheets, duration_s, dry_run, inputs_written, error}]}; errors cut short
  *   POST (team session, /api/team-login) → Refresh Excel now:
  *        1. a run queued or running, requested in the last 15 minutes, is returned
  *           as it is (200 {run, dispatched: false}): runs queue, so a second press
@@ -34,6 +38,9 @@ const NO_STORE = 'no-store';
 const WORKFLOW = 'excel-mirror.yml';
 const SCHEDULE = 'Daily at 01:00 IST';
 const ACTIVE_MS = 15 * 60 * 1000;
+// A run is at most ~20 min pending behind another plus its own 20-min job timeout
+const STALE_MS = 45 * 60 * 1000;
+const STALE_ERROR = 'never finished: the workflow job did not start (superseded by a newer run) or ended without a result';
 const LIST = 10;
 const COLUMNS = 'id,trigger,status,requested_at,started_at,finished_at,files,error,github_run_id';
 
@@ -57,9 +64,20 @@ function publicRun(r) {
       sheets: Array.isArray(f.sheets) ? f.sheets.map(String).slice(0, 20) : [],
       duration_s: Number.isFinite(f.duration_s) ? f.duration_s : null,
       dry_run: !!f.dry_run,
+      inputs_written: typeof f.inputs_written === 'boolean' ? f.inputs_written : null,
       error: short(Array.isArray(f.errors) ? f.errors.join(' | ') : f.error),
     })),
   };
+}
+
+// Closes as failed every run still queued or running STALE_MS after it was requested
+async function closeStaleRuns(now = Date.now()) {
+  const before = new Date(now - STALE_MS).toISOString();
+  await sb(`excel_sync_runs?status=in.(queued,running)&requested_at=lt.${encodeURIComponent(before)}`, {
+    method: 'PATCH',
+    headers: { Prefer: 'return=minimal' },
+    body: JSON.stringify({ status: 'failed', finished_at: new Date(now).toISOString(), error: STALE_ERROR }),
+  });
 }
 
 async function latestRuns() {
@@ -86,6 +104,7 @@ module.exports = async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
+      await closeStaleRuns();
       const runs = await latestRuns();
       return res.status(200).json({ configured: true, signed_in: signedIn, schedule: SCHEDULE, runs: runs.map(publicRun) });
     }

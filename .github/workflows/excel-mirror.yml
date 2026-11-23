@@ -12,9 +12,10 @@ name: Excel Mirror
 #
 # Writes nothing unless the repository variable ENABLE_EXCEL_MIRROR is 'true' (a manual
 # run's row is then closed as failed, so the dashboard does not wait on it).
-# dry_run writes to the test copies in EXCEL_TARGETS_DRYRUN instead; check_only reads
-# each target's metadata, sheets and label cells and writes nothing (both run whatever
-# the variable says). Commits nothing, so Vercel never builds for it.
+# dry_run writes to the test copies in EXCEL_TARGETS_DRYRUN instead, EVEN WITH THE
+# VARIABLE OFF: that variable must never point at the real files. check_only reads each
+# target's metadata, sheets and label cells, and opens a session that saves nothing.
+# Commits nothing, so Vercel never builds for it.
 
 on:
   schedule:
@@ -50,15 +51,49 @@ on:
 permissions:
   contents: read
 
-# Runs queue (a button press during the daily run waits for it), never cancel each other
-concurrency:
-  group: excel-mirror
-  cancel-in-progress: false
-
 jobs:
+  # GitHub's own schedule fires the 01:00 IST slot hours late, after Vercel Cron's
+  # dispatched run: that late run is skipped when a scheduled run already finished
+  # (success or partial) in the last 20 h. Dispatched runs always go ahead. This job
+  # is outside the concurrency group, so it never waits behind a running mirror.
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install --quiet requests
+
+      - name: Is this run due
+        id: gate
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: python scripts/excel_mirror.py --gate
+
   mirror:
+    needs: gate
+    if: ${{ needs.gate.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # One mirror at a time. GitHub keeps one running and at most one pending: a newer
+    # pending run replaces (cancels) the older one, whose job then never starts. Its
+    # row is closed as failed by /api/excel-refresh once it is 45 minutes old; a job
+    # that starts but dies is closed by the last step below.
+    concurrency:
+      group: excel-mirror
+      cancel-in-progress: false
     env:
       ENABLE_EXCEL_MIRROR: ${{ vars.ENABLE_EXCEL_MIRROR }}
       EXCEL_TARGETS: ${{ vars.EXCEL_TARGETS }}
@@ -68,6 +103,7 @@ jobs:
       MSGRAPH_CLIENT_SECRET: ${{ secrets.MSGRAPH_CLIENT_SECRET }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      EXCEL_RUN_ID_FILE: ${{ runner.temp }}/excel_run_id
 
     steps:
       - name: Checkout repository
@@ -101,4 +137,16 @@ jobs:
           if [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then args+=(--run-id "$RUN_ID"); fi
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           if [ "$CHECK_ONLY" = "true" ]; then args+=(--check); fi
+          python scripts/excel_mirror.py "${args[@]}"
+
+      # Whatever happened above (failure, timeout, cancellation): a row still queued or
+      # running is closed as failed, so the dashboard's panel never waits on it
+      - name: Close the run if it did not finish
+        if: ${{ always() }}
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          CONCLUSION: ${{ job.status }}
+        run: |
+          args=(--finalize --conclusion "$CONCLUSION")
+          if [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then args+=(--run-id "$RUN_ID"); fi
           python scripts/excel_mirror.py "${args[@]}"

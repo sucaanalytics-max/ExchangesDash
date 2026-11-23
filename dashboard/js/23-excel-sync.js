@@ -36,7 +36,8 @@ function excelSyncWhen(iso) {
 function excelSyncFileMark(f, label) {
   if (!f) return `<span class="rx-foot" title="${escHtml(label)}: not in this run">${escHtml(label)} –</span>`;
   const [mark, cls] = f.status === 'success' ? ['✓', 'rx-up'] : f.status === 'partial' ? ['!', 'rx-warn'] : f.status === 'skipped' ? ['–', 'rx-foot'] : ['✗', 'rx-dn'];
-  const tip = `${label}: ${f.status}${f.cells ? ` · ${fmtNum(f.cells, 0)} cells` : ''}${f.error ? ` · ${f.error}` : ''}`;
+  const inputs = f.inputs_written === true ? ' · input cells written' : f.inputs_written === false ? ' · input cells NOT written' : '';
+  const tip = `${label}: ${f.status}${f.cells ? ` · ${fmtNum(f.cells, 0)} cells` : ''}${inputs}${f.error ? ` · ${f.error}` : ''}`;
   return `<span class="xs-file ${cls}" title="${escHtml(tip)}">${escHtml(label)} ${mark}</span>`;
 }
 
