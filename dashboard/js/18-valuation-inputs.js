@@ -310,7 +310,9 @@ function openValuationDrawer(ctx) {
       value = parseFloat(text);
     }
     if (!valuationCanEdit() || !valuationInputOk(key, value, latest())) return;
-    overrides = setValuationOverride(overrides, defaults, ex, key, value);
+    // From the inputs in use now, not this drawer's copy: a colleague's change merged since
+    // (a 409) must not come back as an edit of ours
+    overrides = setValuationOverride(readValuationOverrides(), defaults, ex, key, value);
     save();
   });
   // Leaving a field shows the value in use (an unusable entry reverts); an ADR box left
@@ -320,7 +322,7 @@ function openValuationDrawer(ctx) {
     const i = e.target.closest && e.target.closest('input[data-vd]');
     if (!i || i.type === 'date') return;
     if (i.dataset.vd === 'adr' && valuationCanEdit() && i.value.trim() === '' && !(i.validity && i.validity.badInput)) {
-      overrides = setValuationOverride(overrides, defaults, ex, 'adr', null);
+      overrides = setValuationOverride(readValuationOverrides(), defaults, ex, 'adr', null);
       save();
     }
     showInUse(i);
@@ -379,7 +381,7 @@ function openValuationDrawer(ctx) {
   });
   el.addEventListener('click', e => {
     if (!(e.target.closest && e.target.closest('[data-vd-reset]')) || !valuationCanEdit()) return;
-    overrides = { ...overrides };
+    overrides = { ...readValuationOverrides() };
     delete overrides[ex];
     save();
     el.querySelectorAll('input[data-vd]').forEach(showInUse);

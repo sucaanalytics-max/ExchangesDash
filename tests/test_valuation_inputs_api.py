@@ -476,9 +476,9 @@ STORE_JS = ["valuationNum", "valuationIsoDate", "valuationInputOk", "VALUATION_E
             "valuationSameStored", "valuationOverlay", "valuationRecompute", "valuationNotice", "valuationDropPending",
             "valuationTakeConflict", "valuationFetchJson", "valuationStartPut",
             "valuationUnpublishedKeys", "valuationUnpublished", "valuationPutOne", "valuationSendOnLeave",
-            "valuationPublishLocal", "valuationDiscardLocal", "valuationLocalEditsNote", "valuationTeamSignIn", "valuationTeamSignOut",
+            "valuationPublishLocal", "valuationDiscardLocal", "valuationLocalEditsNote", "valuationViewKey", "valuationTeamSignIn", "valuationTeamSignOut",
             "readValuationOverrides", "writeValuationOverrides", "valuationCanEdit", "valuationSameOverrides",
-            "valuationChangedExchanges", "valuationSharedNotify", "valuationApplyShared",
+            "valuationChangedExchanges", "valuationSharedNotify", "valuationOlderStamp", "valuationApplyShared",
             "loadSharedValuationInputs", "valuationScheduleSave", "valuationFlushSaves"]
 
 
@@ -780,6 +780,54 @@ class SharedStore(unittest.TestCase):
         self.assertEqual((got["b"], got["ok"]), (200, True))
         self.assertEqual(got["stored"], {"pe1": 52, "w0": 30})   # ours is the latest action; B's w0 kept
         self.assertRegex(got["notice"] or "", r"colleague.*P/E")
+
+    def test_typing_during_a_conflict_resend_keeps_the_colleagues_change(self):
+        """A view that keeps a copy of the inputs (as the drawer does) and refreshes it on
+        the store's notify: after a 409 merge the copy must be refreshed before the next
+        keystroke, or the colleague's old values come back as our edits."""
+        got = store_e2e("""
+          await loadSharedValuationInputs();
+          let copy = readValuationOverrides();                       // the drawer's copy
+          VALUATION_SHARED.listeners.add(() => { copy = readValuationOverrides(); });
+          const typed = (k, v) => writeValuationOverrides({ ...copy, bse: { ...(copy.bse || {}), [k]: v } });
+          await api('PUT', 'valuation-inputs', { exchange: 'bse', inputs: { pe1: 48, w0: 30 }, base_updated_at: VALUATION_SHARED.updatedAt.bse });   // B
+          let puts = 0;
+          hold = async method => { if (method === 'PUT' && ++puts === 2) await sleep(40); };   // the re-send after the 409
+          typed('pe1', 50);
+          const flush = valuationFlushSaves();
+          await sleep(20);                                           // 409 taken, re-send out
+          typed('adr', 20);
+          await flush;
+          await valuationFlushSaves();
+          return { stored: stored('bse'), shown: readValuationOverrides() };""",
+            rows=[{"exchange": "bse", "inputs": {"pe1": 48, "w0": 10}, "updated_at": "2026-11-20T10:00:00Z"}])
+        self.assertEqual(got["stored"], {"pe1": 50, "w0": 30, "adr": 20})
+        self.assertEqual(got["shown"], {"bse": {"pe1": 50, "w0": 30, "adr": 20}})
+
+    def test_an_older_answer_does_not_replace_a_newer_row(self):
+        got = store("""
+          globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ...DATA, signed_in: true }) });
+          await loadSharedValuationInputs();
+          valuationApplyShared({ signed_in: true, inputs: { bse: { pe1: 50 } }, updated_at: { bse: '2026-11-23T09:00:02.000+00:00' } }, 'bse');
+          // an answer read before that save lands after it; nse in it is new
+          valuationApplyShared({ signed_in: true, inputs: { bse: { pe1: 49 }, nse: { w0: 5 } },
+                                 updated_at: { bse: '2026-11-23T09:00:01.000+00:00', mcx: null, nse: '2026-11-23T09:00:01.500+00:00' } });
+          return [readValuationOverrides(), VALUATION_SHARED.updatedAt, JSON.parse(mem.valuation_inputs_shared_v1)];""", SHARED)
+        self.assertEqual(got[0], {"bse": {"pe1": 50}, "nse": {"w0": 5}})
+        self.assertEqual(got[1]["bse"], "2026-11-23T09:00:02.000+00:00")
+        self.assertEqual(got[2], got[0])
+
+    def test_the_view_key_moves_with_sign_in_and_browser_edits(self):
+        got = store("""
+          globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => DATA });
+          await loadSharedValuationInputs();
+          const keys = [valuationViewKey()];
+          VALUATION_SHARED.signedIn = true;  keys.push(valuationViewKey());
+          mem.valuation_inputs_v1 = '{"bse":{"pe1":51}}';  keys.push(valuationViewKey());
+          keys.push(valuationViewKey());
+          return keys;""", SHARED)
+        self.assertEqual(len(set(got[:3])), 3)   # sign-in and this browser's edits both redraw the tab
+        self.assertEqual(got[2], got[3])
 
     def test_a_save_after_typing_during_a_put_lands_last(self):
         """Review 4664108506: 48 is in flight, 50 is typed and the tab is hidden. The stored

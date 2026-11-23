@@ -370,14 +370,23 @@ function valuationSharedNotify() {
   VALUATION_SHARED.listeners.forEach(f => { try { f(); } catch (e) { console.error(e); } });
 }
 
+// Whether a row stamped `incoming` is older than the one held (`held`): stamps rise strictly
+// with each save of a row, so an answer read before a later save must not replace it
+function valuationOlderStamp(incoming, held) {
+  if (!held) return false;
+  if (!incoming) return true;
+  return Date.parse(incoming) < Date.parse(held);
+}
+
 // Takes an API answer ({ configured: true, signed_in, inputs, updated_at }) as the confirmed
-// inputs (all exchanges, or only `onlyEx`), caches them, and lays the pending edits over them
+// inputs (all exchanges, or only `onlyEx`; an exchange whose row is older than the one held
+// is skipped), caches them, and lays the pending edits over them
 function valuationApplyShared(j, onlyEx) {
   const S = VALUATION_SHARED;
   const wasShared = S.mode === 'shared';
   const inputs = valuationPlainObject(j.inputs), at = valuationPlainObject(j.updated_at);
   const confirmed = { ...S.confirmed }, updatedAt = { ...S.updatedAt };
-  VALUATION_EXCHANGES.filter(ex => !onlyEx || ex === onlyEx).forEach(ex => {
+  VALUATION_EXCHANGES.filter(ex => (!onlyEx || ex === onlyEx) && !(wasShared && valuationOlderStamp(at[ex], S.updatedAt[ex]))).forEach(ex => {
     const o = valuationPlainObject(inputs[ex]);
     if (Object.keys(o).length) confirmed[ex] = { ...o }; else delete confirmed[ex];
     updatedAt[ex] = at[ex] || null;
@@ -407,6 +416,7 @@ function valuationTakeConflict(ex, current) {
   valuationRecompute();
   const labels = both.map(k => VALUATION_INPUT_LABELS[k] || k);
   valuationNotice(`Updated with a colleague’s change${labels.length ? `; your ${labels.join(', ')} kept` : ''}.`);
+  valuationSharedNotify();   // views holding a copy of the inputs take the merged ones before the next keystroke
 }
 
 // fetch, then the answer's JSON (null without one), failing when the API has not answered
@@ -504,6 +514,7 @@ async function valuationPutOne(ex, opts = {}) {
     }
     // While another exchange's PUT is out, this answer may predate it: take only this exchange
     valuationApplyShared(j, Object.keys(S.inflight).some(e => e !== ex) ? ex : null);
+    valuationSharedNotify();
     return null;
   }
 }
@@ -602,6 +613,16 @@ function valuationLocalEditsNote(defaults, discardAttr) {
   if (S.mode !== 'shared' || !valuationUnpublished(readLocalValuationOverrides(), S.inputs, defaults).length) return '';
   return `<span class="rx-vi-msg">This browser has older edits saved only here; the shared inputs are shown.</span>
     <button type="button" class="rx-link" ${discardAttr}>Discard</button>`;
+}
+
+// What a drawing of the Valuation tab depends on besides the data: the inputs in use
+// (version), the mode, whether signed in (the note's Publish link, the drawer's access) and
+// this browser's own edits (the note). A view redraws when this changes.
+function valuationViewKey() {
+  const S = VALUATION_SHARED;
+  let local = '';
+  try { local = localStorage.getItem(VALUATION_STORAGE_KEY) || ''; } catch (e) { /* storage blocked */ }
+  return `${S.version}|${S.mode}|${S.signedIn ? 1 : 0}|${local}`;
 }
 
 // Clears this browser's own edits after the viewer confirms; true when cleared
@@ -1142,18 +1163,24 @@ async function buildValuation(ex) {
     strip.innerHTML = valuationTargetTiles(list, defaults, readValuationOverrides(), ex);
   };
   // Inputs are edited in the drawer (js/18-valuation-inputs.js): each edit re-renders this
-  let shownVersion = null;
+  let shownKey = null;
   const render = () => {
-    shownVersion = VALUATION_SHARED.version;
+    shownKey = valuationViewKey();
     const open = !!el.querySelector('details.rx-val-how[open]');
     el.innerHTML = valuationTabHTML(ex, defaults, data.c, analysts, open);
     fillStrip();
   };
+  // Redraws when the inputs, sign-in or this browser's own edits changed since the last drawing
+  const refresh = () => { if (shownKey !== valuationViewKey()) render(); };
   render();
   RX_TAB_REFRESH.valuation = render;
-  el._valCtx = { ex, defaults, data, onChange: render };
+  el._valCtx = { ex, defaults, data, onChange: refresh };
   if (!el._valEditBound) {
     el._valEditBound = true;
+    // The store changed (a save, a colleague's change, sign-in or out), drawer open or not
+    VALUATION_SHARED.listeners.add(() => {
+      if (el.isConnected && el._valCtx && currentExchange === el._valCtx.ex) el._valCtx.onChange();
+    });
     el.addEventListener('click', e => {
       if (!(e.target.closest && el._valCtx)) return;
       if (e.target.closest('[data-val-edit]')) openValuationDrawer(el._valCtx);
@@ -1162,7 +1189,7 @@ async function buildValuation(ex) {
   }
   // The shared inputs, once they answer, if they differ from what was drawn
   shared.then(() => {
-    if (seq === VALUATION_BUILD_SEQ && currentExchange === ex && shownVersion !== VALUATION_SHARED.version) render();
+    if (seq === VALUATION_BUILD_SEQ && currentExchange === ex) refresh();
   });
   const rest = VALUATION_EXCHANGES.filter(e => e !== ex);
   await ensureFreshMarketData(rest.filter(e => !valuationOnShow(e)));
