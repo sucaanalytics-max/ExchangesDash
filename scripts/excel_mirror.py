@@ -55,6 +55,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, unquote, urlparse
 
 import requests
+import urllib3
 
 import valuation_outputs
 
@@ -70,7 +71,8 @@ WEB_SHEET = "Web Dashboard"
 # Per request: at most this many cells, and about this many bytes of JSON
 CELLS_PER_REQUEST = 4000
 BYTES_PER_REQUEST = 1_000_000
-MAX_TRIES = 5            # 429 / 503 / 504 (and dropped connections), then the call fails
+MAX_TRIES = 5            # 429 / 503 / 504 (and dropped connections), then the call fails;
+                         # a resend=False call is retried only on 429 or a connection never made
 MAX_WAIT_S = 60
 RETRY_STATUSES = (429, 503, 504)
 TIMEOUT_S = 60
@@ -92,13 +94,15 @@ IST = timezone(timedelta(hours=5, minutes=30))
 #   d2           discount_to_today_pct (valuation_inputs.json), as a fraction (9 % → 0.09)
 #   d1           discount_to_fy_end_pct, as a fraction (18 % → 0.18)
 # NSE's sheet differs: its today discount sits in F10 (row "Upside - Current"; row 9,
-# "Current", divides by it), not in F11 beside "Target Price - FY27".
+# "Current", divides by it), not in F11 beside "Target Price - FY27" (fy = 2028).
 # identity: the file's ticker cell (B2), checked first. BSE's and MCX's labels are the
 # same, so without it swapped target ids would write one exchange's inputs into the
 # other's file; a mismatch skips the whole file (nothing written to it).
 _PE = {"name": "P/E bear / base / bull", "label_cell": "A16", "label": "PE Ratio", "range": "B16:D16", "keys": ["pe0", "pe1", "pe2"], "scale": 1}
-_FY_END = {"name": "Discount to FY end", "label_cell": "A12", "label": "Target Price - FY28", "range": "F12", "keys": ["d1"], "scale": 0.01}
-_TODAY = {"name": "Discount to today", "label_cell": "A11", "label": "Target Price - FY27", "range": "F11", "keys": ["d2"], "scale": 0.01}
+# "{fy}" / "{fy_prev}": the model's next FY and the one before (FY28 / FY27 for
+# fy = 2028), from the ADR path, so the checks roll over when the files are relabelled.
+_FY_END = {"name": "Discount to FY end", "label_cell": "A12", "label": "Target Price - {fy}", "range": "F12", "keys": ["d1"], "scale": 0.01}
+_TODAY = {"name": "Discount to today", "label_cell": "A11", "label": "Target Price - {fy_prev}", "range": "F11", "keys": ["d2"], "scale": 0.01}
 VF_INPUT_CELLS = {
     "nse": {"identity": {"cell": "B2", "value": "National Stock Exchange (NSE)"},
             "inputs": [_PE, {**_TODAY, "label_cell": "A10", "label": "Upside - Current", "range": "F10"}, _FY_END]},
@@ -108,7 +112,6 @@ VF_INPUT_CELLS = {
 
 # The inputs, in the order the Web Dashboard sheet and WD_Inputs list them
 INPUT_KEYS = ["adr", "g", "pe0", "pe1", "pe2", "w0", "w1", "w2", "from", "oi", "margin", "days", "d1", "d2"]
-EDITABLE_KEYS = INPUT_KEYS[:9]
 INPUT_LABELS = {
     "adr": "ADR estimate, ₹ Cr / session (blank = 45 DMA)", "g": "QoQ ADR growth, %",
     "pe0": "P/E bear", "pe1": "P/E base", "pe2": "P/E bull",
@@ -159,14 +162,16 @@ def _short(text, n=300):
 class Graph:
     """Graph calls with the app token; retries 429 / 503 / 504 (Retry-After, else
     exponential backoff) up to MAX_TRIES. Raises GraphError, FileLocked (423) or
-    Conflict (409). retry_read_timeout=False: a call that timed out waiting for the
-    answer is not sent again (it may have been applied, e.g. a session created)."""
+    Conflict (409). resend=False, for a call that must not be applied twice (createSession):
+    it is sent again only after a 429 (throttled: not applied) or a connection that was
+    never made; a 503 / 504, a dropped connection or no answer may follow a call that was
+    applied, so they raise instead."""
 
     def __init__(self, token):
         self.token = token
         self.calls = 0
 
-    def request(self, method, url, body=None, session_id=None, timeout=TIMEOUT_S, retry_read_timeout=True):
+    def request(self, method, url, body=None, session_id=None, timeout=TIMEOUT_S, resend=True):
         headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
         if body is not None:
             headers["Content-Type"] = "application/json"
@@ -178,13 +183,13 @@ class Graph:
                 r = requests.request(method, url, headers=headers,
                                      data=None if body is None else json.dumps(body), timeout=timeout)
             except requests.RequestException as e:
-                if isinstance(e, requests.ReadTimeout) and not retry_read_timeout:
-                    raise GraphError(0, f"no answer in {timeout} s (not retried: it may have been applied)", url)
+                if not resend and not _never_sent(e):
+                    raise GraphError(0, f"no answer ({_short(e, 120)}); not sent again: it may have been applied", url)
                 if attempt == MAX_TRIES:
                     raise GraphError(0, f"no answer: {e}", url)
                 _sleep(min(MAX_WAIT_S, 2 ** attempt))
                 continue
-            if r.status_code in RETRY_STATUSES and attempt < MAX_TRIES:
+            if r.status_code in RETRY_STATUSES and attempt < MAX_TRIES and (resend or r.status_code == 429):
                 wait = r.headers.get("Retry-After")
                 try:
                     wait = float(wait)
@@ -206,6 +211,15 @@ class Graph:
                 return r.json()
             except ValueError:
                 return None
+
+
+def _never_sent(e):
+    """True when a requests error came before any connection was made (connect timeout,
+    DNS failure, connection refused), so the call cannot have been applied."""
+    if isinstance(e, requests.ConnectTimeout):
+        return True
+    reason = getattr(e.args[0], "reason", None) if e.args else None
+    return isinstance(reason, urllib3.exceptions.NewConnectionError)
 
 
 def _odata(s):
@@ -274,18 +288,24 @@ class Workbook:
         return self.g.request("GET", self.item)
 
     def open(self, persist=True):
-        """Opens a workbook session. Not retried after a read timeout (a retry could leave
-        an orphan session); any id received is kept, so close() closes it."""
+        """Opens a workbook session. Not sent again after a 503 / 504, a dropped connection
+        or no answer (a second session could be left open on a workbook people use); any id
+        received is kept, so close() closes it."""
         got = self.g.request("POST", f"{self.base}/createSession", {"persistChanges": persist},
-                             timeout=CREATE_SESSION_TIMEOUT_S, retry_read_timeout=False) or {}
+                             timeout=CREATE_SESSION_TIMEOUT_S, resend=False) or {}
         self.session = got.get("id")
         if not self.session:
             raise GraphError(0, "createSession returned no id")
 
     def close(self):
+        """Closes the session. A 404 (no such session) counts as closed: a close that was
+        applied but answered 503, or lost its answer, is sent again and finds none."""
         if self.session:
             try:
                 self.g.request("POST", f"{self.base}/closeSession", {}, self.session)
+            except GraphError as e:
+                if e.status != 404:
+                    raise
             finally:
                 self.session = None
 
@@ -354,17 +374,25 @@ class Workbook:
             addresses.append(address)
         return addresses
 
-    def rewrite_sheet(self, sheet, rows, names):
+    def header(self, sheet, width):
+        """Row 2 of a sheet, `width` cells: a feed sheet's column names."""
+        got = self.read(sheet, f"A2:{col_letter(max(1, width))}2").get("values") or [[]]
+        return list(got[0] if got else [])
+
+    def rewrite_sheet(self, sheet, rows, names, keep_columns=False):
         """Writes `rows` from A1 into a sheet of the mirror's: created if missing (names:
         the workbook's sheets, updated); if it exists, only when empty or stamped by this
         job (else SheetNotOurs, and nothing is written). The new rows are written first,
         then only what lies beyond them (rows below, columns to the right) is cleared, so
-        a run that fails part-way leaves the old values, never a blank sheet."""
+        a run that fails part-way leaves the old values, never a blank sheet.
+        keep_columns: a feed sheet's columns keep their letters (align_columns on its row 2)."""
         old = None
         if sheet in names:
             old = self.extent(sheet)
             if old and not str(old[2]).startswith(STAMP_PREFIX):
                 raise SheetNotOurs(f"sheet {sheet!r} was not written by this job (A1 reads {_short(old[2], 40)!r}): left alone")
+            if old and keep_columns:
+                rows = align_columns(rows, self.header(sheet, old[1]))
         else:
             self.add_sheet(sheet, names)
         addresses = self.write_table(sheet, rows)
@@ -438,7 +466,8 @@ ALLOWED_FILES = {
 # Files the owner has explicitly agreed to, e.g.
 #   "dashboard": {"folder": "Dashboard", "name": "20261027_Exchanges_Dashboard.xlsx"}
 CONSENTED_FILES = {}
-# Copies for --dry-run, also only with the owner's consent; never one of ALLOWED_FILES.
+# Copies for --dry-run, also only with the owner's consent; never a real file
+# (ALLOWED_FILES or CONSENTED_FILES), whatever id or path a dry-run target gives.
 DRYRUN_FILES = {}
 
 
@@ -448,6 +477,11 @@ def _norm(s):
 
 def _same_file(a, b):
     return _norm(a["folder"]) == _norm(b["folder"]) and _norm(a["name"]) == _norm(b["name"])
+
+
+def real_files():
+    """Every real target the job may write: a dry run must never open one of them."""
+    return list(ALLOWED_FILES.values()) + list(CONSENTED_FILES.values())
 
 
 def permitted(dry_run):
@@ -463,8 +497,8 @@ def guard_target(key, t, dry_run):
         what = "dry-run copies are" if dry_run else "this file is"
         raise NotAllowed(f"drive guardrail: {key} refused, {what} not on the owner's list "
                          "(CONSENTED_FILES / DRYRUN_FILES in scripts/excel_mirror.py need the owner's explicit consent); not opened")
-    if dry_run and any(_same_file(spec, real) for real in ALLOWED_FILES.values()):
-        raise NotAllowed(f"drive guardrail: {key} refused, a dry run may not write a real vF file; not opened")
+    if dry_run and any(_same_file(spec, real) for real in real_files()):
+        raise NotAllowed(f"drive guardrail: {key} refused, a dry run may not write a real file; not opened")
     if t.get("path"):
         parts = [p for p in str(t["path"]).split("/") if p]
         if len(parts) < 2 or not _same_file({"folder": parts[-2], "name": parts[-1]}, spec):
@@ -488,8 +522,8 @@ def guard_item(graph, key, spec, drive_id, item_id, dry_run):
         problems.append(f"it is {seen['folder'] or '(root)'}/{seen['name']}, expected {spec['folder']}/{spec['name']}")
     if _norm(url.hostname) != OWNER_HOST or not _norm(unquote(url.path)).startswith(OWNER_SITE):
         problems.append(f"not in the Tusk Invest OneDrive ({url.hostname or 'no web address'})")
-    if dry_run and any(_same_file(seen, real) for real in ALLOWED_FILES.values()):
-        problems.append("a real vF file: a dry run may only write copies")
+    if dry_run and any(_same_file(seen, real) for real in real_files()):
+        problems.append("a real file: a dry run may only write copies")
     if problems:
         raise NotAllowed(f"drive guardrail: {key} refused ({'; '.join(problems)}); not opened")
     return meta
@@ -679,6 +713,19 @@ def _three(x):
     return list(x) if x else ["", "", ""]
 
 
+def fy_label(fy):
+    return f"FY{int(fy) % 100:02d}"
+
+
+def fixed_inputs_note(e):
+    """The tab's warning when valuation_inputs.json's fixed inputs (other income, PAT
+    margin, sessions) are for another FY than the ADR path's; '' when they match."""
+    if not e.get("fy_mismatch"):
+        return ""
+    return (f"Fixed inputs are for {fy_label(e['fixed_fy'])}, but the ADR path now runs to {fy_label(e['adr_path']['fy'])}: "
+            "update other income, PAT margin and sessions in dashboard/data/valuation_inputs.json.")
+
+
 def web_dashboard_rows(ex, e, now, inputs_changed):
     """The vF file's "Web Dashboard" sheet, five columns A–E, fixed addresses
     (docs/EXCEL_MIRROR.md lists them; WEB_ADDRESSES below names the main ones)."""
@@ -687,12 +734,12 @@ def web_dashboard_rows(ex, e, now, inputs_changed):
     rows = [
         [stamp(now, ctx["last_date"], inputs_changed)],
         [f"{NAMES[ex]}: the web dashboard's Valuation Model inputs and results. Plain values, rewritten on every run: link to these cells, do not type here."],
-        [],
+        ["Fixed inputs", fixed_inputs_note(e) or "OK: for the ADR path's FY"],
         ["Inputs"],
         ["Key", "Input", "Value", "Default", "Edited"],
     ]
     for k in INPUT_KEYS:
-        rows.append([k, INPUT_LABELS[k], v.get(k), d.get(k), (k in e["edited"]) if k in EDITABLE_KEYS else ""])
+        rows.append([k, INPUT_LABELS[k], v.get(k), d.get(k), (k in e["edited"]) if k in e.get("editable", ()) else ""])
     rows += [[], ["Market and fit"], ["Item", "Value"]]
     items = [
         ("CMP, ₹", e["cmp"]), ("CMP date (last close)", e["cmp_date"]), ("Data to", ctx["last_date"]),
@@ -745,7 +792,8 @@ def valuation_row(ex, e, inputs_changed):
         for x in ("regression", "ratio", "adr_model", "avg"):
             row += _three(e[key][x])
     row += [e["window"]["n"], e["data_from"], e["window"]["first_point"], fit.get("intercept"), fit.get("slope"),
-            fit.get("se"), fit.get("r2"), ratio.get("mean"), ratio.get("sd"), e["shares_cr"], inputs_changed]
+            fit.get("se"), fit.get("r2"), ratio.get("mean"), ratio.get("sd"), e["shares_cr"], inputs_changed,
+            fixed_inputs_note(e)]
     return row
 
 
@@ -758,16 +806,33 @@ def valuation_header():
         for x in ("regression", "ratio", "adr_model", "avg"):
             h += [f"{t}_{x}_bear", f"{t}_{x}_base", f"{t}_{x}_bull"]
     return h + ["fit_n", "data_from", "fit_first_point", "fit_intercept", "fit_slope", "fit_se", "fit_r2",
-                "ratio_mean", "ratio_sd", "shares_cr", "inputs_changed_at"]
+                "ratio_mean", "ratio_sd", "shares_cr", "inputs_changed_at", "fixed_inputs_warning"]
 
 
 def _columns(rows, first=("date",)):
-    cols = [c for c in first if any(c in r for r in rows)]
-    for r in rows:
-        for k in r:
-            if k not in cols:
-                cols.append(k)
-    return cols
+    """`first`, then every other key in name order: the same order whatever order the
+    rows hold their keys in. A sheet already written keeps its own order (align_columns)."""
+    keys = {k for r in rows for k in r}
+    return [c for c in first if c in keys] + sorted(keys - set(first))
+
+
+def align_columns(rows, old_header):
+    """A feed sheet's rows (row 1 stamp, row 2 header) reordered so every column already
+    in the sheet's header (`old_header`, its row 2) keeps its letter: a column no longer
+    in the data stays, empty; a new one is added at the right. A formula pointing at a
+    WD_* column letter keeps reading the same series."""
+    if len(rows) < 2 or not old_header:
+        return rows
+    head = list(rows[1])
+    old = [h for h in old_header if h not in ("", None)]
+    if old_header[:len(old)] != old or len(set(old)) != len(old):
+        return rows          # not a header this job wrote (blank or repeated names): as built
+    order = old + [h for h in head if h not in old]
+    at = {h: i for i, h in enumerate(head)}
+    out = [rows[0], order]
+    for r in rows[2:]:
+        out.append([r[at[h]] if h in at and at[h] < len(r) else None for h in order])
+    return out
 
 
 def table(rows, cols):
@@ -812,7 +877,8 @@ def feed_sheets(outputs, raw, updated, now):
     contracts = []
     for date in sorted(set(nse) | set(bse)):
         n, b = nse.get(date), bse.get(date)
-        add = lambda r, *ks: sum(r.get(k) or 0 for k in ks) if r else None  # noqa: E731
+        # a count the exchange did not publish stays empty, never 0 or a partial sum
+        add = lambda r, *ks: sum(r[k] for k in ks) if r and all(r.get(k) is not None for k in ks) else None  # noqa: E731
         contracts.append([date, add(n, "io_contracts", "so_contracts"), add(n, "if_contracts", "sf_contracts"),
                           add(n, "io_premium", "so_premium"), b.get("total_contracts") if b else None,
                           b.get("options_premium_turnover") if b else None])
@@ -824,12 +890,24 @@ def feed_sheets(outputs, raw, updated, now):
 
 # ── One file ────────────────────────────────────────────────────────────────
 
-def label_check(wb, ex):
+def next_fy(day):
+    """The Valuation Model's next FY on `day`: the Indian FY (April–March) after the
+    current one, e.g. 2028 on 24 Nov 2026 (current FY27)."""
+    return (day.year + 1 if day.month >= 4 else day.year) + 1
+
+
+def vf_inputs(ex, fy):
+    """VF_INPUT_CELLS[ex]["inputs"] with the FY labels filled in for next FY `fy`."""
+    return [{**c, "label": c["label"].format(fy=fy_label(fy), fy_prev=fy_label(int(fy) - 1))}
+            for c in VF_INPUT_CELLS[ex]["inputs"]]
+
+
+def label_check(wb, ex, fy):
     """Reads the identity and mapped cells of "Tusk - Summary" in one range.
-    Returns (identity problem or None, [label problems]): every label must match and
-    every target cell must hold a value, not a formula."""
+    Returns (identity problem or None, [label problems]): every label must match (the
+    FY labels for next FY `fy`) and every target cell must hold a value, not a formula."""
     spec = VF_INPUT_CELLS[ex]
-    cells, ident = spec["inputs"], spec["identity"]
+    cells, ident = vf_inputs(ex, fy), spec["identity"]
     corners = ([parse_cell(ident["cell"])] + [parse_cell(c["label_cell"]) for c in cells]
                + [p for c in cells for p in parse_range(c["range"])])
     r0, c0 = min(r for r, _ in corners), min(c for _, c in corners)
@@ -866,15 +944,17 @@ def write_vf(wb, ex, e, now, inputs_changed, result):
     names = wb.sheet_names()
     if SUMMARY_SHEET not in names:
         raise WrongFile(f"no sheet {SUMMARY_SHEET!r}: not a vF file, nothing written")
-    identity, problems = label_check(wb, ex)
+    fy = e["adr_path"]["fy"]
+    identity, problems = label_check(wb, ex, fy)
     if identity:
         raise WrongFile(f"identity check failed, nothing written: {identity}")
     # input_cells: per mapped range, whether it was written (the panel says "some" vs none)
-    cells = result["input_cells"] = {c["range"]: False for c in VF_INPUT_CELLS[ex]["inputs"]}
+    inputs = vf_inputs(ex, fy)
+    cells = result["input_cells"] = {c["range"]: False for c in inputs}
     if problems:
         result["errors"].append("label check failed, input cells not written: " + "; ".join(problems))
     else:
-        for c in VF_INPUT_CELLS[ex]["inputs"]:
+        for c in inputs:
             vals = [e["inputs"].get(k) for k in c["keys"]]
             if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in vals):
                 result["errors"].append(f"{c['range']} ({c['name']}) has no value to write: left as it is")
@@ -893,7 +973,7 @@ def write_dashboard(wb, sheets, result):
     names = wb.sheet_names()
     for sheet, rows in sheets.items():
         try:
-            wb.rewrite_sheet(sheet, rows, names)
+            wb.rewrite_sheet(sheet, rows, names, keep_columns=True)
             result["sheets"].append(sheet)
         except SheetNotOurs as err:
             result["errors"].append(str(err))
@@ -1033,7 +1113,7 @@ def check(targets, dry_run=False):
                 if SUMMARY_SHEET not in names:
                     labels = f"no {SUMMARY_SHEET!r} sheet"
                 else:
-                    identity, problems = label_check(wb, VF_TARGETS[key])
+                    identity, problems = label_check(wb, VF_TARGETS[key], next_fy(datetime.now(IST)))
                     labels = identity or ("OK" if not problems else "; ".join(problems))
                 mine = ([WEB_SHEET] if WEB_SHEET in names else [])
                 state = ours_text(wb, mine) or ("present" if mine else "will be created")

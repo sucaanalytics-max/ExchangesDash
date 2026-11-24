@@ -81,8 +81,11 @@ FLOW = r"""
 const document = { querySelectorAll: () => [] };
 const calls = [], delays = [];
 let pending = [];
-const setTimeout = (f, ms) => { delays.push(ms); pending.push(f); return pending.length; };
-const clearTimeout = () => {};
+// timers are collected and fired by hand; a cleared one (valuationFetchJson's request
+// timeout, once the stubbed fetch has answered) is dropped
+let timerId = 0;
+const setTimeout = (f, ms) => { const id = ++timerId; delays.push(ms); pending.push({ id, f }); return id; };
+const clearTimeout = id => { pending = pending.filter(t => t.id !== id); };
 let clock = 0;
 const realNow = Date.now;
 Date.now = () => clock;
@@ -93,24 +96,25 @@ const fetch = async (url, opts = {}) => {
   return { ok: a.status < 300, status: a.status, json: async () => a.body };
 };
 VALUATION_SHARED.signedIn = true;
+if (DATA.flushFails) valuationFlushSaves = async () => { if (DATA.signOut) VALUATION_SHARED.signedIn = false; return false; };
 (async () => {
   await excelSyncRefresh();
   const notes = [EXCEL_SYNC.note && EXCEL_SYNC.note.text];
   for (let i = 0; i < 100 && pending.length; i++) {
     clock += 10000;
-    const f = pending.shift();
-    await f();
+    const t = pending.shift();
+    await t.f();
   }
   process.stdout.write(JSON.stringify({ calls, delays, note: EXCEL_SYNC.note, notes, poll: EXCEL_SYNC.poll, signedIn: VALUATION_SHARED.signedIn }));
 })();
 """
 
 
-def flow(answers):
+def flow(answers, **data):
     names = js_closure(["excelSyncRefresh", "excelSyncFollow", "excelSyncLoad", "excelSyncRender", "VALUATION_SHARED",
                         "valuationSharedNotify"])
     code = "\n".join(js_source(n) for n in names)
-    script = f"const DATA = {json.dumps({'answers': answers})};\n{code}\n{FLOW}"
+    script = f"const DATA = {json.dumps({'answers': answers, **data})};\n{code}\n{FLOW}"
     out = subprocess.run([NODE, "-"], input=script, capture_output=True, text=True)
     if out.returncode:
         raise RuntimeError(out.stderr)
@@ -141,6 +145,22 @@ class RefreshFlow(unittest.TestCase):
         self.assertEqual(len([c for c in r["calls"] if c["method"] == "GET"]), 60)
         self.assertIsNone(r["poll"])
         self.assertIn("Still running after 10 minutes", r["note"]["text"])
+
+    def test_unsaved_edits_stop_the_refresh(self):
+        r = flow([{"status": 202, "body": {"run": run(7, "queued"), "dispatched": True}}], flushFails=True)
+        self.assertEqual(r["calls"], [])                     # nothing posted: the run would read the old inputs
+        self.assertEqual(r["note"]["text"], "Your last edits are not saved yet: retry them first.")
+
+    def test_both_requests_use_the_shared_timeout(self):
+        for name in ("excelSyncLoad", "excelSyncRefresh"):
+            src = js_source(name)
+            self.assertIn("valuationFetchJson('/api/excel-refresh'", src, name)   # 10 s, aborts the request
+            self.assertNotIn("await fetch(", src, name)
+
+    def test_a_signed_out_flush_says_so(self):
+        r = flow([], flushFails=True, signOut=True)
+        self.assertEqual(r["calls"], [])
+        self.assertIn("Signed out", r["note"]["text"])
 
     def test_an_active_run_is_followed(self):
         r = flow([{"status": 200, "body": {"run": run(5, "running"), "dispatched": False}},

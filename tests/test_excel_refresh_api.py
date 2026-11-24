@@ -30,7 +30,7 @@ let nextId = 500;
 global.fetch = async (url, opts = {}) => {
   const u = new URL(url), method = opts.method || 'GET';
   if (u.hostname === 'api.github.com') {
-    dispatches.push({ workflow: u.pathname.split('/workflows/')[1].split('/')[0], ...JSON.parse(opts.body) });
+    dispatches.push({ workflow: u.pathname.split('/workflows/')[1].split('/')[0], ...JSON.parse(opts.body), timed: !!opts.signal });
     if (cfg.ghThrow) throw new Error('network down');
     const st = cfg.ghStatus || 204;
     return reply(st, st < 300 ? undefined : { message: 'Bad credentials' });
@@ -43,7 +43,7 @@ global.fetch = async (url, opts = {}) => {
   if (method === 'GET') {
     let out = rows.slice();
     const st = q.get('status');
-    if (st) { const list = st.replace(/^in\.\(|\)$/g, '').split(','); out = out.filter(r => list.includes(r.status)); }
+    if (st) { const list = st.replace(/^eq\./, '').replace(/^in\.\(|\)$/g, '').split(','); out = out.filter(r => list.includes(r.status)); }
     const gte = q.get('requested_at');
     if (gte) out = out.filter(r => r.requested_at >= gte.replace(/^gte\./, ''));
     out.sort((a, b) => b.requested_at.localeCompare(a.requested_at));
@@ -51,6 +51,8 @@ global.fetch = async (url, opts = {}) => {
   }
   if (method === 'POST') {
     const body = JSON.parse(opts.body);
+    // another press inserted its manual run first: the partial unique index answers 409
+    if (cfg.raceRow) { rows.push(cfg.raceRow); cfg.raceRow = null; return reply(409, { code: '23505', message: 'duplicate key value violates unique constraint "excel_sync_runs_one_manual"' }); }
     const row = { id: nextId++, requested_at: new Date().toISOString(), started_at: null, finished_at: null, files: null, error: null, github_run_id: null, ...body };
     rows.push(row);
     return reply(201, [row]);
@@ -121,28 +123,58 @@ class ExcelRefresh(unittest.TestCase):
         row = r["rows"][0]
         self.assertEqual((row["trigger"], row["status"]), ("manual", "queued"))
         self.assertEqual(r["dispatches"], [{"workflow": "excel-mirror.yml", "ref": "main",
-                                            "inputs": {"trigger": "manual", "run_id": str(row["id"])}}])
+                                            "inputs": {"trigger": "manual", "run_id": str(row["id"])}, "timed": True}])
         self.assertEqual(out["body"]["run"]["id"], row["id"])
         self.assertTrue(out["body"]["dispatched"])
 
-    def test_an_active_run_is_returned_instead_of_dispatching(self):
-        for status in ("queued", "running"):
-            with self.subTest(status=status):
-                rows = [{"id": 7, "trigger": "scheduled", "status": status, "requested_at": iso_ago(5), "files": None, "error": None}]
-                r = run([POST], rows=rows)
-                out = r["out"][0]
-                self.assertEqual(out["status"], 200)
-                self.assertEqual(out["body"]["run"]["id"], 7)
-                self.assertFalse(out["body"]["dispatched"])
-                self.assertEqual(r["dispatches"], [])
-                self.assertEqual(len(r["rows"]), 1)
+    def test_a_queued_run_is_returned_instead_of_dispatching(self):
+        rows = [{"id": 7, "trigger": "manual", "status": "queued", "requested_at": iso_ago(5), "files": None, "error": None}]
+        r = run([POST], rows=rows)
+        out = r["out"][0]
+        self.assertEqual(out["status"], 200)
+        self.assertEqual(out["body"]["run"]["id"], 7)
+        self.assertFalse(out["body"]["dispatched"])
+        self.assertEqual(r["dispatches"], [])
+        self.assertEqual(len(r["rows"]), 1)
 
-    def test_an_old_or_finished_run_does_not_block(self):
-        rows = [{"id": 7, "trigger": "manual", "status": "queued", "requested_at": iso_ago(20)},
+    def test_a_running_run_does_not_block(self):
+        # it read the inputs when it started: a press now must queue a run that sees the latest edits
+        for trigger in ("manual", "scheduled"):
+            with self.subTest(trigger=trigger):
+                rows = [{"id": 7, "trigger": trigger, "status": "running", "requested_at": iso_ago(5), "files": None, "error": None}]
+                r = run([POST], rows=rows)
+                self.assertEqual(r["out"][0]["status"], 202)
+                self.assertEqual(len(r["dispatches"]), 1)
+                self.assertEqual(r["rows"][0]["status"], "running")
+
+    def test_a_stale_or_finished_run_does_not_block(self):
+        rows = [{"id": 7, "trigger": "manual", "status": "queued", "requested_at": iso_ago(50)},
                 {"id": 8, "trigger": "manual", "status": "success", "requested_at": iso_ago(2)}]
         r = run([POST], rows=rows)
         self.assertEqual(r["out"][0]["status"], 202)
         self.assertEqual(len(r["dispatches"]), 1)
+        self.assertEqual(r["rows"][0]["status"], "failed")           # closed as never finished first
+
+    def test_a_queued_run_still_blocks_after_fifteen_minutes(self):
+        rows = [{"id": 7, "trigger": "manual", "status": "queued", "requested_at": iso_ago(30)}]
+        r = run([POST], rows=rows)
+        self.assertEqual(r["out"][0]["status"], 200)
+        self.assertEqual(r["out"][0]["body"]["run"]["id"], 7)
+        self.assertEqual(r["dispatches"], [])
+
+    def test_two_presses_at_once_start_one_run(self):
+        first = {"id": 9, "trigger": "manual", "status": "queued", "requested_at": iso_ago(0)}
+        r = run([POST], raceRow=first)
+        out = r["out"][0]
+        self.assertEqual(out["status"], 200)
+        self.assertEqual(out["body"]["run"]["id"], 9)
+        self.assertFalse(out["body"]["dispatched"])
+        self.assertEqual(r["dispatches"], [])
+
+    def test_a_409_with_no_queued_run_is_an_error(self):
+        r = run([POST], raceRow={"id": 9, "trigger": "manual", "status": "success", "requested_at": iso_ago(0)})
+        self.assertEqual(r["out"][0]["status"], 502)
+        self.assertEqual(r["dispatches"], [])
 
     def test_a_failed_dispatch_marks_the_row_failed(self):
         for cfg in ({"ghStatus": 401}, {"ghThrow": True}):
@@ -177,7 +209,7 @@ class ExcelRefresh(unittest.TestCase):
         self.assertLessEqual(len(body["runs"][0]["error"]), 200)
         self.assertEqual(body["runs"][0]["run_url"], "https://github.com/sucaanalytics-max/ExchangesDash/actions/runs/123")
         self.assertFalse(body["signed_in"])
-        self.assertIn("limit=10", r["sb"][1]["query"])          # after the stale-run sweep
+        self.assertEqual([(c["method"], "limit=10" in c["query"]) for c in r["sb"]], [("GET", True)])   # one read, no write
 
     def test_get_closes_runs_that_never_finished(self):
         rows = [{"id": 1, "trigger": "manual", "status": "queued", "requested_at": iso_ago(50), "files": None, "error": None},

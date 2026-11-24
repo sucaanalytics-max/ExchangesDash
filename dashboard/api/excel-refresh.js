@@ -7,18 +7,24 @@
  * workbooks, daily at 01:00 IST and on demand.
  *
  *   GET  (anyone)  → 200 {configured: true, signed_in, schedule, runs: [latest 10]}
- *                    first closing as failed any run still queued or running 45 minutes
- *                    after it was requested: its job never started (GitHub keeps one
- *                    pending run per concurrency group and cancels the older) or died
- *                    without the workflow's closing step
+ *                    a listed run still queued or running 45 minutes after it was
+ *                    requested is closed as failed first (its job never started: GitHub
+ *                    keeps one pending run per concurrency group and cancels the older;
+ *                    or it died without the workflow's closing step). Only then does a GET
+ *                    write: an ordinary read is one Supabase request
  *                    each run {id, trigger, status, requested_at, started_at,
  *                    finished_at, error, run_url, files: [{target, status, cells,
  *                    sheets, duration_s, dry_run, inputs_written, input_cells, error}]};
  *                    errors cut short
  *   POST (team session, /api/team-login) → Refresh Excel now:
- *        1. a run queued or running, requested in the last 15 minutes, is returned
- *           as it is (200 {run, dispatched: false}): runs queue, so a second press
- *           would only repeat it
+ *        1. stale runs are closed as above; then a run still queued (its job has not
+ *           read the inputs yet) is returned as it is (200 {run, dispatched: false}): it
+ *           will carry the latest saved inputs, so a second press would only repeat it.
+ *           A run already running read the inputs when it started, so a press then
+ *           queues a new run (GitHub holds it pending behind the running one). Two
+ *           presses at once: the partial unique index excel_sync_runs_one_manual
+ *           (valuation_sync_schema.sql) lets only one manual row be queued, so the
+ *           second insert answers 409 and gets the first
  *        2. otherwise inserts an excel_sync_runs row (manual, queued) and dispatches
  *           excel-mirror.yml with {trigger: 'manual', run_id} (202 {run, dispatched: true});
  *           the workflow moves the row to running, then success / partial / failed
@@ -27,18 +33,16 @@
  *
  * Env: SUPABASE_URL, SUPABASE_SERVICE_KEY (the table is service-role only, see
  * valuation_sync_schema.sql) and GITHUB_DISPATCH_PAT (Actions: write); any
- * missing → 503 {configured: false}. TEAM_SESSION_SECRET for the session.
+ * missing → 503 {configured: false}. TEAM_PASSWORD and TEAM_SESSION_SECRET for the session.
  * Every answer is Cache-Control: no-store (vercel.json too).
  */
 
-const { isSignedIn } = require('./_team_auth');
+const { NO_STORE, isSignedIn } = require('./_team_auth');
 const { sb } = require('./valuation-inputs');
 const { REPO, dispatchWorkflow } = require('./_github_dispatch');
 
-const NO_STORE = 'no-store';
 const WORKFLOW = 'excel-mirror.yml';
 const SCHEDULE = 'Daily at 01:00 IST';
-const ACTIVE_MS = 15 * 60 * 1000;
 // A run is at most ~20 min pending behind another plus its own 20-min job timeout
 const STALE_MS = 45 * 60 * 1000;
 const STALE_ERROR = 'never finished: the workflow job did not start (superseded by a newer run) or ended without a result';
@@ -83,13 +87,18 @@ async function closeStaleRuns(now = Date.now()) {
   });
 }
 
+// A run still queued or running STALE_MS after it was requested
+const isStale = (r, now = Date.now()) => (r.status === 'queued' || r.status === 'running')
+  && Date.parse(r.requested_at) < now - STALE_MS;
+
 async function latestRuns() {
   return (await sb(`excel_sync_runs?select=${COLUMNS}&order=requested_at.desc&limit=${LIST}`)) || [];
 }
 
-async function activeRun(now = Date.now()) {
-  const since = new Date(now - ACTIVE_MS).toISOString();
-  const rows = await sb(`excel_sync_runs?select=${COLUMNS}&status=in.(queued,running)&requested_at=gte.${encodeURIComponent(since)}&order=requested_at.desc&limit=1`);
+// The newest run still queued, so not yet reading the inputs (stale ones are closed
+// before this is asked)
+async function queuedRun() {
+  const rows = await sb(`excel_sync_runs?select=${COLUMNS}&status=eq.queued&order=requested_at.desc&limit=1`);
   return (rows && rows[0]) || null;
 }
 
@@ -107,22 +116,34 @@ module.exports = async function handler(req, res) {
 
   try {
     if (req.method === 'GET') {
-      // The sweep is housekeeping: if it fails, the panel still gets the runs
-      try { await closeStaleRuns(); } catch (e) { console.error('excel-refresh: stale-run sweep:', e.message); }
-      const runs = await latestRuns();
+      let runs = await latestRuns();
+      if (runs.some(r => isStale(r))) {
+        // Housekeeping: if the sweep fails, the panel still gets the runs
+        try { await closeStaleRuns(); runs = await latestRuns(); } catch (e) { console.error('excel-refresh: stale-run sweep:', e.message); }
+      }
       return res.status(200).json({ configured: true, signed_in: signedIn, schedule: SCHEDULE, runs: runs.map(publicRun) });
     }
 
     if (!signedIn) return res.status(401).json({ error: 'Sign in to refresh the Excel files' });
 
-    const active = await activeRun();
-    if (active) return res.status(200).json({ run: publicRun(active), dispatched: false, reason: `run ${active.id} is already ${active.status}` });
+    await closeStaleRuns();
+    const already = run => res.status(200).json({ run: publicRun(run), dispatched: false, reason: `run ${run.id} is already ${run.status}` });
+    const queued = await queuedRun();
+    if (queued) return already(queued);
 
-    const rows = await sb('excel_sync_runs', {
-      method: 'POST',
-      headers: { Prefer: 'return=representation' },
-      body: JSON.stringify({ trigger: 'manual', status: 'queued' }),
-    });
+    let rows;
+    try {
+      rows = await sb('excel_sync_runs', {
+        method: 'POST',
+        headers: { Prefer: 'return=representation' },
+        body: JSON.stringify({ trigger: 'manual', status: 'queued' }),
+      });
+    } catch (e) {
+      // 409: another press inserted its manual run first (excel_sync_runs_one_manual)
+      const first = e.status === 409 ? await queuedRun() : null;
+      if (first) return already(first);
+      throw e;
+    }
     const run = rows && rows[0];
     if (!run || run.id == null) throw new Error('insert returned no row');
 

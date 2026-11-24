@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from unittest import mock
 from urllib.parse import unquote, urlparse
 
+import urllib3
+
 import helpers  # noqa: F401  (puts scripts/ on sys.path)
 
 import excel_mirror as xm
@@ -251,7 +253,8 @@ class FixtureData:
                     "fit": {"intercept": 1.0, "slope": 2.0, "se": 0.5, "n": 100, "r2": 0.8}, "fit_why": "", "ratio": None, "ratio_why": "x",
                     "window": {"from": None, "from_ignored": "", "ma_window": 45, "fit_start": "2025-01-01", "first_point": "2025-03-05",
                                "n": 100, "modelled_out": 0, "published_start": "2025-01-01", "published_n": 100},
-                    "data_from": "2025-01-01", "fy_mismatch": False}
+                    "data_from": "2025-01-01", "fy_mismatch": False, "fixed_fy": 2028,
+                    "editable": ["adr", "g", "pe0", "pe1", "pe2", "d1", "d2", "w0", "w1", "w2", "from"]}
         return {"fy": 2028, "labels": {}, "exchanges": {"bse": ex_out("bse", 45), "mcx": ex_out("mcx", 46), "nse": ex_out("nse", 47)}}
 
     @staticmethod
@@ -294,6 +297,7 @@ class MirrorTest(unittest.TestCase):
                 mock.patch.object(xm.valuation_outputs, "compute", compute), \
                 mock.patch.object(xm.valuation_outputs, "load_data", FixtureData.data), \
                 mock.patch.object(xm, "_sleep", lambda s: self.sleeps.append(s)), \
+                mock.patch.object(xm, "next_fy", lambda day: 2028), \
                 mock.patch("excel_sync.MSGRAPH_TENANT_ID", "t"), \
                 (mock.patch("builtins.print") if quiet else contextlib.nullcontext()):
             self.sleeps = []
@@ -417,8 +421,8 @@ class FeedSheets(MirrorTest):
         self.assertEqual(c.cell("dash", "WD_NSE_Daily", "A2"), "date")
         self.assertEqual([c.cell("dash", "WD_NSE_Daily", f"A{r}") for r in (3, 4, 5)], ["2026-11-18", "2026-11-19", "2026-11-20"])
         head = [c.cell("dash", "WD_MCX_Daily", f"{xm.col_letter(i)}2") for i in range(1, 4)]
-        self.assertEqual(head, ["date", "total_rev", "modelled"])
-        self.assertIs(c.cell("dash", "WD_MCX_Daily", "C3"), False)
+        self.assertEqual(head, ["date", "modelled", "total_rev"])      # date, then by name
+        self.assertIs(c.cell("dash", "WD_MCX_Daily", "B3"), False)
         # stacked, with an exchange column
         self.assertEqual([c.cell("dash", "WD_Quarterly", f"A{r}") for r in (2, 3, 4, 5)], ["exchange", "nse", "bse", "mcx"])
         self.assertEqual(c.cell("dash", "WD_Quarterly", "B2"), "quarter")
@@ -631,6 +635,139 @@ class Check(MirrorTest):
         self.assertEqual(self.code, 0)
 
 
+class ReviewFixes(MirrorTest):
+    """Jay's #117 review: FY labels, edited flags, the fixed-inputs warning, null counts,
+    session calls never sent twice, feed-sheet columns that keep their letters."""
+
+    def bse(self, **kw):
+        e = FixtureData.outputs()["exchanges"]["bse"]
+        e.update(kw)
+        return e
+
+    def test_fy_labels_follow_the_model(self):
+        self.assertEqual([c["label"] for c in xm.vf_inputs("bse", 2029)], ["PE Ratio", "Target Price - FY28", "Target Price - FY29"])
+        self.assertEqual([c["label"] for c in xm.vf_inputs("nse", 2028)], ["PE Ratio", "Upside - Current", "Target Price - FY28"])
+        for day, fy in (("2026-11-24", 2028), ("2027-03-31", 2028), ("2027-04-01", 2029), ("2027-01-01", 2028)):
+            with self.subTest(day=day):
+                self.assertEqual(xm.next_fy(datetime.fromisoformat(day)), fy)
+
+    def test_relabelled_files_are_written_once_the_model_rolls_over(self):
+        c = cloud()
+        for ex in ("bse", "mcx"):
+            sheet = c.items[ex]["sheets"]["Tusk - Summary"]
+            sheet[xm.parse_cell("A12")], sheet[xm.parse_cell("A11")] = "Target Price - FY29", "Target Price - FY28"
+        base = FixtureData.outputs
+        with mock.patch.object(FixtureData, "outputs", staticmethod(
+                lambda o=None: {**base(o), "exchanges": {ex: {**e, "adr_path": {**e["adr_path"], "fy": 2029}}
+                                                         for ex, e in base(o)["exchanges"].items()}})):
+            self.run_main(cloud_=c)
+        f = self.files()
+        self.assertTrue(f["bse_vf"]["inputs_written"], f["bse_vf"])
+        self.assertEqual(c.cell("bse", "Tusk - Summary", "C16"), 47)
+        self.assertIn("expected 'Target Price - FY29'", " ".join(f["nse_vf"]["errors"]))   # NSE still says FY28
+
+    def test_edited_discount_rates_are_flagged(self):
+        rows = xm.web_dashboard_rows("bse", self.bse(edited=["d1", "pe1"]), datetime(2026, 11, 24, tzinfo=timezone.utc), None)
+        flags = {r[0]: r[4] for r in rows[5:5 + len(xm.INPUT_KEYS)]}
+        self.assertIs(flags["d1"], True)
+        self.assertIs(flags["d2"], False)
+        self.assertIs(flags["pe1"], True)
+        self.assertEqual(flags["oi"], "")          # fixed, not editable
+
+    def test_fixed_inputs_warning_reaches_excel(self):
+        now = datetime(2026, 11, 24, tzinfo=timezone.utc)
+        ok = xm.web_dashboard_rows("bse", self.bse(), now, None)
+        self.assertEqual(ok[2], ["Fixed inputs", "OK: for the ADR path's FY"])
+        e = self.bse(fy_mismatch=True, fixed_fy=2027)
+        rows = xm.web_dashboard_rows("bse", e, now, None)
+        self.assertEqual(rows[2][1], "Fixed inputs are for FY27, but the ADR path now runs to FY28: update other income, "
+                                     "PAT margin and sessions in dashboard/data/valuation_inputs.json.")
+        self.assertEqual(len(rows), len(ok))       # the fixed addresses do not move
+        head = xm.valuation_header()
+        self.assertEqual(head[-1], "fixed_inputs_warning")
+        self.assertEqual(xm.valuation_row("bse", e, None)[-1], rows[2][1])
+        self.assertEqual(len(xm.valuation_row("bse", e, None)), len(head))
+
+    def test_unpublished_contract_counts_stay_empty(self):
+        raw = FixtureData.data()["raw"]
+        raw["nse"]["daily_all"][0]["so_contracts"] = None
+        raw["nse"]["daily_all"][1].update(io_contracts=None, so_contracts=None)
+        sheets = xm.feed_sheets(FixtureData.outputs(), raw, {}, datetime(2026, 11, 24, tzinfo=timezone.utc))
+        by_date = {r[0]: r for r in sheets["WD_Contracts"][2:]}
+        self.assertIsNone(by_date["2026-11-20"][1])    # partly published: not a partial sum
+        self.assertIsNone(by_date["2026-11-19"][1])    # not published: not 0
+        self.assertEqual(by_date["2026-11-18"][1], 11)
+
+    def test_create_session_is_never_sent_twice(self):
+        for why, setup in (("503", lambda c: c.fail.__setitem__(("POST", r"createSession"), [503])),
+                           ("504", lambda c: c.fail.__setitem__(("POST", r"createSession"), [504])),
+                           ("dropped", lambda c: c.raise_on.__setitem__(("POST", r"createSession"), xm.requests.ConnectionError("reset")))):
+            with self.subTest(why=why):
+                c = FakeCloud({"x": {"sheets": {}}})
+                setup(c)
+                with mock.patch("requests.request", c.request), mock.patch.object(xm, "_sleep", lambda s: None):
+                    wb = xm.Workbook(xm.Graph("t"), "d", "x")
+                    with self.assertRaises(xm.GraphError):
+                        wb.open()
+                self.assertEqual(sum(x[1].endswith("createSession") for x in c.calls), 1)
+        c = FakeCloud({"x": {"sheets": {}}})
+        c.fail[("POST", r"createSession")] = [429]              # throttled: not applied, so sent again
+        with mock.patch("requests.request", c.request), mock.patch.object(xm, "_sleep", lambda s: None):
+            wb = xm.Workbook(xm.Graph("t"), "d", "x")
+            wb.open()
+        self.assertEqual(sum(x[1].endswith("createSession") for x in c.calls), 2)
+        self.assertTrue(wb.session)
+
+    def test_a_create_session_never_connected_is_sent_again(self):
+        c = FakeCloud({"x": {"sheets": {}}})
+        refused = xm.requests.ConnectionError(urllib3.exceptions.MaxRetryError(None, "/", urllib3.exceptions.NewConnectionError(None, "refused")))
+        c.raise_on[("POST", r"createSession")] = refused
+        with mock.patch("requests.request", c.request), mock.patch.object(xm, "_sleep", lambda s: None):
+            wb = xm.Workbook(xm.Graph("t"), "d", "x")
+            wb.open()
+        self.assertEqual(sum(x[1].endswith("createSession") for x in c.calls), 2)
+
+    def test_a_close_that_finds_no_session_counts_as_closed(self):
+        c = FakeCloud({"x": {"sheets": {}}})
+        c.fail[("POST", r"closeSession")] = [503, 404]          # applied, then the resend finds none
+        with mock.patch("requests.request", c.request), mock.patch.object(xm, "_sleep", lambda s: None):
+            wb = xm.Workbook(xm.Graph("t"), "d", "x")
+            wb.open()
+            wb.close()                                          # no GraphError
+        self.assertIsNone(wb.session)
+        c.fail[("POST", r"closeSession")] = [500]
+        with mock.patch("requests.request", c.request), mock.patch.object(xm, "_sleep", lambda s: None):
+            wb = xm.Workbook(xm.Graph("t"), "d", "x")
+            wb.open()
+            with self.assertRaises(xm.GraphError):
+                wb.close()
+
+    def test_columns_are_deterministic(self):
+        a = [{"date": "d1", "z": 1, "b": 2}, {"b": 3, "date": "d2", "a": 4}]
+        self.assertEqual(xm._columns(a), ["date", "a", "b", "z"])
+        self.assertEqual(xm._columns(list(reversed(a))), ["date", "a", "b", "z"])
+
+    def test_align_columns_keeps_letters(self):
+        rows = [["stamp"], ["date", "a", "new"], ["d1", 1, 9], ["d2", 2, 8]]
+        got = xm.align_columns(rows, ["date", "gone", "a"])
+        self.assertEqual(got[1], ["date", "gone", "a", "new"])
+        self.assertEqual(got[2:], [["d1", None, 1, 9], ["d2", None, 2, 8]])
+        self.assertEqual(xm.align_columns(rows, []), rows)
+        self.assertEqual(xm.align_columns(rows, ["date", "", "a"]), rows)      # a gap: not this job's header
+        self.assertEqual(xm.align_columns(rows, ["date", "a", "a"]), rows)     # repeated names
+
+    def test_feed_sheet_keeps_its_column_letters(self):
+        c = cloud()
+        c.items["dash"]["sheets"]["WD_MCX_Daily"] = {(1, 1): "Written by ExchangesDash at old", (2, 1): "date",
+                                                     (2, 2): "total_rev", (2, 3): "retired", (3, 1): "2026-01-01", (3, 3): 5}
+        self.run_main(cloud_=c)
+        head = [c.cell("dash", "WD_MCX_Daily", f"{x}2") for x in "ABCD"]
+        self.assertEqual(head, ["date", "total_rev", "retired", "modelled"])
+        self.assertEqual(c.cell("dash", "WD_MCX_Daily", "B3"), 20.0)
+        self.assertIsNone(c.cell("dash", "WD_MCX_Daily", "C3"))
+        self.assertIs(c.cell("dash", "WD_MCX_Daily", "D3"), False)
+
+
 class Guardrail(MirrorTest):
     """Only the three vF files, unless the owner has consented to another file."""
     consent = False
@@ -683,10 +820,15 @@ class Guardrail(MirrorTest):
         real = {"nse_vf": {"drive_id": "d1", "item_id": "nse"}}
         with mock.patch.object(xm, "DRYRUN_FILES", {"nse_vf": FILE_OF["nse_vf"]}):   # a "copy" entry naming the real file
             c = self.run_main(["--dry-run"], ENABLE_EXCEL_MIRROR="", EXCEL_TARGETS_DRYRUN=json.dumps(real))
-        self.assertIn("may not write a real vF file", self.files()["nse_vf"]["errors"][0])
+        self.assertIn("may not write a real file", self.files()["nse_vf"]["errors"][0])
         with mock.patch.object(xm, "DRYRUN_FILES", {"nse_vf": DRYRUN_FILE_OF["nse_vf"]}):   # a copy entry, the real file's id
             c = self.run_main(["--dry-run"], ENABLE_EXCEL_MIRROR="", EXCEL_TARGETS_DRYRUN=json.dumps(real))
         self.assertIn("drive guardrail: nse_vf refused", self.files()["nse_vf"]["errors"][0])
+        self.assertEqual(c.writes(), [])
+        with mock.patch.object(xm, "CONSENTED_FILES", {"dashboard": DASHBOARD_FILE}), \
+                mock.patch.object(xm, "DRYRUN_FILES", {"dashboard": DASHBOARD_FILE}):   # a consented real file as a "copy"
+            c = self.run_main(["--dry-run"], ENABLE_EXCEL_MIRROR="", EXCEL_TARGETS_DRYRUN=json.dumps({"dashboard": {"drive_id": "d1", "item_id": "dash"}}))
+        self.assertIn("may not write a real file", self.files()["dashboard"]["errors"][0])
         self.assertEqual(c.writes(), [])
 
     def test_check_shows_the_refusal_and_reads_nothing(self):
@@ -722,7 +864,7 @@ class Targets(unittest.TestCase):
                     xm.parse_targets(bad)
 
     def test_mapping_matches_the_brief(self):
-        m = {ex: {c["range"]: (c["label_cell"], c["label"], c["keys"]) for c in spec["inputs"]} for ex, spec in xm.VF_INPUT_CELLS.items()}
+        m = {ex: {c["range"]: (c["label_cell"], c["label"], c["keys"]) for c in xm.vf_inputs(ex, 2028)} for ex in xm.VF_INPUT_CELLS}
         self.assertEqual({ex: (s["identity"]["cell"], s["identity"]["value"]) for ex, s in xm.VF_INPUT_CELLS.items()},
                          {"nse": ("B2", "National Stock Exchange (NSE)"), "bse": ("B2", "BSE"), "mcx": ("B2", "MCX")})
         for ex in ("nse", "bse", "mcx"):

@@ -57,7 +57,8 @@ Each run, scheduled or manual, writes the latest **saved** shared inputs. Saving
    - `files` holds one entry per target: `target`, `status` (`success`, `partial`, `failed` or `skipped`), `cells`, `sheets`, `errors`, `duration_s`, `dry_run`, the resolved `item` ids, and for vF files `inputs_written` (true only when every input cell was written; the panel's tooltip shows it).
    - `github_run_id` links the run to the Actions log.
    - **No row stays open.** The mirror job's last step runs `if: always()` (`--finalize`) and closes the row as `failed` if the job died, timed out or was cancelled before recording a result.
-   - GitHub keeps one running and at most one pending run per concurrency group. A newer pending run cancels the older, whose job then never starts. `GET /api/excel-refresh` closes any run still `queued` or `running` 45 minutes after it was requested.
+   - GitHub keeps one running and at most one pending run per concurrency group. A newer pending run cancels the older, whose job then never starts. A run still `queued` or `running` 45 minutes after it was requested is closed as `failed` by `/api/excel-refresh`: on every Refresh press, and on a GET only when the listed runs include one (an ordinary GET only reads).
+   - **One queued manual run at a time.** A press while a run is still queued follows that run, which will read the latest saved inputs when it starts. A press while a run is already running queues a new one, as the running one read the inputs before the press. The partial unique index `excel_sync_runs_one_manual` (`valuation_sync_schema.sql`) also stops two presses at the same moment from both queueing one.
 
    Run status:
    - **success**: every configured file succeeded
@@ -73,6 +74,11 @@ The four files live in the **OneDrive of the "Tusk Invest" account**. Its folder
 The mirror uses an app registration with the client-credentials flow, as `scripts/excel_sync.py` does. The admin has granted it both of these:
 
 - **`Files.ReadWrite.All`** (application, admin consent). This is what reaches a user's OneDrive (`/users/{upn}/drive`).
+
+  **Scope: a deliberate choice.** As an application permission, `Files.ReadWrite.All` reaches every OneDrive and every SharePoint library in the tenant, not just these files. Someone holding the client secret could read or overwrite any of them. The files stay in the Tusk Invest OneDrive because that is where the team works on them, and `Sites.Selected` cannot be scoped to a OneDrive.
+  - **What limits the job:** the drive guardrail (above) means the job itself opens only the three vF files.
+  - **What limits a leaked secret:** nothing in the code. So keep the secret only in the repo's Actions secrets, never in chat or documents, and rotate it in Entra if it has been shared anywhere.
+  - **The narrower option:** move the files to a SharePoint site, grant `Sites.Selected` on that site, and drop `Files.ReadWrite.All`.
 - **`Sites.Selected`**, with a write grant on a site:
 
   ```
@@ -107,9 +113,13 @@ If the workbook calls are refused, the fallbacks are not implemented. The option
 
 - `GITHUB_DISPATCH_PAT`, already used by the cron triggers: Actions write on this repo
 - `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`
-- `TEAM_SESSION_SECRET`, from the shared-inputs sign-in
+- `TEAM_PASSWORD` (the team's shared password: random, 16+ characters) and `TEAM_SESSION_SECRET`, from the shared-inputs sign-in. Both are required: a session is bound to the password, so without `TEAM_PASSWORD` no sign-in works and the Refresh button never appears.
 
-Without Supabase or the PAT, `/api/excel-refresh` answers 503 and the panel says "Not configured".
+Without Supabase or the PAT, `/api/excel-refresh` answers 503 and the panel says "Not configured". Set them for the **Production** environment.
+
+### 3b. Supabase (once)
+
+Run the `excel_sync_runs_one_manual` block from `valuation_sync_schema.sql` in the SQL editor. That is the `update` that closes manual rows left queued for over 45 minutes, then the `create unique index`. It is the one addition since the file was first applied, and running it again does nothing.
 
 ### 4. Fill `EXCEL_TARGETS`
 
@@ -157,7 +167,19 @@ The `/:f:/p/tuskinvest/…` sharing links redirect to that address.
 
 A target left out of `EXCEL_TARGETS` is recorded as `skipped`.
 
-## Dry run, then go live
+## Go-live order
+
+0. **#116 live first:** merge it, and set `TEAM_PASSWORD` and `TEAM_SESSION_SECRET` in Vercel (Production). The Refresh button needs that sign-in.
+1. **Secrets:** rotate `MSGRAPH_CLIENT_SECRET` (a new secret in Entra, then update the repo secret) if the current one was ever shared outside the repo's secrets.
+2. **Check:** fill `EXCEL_TARGETS` with `user` + `path` entries, and run the workflow with **check_only** (above).
+3. **Pin ids:** replace each path entry with the `drive_id` / `item_id` that `--check` printed. Run `--check` again.
+4. **Dry run** on copies (below), with the drive owner's consent for the copies.
+5. **Switch on:** set `ENABLE_EXCEL_MIRROR` to `true`.
+6. **Repoint, last:** this applies only if the drive owner has consented to the Exchanges Dashboard workbook (`CONSENTED_FILES`).
+   - The real workbook has no `WD_*` sheets until the first real run writes them. Repointing earlier gives `#REF!`, or Excel offers to treat the sheets as external links.
+   - So: rehearse the repoint on the dry-run copy, let the first real run create the sheets, then repoint the real workbook.
+
+## Dry run
 
 1. With the drive owner's consent, copy the files into a test folder, list the copies in `DRYRUN_FILES` (a PR), and put their ids in `EXCEL_TARGETS_DRYRUN`. Check twice that every id is a copy's: **a dry run writes even while `ENABLE_EXCEL_MIRROR` is off**, so this variable must never point at the real files. Run `--check --dry-run` first: it prints each file's name and folder.
 2. Run the workflow with **dry_run** ticked. It writes the copies, and the run appears in the panel with "dry run".
@@ -167,8 +189,9 @@ A target left out of `EXCEL_TARGETS` is recorded as `skipped`.
    - the `WD_*` sheets against the web dashboard
    - that formulas elsewhere are untouched
    - that a copy left open in Excel during the run receives the writes
-4. Only if the drive owner has consented to the Exchanges Dashboard workbook (`CONSENTED_FILES`): repoint its analysis sheets to the `WD_*` sheets, on a copy first.
-5. Set `ENABLE_EXCEL_MIRROR` to `true`. The next 01:00 IST run, or a press of Refresh Excel now, writes the real files.
+4. With the workbook consented, rehearse its repoint on the copy.
+
+Then switch on (step 5 above). The next 01:00 IST run, or a press of Refresh Excel now, writes the real files.
 
 While `ENABLE_EXCEL_MIRROR` is not `true`, a normal run writes nothing. A manual run's row is then closed as `failed` ("switched off"), so the panel does not wait on it.
 
@@ -177,18 +200,18 @@ While `ENABLE_EXCEL_MIRROR` is not `true`, a normal run writes nothing. A manual
 These were confirmed on copies of the three files on 23 Nov 2026. The declarative table is `VF_INPUT_CELLS` in `scripts/excel_mirror.py`.
 
 1. **Identity.** `B2` must read `National Stock Exchange (NSE)`, `BSE` or `MCX`, matching the target. On a mismatch nothing is written to the file.
-2. **Labels.** Each label cell must read the label shown (trimmed, case-insensitive), and every target cell must hold a value, not a formula. On any mismatch, all of that file's input cells are skipped and the error is recorded. Its `Web Dashboard` sheet is still written.
+2. **Labels.** Each label cell must read the label shown (trimmed, case-insensitive), and every target cell must hold a value, not a formula. The FY labels follow the model's next FY, the ADR path's: `FY28` / `FY27` until March 2027, then `FY29` / `FY28`. `--check` has no model run and uses today's date instead, so in the first days of April, before April's data is in, it can expect the new labels while a run would still expect the old. On any mismatch, all of that file's input cells are skipped and the error is recorded. Its `Web Dashboard` sheet is still written.
 3. **Missing values.** An input with no value skips only its own cells, with an error.
 
 | File | Cells | Label cell → label | Value |
 |---|---|---|---|
 | NSE, BSE, MCX | `B16:D16` | `A16` → `PE Ratio` | P/E bear, base, bull (`pe0`, `pe1`, `pe2`) |
-| BSE, MCX | `F11` | `A11` → `Target Price - FY27` | `discount_to_today_pct` ÷ 100 (9 % → 0.09) |
-| BSE, MCX | `F12` | `A12` → `Target Price - FY28` | `discount_to_fy_end_pct` ÷ 100 (18 % → 0.18) |
+| BSE, MCX | `F11` | `A11` → `Target Price - FY27` (the next FY − 1) | `discount_to_today_pct` ÷ 100 (9 % → 0.09) |
+| BSE, MCX | `F12` | `A12` → `Target Price - FY28` (the next FY) | `discount_to_fy_end_pct` ÷ 100 (18 % → 0.18) |
 | NSE | `F10` | `A10` → `Upside - Current` | `discount_to_today_pct` ÷ 100. NSE's sheet differs: row 9 is `Current` (= FY27 ÷ (1 + F10)), and F11 is empty. |
 | NSE | `F12` | `A12` → `Target Price - FY28` | `discount_to_fy_end_pct` ÷ 100 |
 
-The two discounts are fixed values in `valuation_inputs.json` (`d2` / `d1`), the same for every exchange. The FY labels will move with the fiscal year (`Target Price - FY28` → `FY29`): update `VF_INPUT_CELLS` when the workbooks roll over, or the label check will skip the input cells and say so in the panel.
+The two discounts are defaults in `valuation_inputs.json` (`d2` / `d1`), editable in the shared inputs. When the model rolls to a new FY in April before a workbook is relabelled (or the other way round), the label check skips that file's input cells and the panel says so, until the two agree.
 
 ## `Web Dashboard` sheet (each vF file)
 
@@ -198,8 +221,9 @@ The sheet is cleared and rewritten on every run. It has five columns, A–E, at 
 |---|---|
 | `A1` | stamp: "Written by ExchangesDash at <IST time>; data to <date>; inputs last changed <IST time>" |
 | `A2` | what the sheet is |
+| `A3:B3` | **Fixed inputs**: `OK: for the ADR path's FY`, or the tab's warning when `valuation_inputs.json`'s fixed inputs (other income, PAT margin, sessions) are for another FY than the ADR path's |
 | `A4`, headers `A5:E5` | **Inputs**: Key, Input, Value, Default, Edited |
-| `A6:E19` | one row per input, in this order: `adr` (ADR estimate, ₹ Cr / session; blank = the 45 DMA), `g` (QoQ growth %), `pe0`, `pe1`, `pe2`, `w0`, `w1`, `w2` (weights %), `from` (regression data-from date; blank = all data), `oi` (other income next FY, ₹ Cr), `margin` (PAT margin %), `days` (sessions next FY), `d1` (discount to this FY's end %), `d2` (discount to today %). The value in use is in column C (e.g. base P/E = `C9`), the default in D, and `TRUE` in E where the shared inputs changed it. |
+| `A6:E19` | one row per input, in this order: `adr` (ADR estimate, ₹ Cr / session; blank = the 45 DMA), `g` (QoQ growth %), `pe0`, `pe1`, `pe2`, `w0`, `w1`, `w2` (weights %), `from` (regression data-from date; blank = all data), `oi` (other income next FY, ₹ Cr), `margin` (PAT margin %), `days` (sessions next FY), `d1` (discount to this FY's end %), `d2` (discount to today %). The value in use is in column C (e.g. base P/E = `C9`), the default in D, and `TRUE` in E where the shared inputs changed it (blank for the fixed inputs, which cannot be edited on the tab). |
 | `A21`, headers `A22:B22` | **Market and fit** (value in column B) |
 | `B23` … `B47` | CMP ₹ (`B23`), CMP date (`B24`), data to (`B25`), current quarter (`B26`), quarter ADR to date (`B27`), quarter sessions (`B28`), 45 DMA ADR (`B29`), ADR in the estimate table (`B30`), next FY (`B31`), next-FY average ADR (`B32`), total income next FY (`B33`), PAT next FY (`B34`), EPS next FY (`B35`), shares Cr (`B36`), fit sessions n (`B37`), regression data from (`B38`), fit first point (`B39`), fit intercept (`B40`), slope (`B41`), standard error (`B42`), R² (`B43`), price ÷ MA mean (`B44`) and σ (`B45`), fit note (`B46`), ratio note (`B47`) |
 | headers `A49:D49` | **Targets**, ₹ per share: Bear (B), Base (C), Bull (D) |
@@ -220,12 +244,18 @@ Every feed sheet has the same shape: a stamp in row 1, headers in row 2 (field n
 |---|---|---|
 | `WD_Inputs` | one per exchange: `bse`, `mcx`, `nse` (rows 3–5) | `exchange`, `adr`, `g`, `pe0`, `pe1`, `pe2`, `w0`, `w1`, `w2`, `from`, `oi`, `margin`, `days`, `d1`, `d2` (effective inputs), `edited` (the keys the shared inputs changed), `inputs_changed_at` (IST) |
 | `WD_Valuation` | one per exchange: `bse`, `mcx`, `nse` | see below |
-| `WD_NSE_Daily`, `WD_BSE_Daily`, `WD_MCX_Daily` | one per session in `daily_all` of `{ex}_dashboard_data.json` (at today's rates), oldest first | every field of the rows, `date` first, then in the file's order. MCX includes `modelled` (TRUE before 2 Sep 2024). |
+| `WD_NSE_Daily`, `WD_BSE_Daily`, `WD_MCX_Daily` | one per session in `daily_all` of `{ex}_dashboard_data.json` (at today's rates), oldest first | every field of the rows, `date` first, then by name. MCX includes `modelled` (TRUE before 2 Sep 2024). |
 | `WD_Quarterly`, `WD_Monthly` | each exchange's `quarterly` / `monthly` rows, stacked NSE, BSE, MCX | `exchange`, `quarter` / `month`, then every field of the rows (fields one exchange lacks are blank) |
 | `WD_VIX` | NSE sessions with a VIX | `date`, `vix` |
 | `WD_Contracts` | every NSE or BSE session, oldest first | `date`, `nse_option_contracts` (index + stock options), `nse_futures_contracts`, `nse_option_premium_cr`, `bse_contracts`, `bse_option_premium_cr` (the Contracts to Premium tab's inputs; blank where an exchange has no row) |
 
-The daily, quarterly and monthly columns follow the data files. A field added to the pipelines later is appended, so in those sheets look columns up by their row-2 header (`MATCH`), not by letter. `WD_Inputs` and `WD_Valuation` have fixed columns.
+**Columns keep their letters.**
+- **First write:** a sheet's columns are set in a fixed order (the first columns, then by name), whatever order the data files hold their fields in.
+- **Every later run** reads the sheet's row-2 header and keeps each column where it is:
+  - a field added to the pipelines later is appended at the right
+  - a field the data no longer has keeps its column, empty
+- **So** a formula reading `WD_NSE_Daily!AD:AD` keeps reading the same series. Looking columns up by their row-2 header (`XLOOKUP` / `MATCH`) still works and is the most robust choice.
+- **Fixed columns:** `WD_Inputs` and `WD_Valuation` have fixed columns, with new ones only ever added at the right.
 
 `WD_Valuation` columns:
 
@@ -239,7 +269,7 @@ The daily, quarterly and monthly columns follow the data files. A field added to
 | `Y`–`AA` | `adr_model_today_*` |
 | `AB`–`AM` | the 45 DMA triangulation: `dma_regression_*`, `dma_ratio_*`, `dma_adr_model_*`, `dma_avg_*` |
 | `AN`–`AY` | the estimate triangulation: `est_regression_*`, `est_ratio_*`, `est_adr_model_*`, `est_avg_*` |
-| `AZ`–`BJ` | `fit_n`, `data_from`, `fit_first_point`, `fit_intercept`, `fit_slope`, `fit_se`, `fit_r2`, `ratio_mean`, `ratio_sd`, `shares_cr`, `inputs_changed_at` |
+| `AZ`–`BK` | `fit_n`, `data_from`, `fit_first_point`, `fit_intercept`, `fit_slope`, `fit_se`, `fit_r2`, `ratio_mean`, `ratio_sd`, `shares_cr`, `inputs_changed_at`, `fixed_inputs_warning` (blank when the fixed inputs match the ADR path's FY) |
 
 ## Files
 

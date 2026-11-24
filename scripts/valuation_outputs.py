@@ -33,7 +33,8 @@ DATA_DIR = DASHBOARD / "data"
 
 # The entry points; js_eval(closure=True) adds everything they call
 JS_NAMES = ["valuationDefaultsFrom", "valuationContextFor", "valuationInputsFor", "valuationFitted",
-            "valuationModel", "valuationCleanOverrides", "SHARES_OUTSTANDING_CR", "VALUATION_INPUT_LABELS"]
+            "valuationModel", "valuationCleanOverrides", "SHARES_OUTSTANDING_CR", "VALUATION_INPUT_LABELS",
+            "VALUATION_EDITABLE"]
 
 # Runs over DATA = {inputs, raw: {ex: json}, share: {ex: json|null}, overrides}
 JS_EXPR = r"""(() => {
@@ -70,6 +71,8 @@ JS_EXPR = r"""(() => {
                 first_point: win.firstPoint, n: win.n, modelled_out: win.modelledOut, published_start: win.pubStart, published_n: win.pubN },
       data_from: win.from || win.fitStart,
       fy_mismatch: c.start.fy + 1 !== defaults.fy,
+      fixed_fy: defaults.fy,
+      editable: VALUATION_EDITABLE,
     };
   }
   return { fy: defaults.fy, labels: VALUATION_INPUT_LABELS, exchanges };
@@ -114,7 +117,8 @@ def compute(inputs, raw, share, overrides=None):
     (bear/base/bull at next-FY end, this FY's end and today), dma and est (the two
     triangulations: regression, ratio and ADR model rows, weighted average, upside),
     target (the headline: the estimate triangulation), cmp / cmp_date / cmp_live, fit,
-    ratio, window, data_from."""
+    ratio, window, data_from, fy_mismatch / fixed_fy (the fixed inputs are for another FY
+    than the ADR path's, as the tab warns) and editable (VALUATION_EDITABLE)."""
     data = {"inputs": inputs, "raw": {ex: _slim_raw(raw.get(ex)) for ex in EXCHANGES},
             "share": {ex: share.get(ex) for ex in EXCHANGES}, "overrides": overrides or {}}
     return js_eval(JS_NAMES, JS_EXPR, data, closure=True)

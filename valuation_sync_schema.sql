@@ -65,6 +65,22 @@ create table if not exists public.excel_sync_runs (
   github_run_id bigint
 );
 
+-- One manual run queued at a time: two presses of Refresh Excel at the same moment
+-- cannot both insert one (the second insert answers 409, and
+-- dashboard/api/excel-refresh.js returns the first run). A run already running does not
+-- count: it read the inputs when it started, so a press then queues a new one. Other
+-- rows (scheduled, or dispatched by hand from GitHub, which insert their own running
+-- row) are not limited: the workflow's concurrency group runs one job at a time.
+-- Rows left queued from before are closed first, so the index can be built.
+update public.excel_sync_runs
+   set status = 'failed', finished_at = now(),
+       error = 'never finished: closed before the one-queued-run index was added'
+ where trigger = 'manual' and status = 'queued' and requested_at < now() - interval '45 minutes';
+
+create unique index if not exists excel_sync_runs_one_manual
+  on public.excel_sync_runs ((true))
+  where trigger = 'manual' and status = 'queued';
+
 comment on table public.excel_sync_runs is
   'Runs of the Excel mirror (inputs and results into the workbooks): trigger, status and per-file results.';
 

@@ -8,8 +8,9 @@
 // ========================
 // GET /api/excel-refresh lists the latest runs (public); a team member signed in for
 // the shared inputs (VALUATION_SHARED.signedIn, js/14-valuation.js) gets a
-// Refresh Excel now button, which POSTs and then polls GET every 10 s until that run
-// finishes or 10 minutes pass. /api URLs carry no cache-busting parameter.
+// Refresh Excel now button, which first saves any pending input edits, then POSTs and
+// polls GET every 10 s until that run finishes or 10 minutes pass. Both requests time out
+// (valuationFetchJson, js/14-valuation.js). /api URLs carry no cache-busting parameter.
 //   state: 'idle' (never loaded) | 'loading' | 'ok' | 'off' (503: not configured) | 'error'
 //   poll: { id, until, timer } while a run is followed
 //   note: a line under the table ({ text, kind }), e.g. why a refresh did not start
@@ -105,10 +106,9 @@ function excelSyncLoad(maxAgeMs) {
   if (S.state === 'idle') S.state = 'loading';
   S.loading = (async () => {
     try {
-      const r = await fetch('/api/excel-refresh', { cache: 'no-store', credentials: 'same-origin' });
-      if (r.status === 503) { S.state = 'off'; return; }
-      const j = await r.json();
-      if (!r.ok || !j || !Array.isArray(j.runs)) throw new Error(`HTTP ${r.status}`);
+      const { ok, status, j } = await valuationFetchJson('/api/excel-refresh', { cache: 'no-store', credentials: 'same-origin' });
+      if (status === 503) { S.state = 'off'; return; }
+      if (!ok || !j || !Array.isArray(j.runs)) throw new Error(`HTTP ${status}`);
       S.state = 'ok';
       S.runs = j.runs;
       if (j.schedule) S.schedule = j.schedule;
@@ -157,9 +157,14 @@ async function excelSyncRefresh() {
   S.note = null;
   excelSyncRender();
   try {
-    const r = await fetch('/api/excel-refresh', { method: 'POST', credentials: 'same-origin' });
-    let j = null;
-    try { j = await r.json(); } catch (e) { /* no body */ }
+    // The run reads Supabase: an edit still waiting for its save would not reach Excel
+    if (!(await valuationFlushSaves())) {
+      S.note = VALUATION_SHARED.signedIn ? { text: 'Your last edits are not saved yet: retry them first.', kind: 'bad' }
+        : { text: 'Signed out: sign in again to save your edits and refresh.', kind: 'bad' };
+      return;
+    }
+    const r = await valuationFetchJson('/api/excel-refresh', { method: 'POST', credentials: 'same-origin' });
+    const j = r.j;
     if (r.status === 401) { VALUATION_SHARED.signedIn = false; S.note = { text: 'Signed out: sign in again to refresh.', kind: 'bad' }; valuationSharedNotify(); return; }
     if (r.status === 503) { S.state = 'off'; return; }
     const run = j && j.run;
@@ -173,12 +178,20 @@ async function excelSyncRefresh() {
     }
     S.note = { text: `The refresh did not start${(j && j.error) ? `: ${j.error}` : ` (HTTP ${r.status})`}.`, kind: 'bad' };
   } catch (e) {
-    S.note = { text: 'Could not reach the refresh service.', kind: 'bad' };
+    S.note = { text: 'The refresh service did not answer: the table shows whether a run started.', kind: 'bad' };
+    excelSyncLoad();
   } finally {
     S.busy = false;
     excelSyncRender();
   }
 }
 
-// Sign-in or sign-out changes who sees the button
-VALUATION_SHARED.listeners.add(() => { if (EXCEL_SYNC.state !== 'idle') excelSyncRender(); });
+// Sign-in or sign-out changes who sees the button; the store also notifies on every
+// keystroke and save status, which do not change the panel
+let excelSyncSignedIn = null;
+VALUATION_SHARED.listeners.add(() => {
+  const signedIn = !!VALUATION_SHARED.signedIn;
+  if (signedIn === excelSyncSignedIn || EXCEL_SYNC.state === 'idle') return;
+  excelSyncSignedIn = signedIn;
+  excelSyncRender();
+});
