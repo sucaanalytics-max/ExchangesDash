@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-24T12:10:15Z",
+  "updated_at": "2026-11-24T12:44:54Z",
   "ticker": "MCX.NS",
   "ma_window": 45,
   "regression_start": "2025-01-01",
@@ -3321,7 +3321,7 @@
       "revenue_cr": 2.7129,
       "rev_ma": 2.6147,
       "price": 445.27,
-      "price_pred": 950.1,
+      "price_pred": 950.11,
       "modelled": true
     },
     {
@@ -4392,7 +4392,7 @@
       "date": "2024-05-17",
       "revenue_cr": 4.1256,
       "rev_ma": 3.0889,
-      "price": 798.86,
+      "price": 798.87,
       "price_pred": 1051.58,
       "modelled": true
     },
@@ -5417,7 +5417,7 @@
       "revenue_cr": 5.0801,
       "rev_ma": 4.4032,
       "price": 1231.47,
-      "price_pred": 1332.85,
+      "price_pred": 1332.86,
       "modelled": false
     },
     {
@@ -6065,7 +6065,7 @@
       "revenue_cr": 3.4044,
       "rev_ma": 3.8581,
       "price": 1035.07,
-      "price_pred": 1216.21,
+      "price_pred": 1216.22,
       "modelled": false
     },
     {
@@ -6736,7 +6736,7 @@
       "date": "2025-07-22",
       "revenue_cr": 4.8264,
       "rev_ma": 4.9718,
-      "price": 1620.52,
+      "price": 1620.53,
       "price_pred": 1454.55,
       "modelled": false
     },
