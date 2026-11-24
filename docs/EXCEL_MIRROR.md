@@ -5,7 +5,22 @@
 | Target key | Workbook | What is written |
 |---|---|---|
 | `nse_vf`, `bse_vf`, `mcx_vf` | the house vF valuation files (`20250809_NSE vF.xlsx`, `20260718_BSE VF.xlsx`, `20250827_MCX vF.xlsx`) | the P/E and discount input cells on `Tusk - Summary` (label-checked first), and a `Web Dashboard` sheet of inputs and results. Model sheets are never touched. |
-| `dashboard` | the Exchanges Dashboard workbook (`20261027_Exchanges_Dashboard.xlsx`) | plain-value `WD_*` feed sheets. Its analysis sheets are repointed once to read from them. |
+| `dashboard` | the Exchanges Dashboard workbook (`20261027_Exchanges_Dashboard.xlsx`) | plain-value `WD_*` feed sheets. Its analysis sheets are repointed once to read from them. **Off until the drive owner consents** (see "Drive guardrail"). |
+
+## Drive guardrail
+
+The drive owner's rule: the job may open **only the three vF files**, in `Portfolio Stock Valuations - Bull Base Bear (Tusk Prop)` in the Tusk Invest OneDrive. Any other file in the drive needs the owner's explicit consent. That includes the Exchanges Dashboard workbook and the copies a dry run writes.
+
+- **The list.** `ALLOWED_FILES` in `scripts/excel_mirror.py` names the three vF files by folder and file name. A file the owner agrees to is added to `CONSENTED_FILES`, and dry-run copies to `DRYRUN_FILES`, each in a reviewed PR. Both start empty. A test pins all three lists.
+- **The check.** Every target is checked before a session is opened, in a write run and in `--check`:
+  1. A path target must name the listed folder and file. Otherwise it is refused before any Graph call.
+  2. Graph's own metadata for the item must show a file of that name, directly in that folder, at `tuskinvest-my.sharepoint.com/personal/tuskinvest_…`.
+
+  This refuses a wrong id, a look-alike copy in another folder (there are vF copies under `Direct Equity/Vanshika`, `ANKIT`, `Backups` and `Unclassified Files`), a renamed backup, and the same file name in another person's OneDrive.
+- **Dry runs.** A dry run may open only `DRYRUN_FILES`, and never a file on `ALLOWED_FILES`, even when given a real file's id.
+- **Until the owner consents to the workbook,** leave `dashboard` out of `EXCEL_TARGETS`: it is then recorded as `skipped`, and runs stay `success`.
+- **On a refusal** the target is `failed` with "drive guardrail: … refused", and nothing in it is read or written. The other targets still run.
+- **After a rename or "Save as" of a vF file,** update `ALLOWED_FILES` in a PR. Until then the job refuses the file.
 
 It runs:
 
@@ -85,7 +100,7 @@ If the workbook calls are refused, the fallbacks are not implemented. The option
 | secret | `MSGRAPH_TENANT_ID`, `MSGRAPH_CLIENT_ID`, `MSGRAPH_CLIENT_SECRET` | the app above. These are shared with `excel_sync.py`; if the mirror uses its own app, these are its values. |
 | secret | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | the ExchangesDash Supabase project and its service-role key. The workflow passes the key as `SUPABASE_KEY`. |
 | variable | `EXCEL_TARGETS` | the four real files (see below) |
-| variable | `EXCEL_TARGETS_DRYRUN` | copies of the four files in a test folder. **It must never point at the real files**: dry runs write even while `ENABLE_EXCEL_MIRROR` is off. |
+| variable | `EXCEL_TARGETS_DRYRUN` | copies of the files in a test folder. **It must never point at the real files**: dry runs write even while `ENABLE_EXCEL_MIRROR` is off. The copies must also be on `DRYRUN_FILES` (owner's consent), and the guardrail refuses a real vF file. |
 | variable | `ENABLE_EXCEL_MIRROR` | `true` to write the real files. Leave it unset until the dry run has been checked. |
 
 ### 3. Vercel (project env)
@@ -144,7 +159,7 @@ A target left out of `EXCEL_TARGETS` is recorded as `skipped`.
 
 ## Dry run, then go live
 
-1. Copy the four files into a test folder, and put their ids in `EXCEL_TARGETS_DRYRUN`. Check twice that every id is a copy's: **a dry run writes even while `ENABLE_EXCEL_MIRROR` is off**, so this variable must never point at the real files. Run `--check --dry-run` first: it prints each file's name and folder.
+1. With the drive owner's consent, copy the files into a test folder, list the copies in `DRYRUN_FILES` (a PR), and put their ids in `EXCEL_TARGETS_DRYRUN`. Check twice that every id is a copy's: **a dry run writes even while `ENABLE_EXCEL_MIRROR` is off**, so this variable must never point at the real files. Run `--check --dry-run` first: it prints each file's name and folder.
 2. Run the workflow with **dry_run** ticked. It writes the copies, and the run appears in the panel with "dry run".
 3. Check, on the copies:
    - the `Tusk - Summary` input cells
@@ -152,7 +167,7 @@ A target left out of `EXCEL_TARGETS` is recorded as `skipped`.
    - the `WD_*` sheets against the web dashboard
    - that formulas elsewhere are untouched
    - that a copy left open in Excel during the run receives the writes
-4. Repoint the Exchanges Dashboard workbook's analysis sheets to the `WD_*` sheets, on a copy first.
+4. Only if the drive owner has consented to the Exchanges Dashboard workbook (`CONSENTED_FILES`): repoint its analysis sheets to the `WD_*` sheets, on a copy first.
 5. Set `ENABLE_EXCEL_MIRROR` to `true`. The next 01:00 IST run, or a press of Refresh Excel now, writes the real files.
 
 While `ENABLE_EXCEL_MIRROR` is not `true`, a normal run writes nothing. A manual run's row is then closed as `failed` ("switched off"), so the panel does not wait on it.

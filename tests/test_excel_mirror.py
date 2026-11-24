@@ -22,10 +22,23 @@ SB = "https://sb.example.co"
 TARGETS = {
     "nse_vf": {"drive_id": "d1", "item_id": "nse"},
     "bse_vf": {"drive_id": "d1", "item_id": "bse"},
-    "mcx_vf": {"user": "research@example.com", "path": "/Valuations/MCX vF.xlsx"},
+    "mcx_vf": {"user": "tuskinvest@example.com", "path": f"/Tusk Equity/{xm.VF_FOLDER}/20250827_MCX vF.xlsx"},
     "dashboard": {"drive_id": "d1", "item_id": "dash"},
 }
 DRYRUN = {k: {"drive_id": "dtest", "item_id": f"test-{k}"} for k in TARGETS}
+OWNER_URL = "https://tuskinvest-my.sharepoint.com/personal/tuskinvest_example_com/Documents"
+# The owner's consent, as these tests assume it: the dashboard workbook, and dry-run copies.
+DASHBOARD_FILE = {"folder": "Dashboard", "name": "20261027_Exchanges_Dashboard.xlsx"}
+TEST_FOLDER = "Mirror test copies"
+FILE_OF = {**{k: dict(v) for k, v in xm.ALLOWED_FILES.items()}, "dashboard": DASHBOARD_FILE}
+DRYRUN_FILE_OF = {k: {"folder": TEST_FOLDER, "name": v["name"]} for k, v in FILE_OF.items()}
+
+
+def placed(d, f, url=OWNER_URL):
+    """An item's Graph metadata: name, parent folder, owner's web address."""
+    d["meta"] = {"name": f["name"], "webUrl": f"{url}/Tusk Equity/{f['folder']}/{f['name']}",
+                 "parentReference": {"driveId": "d9", "path": f"/drives/d9/root:/Tusk Equity/{f['folder']}"}, "file": {}}
+    return d
 
 
 def summary_sheet(ex):
@@ -123,14 +136,14 @@ class FakeCloud:
         m = re.match(r"/(?:users/[^/]+/drive|drives/[^/]+)/root:(.+?)(\?|$)", p)
         if m:
             item = next((k for k, v in self.items.items() if v.get("path") == m.group(1)), None)
-            return FakeResponse(200, {"id": item, "name": "x.xlsx", "parentReference": {"driveId": "d9"}}) if item else FakeResponse(404, {})
+            return FakeResponse(200, {"id": item, **self.items[item].get("meta", {"name": "x.xlsx", "parentReference": {"driveId": "d9"}})}) if item else FakeResponse(404, {})
         m = re.match(r"/drives/([^/]+)/items/([^/?]+)(.*)$", p)
         if not m or m.group(2) not in self.items:
             return FakeResponse(404, {"error": {"message": "itemNotFound"}})
         item_id, rest = m.group(2), m.group(3)
         wb = self.items[item_id]
-        if rest == "":
-            return FakeResponse(200, {"name": wb.get("name", f"{item_id}.xlsx"), "id": item_id})
+        if rest == "" or rest.startswith("?"):
+            return FakeResponse(200, {"name": f"{item_id}.xlsx", **wb.get("meta", {}), "id": item_id})
         if rest == "/workbook/createSession":
             sid = f"s-{item_id}-{len(self.sessions)}"
             self.sessions[sid] = item_id
@@ -200,10 +213,10 @@ def vf_item(ex, path=None):
 
 def cloud():
     return FakeCloud({
-        "nse": vf_item("nse"), "bse": vf_item("bse"),
-        "mcx": vf_item("mcx", "/Valuations/MCX vF.xlsx"),
-        "dash": {"sheets": {"NSE": {(1, 1): "=WD_NSE_Daily!A3"}, "WD_VIX": {(1, 1): "Written by ExchangesDash at old", (900, 2): 99}}},
-        **{f"test-{k}": (vf_item(xm.VF_TARGETS[k]) if k in xm.VF_TARGETS else {"sheets": {}}) for k in TARGETS},
+        "nse": placed(vf_item("nse"), FILE_OF["nse_vf"]), "bse": placed(vf_item("bse"), FILE_OF["bse_vf"]),
+        "mcx": placed(vf_item("mcx", TARGETS["mcx_vf"]["path"]), FILE_OF["mcx_vf"]),
+        "dash": placed({"sheets": {"NSE": {(1, 1): "=WD_NSE_Daily!A3"}, "WD_VIX": {(1, 1): "Written by ExchangesDash at old", (900, 2): 99}}}, DASHBOARD_FILE),
+        **{f"test-{k}": placed(vf_item(xm.VF_TARGETS[k]) if k in xm.VF_TARGETS else {"sheets": {}}, DRYRUN_FILE_OF[k]) for k in TARGETS},
     })
 
 
@@ -257,8 +270,15 @@ class FixtureData:
 
 
 class MirrorTest(unittest.TestCase):
+    consent = True   # the owner has agreed to the dashboard workbook and the dry-run copies
+
     def run_main(self, args=(), cloud_=None, quiet=True, **env_kw):
         self.cloud = cloud_ or cloud()
+        if self.consent:
+            for name, value in (("CONSENTED_FILES", {"dashboard": DASHBOARD_FILE}), ("DRYRUN_FILES", DRYRUN_FILE_OF)):
+                patcher = mock.patch.object(xm, name, value)
+                patcher.start()
+                self.addCleanup(patcher.stop)
         if "RUNNER_TEMP" not in env_kw:   # the run-id note goes to a fresh directory per test
             tmp = tempfile.TemporaryDirectory()
             self.addCleanup(tmp.cleanup)
@@ -281,6 +301,9 @@ class MirrorTest(unittest.TestCase):
         self.overrides_seen = seen.get("overrides")
         return self.cloud
 
+    def files(self):
+        return {f["target"]: f for f in self.cloud.runs[-1]["files"]}
+
 
 class Sessions(MirrorTest):
     def test_each_file_writes_in_a_persistent_session_that_is_closed(self):
@@ -295,7 +318,7 @@ class Sessions(MirrorTest):
 
     def test_user_and_path_target_is_resolved(self):
         c = self.run_main()
-        self.assertTrue(any("/users/research@example.com/drive/root:/Valuations/MCX vF.xlsx" in x[1] for x in c.calls))
+        self.assertTrue(any(f"/users/tuskinvest@example.com/drive/root:/Tusk Equity/{xm.VF_FOLDER}/20250827_MCX vF.xlsx" in x[1] for x in c.calls))
         self.assertEqual(c.cell("mcx", "Tusk - Summary", "C16"), 46)
 
 
@@ -581,7 +604,7 @@ class Check(MirrorTest):
         self.assertEqual(self.code, 1)                 # a label failed
         self.assertIn("A12 reads 'Target Price - FY29'", out)
         self.assertIn("pin as", out)                    # the path target's ids
-        self.assertTrue(re.search(r"nse_vf\s+nse\.xlsx\s+d1 / nse\s+2\s+will be created\s+OK\s+OK", out), out)
+        self.assertTrue(re.search(r"nse_vf\s+20250809_NSE vF\.xlsx\s+d1 / nse\s+2\s+will be created\s+OK\s+OK", out), out)
         self.assertEqual(c.writes(), [])
         self.assertFalse(any(x[0] in ("PATCH", "DELETE", "PUT") for x in c.calls))
         creates = [x for x in c.calls if x[1].endswith("createSession")]
@@ -606,6 +629,80 @@ class Check(MirrorTest):
         with mock.patch("builtins.print"):
             self.run_main(["--check"])
         self.assertEqual(self.code, 0)
+
+
+class Guardrail(MirrorTest):
+    """Only the three vF files, unless the owner has consented to another file."""
+    consent = False
+
+    def test_without_consent_only_the_three_vf_files_are_opened(self):
+        c = self.run_main()
+        f = self.files()
+        for k in ("nse_vf", "bse_vf", "mcx_vf"):
+            self.assertEqual(f[k]["status"], "success", f[k])
+        self.assertEqual(f["dashboard"]["status"], "failed")
+        self.assertIn("not on the owner's list", f["dashboard"]["errors"][0])
+        self.assertFalse(any("/items/dash" in x[1] for x in c.calls))       # not even read
+        self.assertEqual(c.runs[-1]["status"], "partial")
+
+    def test_look_alike_copies_and_other_drives_are_refused(self):
+        cases = {
+            "a copy in another folder": dict(f={"folder": "Vanshika", "name": "20260718_BSE VF.xlsx"}),
+            "a backup with another name": dict(f={"folder": xm.VF_FOLDER, "name": "BSE VF (1).xlsx"}),
+            "the same file in someone else's OneDrive": dict(f=FILE_OF["bse_vf"], url="https://tuskinvest-my.sharepoint.com/personal/shreevar_example_com/Documents"),
+            "another tenant": dict(f=FILE_OF["bse_vf"], url="https://other-my.sharepoint.com/personal/tuskinvest_example_com/Documents"),
+        }
+        for why, kw in cases.items():
+            with self.subTest(why=why):
+                c = cloud()
+                placed(c.items["bse"], **kw)
+                self.run_main(cloud_=c)
+                f = self.files()
+                self.assertEqual(f["bse_vf"]["status"], "failed")
+                self.assertIn("drive guardrail: bse_vf refused", f["bse_vf"]["errors"][0])
+                self.assertEqual(c.writes("bse"), [])
+                self.assertFalse(any(x[1].endswith("createSession") and "/items/bse/" in x[1] for x in c.calls))
+                self.assertEqual(f["nse_vf"]["status"], "success")
+
+    def test_a_folder_is_refused(self):
+        c = cloud()
+        del c.items["nse"]["meta"]["file"]
+        self.run_main(cloud_=c)
+        self.assertIn("not a file", self.files()["nse_vf"]["errors"][0])
+        self.assertEqual(c.writes("nse"), [])
+
+    def test_a_path_target_outside_the_list_is_refused_before_any_call(self):
+        c = self.run_main(EXCEL_TARGETS=json.dumps({"mcx_vf": {"user": "tuskinvest@example.com", "path": "/Direct Equity/Vanshika/20250827_MCX vF.xlsx"}}))
+        self.assertIn("is not Portfolio Stock Valuations", self.files()["mcx_vf"]["errors"][0])
+        self.assertFalse(any("graph.microsoft.com" in x[1] and "/drive" in x[1] for x in c.calls))
+
+    def test_dry_run_needs_consent_and_never_writes_a_real_vf_file(self):
+        c = self.run_main(["--dry-run"], ENABLE_EXCEL_MIRROR="")
+        self.assertTrue(all(f["status"] == "failed" for f in c.runs[-1]["files"]))
+        self.assertEqual(c.writes(), [])
+        real = {"nse_vf": {"drive_id": "d1", "item_id": "nse"}}
+        with mock.patch.object(xm, "DRYRUN_FILES", {"nse_vf": FILE_OF["nse_vf"]}):   # a "copy" entry naming the real file
+            c = self.run_main(["--dry-run"], ENABLE_EXCEL_MIRROR="", EXCEL_TARGETS_DRYRUN=json.dumps(real))
+        self.assertIn("may not write a real vF file", self.files()["nse_vf"]["errors"][0])
+        with mock.patch.object(xm, "DRYRUN_FILES", {"nse_vf": DRYRUN_FILE_OF["nse_vf"]}):   # a copy entry, the real file's id
+            c = self.run_main(["--dry-run"], ENABLE_EXCEL_MIRROR="", EXCEL_TARGETS_DRYRUN=json.dumps(real))
+        self.assertIn("drive guardrail: nse_vf refused", self.files()["nse_vf"]["errors"][0])
+        self.assertEqual(c.writes(), [])
+
+    def test_check_shows_the_refusal_and_reads_nothing(self):
+        with mock.patch("builtins.print") as p:
+            c = self.run_main(["--check"], quiet=False)
+        out = "\n".join(" ".join(map(str, a.args)) for a in p.call_args_list)
+        self.assertEqual(self.code, 1)
+        self.assertRegex(out, r"dashboard .*REFUSED drive guardrail")
+        self.assertFalse(any("/items/dash" in x[1] for x in c.calls))
+
+    def test_the_list_is_the_three_vf_files(self):
+        self.assertEqual({k: v["name"] for k, v in xm.ALLOWED_FILES.items()},
+                         {"nse_vf": "20250809_NSE vF.xlsx", "bse_vf": "20260718_BSE VF.xlsx", "mcx_vf": "20250827_MCX vF.xlsx"})
+        self.assertEqual({v["folder"] for v in xm.ALLOWED_FILES.values()}, {"Portfolio Stock Valuations - Bull Base Bear (Tusk Prop)"})
+        self.assertEqual(xm.CONSENTED_FILES, {})
+        self.assertEqual(xm.DRYRUN_FILES, {})
 
 
 class Targets(unittest.TestCase):
@@ -640,9 +737,6 @@ class Safety(MirrorTest):
     """The review's fixes: never overwrite a sheet this job did not write, never a blank
     sheet on failure, never the wrong exchange's file."""
 
-    def files(self):
-        return {f["target"]: f for f in self.cloud.runs[-1]["files"]}
-
     def test_a_sheet_not_written_by_the_job_is_left_alone(self):
         c = cloud()
         c.items["bse"]["sheets"]["Web Dashboard"] = {(1, 1): "My notes", (2, 2): 5}
@@ -674,9 +768,20 @@ class Safety(MirrorTest):
         self.assertFalse(any("WD_VIX" in x[1] and x[1].endswith("/clear") for x in c.calls))
         self.assertEqual(self.files()["dashboard"]["status"], "failed")
 
-    def test_swapped_targets_fail_the_identity_check(self):
+    def test_swapped_targets_are_refused_by_the_guardrail(self):
         c = cloud()
         swapped = {**TARGETS, "bse_vf": {"drive_id": "d1", "item_id": "mcx"}, "mcx_vf": {"drive_id": "d1", "item_id": "bse"}}
+        self.run_main(cloud_=c, EXCEL_TARGETS=json.dumps(swapped))
+        f = self.files()
+        for k in ("bse_vf", "mcx_vf"):
+            self.assertEqual(f[k]["status"], "failed")
+            self.assertIn("drive guardrail", f[k]["errors"][0])
+        self.assertFalse(any(x[1].endswith("createSession") and ("/items/bse/" in x[1] or "/items/mcx/" in x[1]) for x in c.calls))
+
+    def test_swapped_contents_fail_the_identity_check(self):
+        c = cloud()   # the right file names, but each holds the other exchange's model
+        c.items["bse"]["sheets"], c.items["mcx"]["sheets"] = c.items["mcx"]["sheets"], c.items["bse"]["sheets"]
+        swapped = {**TARGETS, "mcx_vf": {"drive_id": "d1", "item_id": "mcx"}}
         self.run_main(cloud_=c, EXCEL_TARGETS=json.dumps(swapped))
         f = self.files()
         for k, other in (("bse_vf", "MCX"), ("mcx_vf", "BSE")):

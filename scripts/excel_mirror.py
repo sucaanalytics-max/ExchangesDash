@@ -31,6 +31,9 @@ Env:
                            T = {"drive_id", "item_id"}, {"user": upn, "path": "/f/x.xlsx"}
                            (that user's OneDrive) or {"drive_id", "path"} (any drive)
   EXCEL_TARGETS_DRYRUN     the same for --dry-run (copies in a test folder)
+                           Drive guardrail: a target is opened only if it is on ALLOWED_FILES
+                           (the three vF files) or, with the owner's consent, CONSENTED_FILES /
+                           DRYRUN_FILES; see "Drive guardrail" below and docs/EXCEL_MIRROR.md.
   MSGRAPH_TENANT_ID, MSGRAPH_CLIENT_ID, MSGRAPH_CLIENT_SECRET   (excel_sync.get_graph_token)
   SUPABASE_URL, SUPABASE_KEY   service-role key (the workflow passes SUPABASE_SERVICE_KEY)
   GITHUB_RUN_ID            recorded on the run row
@@ -47,8 +50,9 @@ import os
 import sys
 import tempfile
 import time
+import unicodedata
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 
 import requests
 
@@ -136,6 +140,10 @@ class SheetNotOurs(Exception):
 
 class WrongFile(Exception):
     """The target's identity cell names another exchange: nothing is written to it."""
+
+
+class NotAllowed(Exception):
+    """The target is not on the drive guardrail's list: it is never opened."""
 
 
 _sleep = time.sleep   # tests replace it
@@ -409,6 +417,82 @@ def resolve_target(graph, key, t):
     drive_id, item_id = meta["parentReference"]["driveId"], meta["id"]
     print(f"{key}: {where}:{path} → pin as {json.dumps({'drive_id': drive_id, 'item_id': item_id})}")
     return drive_id, item_id
+
+
+# ── Drive guardrail ─────────────────────────────────────────────────────────
+# The drive owner's rule (24 Nov 2026): this job may open only the three vF files
+# below, in the Tusk Invest OneDrive. Any other file, including the Exchanges
+# Dashboard workbook and the copies a dry run writes, needs the owner's explicit
+# consent, recorded in CONSENTED_FILES / DRYRUN_FILES by a reviewed PR. Every target is
+# checked against Graph's own metadata for the item (drive owner, parent folder, file
+# name) before a session is opened, so a wrong id or path, a look-alike copy in another
+# folder or another person's drive is refused and nothing in it is read or written.
+OWNER_HOST = "tuskinvest-my.sharepoint.com"
+OWNER_SITE = "/personal/tuskinvest_"           # the Tusk Invest account's OneDrive
+VF_FOLDER = "Portfolio Stock Valuations - Bull Base Bear (Tusk Prop)"
+ALLOWED_FILES = {
+    "nse_vf": {"folder": VF_FOLDER, "name": "20250809_NSE vF.xlsx"},
+    "bse_vf": {"folder": VF_FOLDER, "name": "20260718_BSE VF.xlsx"},
+    "mcx_vf": {"folder": VF_FOLDER, "name": "20250827_MCX vF.xlsx"},
+}
+# Files the owner has explicitly agreed to, e.g.
+#   "dashboard": {"folder": "Dashboard", "name": "20261027_Exchanges_Dashboard.xlsx"}
+CONSENTED_FILES = {}
+# Copies for --dry-run, also only with the owner's consent; never one of ALLOWED_FILES.
+DRYRUN_FILES = {}
+
+
+def _norm(s):
+    return unicodedata.normalize("NFC", str(s or "")).strip().casefold()
+
+
+def _same_file(a, b):
+    return _norm(a["folder"]) == _norm(b["folder"]) and _norm(a["name"]) == _norm(b["name"])
+
+
+def permitted(dry_run):
+    """{target key: {"folder", "name"}} this run may open."""
+    return dict(DRYRUN_FILES) if dry_run else {**ALLOWED_FILES, **CONSENTED_FILES}
+
+
+def guard_target(key, t, dry_run):
+    """Before any Graph call: the key must be on the list, and a path target must name
+    that list entry's folder and file. Returns the entry; raises NotAllowed."""
+    spec = permitted(dry_run).get(key)
+    if spec is None:
+        what = "dry-run copies are" if dry_run else "this file is"
+        raise NotAllowed(f"drive guardrail: {key} refused, {what} not on the owner's list "
+                         "(CONSENTED_FILES / DRYRUN_FILES in scripts/excel_mirror.py need the owner's explicit consent); not opened")
+    if dry_run and any(_same_file(spec, real) for real in ALLOWED_FILES.values()):
+        raise NotAllowed(f"drive guardrail: {key} refused, a dry run may not write a real vF file; not opened")
+    if t.get("path"):
+        parts = [p for p in str(t["path"]).split("/") if p]
+        if len(parts) < 2 or not _same_file({"folder": parts[-2], "name": parts[-1]}, spec):
+            raise NotAllowed(f"drive guardrail: {key} refused, path {t['path']!r} is not "
+                             f"{spec['folder']}/{spec['name']}; not opened")
+    return spec
+
+
+def guard_item(graph, key, spec, drive_id, item_id, dry_run):
+    """After the ids are known, before a session: Graph's metadata for the item must show
+    a file named spec["name"], directly in spec["folder"], in the Tusk Invest OneDrive."""
+    meta = graph.request("GET", f"{GRAPH}/drives/{quote(drive_id, safe='')}/items/{quote(item_id, safe='')}"
+                         "?$select=id,name,webUrl,parentReference,file") or {}
+    parent = unquote((meta.get("parentReference") or {}).get("path") or "").rstrip("/")
+    seen = {"folder": parent.rsplit("/", 1)[-1].split("root:")[-1], "name": meta.get("name") or ""}
+    url = urlparse(meta.get("webUrl") or "")
+    problems = []
+    if "file" not in meta:
+        problems.append("not a file")
+    if not _same_file(seen, spec):
+        problems.append(f"it is {seen['folder'] or '(root)'}/{seen['name']}, expected {spec['folder']}/{spec['name']}")
+    if _norm(url.hostname) != OWNER_HOST or not _norm(unquote(url.path)).startswith(OWNER_SITE):
+        problems.append(f"not in the Tusk Invest OneDrive ({url.hostname or 'no web address'})")
+    if dry_run and any(_same_file(seen, real) for real in ALLOWED_FILES.values()):
+        problems.append("a real vF file: a dry run may only write copies")
+    if problems:
+        raise NotAllowed(f"drive guardrail: {key} refused ({'; '.join(problems)}); not opened")
+    return meta
 
 
 # ── Supabase ────────────────────────────────────────────────────────────────
@@ -825,8 +909,10 @@ def run_target(graph, key, target, work, dry_run):
         result["inputs_written"] = False
     wb, fatal = None, True
     try:
+        spec = guard_target(key, target, dry_run)
         drive_id, item_id = resolve_target(graph, key, target)
         result["item"] = {"drive_id": drive_id, "item_id": item_id}
+        guard_item(graph, key, spec, drive_id, item_id, dry_run)
         wb = Workbook(graph, drive_id, item_id)
         wb.open()
         work(wb, result)
@@ -835,7 +921,7 @@ def run_target(graph, key, target, work, dry_run):
         result["errors"].append(f"file locked ({e})")
     except Conflict as e:
         result["errors"].append(f"conflict ({e})")
-    except (GraphError, WrongFile) as e:
+    except (GraphError, WrongFile, NotAllowed) as e:
         result["errors"].append(str(e))
     except Exception as e:   # a bug must not stop the other files
         result["errors"].append(f"{type(e).__name__}: {_short(e)}")
@@ -927,7 +1013,7 @@ def ours_text(wb, sheets):
     return "; ".join(out)
 
 
-def check(targets):
+def check(targets, dry_run=False):
     """Read only: each target's metadata, sheets, identity and label checks, and a session
     that saves nothing, as a table. True when every configured target passes."""
     graph = Graph(graph_token())
@@ -938,9 +1024,10 @@ def check(targets):
             rows.append((key, "-", "not configured", "", "", "", ""))
             continue
         try:
+            spec = guard_target(key, targets[key], dry_run)
             drive_id, item_id = resolve_target(graph, key, targets[key])
+            meta = guard_item(graph, key, spec, drive_id, item_id, dry_run)
             wb = Workbook(graph, drive_id, item_id)
-            meta = wb.metadata() or {}
             names = wb.sheet_names()
             if key in VF_TARGETS:
                 if SUMMARY_SHEET not in names:
@@ -957,6 +1044,9 @@ def check(targets):
             session = session_probe(wb)
             ok = ok and labels in ("OK", "n/a") and session == "OK" and "NOT OURS" not in state
             rows.append((key, meta.get("name", "?"), f"{drive_id} / {item_id}", str(len(names)), state, labels, session))
+        except NotAllowed as e:
+            ok = False
+            rows.append((key, "-", "", "", "", f"REFUSED {e}", ""))
         except GraphError as e:
             ok = False
             rows.append((key, "-", "", "", "", f"ERROR {e}", ""))
@@ -1010,7 +1100,7 @@ def main(argv=None):
             print(f"ERROR: {bad}")
             return 1
         try:
-            return 0 if check(targets) else 1
+            return 0 if check(targets, dry_run=args.dry_run) else 1
         except GraphError as e:
             print(f"ERROR: {e}")
             return 1

@@ -4,7 +4,7 @@
 // ========================
 // EXCEL SYNC — runs of the Excel mirror (scripts/excel_mirror.py), which writes the
 // shared inputs, the valuation results and the dashboard's data into the vF files and
-// the Exchanges Dashboard workbook, daily at 01:00 IST and on demand.
+// (with the drive owner's consent) the Exchanges Dashboard workbook, daily at 01:00 IST and on demand.
 // ========================
 // GET /api/excel-refresh lists the latest runs (public); a team member signed in for
 // the shared inputs (VALUATION_SHARED.signedIn, js/14-valuation.js) gets a
@@ -83,7 +83,7 @@ function excelSyncPanelHTML(s, signedIn) {
   const note = s.note ? `<p class="rx-foot xs-note${s.note.kind === 'bad' ? ' rx-dn' : ''}" role="status">${escHtml(s.note.text)}</p>` : '';
   return rxPanel({
     title: 'Excel sync', cls: 'xs-panel',
-    meta: `${escHtml(s.schedule)} · inputs and results into the NSE, BSE and MCX vF files, data into the Exchanges Dashboard workbook`,
+    meta: `${escHtml(s.schedule)} · inputs and results into the NSE, BSE and MCX vF files`,
     right, body: body + note,
     foot: s.state === 'off' ? '' : 'Each run writes the shared inputs as last saved. Hover a file for its error.',
     attrs: 'data-excel-sync',
