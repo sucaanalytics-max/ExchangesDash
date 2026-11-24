@@ -22,6 +22,8 @@ class FeeRegister(unittest.TestCase):
     def test_bse_cash_calibrated_then_provisional(self):
         r = fr.rule("BSE", "cash", "2026-05-15")              # Q1 FY 2027, reported
         self.assertEqual((r["rate_per_cr_per_side"], r["basis"]), (557, "calibrated"))
+        r = fr.rule("BSE", "cash", "2026-08-14")              # Q2 FY 2027, reported (H1 − Q1)
+        self.assertEqual((r["rate_per_cr_per_side"], r["basis"]), (535, "calibrated"))
         r = fr.rule("BSE", "cash", "2026-10-15")              # Q3 FY 2027, not reported yet
         self.assertEqual((r["rate_per_cr_per_side"], r["basis"]),
                          (fr.BSE_CASH_PROVISIONAL_RATE, "calibrated_provisional"))

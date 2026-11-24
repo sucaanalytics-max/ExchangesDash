@@ -157,11 +157,12 @@ BSE_CASH_CALIBRATED_QUARTERS = [
     ("Q3 FY 2026", 681, "BSE1_09022026185014_intimation", "Q3"),
     ("Q4 FY 2026", 584, "BSE1_07052026174401_NSEintimation", "Q4"),
     ("Q1 FY 2027", 557, "BSE1_04082026185534_NSEintimation", "Q1"),
+    ("Q2 FY 2027", 535, "BSE1_04112026181604_NSEIntimation", "H1 − Q1"),
 ]
-# Pooled over the last four reported quarters (Q2 FY26–Q1 FY27): sum of income
+# Pooled over the last four reported quarters (Q3 FY26–Q2 FY27): sum of income
 # ÷ (2 × sum of traded value). Recompute when a quarter is added above.
-BSE_CASH_PROVISIONAL_RATE = 616
-BSE_CASH_PROVISIONAL_SOURCE = "Trailing four reported quarters pooled (Q2 FY 2026 – Q1 FY 2027)"
+BSE_CASH_PROVISIONAL_RATE = 582
+BSE_CASH_PROVISIONAL_SOURCE = "Trailing four reported quarters pooled (Q3 FY 2026 – Q2 FY 2027)"
 
 
 def quarter_bounds(label):
