@@ -794,6 +794,7 @@ function buildContractsAdr(ex) {
   const name = SHARE_EXCHANGE_NAMES[ex];
   const canvasId = `cadrChart-${ex}`;
 
+  document.getElementById(`cadr-${ex}`)?.remove();   // never two panels, even if the tab's rebuild failed part-way
   box.insertAdjacentHTML('beforeend', rxPanel({
     title: `${name} F&amp;O contracts vs ADR`,
     meta: `<span data-cadr="period">loading the window…</span>`,
@@ -825,7 +826,7 @@ function buildContractsAdr(ex) {
     const w = CADR_VIEW.window, axes = CADR_VIEW.scale === 'axes';
     const ser = contractsAdrSeries(rows, ex, { from: period.from, window: w, revenue: CADR_VIEW.revenue });
     const p = contractsAdrPeriod(rows, period.from, ser, w);
-    q('period').textContent = period.error ? `all trading history since ${rxDate(rows.length ? rows[0].date : null)} (Valuation inputs not loaded)` : p.text;
+    q('period').textContent = period.error ? `all trading history since ${rxDate(rows.length ? rows.reduce((m, r) => (r.date < m ? r.date : m), rows[0].date) : null)} (Valuation inputs not loaded)` : p.text;
     if (charts.shCadr) { charts.shCadr.destroy(); delete charts.shCadr; }
     q('chart').hidden = !ser.length;
     q('msg').innerHTML = ser.length ? '' : `<div class="rx-pb">${rxAlert(escHtml(p.message))}</div>`;
