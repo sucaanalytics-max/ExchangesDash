@@ -154,14 +154,14 @@ BSE_CASH_CALIBRATED_QUARTERS = [
     ("Q4 FY 2025", 758, "BSE1_06052025185359_NSEintimation", "Q4"),
     ("Q1 FY 2026", 622, "BSE1_07082025182504_Coveringletterinvestorpresentation", "Q1"),
     ("Q2 FY 2026", 658, "BSE1_11112025201829_Coveringletterinvestorpresentationrevised", "Q2"),
-    ("Q3 FY 2026", 681, "BSE1_09022026185014_intimation", "Q3"),
+    ("Q3 FY 2026", 685, "BSE1_09022026185014_intimation", "9M − H1"),
     ("Q4 FY 2026", 584, "BSE1_07052026174401_NSEintimation", "Q4"),
     ("Q1 FY 2027", 547, "BSE1_04082026185534_NSEintimation", "Q1"),
     ("Q2 FY 2027", 535, "BSE1_04112026181604_NSEIntimation", "H1 − Q1"),
 ]
 # Pooled over the last four reported quarters (Q3 FY26–Q2 FY27): sum of income
 # ÷ (2 × sum of traded value). Recompute when a quarter is added above.
-BSE_CASH_PROVISIONAL_RATE = 580
+BSE_CASH_PROVISIONAL_RATE = 581
 BSE_CASH_PROVISIONAL_SOURCE = "Trailing four reported quarters pooled (Q3 FY 2026 – Q2 FY 2027)"
 
 

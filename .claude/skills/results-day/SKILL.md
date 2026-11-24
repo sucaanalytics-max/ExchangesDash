@@ -31,6 +31,8 @@ Everything below is a hand edit to a Python register. Never edit the generated J
    python3 -I -c "import json; d=json.load(open('dashboard/data/bse_dashboard_data.json')); print({q['quarter']: q['cash_traded_value'] for q in d['quarterly'][-6:]})"
    ```
 3. Compute rate (₹/Cr per side) = income_cr × 1e7 ÷ (2 × cash_traded_value), rounded to a whole number. Append `(fy_quarter, rate, filing_id, derivation)` to `BSE_CASH_CALIBRATED_QUARTERS`. The rows are oldest first and must be contiguous; `filing_id` is the PDF name under `nsearchives.nseindia.com/corporate/`.
+
+   Then recompute the three quarters before it on today's turnover and refresh any whose rate has moved. Their turnover can change after calibration as BSE's held-back cash days are filled in: on Q2 FY 2027's results day, Q1 FY 2027 went from 557 to 547 and Q3 FY 2026 from 681 to 685. Those three quarters feed the pooled rate in step 4.
 4. Recompute `BSE_CASH_PROVISIONAL_RATE` by pooling the last four calibrated quarters (turnover-weighted), and update `BSE_CASH_PROVISIONAL_SOURCE` to name them:
    ```bash
    python3 -I -c "
@@ -39,8 +41,8 @@ Everything below is a hand edit to a Python register. Never edit the generated J
    last = fr.BSE_CASH_CALIBRATED_QUARTERS[-4:]
    print([l for l, *_ in last], round(sum(r * tv[l] for l, r, *_ in last) / sum(tv[l] for l, r, *_ in last)))"
    ```
-   Run this after step 3 and edit the constant; before this change the formula gave 616.
-5. `tests/test_fees.py` `test_bse_cash_calibrated_then_provisional` pins a reported date (Q1 FY 2027, rate 557) and an unreported date (2026-10-15). Once 2026-10-15 falls in a reported quarter, move the unreported date forward.
+   Run this after step 3 and edit the constant. With Q3 FY 2026 – Q2 FY 2027 pooled, it gives 581.
+5. `tests/test_fees.py` `test_bse_cash_calibrated_then_provisional` pins two reported dates (Q1 FY 2027 at 547, Q2 FY 2027 at 535) and an unreported date (2026-10-15). Once 2026-10-15 falls in a reported quarter, move the unreported date forward.
 
 ## Brokers' MTF books (`scripts/broker_mtf_register.py`)
 
