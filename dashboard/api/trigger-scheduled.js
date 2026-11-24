@@ -17,8 +17,11 @@
  *   share analyses only on new days, and the deploy marker only after the
  *   15:30 and 19:15 slots. The 01:45 UTC slot (07:15 IST, Tue–Sat) runs MCX
  *   only: it publishes the previous session's total_contracts, which
- *   mcx-vercel writes to mcx_commodity_daily at about 06:30–07:00 IST, after
- *   the 00:30 slot. The 19:15 UTC slot (00:45 IST, Tue–Sat) runs MTF only and
+ *   mcx-vercel writes to mcx_commodity_daily from 05:30 IST once MCX's report
+ *   is complete (retrying to 06:55, backstop 07:00), sometimes after the 00:30
+ *   slot. The weekend 00:30 UTC slot (06:00 IST, Sat–Sun) also runs MCX only:
+ *   Friday's count on Saturday at the weekday time, or on Sunday when
+ *   mcx-vercel only loaded it that morning. The 19:15 UTC slot (00:45 IST, Tue–Sat) runs MTF only and
  *   deploys: NSE posts a day's margin trading file at 18:26–18:27 UTC on the
  *   next trading day, after the 15:30 slot.
  * - brokers-mirror.yml copies at 15:02 and again at 23:32 UTC. The brokers
@@ -50,6 +53,7 @@ const MIRROR = (job) => ({ job, workflow: 'brokers-mirror.yml', inputs: { mode: 
 const SLOTS = {
   '30 0 * * 1-5':  EXCHANGE('30 0 * * 1-5', 'exchange-update-0030'),
   '45 1 * * 2-6':  EXCHANGE('45 1 * * 2-6', 'exchange-update-0145-mcx', 'mcx'),
+  '30 0 * * 0,6':  EXCHANGE('30 0 * * 0,6', 'exchange-update-0030-mcx-weekend', 'mcx'),
   '30 12 * * 1-5': EXCHANGE('30 12 * * 1-5', 'exchange-update-1230'),
   '30 15 * * 1-5': EXCHANGE('30 15 * * 1-5', 'exchange-update-1530'),
   '15 19 * * 1-5': EXCHANGE('15 19 * * 1-5', 'exchange-update-1915-mtf', 'mtf'),

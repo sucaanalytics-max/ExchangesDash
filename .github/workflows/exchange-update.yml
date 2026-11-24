@@ -9,9 +9,14 @@ on:
     # 6:00 AM IST = 00:30 UTC — picks up yesterday's confirmed data
     - cron: '30 0 * * 1-5'
     # 7:15 AM IST Tue–Sat = 01:45 UTC — MCX only: the previous session's contracts,
-    # which mcx-vercel writes to mcx_commodity_daily at ~06:30–07:00 IST (after the
-    # 00:30 slot); Saturday's run carries Friday's. Other jobs skip this slot.
+    # which mcx-vercel writes to mcx_commodity_daily from 05:30 IST once MCX's report
+    # is complete (retries to 06:55, backstop 07:00); Saturday's run carries Friday's.
+    # Other jobs skip this slot.
     - cron: '45 1 * * 2-6'
+    # 6:00 AM IST Sat–Sun = 00:30 UTC — MCX only: Friday's contracts on Saturday at the
+    # weekday 00:30 time, and on Sunday when mcx-vercel only loaded them that morning
+    # (20 Nov 2026's landed Sun 05:30 IST). Other jobs skip this slot.
+    - cron: '30 0 * * 0,6'
     # 6:00 PM IST = 12:30 UTC — picks up today's data after market close (3:30 PM IST)
     - cron: '30 12 * * 1-5'
     # 9:00 PM IST = 15:30 UTC — late retry in case MCX Supabase data arrives after 6 PM run
@@ -51,7 +56,7 @@ concurrency:
 
 jobs:
   nse-update:
-    if: ${{ (github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6' && github.event.schedule != '15 19 * * 1-5') || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'nse' }}
+    if: ${{ (github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6' && github.event.schedule != '30 0 * * 0,6' && github.event.schedule != '15 19 * * 1-5') || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'nse' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -119,7 +124,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [nse-update]
-    if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6' && github.event.schedule != '15 19 * * 1-5') || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'bse') }}
+    if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6' && github.event.schedule != '30 0 * * 0,6' && github.event.schedule != '15 19 * * 1-5') || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'bse') }}
     outputs:
       new_days: ${{ steps.check_new.outputs.new_days }}
 
@@ -455,7 +460,7 @@ jobs:
     # exchange still lets the other one's data be committed; the job then fails at
     # its last step.
     needs: [nse-update, bse-update]
-    if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6') || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'mtf') }}
+    if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6' && github.event.schedule != '30 0 * * 0,6') || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'mtf') }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     outputs:
@@ -539,7 +544,7 @@ jobs:
     # participants_monthly.json / participants_daily.json (the Participants tab reads them);
     # the slot runs' 8-minute budget keeps that wait short.
     needs: [nse-update, bse-update]
-    if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6' && github.event.schedule != '15 19 * * 1-5') || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'participants') }}
+    if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6' && github.event.schedule != '30 0 * * 0,6' && github.event.schedule != '15 19 * * 1-5') || github.event.inputs.exchange == 'all' || github.event.inputs.exchange == 'participants') }}
     runs-on: ubuntu-latest
     timeout-minutes: 100
     outputs:

@@ -14,6 +14,9 @@ from helpers import NODE, ROOT
 HANDLER = ROOT / "dashboard" / "api" / "trigger-scheduled.js"
 WORKFLOWS = ROOT / ".github" / "workflows"
 PATH = "/api/trigger-scheduled"
+# The slots that run MCX only (cron -> job name in SLOTS)
+MCX_ONLY_SLOTS = {"45 1 * * 2-6": "exchange-update-0145-mcx",
+                  "30 0 * * 0,6": "exchange-update-0030-mcx-weekend"}
 
 # Calls the handler once; prints {status, body, calls} where calls lists each
 # GitHub request as {workflow, ref, inputs}.
@@ -79,13 +82,15 @@ class TriggerScheduled(unittest.TestCase):
                 self.assertEqual(r["calls"], [{"workflow": "exchange-update.yml", "ref": "main",
                                                "inputs": {"exchange": "all", "cron": cron}}])
 
-    def test_mcx_morning_slot_dispatches_mcx_only(self):
-        r = self.call(schedule="45 1 * * 2-6")
-        self.assertEqual(r["status"], 200)
-        self.assertEqual(r["calls"], [{"workflow": "exchange-update.yml", "ref": "main",
-                                       "inputs": {"exchange": "mcx", "cron": "45 1 * * 2-6"}}])
-        r = self.call("Bearer external-secret", query={"job": "exchange-update-0145-mcx"})
-        self.assertEqual(r["calls"][0]["inputs"], {"exchange": "mcx", "cron": "45 1 * * 2-6"})
+    def test_mcx_morning_slots_dispatch_mcx_only(self):
+        for cron, job in MCX_ONLY_SLOTS.items():
+            with self.subTest(cron=cron):
+                r = self.call(schedule=cron)
+                self.assertEqual(r["status"], 200)
+                self.assertEqual(r["calls"], [{"workflow": "exchange-update.yml", "ref": "main",
+                                               "inputs": {"exchange": "mcx", "cron": cron}}])
+                r = self.call("Bearer external-secret", query={"job": job})
+                self.assertEqual(r["calls"][0]["inputs"], {"exchange": "mcx", "cron": cron})
 
     def test_mtf_night_slot_dispatches_mtf_only(self):
         r = self.call(schedule="15 19 * * 1-5")
@@ -175,16 +180,24 @@ class DailyUpdateSlotRuns(unittest.TestCase):
                 self.assertIn(f"inputs.cron == '{cron}'", cond)
 
     def test_mcx_slot_fallback_runs_mcx_only(self):
-        """GitHub's own run of the 01:45 UTC slot carries no inputs, so the other
-        exchanges' jobs must skip it by its schedule; the MCX job must not."""
-        skip = "(github.event_name == 'schedule' && github.event.schedule != '45 1 * * 2-6'"
-        for job in ("nse-update", "bse-update", "mtf-update", "participants-update"):
-            with self.subTest(job=job):
-                cond = re.search(r"^    if: (.*)$", job_block(self.text, job), re.M).group(1)
-                self.assertIn(skip, cond)
-        cond = re.search(r"^    if: (.*)$", job_block(self.text, "mcx-update"), re.M).group(1)
-        self.assertNotIn("45 1", cond)
-        self.assertIn("github.event_name == 'schedule'", cond)
+        """GitHub's own run of an MCX-only slot (01:45 UTC Tue–Sat, 00:30 UTC
+        Sat–Sun) carries no inputs, so the other exchanges' jobs must skip it by
+        its schedule; the MCX job must not."""
+        for cron in MCX_ONLY_SLOTS:
+            skip = f"github.event.schedule != '{cron}'"
+            for job in ("nse-update", "bse-update", "mtf-update", "participants-update"):
+                with self.subTest(cron=cron, job=job):
+                    cond = re.search(r"^    if: (.*)$", job_block(self.text, job), re.M).group(1)
+                    self.assertIn("(github.event_name == 'schedule' && ", cond)
+                    self.assertIn(skip, cond)
+            cond = re.search(r"^    if: (.*)$", job_block(self.text, "mcx-update"), re.M).group(1)
+            self.assertNotIn(cron, cond)
+            self.assertIn("github.event_name == 'schedule'", cond)
+
+    def test_mcx_only_slots_do_not_deploy(self):
+        cond = re.search(r"^    if: (.*)$", job_block(self.text, "deploy"), re.M).group(1)
+        for cron in MCX_ONLY_SLOTS:
+            self.assertNotIn(cron, cond)
 
     def test_mtf_slot_fallback_runs_mtf_only(self):
         """Likewise GitHub's own run of the 19:15 UTC slot: every job but MTF (and
