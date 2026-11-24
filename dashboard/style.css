@@ -3923,3 +3923,7 @@ body.rx-drawer-on { overflow: hidden; }
 @media (max-width: 640px) {
   .rx-table.rx-scen th:first-child, .rx-table.rx-scen td:first-child { position: sticky; left: 0; z-index: 1; background: var(--rx-surface); box-shadow: inset -1px 0 0 var(--rx-rule); }
 }
+
+/* Regression tab, contracts vs ADR: the chart's toggles, wrapping on phones */
+.rx-cadr-ctl { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; padding-bottom: 0; }
+.rx-cadr-ctl .rx-grp { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }

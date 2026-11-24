@@ -719,3 +719,187 @@ function renderShareCollecting(el, ex) {
   rxFixHeight(charts.shCollect);
   RX_TAB_REFRESH.share = () => { renderChart(); rxFixHeight(charts.shCollect); };
 }
+
+// ========================
+// CONTRACTS VS ADR (NSE and BSE) — under the regression charts: F&O contracts
+// traded per session against average daily revenue, as trailing means, with
+// revenue per contract (the revenue MA ÷ the contracts MA) as a third line.
+// The window is the Valuation Model's: the exchange's "Regression data from"
+// date (Valuation Inputs), or all of daily_all when none is set.
+// ========================
+
+// Per NSE / BSE session: F&O contracts in crore (contractsDailyRows, the
+// contracts view's definition) and revenue at today's rates, `revenue` 'total'
+// (total_rev) or 'fo' (opt_rev + fut_rev). Sessions missing either are left
+// out, never counted as 0. Each point is the trailing `window`-session mean
+// over those sessions; sessions before `from` (ISO, null = no start) are the
+// means' lead-in only, so with history before it the line starts at `from`.
+// [{ date, contracts (Cr / session), adr (₹ Cr / session), perContract (₹ / contract) }]
+function contractsAdrSeries(rows, exchange, { from = null, window = 45, revenue = 'total' } = {}) {
+  const contracts = new Map(contractsDailyRows(rows, exchange).map(r => [r.date, r.total_rev]));
+  const revOf = r => revenue === 'fo'
+    ? (contractsNum(r.opt_rev) == null ? null : r.opt_rev + (contractsNum(r.fut_rev) || 0))
+    : contractsNum(r.total_rev);
+  const days = (rows || []).filter(r => r && contracts.has(r.date) && revOf(r) != null)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map(r => ({ date: r.date, c: contracts.get(r.date), v: revOf(r) }));
+  const out = [];
+  days.forEach((d, i) => {
+    if (i < window - 1 || (from && d.date < from)) return;
+    const span = days.slice(i - window + 1, i + 1);
+    const c = span.reduce((s, x) => s + x.c, 0) / window;
+    const v = span.reduce((s, x) => s + x.v, 0) / window;
+    out.push({ date: d.date, contracts: c, adr: v, perContract: c > 0 ? v / c : null });
+  });
+  return out;
+}
+
+// The chart's window in words, and why `series` is empty ('' when it is not)
+function contractsAdrPeriod(rows, from, series, window) {
+  const dates = (rows || []).map(r => r && r.date).filter(Boolean).sort();
+  const first = dates[0], last = dates[dates.length - 1];
+  const text = from
+    ? `from ${rxDate(from)} (Regression data from, Valuation Inputs)`
+    : `all trading history since ${rxDate(first)} (no Regression data from set)`;
+  let message = '';
+  if (!series.length) {
+    message = from && last && from > last
+      ? `No sessions from ${rxDate(from)}: the daily data ends on ${rxDate(last)}. Set an earlier Regression data from date on the Valuation Inputs.`
+      : `Fewer than ${window} sessions with both revenue and contracts${from ? ` up to the start date, ${rxDate(from)}, and after it` : ''}, so there is no ${window}-session average to plot.`;
+  }
+  return { text, message };
+}
+
+// The panel's toggles, kept across rebuilds and exchange switches
+const CADR_VIEW = { window: 45, scale: 'index', revenue: 'total' };
+
+// The exchange's "Regression data from" date in use: { from, error }
+async function contractsAdrFrom(ex, latest) {
+  const defaults = await loadValuationDefaults();
+  if (defaults.error) return { from: null, error: defaults.error };
+  return { from: valuationInputsFor(defaults, readValuationOverrides(), ex, latest).v.from || null, error: null };
+}
+
+// Appends the panel to the Regression tab (after buildShareAnalysis) and draws
+// it. Every Regression tab show (RX_TAB_REFRESH.share) re-reads the date, so a
+// change on the Valuation Inputs applies the next time the tab is opened.
+function buildContractsAdr(ex) {
+  if (ex !== 'nse' && ex !== 'bse') return;
+  const host = document.getElementById(`${ex}-share-inner`);
+  const box = host && host.querySelector('.rx');
+  if (!box) return;
+  const raw = rawFor(ex);
+  const rows = (raw && raw.daily_all) || [];
+  const latest = rows.reduce((m, r) => (r.date > m ? r.date : m), '') || undefined;
+  const name = SHARE_EXCHANGE_NAMES[ex];
+  const canvasId = `cadrChart-${ex}`;
+
+  box.insertAdjacentHTML('beforeend', rxPanel({
+    title: `${name} F&amp;O contracts vs ADR`,
+    meta: `<span data-cadr="period">loading the window…</span>`,
+    attrs: `id="cadr-${ex}"`,
+    right: `<span data-cadr="legend"></span>`,
+    body: `<div class="rx-pb rx-cadr-ctl" role="toolbar" aria-label="Contracts vs ADR chart controls">
+        <div class="rx-grp"><span class="rx-lbl">MA</span>${rxSeg('cadrWin', SHARE_MA_WINDOWS.map(w => [w, w + ' D']), CADR_VIEW.window, 'Moving-average window')}</div>
+        <div class="rx-grp"><span class="rx-lbl">Scale</span>${rxSeg('cadrScale', [['index', 'Indexed to 100'], ['axes', 'Two axes']], CADR_VIEW.scale, 'Chart scale')}</div>
+        <div class="rx-grp"><span class="rx-lbl">Revenue</span>${rxSeg('cadrRev', [['total', 'Total'], ['fo', 'F&amp;O']], CADR_VIEW.revenue, 'Revenue measure')}</div>
+      </div>
+      <div data-cadr="msg"></div>
+      <div class="rx-pb" data-cadr="chart" style="padding-bottom:10px">${rxCanvas(canvasId)}</div>`,
+    foot: `<span data-cadr="foot"></span>`,
+    how: rxHow('How this chart works', `<ul>
+      <li><b>Contracts</b>: F&amp;O contracts traded per session, in crore, as on the Revenue Summary's Contracts view. NSE: index and stock options plus index and stock futures. BSE publishes one F&amp;O contract count, its few futures included, so all of BSE's contracts are treated as options.</li>
+      <li><b>ADR</b>: revenue per session at today's rates, the revenue the regression above uses: total (cash included) or, with Revenue: F&amp;O, options plus futures only.</li>
+      <li><b>Revenue per contract</b> (thin line): the ADR average ÷ the contracts average, ₹ per contract.</li>
+      <li>Each point is the mean of the last 10, 20 or 45 sessions that have both revenue and contracts; a day without contract figures is left out, not counted as 0. Sessions before the window's start are the averages' lead-in, so the line starts on the start date.</li>
+      <li>Indexed to 100, each line is divided by its own first value. ADR index ÷ contracts index × 100 is exactly the revenue-per-contract index, so the gap between the ADR and contracts lines is the change in revenue per contract. Every day is priced at today's fees, so fee changes are not behind it: options are charged on premium, so revenue per contract moves with premium per contract (volatility, the VIX, and the mix of index, stock and longer-dated options) against plain volume, and in Total with cash, which has no contracts.</li>
+      <li>Window: the same as the Valuation Model's regression and ratio analysis, from the exchange's “Regression data from” date on the Valuation Inputs; with none set, all trading history in the daily data. A changed date applies the next time this tab is opened.</li>
+    </ul>`),
+  }));
+  const panel = document.getElementById(`cadr-${ex}`);
+  const q = k => panel.querySelector(`[data-cadr="${k}"]`);
+  let period = null;   // { from, error } once loaded
+
+  function draw() {
+    if (!period || !panel.isConnected) return;
+    const w = CADR_VIEW.window, axes = CADR_VIEW.scale === 'axes';
+    const ser = contractsAdrSeries(rows, ex, { from: period.from, window: w, revenue: CADR_VIEW.revenue });
+    const p = contractsAdrPeriod(rows, period.from, ser, w);
+    q('period').textContent = period.error ? `all trading history since ${rxDate(rows.length ? rows[0].date : null)} (Valuation inputs not loaded)` : p.text;
+    if (charts.shCadr) { charts.shCadr.destroy(); delete charts.shCadr; }
+    q('chart').hidden = !ser.length;
+    q('msg').innerHTML = ser.length ? '' : `<div class="rx-pb">${rxAlert(escHtml(p.message))}</div>`;
+    if (!ser.length) { q('legend').innerHTML = ''; q('foot').textContent = ''; return; }
+
+    const idx = indexTo100(ser, ['contracts', 'adr', 'perContract']);
+    const revName = CADR_VIEW.revenue === 'fo' ? 'F&O ADR' : 'ADR';
+    const revHtml = escHtml(revName);
+    const last = ser[ser.length - 1], lastIdx = idx[idx.length - 1];
+    const ctrTxt = v => `${fmtNum(v, 2)} Cr`;
+    const adrTxt = v => `₹${fmtNum(v, 2)} Cr`;
+    const perTxt = v => `₹${fmtNum(v, 2)}`;
+    const line = (label, key, color, width, yAxisID) => ({ label, data: (axes ? ser : idx).map(r => r[key]), borderColor: color,
+      borderWidth: width, pointRadius: 0, pointHoverRadius: 3, tension: 0, yAxisID });
+    const datasets = [
+      line('Contracts', 'contracts', RX.model, 1.75, 'y'),
+      line(revName, 'adr', RX.rev, 1.75, axes ? 'y1' : 'y'),
+    ];
+    // Two axes: revenue per contract has no axis of its own; the tooltip gives it
+    if (!axes) datasets.push(line('Revenue per contract', 'perContract', RX.muted, 1, 'y'));
+    const tickOpts = { maxTicksLimit: 8, maxRotation: 0, autoSkip: true };
+    const scales = axes ? {
+      x: { grid: { display: false }, ticks: tickOpts },
+      y: { position: 'left', title: { display: true, text: 'Contracts, Cr / session' }, ticks: { callback: v => fmtNum(v, 1) } },
+      y1: { position: 'right', grid: { display: false }, title: { display: true, text: `${revName}, ₹ Cr / session` }, ticks: { callback: v => '₹' + fmtNum(v, 1) } },
+    } : {
+      x: { grid: { display: false }, ticks: tickOpts },
+      y: { title: { display: true, text: 'Index (start = 100)' }, ticks: { callback: v => fmtNum(v, 0) } },
+    };
+    const fmts = [ctrTxt, adrTxt, perTxt], keys = ['contracts', 'adr', 'perContract'];
+    rxChart('shCadr', canvasId, 260, {
+      type: 'line',
+      data: { labels: ser.map(r => fmtChartDate(r.date)), datasets },
+      options: {
+        interaction: { mode: 'index', intersect: false },
+        plugins: { tooltip: { callbacks: {
+          title: items => rxDate(ser[items[0].dataIndex].date),
+          label: ctx => {
+            const i = ctx.dataIndex, k = ctx.datasetIndex;
+            return ` ${ctx.dataset.label}: ${fmts[k](ser[i][keys[k]])} · index ${fmtNum(idx[i][keys[k]], 1)}`;
+          },
+          footer: items => {
+            if (!axes) return '';
+            const i = items[0].dataIndex;
+            return `Revenue per contract: ${perTxt(ser[i].perContract)} · index ${fmtNum(idx[i].perContract, 1)}`;
+          },
+        } } },
+        scales,
+      },
+    });
+    rxFixHeight(charts.shCadr);
+    q('legend').innerHTML = rxLegend(axes ? [
+      { label: `Contracts ${ctrTxt(last.contracts)} (left)`, color: RX.model, kind: 'line' },
+      { label: `${revHtml} ${adrTxt(last.adr)} (right)`, color: RX.rev, kind: 'line' },
+    ] : [
+      { label: `Contracts ${fmtNum(lastIdx.contracts, 0)}`, color: RX.model, kind: 'line' },
+      { label: `${revHtml} ${fmtNum(lastIdx.adr, 0)}`, color: RX.rev, kind: 'line' },
+      { label: `Revenue per contract ${fmtNum(lastIdx.perContract, 0)}`, color: RX.muted, kind: 'line' },
+    ]);
+    q('foot').textContent = `${w}-session means · ${rxDate(ser[0].date)} – ${rxDate(last.date)} · latest: ${ctrTxt(last.contracts)} contracts, ${revName} ${adrTxt(last.adr)}, ${perTxt(last.perContract)} per contract`
+      + (axes ? ' · revenue per contract is in the tooltip' : '');
+  }
+
+  async function refresh() {
+    const p = await contractsAdrFrom(ex, latest);
+    if (!panel.isConnected) return;   // rebuilt or switched away while loading
+    period = p;
+    draw();
+  }
+
+  rxOnSeg(panel, 'cadrWin', v => { CADR_VIEW.window = +v; draw(); });
+  rxOnSeg(panel, 'cadrScale', v => { CADR_VIEW.scale = v; draw(); });
+  rxOnSeg(panel, 'cadrRev', v => { CADR_VIEW.revenue = v; draw(); });
+  const prev = RX_TAB_REFRESH.share;
+  RX_TAB_REFRESH.share = () => { if (prev) prev(); refresh(); };
+  refresh();
+}
