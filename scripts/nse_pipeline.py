@@ -993,13 +993,19 @@ def nse_ratio_model(pnl_history):
     }
 
 
-def nse_other_txn_charges(pnl_history, daily):
+def nse_other_txn_charges(pnl_history, daily, special_sessions=None):
     """NSE's transaction charges that are not in the daily equity F&O and cash
     files (mutual fund platform, currency derivatives, NSEIX), in ₹ Cr per
     trading session: reported transaction_rev less the daily sum, averaged over
     the ratio model's base quarters. The daily sum is priced at the fee rules
     then in force (reprice_date_effective), since it is compared with what NSE
     actually charged; at today's rates a fee change would show up as a gap.
+
+    special_sessions (Muhurat, DR tests; kept out of `daily` by
+    trading_calendar.split_special) are in NSE's reported charges too, so their
+    revenue is added to the daily sum, but they are not counted as sessions;
+    otherwise a Muhurat (₹19.33 Cr on 8 Nov 2026) would be read as other
+    charges and spread over every forecast session.
 
     Our daily sum fell short of reported transaction charges by ₹27–50 Cr a
     quarter from Q3 FY 2025 (flat fees) to Q2 FY 2027; NSE's own model types
@@ -1009,20 +1015,27 @@ def nse_other_txn_charges(pnl_history, daily):
     if not m:
         return None
     base = set(m["base_quarters"])
-    rows = reprice_date_effective([d for d in (daily or []) if d.get("fy_quarter") in base])
+    def in_base(rows):
+        return reprice_date_effective([d for d in (rows or []) if d.get("fy_quarter") in base])
+
     by_q = {}
-    for d in rows:
+    for d in in_base(daily):
         s = by_q.setdefault(d["fy_quarter"], [0.0, 0])
         s[0] += _num(d, "total_rev")
         s[1] += 1
+    special = {}
+    for d in in_base(special_sessions):
+        special[d["fy_quarter"]] = special.get(d["fy_quarter"], 0.0) + _num(d, "total_rev")
     reported = {r["quarter"]: _pnl_num(r, "transaction_rev") for r in pnl_history
                 if r.get("quarter") in base and not r.get("is_predicted")}
     per_q = []
     for q in m["base_quarters"]:
         daily_sum, days = by_q.get(q, (0.0, 0))
+        daily_sum += special.get(q, 0.0)
         if not days or q not in reported or reported[q] < daily_sum:
             return None
         per_q.append({"quarter": q, "reported": round(reported[q], 2), "daily_sum": round(daily_sum, 2),
+                      "special_rev": round(special.get(q, 0.0), 2),
                       "days": days, "per_day": round((reported[q] - daily_sum) / days, 4)})
     return {
         "per_day": round(sum(x["per_day"] for x in per_q) / len(per_q), 4),
@@ -1120,7 +1133,7 @@ def compute_predicted_quarters(pnl_predictor, pnl_history, quarterly):
     return result
 
 
-def compute_enriched(daily, quarterly, pnl):
+def compute_enriched(daily, quarterly, pnl, special_sessions=None):
     enriched = {
         "summary_total": seg_summary(daily, "total_rev"),
         "seg_options":   seg_summary(daily, "opt_rev"),
@@ -1142,7 +1155,7 @@ def compute_enriched(daily, quarterly, pnl):
         # The daily files cover equity F&O and cash only; NSE's reported
         # transaction charges (the ratio model's base) also hold its MF,
         # currency and NSEIX charges, carried here per session.
-        other = nse_other_txn_charges(pnl, daily)
+        other = nse_other_txn_charges(pnl, daily, special_sessions)
         other_per_day = other["per_day"] if other else 0.0
         segments_extrap = round(daily_avg * expected_days, 2)
         other_txn_rev = round(other_per_day * expected_days, 2)
@@ -1225,7 +1238,7 @@ def build_outputs(all_daily, pnl, pnl_fy, cost_ratios):
 
     take_rates = {"futures": TR_FUT, "options": TR_OPT, "cash": TR_CASH}
 
-    enriched = compute_enriched(all_daily, quarterly, pnl)
+    enriched = compute_enriched(all_daily, quarterly, pnl, special)
 
     dashboard_json = build_dashboard_json(
         all_daily, quarterly, monthly, weekly, dow_avg, summary_obj,
