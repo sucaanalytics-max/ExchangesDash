@@ -759,7 +759,9 @@ function buildRevenuePredictor(ex) {
         const out = body.querySelector('[data-rp-sent]');
         const open = '<button type="button" class="rx-link" data-rx-goto="valuation">Open Valuation Model →</button>';
         if (vd.error) { out.textContent = `Valuation inputs not loaded (${vd.error}).`; return; }
-        if (!writeValuationOverrides(setValuationOverride(readValuationOverrides(), vd, ex, 'adr', adr))) {
+        // The custom ADR, with Custom selected for the estimate table
+        const set = setValuationOverride(setValuationOverride(readValuationOverrides(), vd, ex, 'adr', adr), vd, ex, 'eb', 'custom');
+        if (!writeValuationOverrides(set)) {
           out.innerHTML = VALUATION_SHARED.mode === 'pending'
             ? 'The shared valuation inputs have not loaded yet: try again in a moment.'
             : `Not set: the valuation inputs are shared, and only a signed-in team member can change them (Edit inputs on the Valuation Model). ${open}`;

@@ -435,6 +435,9 @@ class Schema(unittest.TestCase):
 
 # Values for the parity check (latest-date bound aside: the server has no data dates)
 PARITY = [("adr", v) for v in (None, 0, -1, 0.01, 72.5, "70", True)] \
+    + [("dma", v) for v in (45, 20, 10, 30, "45", None, 45.0001)] \
+    + [("eb", v) for v in ("dma45", "dma20", "dma10", "custom", "dma30", "Custom", 45, None, "")] \
+    + [("g2", v) for v in (-100, -99.9, 0, 4.5, None, "3")] \
     + [("g", v) for v in (-100, -99.9, 0, 4.5, None, "3")] \
     + [(k, v) for k in ("pe0", "pe1", "pe2") for v in (0, -5, 0.1, 48, None, "48")] \
     + [(k, v) for k in ("w0", "w1", "w2") for v in (-0.01, 0, 45, 100, None)] \
@@ -1208,7 +1211,7 @@ class SharedStore(unittest.TestCase):
             "local": {"bse": {"pe1": 51, "adr": None}, "nse": {"g": 4}},
             "shared": {"bse": {"pe1": 48, "adr": 20}},
             "defaults": {"ex": {"bse": {"pe1": 45, "adr": None}, "nse": {"g": 3}}}})
-        self.assertEqual(got, "BSE (ADR estimate blank vs shared 20; P/E base 51 vs shared 48), NSE (QoQ ADR growth 4 vs shared 3)")
+        self.assertEqual(got, "BSE (Custom ADR blank vs shared 20; P/E base 51 vs shared 48), NSE (QoQ growth (DMA table) 4 vs shared 3)")
 
 
 if __name__ == "__main__":

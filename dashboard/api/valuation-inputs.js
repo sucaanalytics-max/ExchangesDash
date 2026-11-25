@@ -35,7 +35,7 @@ const { NO_STORE, isSignedIn, clientIp, readBody } = require('./_team_auth');
 
 const SUPABASE_TIMEOUT_MS = 8000;   // a slow Supabase answers 502, not a hung function
 const EXCHANGES = ['bse', 'mcx', 'nse'];
-const EDITABLE = ['adr', 'g', 'pe0', 'pe1', 'pe2', 'd1', 'd2', 'w0', 'w1', 'w2', 'from'];
+const EDITABLE = ['dma', 'g', 'eb', 'adr', 'g2', 'pe0', 'pe1', 'pe2', 'd1', 'd2', 'w0', 'w1', 'w2', 'from'];
 
 const isNum = x => typeof x === 'number' && isFinite(x);
 
@@ -52,6 +52,8 @@ function istToday(now = Date.now()) {
 
 // valuationInputOk's rules, with `today` in place of the latest data date
 function inputOk(k, x, today) {
+  if (k === 'dma') return [45, 20, 10].includes(x);
+  if (k === 'eb') return ['dma45', 'dma20', 'dma10', 'custom'].includes(x);
   if (k === 'adr') return x === null || (isNum(x) && x > 0);
   if (k === 'from') return x === null || (isIsoDate(x) && !(today && x > today));
   if (!isNum(x)) return false;

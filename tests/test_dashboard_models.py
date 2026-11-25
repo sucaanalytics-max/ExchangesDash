@@ -117,6 +117,7 @@ class PredictorMirrorsPipeline(unittest.TestCase):
 
 
 VALUATION_JS = ["valuationNum", "valuationIsoDate", "VALUATION_EXCHANGES", "VALUATION_METHODS", "VALUATION_EDITABLE", "VALUATION_STORAGE_KEY",
+                "VALUATION_DMA_WINDOWS", "VALUATION_EST_BASES", "valuationDmaAdr", "valuationEstAdr",
                 "valuationDefaultsFrom", "valuationSameInput", "valuationInputOk", "VALUATION_SHARED",
                 "valuationPlainObject", "readLocalValuationOverrides", "VALUATION_SHARED_CACHE_KEY",
                 "readSharedValuationCache", "readValuationOverrides",
@@ -188,13 +189,21 @@ class ValuationGoldenNumbers(unittest.TestCase):
         self.assertAlmostEqual(a["eps"], 117.7704, delta=0.0001)
         self.close(a["fwd"], [4710.82, 5299.67, 5888.52])
         self.close(a["now"], [3662.584193770785, 4120.407217992134, 4578.230242213482])
-        # Estimate 24: the sheet's rows C29:F31 (regression base only)
+        # Estimate 24: the sheet's rows C29:F31 (regression base only). Its ADR model now
+        # grows the estimate itself (24 at 5 % QoQ), not Q3's ADR to date as the sheet did,
+        # so its weighted average is checked against that model rather than E32.
         est = m["est"]
         self.assertEqual(est["adr"], 24)
+        self.assertEqual(est["basis"]["label"], "custom")
         self.assertAlmostEqual(est["vals"]["reg"][1], 4138.333464120598, delta=0.01)
         self.close(est["vals"]["ratio"], [4204.800373273975, 4984.860064430118, 5764.91975558626])
-        self.close(est["vals"]["adr"], a["now"], 1e-9)
-        self.assertAlmostEqual(est["avg"][1], 4214.9193133937415, delta=0.01)   # E32
+        self.close([p["adr"] for p in est["path"]["path"]], [24 * 1.05 ** i for i in range(6)], 1e-9)
+        self.assertAlmostEqual(est["path"]["adr"], 24 * sum(1.05 ** i for i in range(2, 6)) / 4, places=9)
+        e = est["adrModel"]
+        self.assertAlmostEqual(e["eps"], (e["adrFY"] * 247 + a["oi"]) * 0.51 / 40.7884, places=9)
+        self.close(est["vals"]["adr"], e["now"], 1e-9)
+        self.assertLess(e["now"][1], a["now"][1])   # 24 to date is below Q3's 24.04
+        self.assertAlmostEqual(est["avg"][1], (45 * est["vals"]["reg"][1] + 10 * est["vals"]["ratio"][1] + 45 * e["now"][1]) / 100, places=6)
         # 45 DMA 21.2091
         dma = m["dma"]
         self.assertAlmostEqual(dma["vals"]["reg"][1], 3775.88, delta=0.01)
@@ -211,7 +220,8 @@ class ValuationGoldenNumbers(unittest.TestCase):
         self.close(a["now"], [3373.803705375013, 3785.2431816402586, 4196.682657905504])
         self.assertAlmostEqual(m["est"]["vals"]["reg"][1], 3365.3088401338523, delta=0.01)
         self.close(m["est"]["vals"]["ratio"], [3201.8517549597004, 3774.343242046283, 4346.8347291328655])
-        self.assertAlmostEqual(m["est"]["avg"][1], 3696.8963375013877, delta=0.01)   # E39
+        # E39 used Q3's ADR to date in the ADR model; the estimate table now grows the estimate (14)
+        self.assertEqual(m["est"]["path"]["path"][0]["adr"], 14)
         self.assertAlmostEqual(m["dma"]["vals"]["reg"][1], 3206.98, delta=0.01)
         self.close(m["dma"]["vals"]["ratio"], [3030.36, 3572.19, 4114.01])
         self.assertAlmostEqual(m["dma"]["avg"][1], 3584.3671954182473, delta=0.01)   # E40
@@ -221,7 +231,8 @@ class ValuationGoldenNumbers(unittest.TestCase):
         m, v = r["m"], r["v"]
         a = m["adrModel"]
         self.assertIsNone(v["adr"])   # the sheet's "n/a": the estimate model takes the 45 DMA
-        self.assertTrue(m["estIsDma"])
+        self.assertEqual(v["eb"], "dma45")
+        self.assertEqual(m["est"]["basis"]["label"], "45 DMA")
         self.assertEqual(m["est"]["adr"], self.CTX["nse"]["adr45"])
         self.assertAlmostEqual(a["adrFY"], 77.42639289419103, places=9)
         self.assertAlmostEqual(a["total"], 25656.999044865184, delta=0.001)
@@ -229,7 +240,9 @@ class ValuationGoldenNumbers(unittest.TestCase):
         self.close(a["now"], [1963.3577156510391, 2197.0907770380677, 2430.8238384250967])
         for t in (m["dma"], m["est"]):
             self.assertEqual((t["used"], t["dropped"]), (["adr"], []))   # weights 0 / 0 / 100: nothing rescaled
-            self.close(t["avg"], a["now"], 1e-9)
+            self.close(t["avg"], t["adrModel"]["now"], 1e-9)
+        self.assertEqual(m["dma"]["adrModel"], a)
+        self.assertEqual(m["est"]["path"]["path"][0]["adr"], self.CTX["nse"]["adr45"])
 
     def test_regression_bear_bull_are_the_standard_error(self):
         m = self.model("bse")["m"]
@@ -242,16 +255,40 @@ class ValuationGoldenNumbers(unittest.TestCase):
             self.assertAlmostEqual(reg[2], fit["intercept"] + fit["slope"] * (t["adr"] + 300 / fit["slope"]), places=6)
 
     def test_edits_move_only_their_methods(self):
-        """The ADR estimate moves Regression and Ratio in the estimate model only; QoQ growth and P/E the ADR model."""
+        """The estimate ADR and g2 move the estimate table only; the DMA window and g the DMA table only; P/E both."""
         base = self.model("bse")["m"]
         est = self.model("bse", {"bse": {"adr": 26}})["m"]
         self.assertEqual(est["dma"], base["dma"])
         self.assertEqual(est["adrModel"], base["adrModel"])
         self.assertAlmostEqual(est["est"]["vals"]["reg"][1], 1021.435 + 129.8708 * 26, places=6)
+        self.assertEqual(est["est"]["path"]["path"][0]["adr"], 26)
         grown = self.model("bse", {"bse": {"g": 6, "pe1": 50}})["m"]
         self.assertGreater(grown["adrModel"]["adrFY"], base["adrModel"]["adrFY"])
         self.assertAlmostEqual(grown["adrModel"]["fwd"][1], grown["adrModel"]["eps"] * 50, places=6)
         self.assertEqual(grown["dma"]["vals"]["reg"], base["dma"]["vals"]["reg"])
+        self.assertEqual(grown["est"]["path"], base["est"]["path"])   # g is the DMA table's only
+        g2 = self.model("bse", {"bse": {"g2": 6.5}})["m"]
+        self.assertEqual(g2["dma"], base["dma"])
+        self.assertGreater(g2["est"]["adrModel"]["adrFY"], base["est"]["adrModel"]["adrFY"])
+        self.assertEqual(g2["est"]["vals"]["reg"], base["est"]["vals"]["reg"])
+
+    def test_dma_window_and_estimate_basis(self):
+        """dma picks the DMA table's ADR from adrN; eb the estimate's (custom = adr, or the 45 DMA when blank)."""
+        c = dict(self.CTX["bse"], adrN={"45": 21.2, "20": 22.5, "10": 23.75})
+        run = lambda o: js_eval(VALUATION_JS, """(() => {
+          const d = valuationDefaultsFrom(DATA.file);
+          const { v } = valuationInputsFor(d, DATA.o, 'bse');
+          return valuationModel(DATA.c, v, DATA.c.shares);
+        })()""", {"c": c, "o": {"bse": o}, "file": _valuation_inputs_file()})
+        m = run({"dma": 20})
+        self.assertEqual((m["dma"]["window"], m["dma"]["adr"]), (20, 22.5))
+        self.assertEqual(m["dma"]["path"]["path"][0]["adr"], c["qAdr"])   # the ADR model still starts from Q3 to date
+        self.assertEqual(run({"dma": 10})["dma"]["adr"], 23.75)
+        e = run({"eb": "dma10"})["est"]
+        self.assertEqual((e["adr"], e["basis"]["label"], e["path"]["path"][0]["adr"]), (23.75, "10 DMA", 23.75))
+        blank = run({"eb": "custom", "adr": None})["est"]
+        self.assertEqual((blank["adr"], blank["basis"]["blank"]), (21.2, True))
+        self.assertEqual(run({"dma": 30})["dma"]["window"], 45)   # an unusable saved window is ignored
 
 
 @unittest.skipUnless(NODE, "node not installed")
@@ -333,7 +370,7 @@ class ValuationInputs(unittest.TestCase):
     def test_file_parses(self):
         parsed = js_eval(VALUATION_JS, "valuationDefaultsFrom(DATA)", _valuation_inputs_file())
         self.assertEqual(parsed["fy"], 2028)
-        self.assertEqual(parsed["ex"]["bse"], {"adr": 24, "g": 5, "pe0": 40, "pe1": 45, "pe2": 50, "w0": 45, "w1": 10,
+        self.assertEqual(parsed["ex"]["bse"], {"dma": 45, "eb": "custom", "g2": 5, "adr": 24, "g": 5, "pe0": 40, "pe1": 45, "pe2": 50, "w0": 45, "w1": 10,
                                                "w2": 45, "from": "2025-01-01", "oi": 2363.6982, "margin": 51, "days": 247,
                                                "d1": 18, "d2": 6.75})
         # Regression data from: BSE 1 Jan 2025, MCX 1 Nov 2024, NSE all data

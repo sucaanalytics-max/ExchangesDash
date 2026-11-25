@@ -92,10 +92,14 @@ function safeHttpUrl(u) {
 //     that FY's four-quarter average × sessions + other income → × PAT margin ÷
 //     shares → EPS × P/E → next-FY-end target, ÷ (1 + 18 %) to this FY's end and
 //     ÷ (1 + 6.75 %) to today (the defaults; both editable).
-// The two triangulations differ only in the ADR fed to Regression and Ratio: the
-// current 45-session ADR, or the ADR estimate typed in the inputs drawer
-// (blank = the 45-session ADR). The ADR model row is the same in both. Every ADR
-// is at today's rates, the basis the fits are built on (the whole dashboard is).
+// The two triangulations each have their own ADR and ADR model:
+//   DMA table: Regression and Ratio at the last 45, 20 or 10 sessions' ADR (input
+//     `dma`); its ADR model grows this quarter's ADR to date at QoQ `g`.
+//   Estimate table: Regression and Ratio at the ADR estimate (input `eb`: the 45, 20
+//     or 10 DMA, or `custom`, the ADR typed as `adr`); its ADR model grows that
+//     same ADR at its own QoQ `g2`.
+// Quick-select buttons under each table set these inputs as the drawer does. Every
+// ADR is at today's rates, the basis the fits are built on (the whole dashboard is).
 // Inputs: the shared defaults in dashboard/data/valuation_inputs.json (hand-edited;
 // without it the tabs say so and show no targets), with the edits from the inputs
 // drawer (js/18-valuation-inputs.js) on top: shared by every viewer through
@@ -108,16 +112,25 @@ const VALUATION_EXCHANGES = ['bse', 'mcx', 'nse'];
 // Row keys and labels of the 3 × 3 tables, in the order of the weights w0 / w1 / w2
 const VALUATION_METHODS = [['reg', 'Regression'], ['ratio', 'Ratio Analysis'], ['adr', 'ADR model']];
 // The inputs the drawer edits, in its order; the rest (oi, margin, days) are fixed.
+// dma: the DMA table's window (45, 20 or 10 sessions); g: its QoQ growth, %.
+// eb: the estimate table's ADR ('dma45', 'dma20', 'dma10' or 'custom'); adr: the custom
+// ADR (null = none typed: the 45 DMA stands in); g2: the estimate table's QoQ growth, %.
 // d1 / d2: the discount rates, % (next-FY-end target → this FY's end → today; their
 // defaults are valuation_inputs.json's two global rates, edited per exchange).
 // from: the "Regression data from" date (ISO, null = all the share file's data).
-const VALUATION_EDITABLE = ['adr', 'g', 'pe0', 'pe1', 'pe2', 'd1', 'd2', 'w0', 'w1', 'w2', 'from'];
+const VALUATION_EDITABLE = ['dma', 'g', 'eb', 'adr', 'g2', 'pe0', 'pe1', 'pe2', 'd1', 'd2', 'w0', 'w1', 'w2', 'from'];
 const VALUATION_INPUT_LABELS = {
-  adr: 'ADR estimate', g: 'QoQ ADR growth', pe0: 'P/E bear', pe1: 'P/E base', pe2: 'P/E bull',
+  dma: 'DMA table window', g: 'QoQ growth (DMA table)', eb: 'ADR estimate basis', adr: 'Custom ADR',
+  g2: 'QoQ growth (estimate table)', pe0: 'P/E bear', pe1: 'P/E base', pe2: 'P/E bull',
   d1: 'Discount to FY end', d2: 'Discount to today',
   w0: 'Regression weight', w1: 'Ratio weight', w2: 'ADR model weight', from: 'Regression data from',
 };
 const VALUATION_STORAGE_KEY = 'valuation_inputs_v1';
+// The quick-select buttons under the two tables (valuationInputOk keeps its own copy of
+// the windows and bases, so it stands alone)
+const VALUATION_DMA_WINDOWS = [45, 20, 10];
+const VALUATION_EST_BASES = ['dma45', 'dma20', 'dma10', 'custom'];
+const VALUATION_QOQ_CHIPS = [4, 4.5, 5, 5.5, 6, 6.5, 7];
 
 const valuationNum = x => typeof x === 'number' && isFinite(x);
 // A real calendar date written YYYY-MM-DD, from 1900 on (a year being typed into a date
@@ -127,20 +140,25 @@ function valuationIsoDate(x) {
   return !!m && +m[1] >= 1900 && new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).toISOString().slice(0, 10) === x;
 }
 
-// valuation_inputs.json → { fy, ex: { bse: { adr, g, pe0, pe1, pe2, w0, w1, w2, from, oi, margin, days, d1, d2 }, … } }
-// (adr null = use the 45-session ADR; from null = all data); null when any value is missing or not a number
+// valuation_inputs.json → { fy, ex: { bse: { dma, g, eb, adr, g2, pe0, pe1, pe2, w0, w1, w2, from, oi, margin, days, d1, d2 }, … } }
+// (adr null = no custom ADR; from null = all data); null when any value is missing or unusable.
+// Optional keys: dma_window (default 45), adr_estimate_basis (default 'custom' with an
+// adr_estimate_cr, else 'dma45') and qoq_growth_estimate_pct (default qoq_growth_pct).
 function valuationDefaultsFrom(json) {
   if (!json || !json.exchanges || !valuationNum(json.fy) || !valuationNum(json.discount_to_fy_end_pct) || !valuationNum(json.discount_to_today_pct)) return null;
   const out = {};
   for (const ex of VALUATION_EXCHANGES) {
     const e = json.exchanges[ex] || {}, ed = e.editable || {}, fx = e.fixed || {}, pe = ed.pe || {}, w = ed.weights_pct || {};
     const v = {
-      adr: ed.adr_estimate_cr ?? null, g: ed.qoq_growth_pct, pe0: pe.bear, pe1: pe.base, pe2: pe.bull,
+      dma: ed.dma_window ?? 45, g: ed.qoq_growth_pct,
+      eb: ed.adr_estimate_basis ?? (ed.adr_estimate_cr != null ? 'custom' : 'dma45'),
+      adr: ed.adr_estimate_cr ?? null, g2: ed.qoq_growth_estimate_pct ?? ed.qoq_growth_pct,
+      pe0: pe.bear, pe1: pe.base, pe2: pe.bull,
       w0: w.regression, w1: w.ratio, w2: w.adr_model, from: ed.regression_from ?? null,
       oi: fx.other_income_cr, margin: fx.pat_margin_pct, days: fx.sessions,
       d1: json.discount_to_fy_end_pct, d2: json.discount_to_today_pct,
     };
-    if (!Object.entries(v).every(([k, x]) => (k === 'from' ? valuationInputOk(k, x) : valuationNum(x) || (k === 'adr' && x === null)))) return null;
+    if (!Object.entries(v).every(([k, x]) => (['from', 'eb', 'dma'].includes(k) ? valuationInputOk(k, x) : valuationNum(x) || (k === 'adr' && x === null)))) return null;
     out[ex] = v;
   }
   // The Competition tab's assumed shares of NSE's volume that would otherwise trade on MCX
@@ -672,11 +690,14 @@ async function valuationTeamSignOut(opts = {}) {
 
 const valuationSameInput = (a, b) => (a === null || b === null || typeof a === 'string' || typeof b === 'string') ? a === b : Math.abs(a - b) < 1e-9;
 
-// A usable value for an editable input: a blank (null) or positive ADR estimate, a P/E above
+// A usable value for an editable input: a DMA window of 45, 20 or 10, an estimate basis of
+// dma45 / dma20 / dma10 / custom, a blank (null) or positive custom ADR, a P/E above
 // zero, a weight of zero or more, a discount rate of zero or more and below 100 %, QoQ
 // growth above −100 %, a blank (null) data-from date or a real YYYY-MM-DD date not after
 // `latest` (the latest data date, when known)
 function valuationInputOk(k, x, latest) {
+  if (k === 'dma') return [45, 20, 10].includes(x);
+  if (k === 'eb') return ['dma45', 'dma20', 'dma10', 'custom'].includes(x);
   if (k === 'adr') return x === null || (valuationNum(x) && x > 0);
   if (k === 'from') return x === null || (valuationIsoDate(x) && !(latest && x > latest));
   if (!valuationNum(x)) return false;
@@ -780,17 +801,43 @@ function valuationTriangulate(vals, w) {
   };
 }
 
+// The last `w` sessions' ADR (45, 20 or 10) from the context; the 45 DMA when the
+// context has no adrN (older callers)
+function valuationDmaAdr(c, w) {
+  return (c.adrN && c.adrN[w]) ?? c.adr45;
+}
+
+// The estimate table's ADR: { adr, label ('20 DMA', 'custom' …), custom, blank }.
+// A custom basis with no ADR typed falls back to the 45 DMA (blank: true).
+function valuationEstAdr(c, v) {
+  if (v.eb === 'custom') {
+    return v.adr != null ? { adr: v.adr, label: 'custom', custom: true, blank: false }
+      : { adr: valuationDmaAdr(c, 45), label: '45 DMA', custom: true, blank: true };
+  }
+  const w = +String(v.eb || 'dma45').slice(3) || 45;
+  return { adr: valuationDmaAdr(c, w), label: `${w} DMA`, custom: false, blank: false, window: w };
+}
+
 // Both triangulations for one exchange. c: the data (valuationContextFor) — start quarter,
-// its ADR to date (qAdr), the 45-session ADR (adr45), the fit { intercept, slope, se } and
-// ratio { mean, sd } (either null); v: the inputs (valuationInputsFor); shares in Cr.
+// its ADR to date (qAdr), the 45 / 20 / 10-session ADRs (adrN), the fit { intercept, slope,
+// se } and ratio { mean, sd } (either null); v: the inputs (valuationInputsFor); shares in Cr.
+// Each table: { adr, vals, avg …, path, adrModel, g }. DMA table: Regression and Ratio at
+// the `dma`-session ADR, ADR model from this quarter's ADR to date at `g`. Estimate table:
+// Regression, Ratio and the ADR model's start all at the estimate ADR, grown at `g2`.
+// path / adrModel at the top level are the DMA table's.
 function valuationModel(c, v, shares) {
-  const path = valuationAdrPath(c.start, c.qAdr, v.g);
-  const adrModel = valuationAdrModel(v, path.adr, shares);
-  const tri = adr => {
+  const weights = [v.w0, v.w1, v.w2];
+  const table = (adr, startAdr, g) => {
+    const path = valuationAdrPath(c.start, startAdr, g);
+    const adrModel = valuationAdrModel(v, path.adr, shares);
     const vals = { reg: valuationRegression(c.fit, adr), ratio: valuationRatio(c.ratio, adr), adr: adrModel.eps != null ? adrModel.now : null };
-    return { adr, vals, ...valuationTriangulate(vals, [v.w0, v.w1, v.w2]) };
+    return { adr, vals, ...valuationTriangulate(vals, weights), path, adrModel, g };
   };
-  return { path, adrModel, dma: tri(c.adr45), est: tri(v.adr ?? c.adr45), estIsDma: v.adr == null };
+  const window = VALUATION_DMA_WINDOWS.includes(v.dma) ? v.dma : 45;
+  const dma = { ...table(valuationDmaAdr(c, window), c.qAdr, v.g), window };
+  const e = valuationEstAdr(c, v);
+  const est = { ...table(e.adr, e.adr, v.g2), basis: e };
+  return { path: dma.path, adrModel: dma.adrModel, dma, est };
 }
 
 // The regression and ratio the valuation uses, fitted on the share file's data from `from`
@@ -843,7 +890,7 @@ function valuationFitFields(share, from) {
 }
 
 // What the model reads from an exchange's daily rows (at today's rates) and its share file:
-// the latest quarter's ADR to date, the last 45 sessions' ADR, the published 45-session fit
+// the latest quarter's ADR to date, the last 45, 20 and 10 sessions' ADR (adrN; adr45 too), the published 45-session fit
 // with its standard error (only when the Regression tab publishes a fair value) and the
 // price ÷ MA ratio (once the fit is past collecting); CMP. null without daily rows.
 // valuationFitted re-fits it from a data-from date.
@@ -854,10 +901,12 @@ function valuationContextFor(raw, share) {
   if (!start) return null;
   const qRows = rows.filter(r => r.fy_quarter === last.fy_quarter), r45 = rows.slice(-45);
   const mean = rs => rs.reduce((s, r) => s + r.total_rev, 0) / rs.length;
+  const adrN = {}, nN = {};
+  [45, 20, 10].forEach(w => { const rs = rows.slice(-w); adrN[w] = mean(rs); nN[w] = rs.length; });
   const lat = (share && share.latest) || {};
   const rev = (share && share.revenue_daily) || [];
   return {
-    start, qLabel: last.fy_quarter, qAdr: mean(qRows), qN: qRows.length, adr45: mean(r45), n45: r45.length, lastDate: last.date,
+    start, qLabel: last.fy_quarter, qAdr: mean(qRows), qN: qRows.length, adr45: mean(r45), n45: r45.length, adrN, nN, lastDate: last.date,
     flags: mergeFlags([rowsFlags(qRows, 'total'), rowsFlags(r45, 'total')]),
     ...valuationFitFields(share, null),
     fitStart: (share && share.regression_start) || null, ticker: (share && share.ticker) || '',
@@ -1012,7 +1061,8 @@ function valuationExcelCells(a, v, cmp) {
   };
 }
 
-function valuationExcelTable(m, v, cmp) {
+// t: a table of valuationModel (or the model itself: its path / adrModel are the DMA table's)
+function valuationExcelTable(m, v, cmp, which = '') {
   const rows = valuationExcelRows(m.path.fy, v.d1, v.d2);
   const cells = valuationExcelCells(m.adrModel, v, cmp);
   // the box edges a row's cells carry: top of a later block, bottom of a block or of a boxed row
@@ -1032,8 +1082,46 @@ function valuationExcelTable(m, v, cmp) {
     const gap = e.includes('rx-xl-t') ? '<tr class="rx-xl-gap" aria-hidden="true"><td colspan="4"></td></tr>' : '';
     return `${gap}<tr${cls ? ` class="${cls}"` : ''}><td class="rx-xl-lab${e}">${r.label}</td>${tds}</tr>`;
   }).join('');
-  return `<table class="rx-table rx-xl rx-val-tri" aria-label="ADR model ${valuationFYShort(m.path.fy)}, Bear / Base / Bull">
+  return `<table class="rx-table rx-xl rx-val-tri" aria-label="ADR model ${valuationFYShort(m.path.fy)}${which ? `, ${which}` : ''}, Bear / Base / Bull">
     <thead><tr><th scope="col" class="rx-xl-lab rx-xl-t">CMP ${rxRupee(cmp)}</th>${heads}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+// QoQ growth as a button label: 4, 4.5 …
+const valuationQoqLabel = x => fmtNum(x, valuationPctDp(x));
+
+// The quick-select bar under a table (which: 'dma' or 'est'): its ADR (45 / 20 / 10 DMA,
+// and Custom under the estimate table) and its QoQ growth, each button saving that input
+// as the drawer does (valuationQuickSelect); disabled when this viewer may not edit
+function valuationQuickBar(which, v, can) {
+  const dis = can ? '' : ' disabled title="Sign in with the team password to change the shared inputs (Edit inputs)"';
+  const seg = (key, opts, active, aria) => `<div class="rx-seg" role="group" aria-label="${escHtml(aria)}" data-val-qs="${key}">${opts.map(([val, label]) =>
+    `<button type="button" data-value="${val}" aria-pressed="${String(val) === String(active)}"${dis}>${label}</button>`).join('')}</div>`;
+  const adrSeg = which === 'dma'
+    ? seg('dma', VALUATION_DMA_WINDOWS.map(w => [w, `${w} D`]), v.dma, 'DMA table: ADR window')
+    : seg('eb', VALUATION_EST_BASES.map(b => [b, b === 'custom' ? (v.adr != null ? `Custom ${fmtNum(v.adr, 2)}` : 'Custom…') : `${b.slice(3)} D`]), v.eb, 'Estimate table: ADR');
+  const gKey = which === 'dma' ? 'g' : 'g2';
+  const off = VALUATION_QOQ_CHIPS.some(x => valuationSameInput(x, v[gKey])) ? '' : ` <span class="rx-foot">now ${valuationQoqLabel(v[gKey])} %</span>`;
+  return `<div class="rx-val-qs">
+      <div class="rx-grp"><span class="rx-lbl">ADR</span>${adrSeg}</div>
+      <div class="rx-grp"><span class="rx-lbl">QoQ %</span>${seg(gKey, VALUATION_QOQ_CHIPS.map(x => [x, valuationQoqLabel(x)]), v[gKey], `${which === 'dma' ? 'DMA' : 'Estimate'} table: QoQ ADR growth, %`)}${off}</div>
+    </div>`;
+}
+
+// A quick-select click: key ('dma', 'eb', 'g' or 'g2') set to the button's value for the
+// tab's exchange, saved like a drawer edit. Custom with no ADR typed opens the drawer at it.
+// Returns whether the inputs changed.
+function valuationQuickSelect(ctx, key, raw) {
+  if (!valuationCanEdit()) return false;
+  const latest = ctx.data && ctx.data.c && ctx.data.c.lastDate;
+  const value = key === 'eb' ? raw : parseFloat(raw);
+  if (key === 'eb' && value === 'custom' && valuationInputsFor(ctx.defaults, readValuationOverrides(), ctx.ex, latest).v.adr == null) {
+    openValuationDrawer(ctx);
+    const i = document.querySelector('.rx-drawer input[data-vd="adr"]');
+    if (i) i.focus();
+    return false;
+  }
+  if (!valuationInputOk(key, value, latest)) return false;
+  return writeValuationOverrides(setValuationOverride(readValuationOverrides(), ctx.defaults, ctx.ex, key, value));
 }
 
 function valuationTabHTML(ex, defaults, c0, analysts, open) {
@@ -1045,28 +1133,30 @@ function valuationTabHTML(ex, defaults, c0, analysts, open) {
   const cmp = c.cmp;
   const cmpWhen = valuationCmpWhen(c);
   const adrTxt = x => fmtNum(x, 2);
-  const vs45 = v.adr != null && c.adr45 ? ` · ${rxSignedPct(v.adr / c.adr45 - 1, 1)} vs 45 DMA` : '';
+  const can = valuationCanEdit();
+  const eb = m.est.basis;
+  const vs45 = !(eb.window === 45 || eb.blank) && c.adr45 ? ` · ${rxSignedPct(m.est.adr / c.adr45 - 1, 1)} vs 45 DMA` : '';
+  const gTxt = g => `${valuationQoqLabel(g)} % QoQ`;
   const editedChip = edited.length ? rxChip(`Edited: ${edited.map(k => VALUATION_INPUT_LABELS[k]).join(', ')}`, 'edit') : '';
-  const triPanel = (t, title, meta, aria, cls = 'rx-col-half') => rxPanel({
-    cls, title, meta,
-    body: `<div class="rx-pb rx-scroll">${valuationTriTable(t, v, cmp, aria)}</div>`,
+  const triPanel = (t, which, title, meta, aria) => rxPanel({
+    cls: 'rx-col-half', title, meta,
+    body: `<div class="rx-pb rx-scroll">${valuationTriTable(t, v, cmp, aria)}</div>${valuationQuickBar(which, v, can)}`,
     foot: valuationTriNote(t, c) || `Weighted average = Σ weight × target ÷ Σ weight, over the methods with a value.`,
   });
-  // No ADR estimate: the estimate triangulation would repeat the 45 DMA one, so show it once
-  const tris = m.estIsDma
-    ? `<div class="rx-row">
-    ${triPanel(m.dma, `Triangulated · 45 DMA (ADR ${adrTxt(c.adr45)})`,
-      `last ${c.n45} sessions${flagTags(c.flags)} · no ADR estimate set, so there is no second table · <button type="button" class="rx-link" data-val-edit>set one in the inputs</button>`,
-      '45 DMA triangulation', 'rx-col-full')}
-  </div>`
-    : `<div class="rx-row">
-    ${triPanel(m.dma, `Triangulated · 45 DMA (ADR ${adrTxt(c.adr45)})`, `last ${c.n45} sessions${flagTags(c.flags)}`, '45 DMA triangulation')}
-    ${triPanel(m.est, `Triangulated · ADR estimate (ADR ${adrTxt(m.est.adr)})`, `your estimate${vs45}`, 'ADR estimate triangulation')}
+  const w = m.dma.window;
+  const estWhat = eb.blank ? 'custom ADR not set: the 45 DMA stands in · <button type="button" class="rx-link" data-val-edit>type one in the inputs</button>'
+    : eb.custom ? 'custom ADR' : `last ${c.nN ? c.nN[eb.window] : eb.window} sessions`;
+  const tris = `<div class="rx-row">
+    ${triPanel(m.dma, 'dma', `Triangulated · ${w} DMA (ADR ${adrTxt(m.dma.adr)})`,
+      `last ${c.nN ? c.nN[w] : c.n45} sessions${flagTags(c.flags)} · ADR model from ${qShort} ADR to date (${adrTxt(c.qAdr)}), ${gTxt(v.g)}`, `${w} DMA triangulation`)}
+    ${triPanel(m.est, 'est', `Triangulated · ADR estimate, ${eb.custom && !eb.blank ? 'custom' : eb.label} (ADR ${adrTxt(m.est.adr)})`,
+      `${estWhat}${vs45} · ADR model from this ADR, ${gTxt(v.g2)}`, 'ADR estimate triangulation')}
   </div>`;
 
   // Workings: the ADR model block, the ADR path, the regression and ratio figures
   const fit = c.fit, ratio = c.ratio, win = c.win, winNote = valuationWindowNote(win);
-  const pathRows = m.path.path.map((p, i) => `<tr><td>${p.label}${i === 0 ? ` · to date${flagTags(c.flags)}` : ''}</td><td>${adrTxt(p.adr)}</td><td class="rx-src">${i === 0 ? `${c.qN} sessions` : `× ${fmtNum(1 + v.g / 100, 2)}`}</td></tr>`).join('');
+  const pathRows = m.dma.path.path.map((p, i) => `<tr><td>${p.label}${i === 0 ? ` · start${flagTags(c.flags)}` : ''}</td><td>${adrTxt(p.adr)}</td><td>${adrTxt(m.est.path.path[i].adr)}</td></tr>`).join('');
+  const yr = g => fmtPct(Math.pow(1 + g / 100, 4) - 1);
   const regAt = (label, adr) => {
     const r = valuationRegression(fit, adr), k = valuationRatio(ratio, adr);
     return `<tr><td>${label}</td><td>${adrTxt(adr)}</td><td>${r ? `${fmtNum(r[0], 0)} / ${fmtNum(r[1], 0)} / ${fmtNum(r[2], 0)}` : '—'}</td><td>${k ? `${fmtNum(k[0], 0)} / ${fmtNum(k[1], 0)} / ${fmtNum(k[2], 0)}` : '—'}</td></tr>`;
@@ -1075,18 +1165,26 @@ function valuationTabHTML(ex, defaults, c0, analysts, open) {
     <summary class="rx-ph"><h2>How the figures are built</h2><span class="rx-meta">ADR model ${fy1}E, ADR path, regression and ratio</span></summary>
     <div class="rx-pb"><div class="rx-row">
       <div class="rx-col-half">
-        <h3 class="rx-lbl rx-val-h3">ADR model · ${fy1}E · same in both tables</h3>
-        <div class="rx-scroll">${valuationExcelTable(m, v, cmp)}</div>
-        <p class="rx-foot rx-val-p">ADR ₹ Cr / session × ${fmtNum(v.days, 0)} sessions + other income ₹${fmtNum(v.oi, 0)} Cr = total income; × PAT margin ÷ ${fmtNum(shares, 2)} Cr shares ${sharesChip(ex)} = EPS; × P/E = the ${fy1}-end target, discounted ${valuationPct(v.d1)} to ${valuationFYShort(m.path.fy - 1)} end and ${valuationPct(v.d2)} to today. Upside: the ${fy1}-end target vs CMP (${cmpWhen}).</p>
+        <h3 class="rx-lbl rx-val-h3">ADR model · ${w} DMA table · ${fy1}E</h3>
+        <div class="rx-scroll">${valuationExcelTable(m.dma, v, cmp, `${w} DMA table`)}</div>
       </div>
+      <div class="rx-col-half">
+        <h3 class="rx-lbl rx-val-h3">ADR model · estimate table · ${fy1}E</h3>
+        <div class="rx-scroll">${valuationExcelTable(m.est, v, cmp, 'estimate table')}</div>
+      </div>
+    </div>
+    <p class="rx-foot rx-val-p">ADR ₹ Cr / session × ${fmtNum(v.days, 0)} sessions + other income ₹${fmtNum(v.oi, 0)} Cr = total income; × PAT margin ÷ ${fmtNum(shares, 2)} Cr shares ${sharesChip(ex)} = EPS; × P/E = the ${fy1}-end target, discounted ${valuationPct(v.d1)} to ${valuationFYShort(m.path.fy - 1)} end and ${valuationPct(v.d2)} to today. Upside: the ${fy1}-end target vs CMP (${cmpWhen}). The two tables differ only in the ADR path below.</p>
+    <div class="rx-row">
       <div class="rx-col-half">
         <h3 class="rx-lbl rx-val-h3">ADR path · ₹ Cr / session at today’s rates</h3>
         <div class="rx-scroll"><table class="rx-table">
-          <thead><tr><th scope="col">Quarter</th><th scope="col">ADR</th><th scope="col" class="rx-l">From</th></tr></thead>
+          <thead><tr><th scope="col">Quarter</th><th scope="col">${w} DMA table</th><th scope="col">Estimate table</th></tr></thead>
           <tbody>${pathRows}
-            <tr class="rx-sub"><td>${fy1} average</td><td>${adrTxt(m.path.adr)}</td><td class="rx-src">mean of its four quarters</td></tr>
+            <tr class="rx-sub"><td>${fy1} average</td><td>${adrTxt(m.dma.path.adr)}</td><td>${adrTxt(m.est.path.adr)}</td></tr>
           </tbody></table></div>
-        <p class="rx-foot rx-val-p">${qShort} ADR to date, grown ${fmtNum(v.g, 1)} % a quarter (${fmtPct(Math.pow(1 + v.g / 100, 4) - 1)} a year).</p>
+        <p class="rx-foot rx-val-p">${w} DMA table: ${qShort} ADR to date (${c.qN} sessions), grown ${valuationQoqLabel(v.g)} % a quarter (${yr(v.g)} a year). Estimate table: the estimate ADR (${eb.custom && !eb.blank ? 'custom' : eb.label}), grown ${valuationQoqLabel(v.g2)} % a quarter (${yr(v.g2)} a year). Each ${fy1} average is the mean of its four quarters.</p>
+      </div>
+      <div class="rx-col-half">
         <h3 class="rx-lbl rx-val-h3">Regression and ratio · ${win.from ? `${win.maWindow}-session fit, data from ${rxDate(win.from)}` : `published ${win.maWindow}-session fit`}</h3>
         <div class="rx-scroll"><table class="rx-table rx-wrap-lab">
           <tbody>
@@ -1096,7 +1194,7 @@ function valuationTabHTML(ex, defaults, c0, analysts, open) {
           </tbody></table></div>
         <div class="rx-scroll" style="margin-top:8px"><table class="rx-table">
           <thead><tr><th scope="col">ADR from</th><th scope="col">ADR</th><th scope="col">Regression</th><th scope="col">Ratio</th></tr></thead>
-          <tbody>${regAt('45 DMA', c.adr45)}${regAt(m.estIsDma ? 'Estimate (= 45 DMA)' : 'Estimate', m.est.adr)}</tbody></table></div>
+          <tbody>${regAt(`${w} DMA`, m.dma.adr)}${regAt(`Estimate (${eb.custom && !eb.blank ? 'custom' : eb.label})`, m.est.adr)}</tbody></table></div>
         <p class="rx-foot rx-val-p">Bear / Base / Bull, ₹ per share, not discounted.</p>
       </div>
     </div></div>
@@ -1185,6 +1283,11 @@ async function buildValuation(ex) {
     });
     el.addEventListener('click', e => {
       if (!(e.target.closest && el._valCtx)) return;
+      const qs = e.target.closest('[data-val-qs] button[data-value]');
+      if (qs) {
+        if (qs.getAttribute('aria-pressed') !== 'true' && valuationQuickSelect(el._valCtx, qs.closest('[data-val-qs]').dataset.valQs, qs.dataset.value)) el._valCtx.onChange();
+        return;
+      }
       if (e.target.closest('[data-val-edit]')) openValuationDrawer(el._valCtx);
       else if (e.target.closest('[data-val-discard]') && valuationDiscardLocal()) el._valCtx.onChange();
     });
