@@ -432,6 +432,21 @@ function rxDate(iso) {
   return `${+m[3]} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m[2] - 1]} ${m[1]}`;
 }
 
+// A copy of `series` with each of `keys` rebased to its first point = 100 (null
+// throughout when that first value is not a positive number); other fields kept
+function indexTo100(series, keys) {
+  const base = {};
+  keys.forEach(k => {
+    const b = series.length ? series[0][k] : null;
+    base[k] = typeof b === 'number' && isFinite(b) && b > 0 ? b : null;
+  });
+  return series.map(p => {
+    const o = { ...p };
+    keys.forEach(k => { o[k] = base[k] != null && typeof p[k] === 'number' && isFinite(p[k]) ? p[k] / base[k] * 100 : null; });
+    return o;
+  });
+}
+
 // Chart.js config in the redesigned style: Plex type, hairline grid, dark
 // tooltip, no canvas legend (panels carry an HTML legend instead).
 function rxChartConfig(config) {
