@@ -11,10 +11,12 @@ import datetime as dt
 import math
 import unittest
 
+import trading_calendar as tc
+
 from helpers import NODE, js_eval
 from test_dashboard_models import js_eval_async
 
-EXPIRY_JS = ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry", "computeWeekExpiryDates",
+EXPIRY_JS = ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry", "EQUITY_HOLIDAYS", "isExchangeHoliday", "expiryCanTrade", "computeWeekExpiryDates",
              "EXPIRY_DATES_CACHE", "expiryDateSet", "PRE_EXPIRY_DATES_CACHE", "preExpiryDateSet"]
 VIX_JS = EXPIRY_JS + ["VIX_FIT_FROM", "VIX_LEVELS", "VIX_MA", "cpWeekStart", "vixByDate", "vixFitSample", "vixOLS",
                       "vixFit", "vixBase", "vixMean", "vixSensitivityRows", "vixWeeklyRows"]
@@ -57,22 +59,30 @@ def synthetic_rows(count=200, beta=0.7):
 def nse_expiry_days(dates):
     """NSE's expiry and pre-expiry sessions among `dates` (weekdays), as
     preExpiryDateSet defines them: Thursday expiry to 31 Aug 2025, Tuesday from
-    1 Sep; a holiday moves the expiry to the week's previous session, and the
-    pre-expiry session is the scheduled weekday before, if it traded before the expiry."""
+    1 Sep; a holiday moves the expiry to the week's previous session (a listed
+    holiday, trading_calendar.HOLIDAYS, even after the data: Tue 31 Mar 2026 →
+    Mon 30 Mar), and the pre-expiry session is the scheduled weekday before, if
+    it traded before the expiry."""
     have, last = set(dates), max(dates)
+    hol = tc.HOLIDAYS["nse"]
+
+    def trades(x):
+        s = x.isoformat()
+        return s in have or (s > last and x.weekday() < 5 and s not in hol)
+
     exp, pre = set(), set()
     mondays = sorted({(dt.date.fromisoformat(d) - dt.timedelta(days=dt.date.fromisoformat(d).weekday())) for d in dates})
     for mon in mondays:
         wd = 3 if mon.isoformat() < "2025-09-01" else 1
         target = mon + dt.timedelta(days=wd)
         p = target - dt.timedelta(days=1)
-        if target.isoformat() > last:   # this week's expiry is still ahead of the data
+        e = target
+        while e >= mon and not trades(e):
+            e -= dt.timedelta(days=1)
+        if e.isoformat() > last:   # this week's expiry is still ahead of the data
             if p.isoformat() in have:
                 pre.add(p.isoformat())
             continue
-        e = target
-        while e >= mon and e.isoformat() not in have:
-            e -= dt.timedelta(days=1)
         if e >= mon:
             exp.add(e.isoformat())
         if p.isoformat() in have and p < e:
