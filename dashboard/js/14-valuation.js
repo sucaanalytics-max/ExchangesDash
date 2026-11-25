@@ -91,7 +91,7 @@ function safeHttpUrl(u) {
 //   ADR model: the current quarter's ADR to date grown QoQ to Q4 of the next FY,
 //     that FY's four-quarter average × sessions + other income → × PAT margin ÷
 //     shares → EPS × P/E → next-FY-end target, ÷ (1 + 18 %) to this FY's end and
-//     ÷ (1 + 9 %) to today.
+//     ÷ (1 + 6.75 %) to today (the defaults; both editable).
 // The two triangulations differ only in the ADR fed to Regression and Ratio: the
 // current 45-session ADR, or the ADR estimate typed in the inputs drawer
 // (blank = the 45-session ADR). The ADR model row is the same in both. Every ADR
@@ -895,8 +895,10 @@ async function valuationExchange(ex) {
 
 // ── Shared pieces of the two tabs ───────────────────────────────────────────
 const valuationFYShort = fy => `FY${String(fy).slice(-2)}`;
-// A weight or other whole-number percentage, with a decimal only when it has one
-const valuationPct = x => `${fmtNum(x, Number.isInteger(x) ? 0 : 1)} %`;
+// A weight or discount rate as a percentage, with only the decimals it has, up to 2
+// (18 → "18 %", 6.5 → "6.5 %", 6.75 → "6.75 %")
+const valuationPctDp = x => [0, 1, 2].find(d => Math.abs(x * 10 ** d - Math.round(x * 10 ** d)) < 1e-9) ?? 2;
+const valuationPct = x => `${fmtNum(x, valuationPctDp(x))} %`;
 
 // Warning about the defaults: fixed inputs for another year
 function valuationDefaultsNotes(defaults, c) {
@@ -1003,9 +1005,9 @@ function valuationExcelCells(a, v, cmp) {
     pe: each(i => `${fmtNum(a.pe[i], 0)}×`),
     fwd: each(i => n0(a.fwd[i])),
     up: each(i => a.fwd[i] != null && cmp ? rxSignedPct(a.fwd[i] / cmp - 1, 0) : '—'),
-    d1: each(() => `÷ ${fmtNum(1 + v.d1 / 100, Number.isInteger(v.d1) ? 2 : 3)}`),
+    d1: each(() => `÷ ${fmtNum(1 + v.d1 / 100, valuationPctDp(v.d1) + 2)}`),
     mid: each(i => n0(a.mid[i])),
-    d2: each(() => `÷ ${fmtNum(1 + v.d2 / 100, Number.isInteger(v.d2) ? 2 : 3)}`),
+    d2: each(() => `÷ ${fmtNum(1 + v.d2 / 100, valuationPctDp(v.d2) + 2)}`),
     now: each(i => n0(a.now[i])),
   };
 }
