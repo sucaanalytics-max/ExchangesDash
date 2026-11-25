@@ -3,19 +3,23 @@
 contractsAdrSeries pairs each NSE / BSE session's F&O contracts (crore, from
 contractsDailyRows in 23-contracts-view.js) with its revenue at today's rates
 (total, or F&O only), keeps the sessions that have both, and takes trailing
-N-session means. Sessions before `from` (the Valuation Inputs' "Regression data
-from") are the MAs' lead-in only. Revenue per contract is the revenue MA ÷ the
-contracts MA. indexTo100 rebases each line to its first point; contractsAdrPeriod
-words the window and says why a series is empty."""
+N-session means. Sessions before `from` (the chart's own start, CADR_START) are
+the MAs' lead-in only, and `anchor` starts every window on the same session.
+Revenue per contract is the revenue MA ÷ the contracts MA. indexTo100 rebases
+each line to its first point; contractsAdrPeriod words the window and says why a
+series is empty."""
 
+import re
 import unittest
+from pathlib import Path
 from datetime import date, timedelta
 
 from helpers import NODE, js_eval
 
 CADR_JS = ["CONTRACTS_PER_CRORE", "contractsNum", "contractsDailyRows", "contractsAdrSeries", "indexTo100",
-           "rxDate", "contractsAdrPeriod"]
+           "rxDate", "contractsAdrPeriod", "CADR_START"]
 CR = 1e7
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def weekdays(start, n):
@@ -77,6 +81,21 @@ class ContractsAdrSeriesTest(unittest.TestCase):
         self.assertEqual(out[0]["date"], rows[4]["date"])
         self.assertEqual(len(out), 8)
         self.assertAlmostEqual(out[0]["contracts"], mean([10, 11, 12, 13, 14]))
+
+    def test_anchor_starts_every_window_on_the_same_session(self):
+        rows = nse_rows(30)
+        outs = {w: series(rows, "nse", **{"from": None, "window": w, "revenue": "total", "anchor": 8}) for w in (2, 5, 8)}
+        for w, out in outs.items():
+            self.assertEqual(out[0]["date"], rows[7]["date"], w)
+            self.assertEqual(len(out), 23, w)
+        # Each window still averages its own sessions
+        self.assertAlmostEqual(outs[2][0]["contracts"], mean([16, 17]))
+        self.assertAlmostEqual(outs[8][0]["contracts"], mean(range(10, 18)))
+
+    def test_from_after_the_anchor_wins(self):
+        rows = nse_rows(30)
+        out = series(rows, "nse", **{"from": rows[12]["date"], "window": 3, "revenue": "total", "anchor": 8})
+        self.assertEqual(out[0]["date"], rows[12]["date"])
 
     def test_unsorted_rows_are_ordered_by_date(self):
         rows = nse_rows(12)
@@ -149,29 +168,51 @@ class IndexTo100Test(unittest.TestCase):
 
 
 @unittest.skipUnless(NODE, "node not installed")
+class StartTest(unittest.TestCase):
+    def test_nse_has_no_start(self):
+        self.assertIsNone(js_eval(CADR_JS, "CADR_START.nse.from"))
+
+    def test_bse_starts_where_its_share_regression_does(self):
+        src = (ROOT / "scripts" / "bse_share_analysis.py").read_text()
+        reg_start = re.search(r'^REGRESSION_START\s*=\s*"([0-9-]+)"', src, re.M).group(1)
+        self.assertEqual(js_eval(CADR_JS, "CADR_START.bse.from"), reg_start)
+
+    def test_neither_reads_the_valuation_inputs(self):
+        src = (ROOT / "dashboard" / "js" / "13-regression.js").read_text()
+        body = src[src.index("function buildContractsAdr"):]
+        for name in ("loadValuationDefaults", "readValuationOverrides", "valuationInputsFor"):
+            self.assertNotIn(name, body)
+
+
+@unittest.skipUnless(NODE, "node not installed")
 class PeriodTest(unittest.TestCase):
-    def run_period(self, rows, ex, frm, window=5):
+    def run_period(self, rows, ex, frm, window=5, note=""):
         return js_eval(CADR_JS, """(() => {
           const s = contractsAdrSeries(DATA.rows, DATA.ex, { from: DATA.from, window: DATA.w, revenue: 'total' });
-          return { s, p: contractsAdrPeriod(DATA.rows, DATA.from, s, DATA.w) };
-        })()""", {"rows": rows, "ex": ex, "from": frm, "w": window})
+          return { s, p: contractsAdrPeriod(DATA.rows, { from: DATA.from, note: DATA.note }, s, DATA.w) };
+        })()""", {"rows": rows, "ex": ex, "from": frm, "w": window, "note": note})
 
     def test_null_from_gives_full_history(self):
         rows = nse_rows(30, start="2023-04-03")
         out = self.run_period(rows, "nse", None)
         self.assertEqual(out["s"][0]["date"], rows[4]["date"])
         self.assertEqual(out["s"][-1]["date"], rows[-1]["date"])
-        self.assertEqual(out["p"]["text"], "all trading history since 3 Apr 2023 (no Regression data from set)")
+        self.assertEqual(out["p"]["text"], "all trading history since 3 Apr 2023")
         self.assertEqual(out["p"]["message"], "")
 
     def test_from_clips_the_start(self):
         rows = bse_rows(40)
         frm = "2025-01-01"
-        out = self.run_period(rows, "bse", frm)
+        out = self.run_period(rows, "bse", frm, note="why")
         self.assertEqual(out["s"][0]["date"], "2025-01-01")
         self.assertTrue(all(p["date"] >= frm for p in out["s"]))
-        self.assertEqual(out["p"]["text"], "from 1 Jan 2025 (Regression data from, Valuation Inputs)")
+        self.assertEqual(out["p"]["text"], "from 1 Jan 2025 (why)")
         self.assertEqual(out["p"]["message"], "")
+
+    def test_the_real_starts_word_the_window(self):
+        rows = bse_rows(400, start="2024-01-01")
+        out = js_eval(CADR_JS, "contractsAdrPeriod(DATA, CADR_START.bse, [{}], 45).text", rows)
+        self.assertTrue(out.startswith("from 1 Mar 2025 (the share-price regression's start"), out)
 
     def test_from_beyond_the_data_gives_empty_series_and_message(self):
         rows = bse_rows(20)
@@ -179,6 +220,7 @@ class PeriodTest(unittest.TestCase):
         self.assertEqual(out["s"], [])
         self.assertIn("1 Jan 2027", out["p"]["message"])
         self.assertIn("ends on", out["p"]["message"])
+        self.assertNotIn("Valuation Inputs", out["p"]["message"])
 
     def test_too_few_sessions_message(self):
         out = self.run_period(bse_rows(3), "bse", None, window=45)
