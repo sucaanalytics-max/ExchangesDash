@@ -1,16 +1,16 @@
 {
-  "updated_at": "2026-11-25T03:40:39Z",
+  "updated_at": "2026-11-25T03:45:36Z",
   "market_status": {
     "marketState": [
       {
         "market": "Capital Market",
         "marketStatus": "Open",
-        "tradeDate": "25-Nov-2026 09:09",
+        "tradeDate": "25-Nov-2026 09:15",
         "index": "NIFTY 50",
-        "last": 25658.35,
-        "variation": 308.6999999999971,
-        "percentChange": 1.22,
-        "marketStatusMessage": "Pre-Open Session Closed \u2013 Normal Market will begin shortly"
+        "last": 25673.45,
+        "variation": 323.7999999999993,
+        "percentChange": 1.28,
+        "marketStatusMessage": "Normal Market is Open"
       },
       {
         "market": "Currency",
@@ -44,24 +44,24 @@
       },
       {
         "index": "NIFTY50 USD",
-        "last": 9600.3,
-        "change": 146.23999999999978,
-        "percentChange": 1.54,
-        "timestamp": "25-Nov-2026 09:09"
+        "last": 9586.1,
+        "change": 132.04000000000087,
+        "percentChange": 1.39,
+        "timestamp": "25-Nov-2026 09:15"
       },
       {
         "market": "currencyfuture",
         "marketStatus": "Open",
         "tradeDate": "25-Nov-2026",
         "index": "",
-        "last": "92.7350",
+        "last": "92.6850",
         "variation": "",
         "percentChange": "",
         "marketStatusMessage": "Market is Open",
         "expiryDate": "26-Nov-2026",
         "underlying": "USDINR",
-        "updated_time": "25-Nov-2026 09:09",
-        "tradeDateFormatted": "25-Nov-2026 09:09",
+        "updated_time": "25-Nov-2026 09:15",
+        "tradeDateFormatted": "25-Nov-2026 09:15",
         "slickclass": "slick-item"
       }
     ],
@@ -88,24 +88,24 @@
       "status": "CLOSE"
     },
     "giftnifty": {
-      "CONTRACTSTRADED": 4088,
-      "DAYCHANGE": -27,
+      "CONTRACTSTRADED": 4680,
+      "DAYCHANGE": -20.5,
       "EXPIRYDATE": "29-Dec-2026",
       "INSTRUMENTTYPE": "FUTIDX",
-      "LASTPRICE": 25780.5,
+      "LASTPRICE": 25787,
       "OPTIONTYPE": "-",
-      "PERCHANGE": -0.1,
+      "PERCHANGE": -0.08,
       "STRIKEPRICE": 0,
       "SYMBOL": "NIFTY",
-      "TIMESTMP": "25-Nov-2026 09:08",
+      "TIMESTMP": "25-Nov-2026 09:13",
       "id": "1/NIFTYFUTIDX29-Dec-2026--"
     },
     "niftyusd": {
       "index": "NIFTY50 USD",
-      "last": 9600.3,
-      "change": 146.23999999999978,
-      "percentChange": 1.54,
-      "timestamp": "25-Nov-2026 09:09"
+      "last": 9586.1,
+      "change": 132.04000000000087,
+      "percentChange": 1.39,
+      "timestamp": "25-Nov-2026 09:15"
     }
   },
   "revenue": {
@@ -458,17 +458,17 @@
   "stock_price": {
     "last_price": 2209.2,
     "previous_close": 2223.8,
-    "open": 2249.0,
-    "day_high": 2252.5,
-    "day_low": 2135.0,
+    "open": null,
+    "day_high": null,
+    "day_low": null,
     "pct_change": -0.66
   },
   "india_vix": {
-    "last": 17.7,
+    "last": 17.57,
     "previous_close": 17.7,
-    "change": 0.0,
-    "pct_change": 2.17,
-    "as_of": "2026-11-25T03:40:39Z",
+    "change": -0.13,
+    "pct_change": -0.74,
+    "as_of": "2026-11-25T03:45:36Z",
     "source": "nse",
     "trade_date": "2026-11-25"
   }
