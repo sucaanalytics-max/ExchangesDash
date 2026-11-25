@@ -112,6 +112,9 @@ def main():
         print(f"screener: {len(screener)} prices, filling {len(filled)} day(s) yfinance lacks: {filled}")
     for d in filled:
         prices[d] = screener[d]
+    prices, special = sr.drop_special_sessions(prices, "mcx")
+    if special:
+        print(f"Left out special-session closes: {special}")
     if not prices:
         raise SystemExit("ERROR: No price data available — aborting")
 

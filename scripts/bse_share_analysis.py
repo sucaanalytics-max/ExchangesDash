@@ -174,7 +174,9 @@ def main():
     # Revenue: pipeline > seed for overlapping dates; special sessions stay out.
     rev_rows = merge_revenue(seed, pipeline)
 
-    prices = collect_prices(seed)
+    prices, special = sr.drop_special_sessions(collect_prices(seed), "bse")
+    if special:
+        print(f"Left out special-session closes: {special}")
     if not prices:
         raise SystemExit("ERROR: No price data — aborting")
 
