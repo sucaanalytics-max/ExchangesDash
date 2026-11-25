@@ -51,6 +51,74 @@ PRE_FY24_HOLIDAYS = (
 PRE_FY24_MUHURAT = ("2021-11-04", "2022-10-24")    # Samvat 2078, 2079 (held on a holiday)
 
 
+# Weekdays each exchange is shut all day, for counting a quarter's sessions
+# (quarter_sessions). NSE and BSE share the equity calendar; MCX shuts fully on
+# far fewer days, trading its evening session on most equity holidays. A Diwali
+# Laxmi Puja day with only a Muhurat session (2025-10-21) is a holiday here: its
+# Muhurat session is in SPECIAL_SESSIONS and outside every count. 2025 to
+# 2026-11-23 are every weekday the daily files lack (tests/test_trading_calendar.py
+# checks the lists against them); later dates are from the exchanges' lists.
+# Add each year's when the exchanges publish it (December), and move
+# HOLIDAYS_KNOWN_TO; until then a quarter past it estimates its holidays from
+# the same dates a year earlier.
+EQUITY_HOLIDAYS = (
+    "2025-02-26", "2025-03-14", "2025-03-31", "2025-04-10", "2025-04-14", "2025-04-18",
+    "2025-05-01", "2025-08-15", "2025-08-27", "2025-10-02", "2025-10-21", "2025-10-22",
+    "2025-11-05", "2025-12-25",
+    "2026-01-15", "2026-01-26", "2026-03-03", "2026-03-26", "2026-03-31", "2026-04-03",
+    "2026-04-14", "2026-05-01", "2026-05-28", "2026-06-26", "2026-09-14", "2026-10-02",
+    "2026-10-20", "2026-11-10", "2026-11-24", "2026-12-25",
+)
+MCX_HOLIDAYS = (
+    "2025-04-18", "2025-08-15", "2025-10-02", "2025-10-21", "2025-12-25",
+    "2026-01-26", "2026-04-03", "2026-10-02", "2026-12-25",
+)
+HOLIDAYS = {"nse": frozenset(EQUITY_HOLIDAYS), "bse": frozenset(EQUITY_HOLIDAYS),
+            "mcx": frozenset(MCX_HOLIDAYS)}
+HOLIDAYS_FROM, HOLIDAYS_KNOWN_TO = "2025-01-01", "2026-12-31"
+
+
+def quarter_sessions(exchange, quarter, sessions_so_far, last_date):
+    """Expected sessions in `quarter` ('Q3 FY 2027'): the `sessions_so_far` up to
+    `last_date`, plus each weekday after it to the quarter end that is not one of
+    the exchange's HOLIDAYS. Weekdays after HOLIDAYS_KNOWN_TO are discounted by
+    the share of weekdays the exchange was shut over the same span a year
+    earlier. Returns (sessions, basis): 'holiday calendar', or 'holiday calendar;
+    N weekday(s) after HOLIDAYS_KNOWN_TO estimated from a year earlier'.
+    Weekend sessions (a Budget day on a Saturday or Sunday) are not foreseen."""
+    from datetime import date, timedelta
+    from fee_register import quarter_bounds
+    holidays = HOLIDAYS[exchange.lower()]
+    _, end = quarter_bounds(quarter)
+    day, end = date.fromisoformat(last_date) + timedelta(days=1), date.fromisoformat(end)
+    known_to = date.fromisoformat(HOLIDAYS_KNOWN_TO)
+    rest, unknown = 0, 0
+    while day <= end:
+        if day.weekday() < 5:
+            if day <= known_to:
+                rest += day.isoformat() not in holidays
+            else:
+                unknown += 1
+        day += timedelta(days=1)
+    if not unknown:
+        return sessions_so_far + rest, "holiday calendar"
+    # Past the published lists: the share of weekdays shut over the same span a
+    # year earlier (Indian holidays move with the lunar calendar, so per-date
+    # matching would miss most of them)
+    span_start = max(known_to + timedelta(days=1), date.fromisoformat(last_date) + timedelta(days=1))
+    ly_start, ly_end = span_start.replace(year=span_start.year - 1), end.replace(year=end.year - 1)
+    wk = shut = 0
+    d = ly_start
+    while d <= ly_end:
+        if d.weekday() < 5:
+            wk += 1
+            shut += d.isoformat() in holidays
+        d += timedelta(days=1)
+    est = unknown - round(unknown * shut / wk) if wk else unknown
+    return (sessions_so_far + rest + est,
+            f"holiday calendar; {unknown} weekday(s) after {HOLIDAYS_KNOWN_TO} estimated from a year earlier")
+
+
 def equity_days_pre_fy24():
     """ISO dates of the equity trading days from 1 Apr 2021 to 2 Apr 2023, oldest first."""
     from datetime import date, timedelta

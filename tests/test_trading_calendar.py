@@ -68,3 +68,71 @@ class PreFy24Days(unittest.TestCase):
     def test_ends_where_the_revenue_history_begins(self):
         self.assertLess(tc.PRE_FY24_LAST, "2023-04-03")
 
+
+
+class QuarterSessions(unittest.TestCase):
+    """quarter_sessions: a quarter's expected sessions from the holiday calendar,
+    which the Revenue Predictor's pnl_predictor.expected_trading_days uses."""
+
+    def test_q3_fy27(self):
+        # NSE / BSE shut 2 Oct, 20 Oct, 10 Nov, 24 Nov, 25 Dec; MCX trades through
+        # most of them (shut 2 Oct and 25 Dec)
+        self.assertEqual(tc.quarter_sessions("nse", "Q3 FY 2027", 35, "2026-11-23"), (61, "holiday calendar"))
+        self.assertEqual(tc.quarter_sessions("bse", "Q3 FY 2027", 35, "2026-11-23")[0], 61)
+        self.assertEqual(tc.quarter_sessions("mcx", "Q3 FY 2027", 38, "2026-11-24")[0], 64)
+        # on the quarter's last session nothing is left to add
+        self.assertEqual(tc.quarter_sessions("nse", "Q3 FY 2027", 61, "2026-12-31")[0], 61)
+
+    def test_past_the_published_lists_is_estimated(self):
+        n, basis = tc.quarter_sessions("nse", "Q4 FY 2027", 0, "2026-12-31")
+        self.assertIn("estimated from a year earlier", basis)
+        # Jan–Mar 2027 has 64 weekdays; Jan–Mar 2026 shut 5 of its 64 (15 Jan,
+        # 26 Jan, 3 Mar, 26 Mar, 31 Mar)
+        self.assertEqual(n, 59)
+
+
+@unittest.skipUnless((helpers.ROOT / "dashboard" / "data" / "nse_dashboard_data.json").exists(), "no data")
+class HolidayListsMatchTheData(unittest.TestCase):
+    """The holiday lists against the committed daily files: every weekday a file
+    lacks from HOLIDAYS_FROM to 10 days before its last session (BSE holds days
+    back up to 7) is a listed holiday and vice versa, and finished quarters come
+    out at their actual session count less any weekend session."""
+
+    @staticmethod
+    def rows(ex):
+        import json
+        path = helpers.ROOT / "dashboard" / "data" / f"{ex}_dashboard_data.json"
+        return json.loads(path.read_text())["daily_all"]
+
+    def test_closures(self):
+        from datetime import date, timedelta
+        for ex in ("nse", "bse", "mcx"):
+            rows = self.rows(ex)
+            have = {r["date"] for r in rows}
+            to = date.fromisoformat(max(have)) - timedelta(days=10)
+            day, shut = date.fromisoformat(tc.HOLIDAYS_FROM), set()
+            while day <= to:
+                if day.weekday() < 5 and day.isoformat() not in have:
+                    shut.add(day.isoformat())
+                day += timedelta(days=1)
+            listed = {d for d in tc.HOLIDAYS[ex] if d <= to.isoformat()}
+            with self.subTest(ex=ex):
+                self.assertEqual(sorted(shut - listed), [], "closed but not listed")
+                self.assertEqual(sorted(listed - shut), [], "listed but traded")
+
+    def test_finished_quarters(self):
+        from datetime import date, timedelta
+        from fee_register import quarter_bounds
+        for ex in ("nse", "bse", "mcx"):
+            rows = self.rows(ex)
+            last = max(r["date"] for r in rows)
+            for q in sorted({r["fy_quarter"] for r in rows if r["date"] >= tc.HOLIDAYS_FROM}):
+                start, end = quarter_bounds(q)
+                if start < tc.HOLIDAYS_FROM or end >= last:
+                    continue
+                days = [r["date"] for r in rows if r["fy_quarter"] == q]
+                weekend = sum(date.fromisoformat(d).weekday() >= 5 for d in days)
+                before = (date.fromisoformat(start) - timedelta(days=1)).isoformat()
+                with self.subTest(ex=ex, q=q):
+                    self.assertEqual(tc.quarter_sessions(ex, q, 0, before)[0] + weekend, len(days))
+                    self.assertEqual(tc.quarter_sessions(ex, q, 20, days[19])[0] + weekend, len(days))
