@@ -8,7 +8,7 @@ The pipelines (GitHub Actions) commit their output to this repository several ti
 
 | Data | Use | Updated | Don't use |
 |---|---|---|---|
-| NSE, BSE and MCX daily turnover, contracts and revenue; monthly / quarterly / weekly; NSE P&L | `analyst` loader (`nse_daily`, …) | after each daily run (00:30 / 12:30 / 15:30 UTC); MCX's previous session lands at 07:15 IST | Supabase `nse_daily`, `bse_daily`, `nse_aggregates` and `bse_aggregates` stopped on 27 Oct 2026; your login can't read them |
+| NSE, BSE and MCX daily turnover, contracts and revenue; monthly / quarterly / weekly; NSE P&L | `analyst` loader (`nse_daily`, …) | after each daily run (00:30 / 12:30 / 15:30 UTC); MCX's previous session lands at 07:15 IST | |
 | NSE vs MCX commodity derivatives | loader (`nse_commodity_*`) | each MCX run | |
 | MTF book (NSE, BSE, combined), per stock, brokers' books | loader (`mtf_*`) | each run, plus 00:45 IST | Supabase `mtf.*`: a Sep 2026 snapshot, not granted |
 | Participant-wise data (NSE, BSE, NSDL, Market Pulse) | loader (`participants_*`) | each run | |
@@ -16,6 +16,7 @@ The pipelines (GitHub Actions) commit their output to this repository several ti
 | 5-minute bars (21 capital-market stocks, Nifty, Bank Nifty, VIX) | loader (`intraday_5m`) | 17:17 IST, Mon–Fri | |
 | NSE F&O history for BSE and MCX stock options | loader (`options:BSE`, `options:MCX`) | 19:00 IST, Mon–Fri | lands on `main` with PR #134 |
 | **Brokers** (the Brokers tab: calibration, daily revenue, PAT and valuation lines, summary cells, share prices) | Supabase NSE-BSE project, `sb_*` tables | mirrored at 20:32 and 05:02 IST, Mon–Fri | |
+| NSE and BSE daily rows and aggregates in SQL (same rows as the loader's `nse_daily` / `bse_daily`, at today's rates; Muhurat and DR-test days included, the loader lists them under `special_sessions`) | Supabase NSE-BSE, `nse_daily`, `bse_daily`, `nse_aggregates`, `bse_aggregates` | written by each daily run since 25 Nov 2026 (the run reads them back to build the JSON, so the two match row for row) | if they ever disagree, the loader wins |
 | Broker research library, consensus | Supabase NSE-BSE, `rl_*`, `broker_*`, `argus.*` | as their jobs run | |
 | MCX raw: bhavcopy per commodity, revenue as reported, margins, OI participants, iCOMDEX | Supabase OctoTusk + MCX, `mcx_*` | 05:30–07:00 IST each morning | |
 | `codex_*` tables | an external job, **not reconciled** with this repo | | don't use as a source of truth |
@@ -111,7 +112,7 @@ The login is `vatsal_ro`, on two projects. Jay gives you the passwords and the s
 
 | Project | Ref | Holds |
 |---|---|---|
-| NSE-BSE | `vuswwmczfrlzjoxfvkzu` | `sb_*` (Brokers), `rl_*` / `broker_*` / `argus.*` (research library), `codex_*`, `nse_pnl`, valuation inputs |
+| NSE-BSE | `vuswwmczfrlzjoxfvkzu` | `nse_daily`, `bse_daily` (+ `_aggregates`), `sb_*` (Brokers), `rl_*` / `broker_*` / `argus.*` (research library), `codex_*`, `nse_pnl`, valuation inputs |
 | OctoTusk + MCX | `avqwpebveqetwwzkmtux` | `mcx_commodity_daily`, `mcx_daily_revenue`, `mcx_margin_daily`, `mcx_oi_participants`, `mcx_icomdex_daily`, prices, the MCX app's tables |
 
 ```python
@@ -128,12 +129,11 @@ pd.read_sql("""
 - **Read-only.** Every transaction is read-only, queries stop at 120 s, and you get at most 5 connections. For big pulls, page by date.
 - **Brokers.** The brokers team's tables keep **every run**: `sb_runs` lists them, and `sb_calibration`, `sb_daily_revenue`, `sb_summary_cells`, `sb_pat_lines` and `sb_valuation_lines` are keyed by `run_id`. **Filter on one `run_id`**: without it, rows from every run are stacked. Take each broker's latest successful `live` run (`status`, `finished_at`; brokers `ANGELONE`, `GROWW`, `MOSL`), unless you want the history of estimates. Rules for the brokers data: `docs/BROKERS_INTEGRATION.md`.
 - **Not available:**
-  - the stale tables above;
-  - `mtf.*`;
+  - `mtf.*` (a Sep 2026 snapshot that nothing keeps current; use the loader's `mtf_*`);
   - `private.*`, `migration_backup.*`;
   - on OctoTusk: `push_subscriptions`, `pin_attempts`, `user_roles`.
   
-  They come back once the Supabase writes are switched on and backfilled. Grants are recorded in `analyst_readonly_role.sql`.
+  Grants are recorded in `analyst_readonly_role.sql`.
 
 ## 5. Backtest checklist
 

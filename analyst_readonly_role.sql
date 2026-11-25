@@ -9,6 +9,10 @@
 --     2026-11-25 analyst_readonly_role: idle-in-transaction timeout; stale NSE/BSE
 --                tables revoked (below).
 --     2026-11-25 analyst_readonly_role_drop_mtf: mtf schema revoked.
+--     2026-11-25 analyst_readonly_role_regrant_nse_bse: nse_daily, bse_daily,
+--                nse_aggregates, bse_aggregates granted again after the
+--                Supabase cutover (supabase_cutover.sql run, rows 28 Oct-23 Nov
+--                backfilled from the repo JSON, ENABLE_SUPABASE_WRITES on).
 --   OctoTusk + MCX (avqwpebveqetwwzkmtux)
 --     2026-11-25 analyst_readonly_role: role created; password still to be set.
 --
@@ -42,13 +46,12 @@ alter role vatsal_ro set idle_in_transaction_session_timeout = '300s';
 --   mtf: a one-off Sep 2026 load (mtf.trading's files, a source the broker
 --        register does not accept) and exchange_daily, last written 23 Sep;
 --        the repo's mtf_*.json are current.
---   nse_daily, bse_daily, nse_aggregates, bse_aggregates: last written
---        27 Oct 2026 (ENABLE_SUPABASE_WRITES is off); the repo's JSON is current.
---   Re-grant both once the Supabase cutover backfills them.
+--   (nse_daily, bse_daily, nse_aggregates and bse_aggregates were revoked
+--   while stale and granted again on 25 Nov 2026, once they matched the repo.)
+--   mtf stays revoked: ENABLE_MTF_WRITES is off, so nothing keeps it current.
 grant usage on schema public, argus to vatsal_ro;
 grant select on all tables in schema public, argus to vatsal_ro;
 alter default privileges for role postgres in schema public, argus grant select on tables to vatsal_ro;
-revoke select on public.nse_daily, public.bse_daily, public.nse_aggregates, public.bse_aggregates from vatsal_ro;
 revoke select on all tables in schema mtf from vatsal_ro;
 alter default privileges for role postgres in schema mtf revoke select on tables from vatsal_ro;
 revoke usage on schema mtf from vatsal_ro;
