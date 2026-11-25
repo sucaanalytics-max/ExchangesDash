@@ -116,6 +116,9 @@ def main():
     prices, special = sr.drop_special_sessions(prices, "nse")
     if special:
         print(f"Left out special-session closes: {special}")
+    prices, unfinished = sr.drop_unfinished_session(prices)
+    if unfinished:
+        print(f"Left out today's unfinished bar (before 16:00 IST): {unfinished}")
     if not prices:
         raise SystemExit("ERROR: No price data from Yahoo or screener")
 
