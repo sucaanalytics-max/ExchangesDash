@@ -864,9 +864,9 @@ async function buildMcxCompetition() {
   }));
   q('riskreset').addEventListener('click', () => { sub = { ...subDefaults }; ccSubsSave(sub, subDefaults); showSubs(); drawRisk(); });
   showSubs();
-  // MCX's valuation inputs (sessions, PAT margin, base P/E, with this browser's edits) and the
+  // MCX's valuation inputs (sessions, PAT margin, base P/E, with the shared edits) and the
   // shared substitution defaults; the year's figures appear once they load
-  loadValuationDefaults().then(defaults => {
+  Promise.all([loadValuationDefaults(), loadSharedValuationInputs()]).then(([defaults]) => {
     if (!defaults || defaults.error || seq !== ccBuildSeq) return;
     for (const k of ['ord', 'exp']) if (defaults.comp && defaults.comp[k] != null) subDefaults[k] = defaults.comp[k];
     sub = ccSubs(subDefaults);
