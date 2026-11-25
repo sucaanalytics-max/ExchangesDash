@@ -17,7 +17,7 @@ from datetime import date, timedelta
 from helpers import NODE, js_eval
 
 CADR_JS = ["CONTRACTS_PER_CRORE", "contractsNum", "contractsDailyRows", "contractsAdrSeries", "indexTo100",
-           "rxDate", "contractsAdrPeriod", "CADR_START"]
+           "rxDate", "contractsAdrPeriod", "CADR_START", "CADR_EVENTS", "contractsAdrPerLabel"]
 CR = 1e7
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -185,6 +185,35 @@ class StartTest(unittest.TestCase):
 
 
 @unittest.skipUnless(NODE, "node not installed")
+class ContractSizeTest(unittest.TestCase):
+    def test_per_contract_label_names_what_is_divided(self):
+        self.assertEqual(js_eval(CADR_JS, "contractsAdrPerLabel('total')"), "Total revenue per F&O contract")
+        self.assertEqual(js_eval(CADR_JS, "contractsAdrPerLabel('fo')"), "F&O revenue per contract")
+
+    def test_events_are_nse_only_and_dated(self):
+        ev = js_eval(CADR_JS, "CADR_EVENTS")
+        self.assertEqual([e["date"] for e in ev["nse"]], ["2024-11-20", "2025-12-31"])
+        self.assertEqual(ev["bse"], [])
+        for e in ev["nse"]:
+            self.assertTrue(e["short"] and e["text"])
+
+    def test_nse_notional_per_index_option_steps_at_the_events(self):
+        """The marked dates are where NSE's own file shows the contract size moving."""
+        import json
+        rows = json.loads((ROOT / "dashboard" / "data" / "nse_dashboard_data.json").read_text())["daily_all"]
+        def size(a, b):
+            r = [x["io_notional"] / x["io_contracts"] for x in rows
+                 if a <= x["date"] <= b and x.get("io_contracts") and x.get("io_notional")]
+            return sum(r) / len(r) if r else None
+        before, after = size("2024-10-01", "2024-11-19"), size("2025-01-02", "2025-02-28")
+        if before and after:
+            self.assertGreater(after / before, 1.8)   # about doubled once the old monthly contracts expired
+        before, after = size("2025-12-01", "2025-12-30"), size("2025-12-31", "2026-01-31")
+        if before and after:
+            self.assertLess(after / before, 0.92)     # lot sizes cut
+
+
+@unittest.skipUnless(NODE, "node not installed")
 class PeriodTest(unittest.TestCase):
     def run_period(self, rows, ex, frm, window=5, note=""):
         return js_eval(CADR_JS, """(() => {
@@ -197,8 +226,14 @@ class PeriodTest(unittest.TestCase):
         out = self.run_period(rows, "nse", None)
         self.assertEqual(out["s"][0]["date"], rows[4]["date"])
         self.assertEqual(out["s"][-1]["date"], rows[-1]["date"])
-        self.assertEqual(out["p"]["text"], "all trading history since 3 Apr 2023")
+        # The line starts after the averages' lead-in, and says so
+        self.assertEqual(out["p"]["text"], "all trading history; the averages start on 7 Apr 2023, the index base")
         self.assertEqual(out["p"]["message"], "")
+
+    def test_series_from_the_first_day_says_since(self):
+        rows = nse_rows(3, start="2023-04-03")
+        out = js_eval(CADR_JS, "contractsAdrPeriod(DATA, CADR_START.nse, [{ date: '2023-04-03' }], 1).text", rows)
+        self.assertEqual(out, "all trading history since 3 Apr 2023")
 
     def test_from_clips_the_start(self):
         rows = bse_rows(40)

@@ -738,6 +738,28 @@ const CADR_START = {
   bse: { from: '2025-03-01', note: "the share-price regression's start, after BSE's 2023 derivatives restart" },
 };
 
+// Contract-size changes, drawn as dashed lines: the same notional trades as
+// fewer or more contracts, so revenue per contract steps with them. NSE's
+// notional per index option (io_notional ÷ io_contracts) was ₹6.6 lakh in
+// Oct 2024, ₹13.7 lakh in Jan–Feb 2025 and ₹19.6 lakh in Dec 2025, then ₹17.0
+// lakh from 31 Dec 2025. BSE's window starts after its own step and its
+// contracts have stayed at ₹15–17 lakh, so it has none.
+const CADR_EVENTS = {
+  nse: [
+    { date: '2024-11-20', short: '20 Nov 2024: larger contracts (SEBI)',
+      text: "SEBI's index-derivative rules from 20 Nov 2024: a ₹15 lakh minimum contract value (from ₹5–10 lakh) and one weekly index expiry per exchange. New contracts were larger at once; the monthly contracts already listed kept their lot sizes until the 26 Dec 2024 expiry" },
+    { date: '2025-12-31', short: '31 Dec 2025: lot sizes cut',
+      text: 'index lot sizes cut after the 30 Dec 2025 expiry (notional per index option ₹19.6 lakh → ₹17.0 lakh)' },
+  ],
+  bse: [],
+};
+
+// The revenue-per-contract line's name: in Total, cash revenue is divided by
+// F&O contracts too, so the label says so
+function contractsAdrPerLabel(revenue) {
+  return revenue === 'fo' ? 'F&O revenue per contract' : 'Total revenue per F&O contract';
+}
+
 // Per NSE / BSE session: F&O contracts in crore (contractsDailyRows, the
 // contracts view's definition) and revenue at today's rates, `revenue` 'total'
 // (total_rev) or 'fo' (opt_rev + fut_rev). Sessions missing either are left
@@ -768,14 +790,17 @@ function contractsAdrSeries(rows, exchange, { from = null, window = 45, revenue 
 }
 
 // The chart's window in words (`start`: a CADR_START entry), and why `series`
-// is empty ('' when it is not)
+// is empty ('' when it is not). With no start date, the line begins where the
+// longest average can first be taken, after daily_all's first date
 function contractsAdrPeriod(rows, start, series, window) {
   const { from = null, note = '' } = start || {};
   const dates = (rows || []).map(r => r && r.date).filter(Boolean).sort();
   const first = dates[0], last = dates[dates.length - 1];
   const text = from
     ? `from ${rxDate(from)}${note ? ` (${note})` : ''}`
-    : `all trading history since ${rxDate(first)}`;
+    : series.length && series[0].date !== first
+      ? `all trading history; the averages start on ${rxDate(series[0].date)}, the index base`
+      : `all trading history since ${rxDate(first)}`;
   let message = '';
   if (!series.length) {
     message = from && last && from > last
@@ -819,9 +844,10 @@ function buildContractsAdr(ex) {
     how: rxHow('How this chart works', `<ul>
       <li><b>Contracts</b>: F&amp;O contracts traded per session, in crore, as on the Revenue Summary's Contracts view. NSE: index and stock options plus index and stock futures. BSE publishes one F&amp;O contract count, its few futures included, so all of BSE's contracts are treated as options.</li>
       <li><b>ADR</b>: revenue per session at today's rates, the revenue the regression above uses: total (cash included) or, with Revenue: F&amp;O, options plus futures only.</li>
-      <li><b>Revenue per contract</b> (thin line): the ADR average ÷ the contracts average, ₹ per contract.</li>
+      <li><b>Revenue per contract</b> (thin line): the ADR average ÷ the contracts average, ₹ per contract. In Total it is total revenue, cash included, per F&amp;O contract; Revenue: F&amp;O gives F&amp;O revenue per contract.</li>
       <li>Each point is the mean of the last 10, 20 or 45 sessions that have both revenue and contracts; a day without contract figures is left out, not counted as 0. Sessions before the window's start are the averages' lead-in, so the line starts on the start date.</li>
       <li>Indexed to 100, each line is divided by its own first value. ADR index ÷ contracts index × 100 is exactly the revenue-per-contract index, so the gap between the ADR and contracts lines is the change in revenue per contract. Every day is priced at today's fees, so fee changes are not behind it: options are charged on premium, so revenue per contract moves with premium per contract (volatility, the VIX, and the mix of index, stock and longer-dated options) against plain volume, and in Total with cash, which has no contracts.</li>
+      <li><b>Contract size</b> moves it too: the same notional trades as fewer, larger contracts. On NSE (dashed lines) SEBI's ₹15 lakh minimum from 20 Nov 2024 about doubled the notional per index option once the older monthly contracts expired on 26 Dec 2024 (₹6.6 lakh in Oct 2024, ₹13.7 lakh in Jan–Feb 2025), and lot sizes were cut after the 30 Dec 2025 expiry (₹19.6 lakh → ₹17.0 lakh). So most of NSE's fall in contracts and rise in revenue per contract since 2023 is contract size, not volume or premium. BSE's window starts after its own step, and its contracts have stayed at ₹15–17 lakh.</li>
       <li>Window: NSE, all trading history in the daily data; BSE, from 1 Mar 2025, where the share-price regression above starts. BSE's derivatives restarted in 2023 from a few contracts a day, so an index based in 2023 would read in the thousands. Every MA window starts on the same day, where the 45-session average can first be taken, so the 10, 20 and 45 D indices share one base. The Valuation Inputs' “Regression data from” date does not move this chart.</li>
     </ul>`),
   }));
@@ -841,6 +867,8 @@ function buildContractsAdr(ex) {
 
     const idx = indexTo100(ser, ['contracts', 'adr', 'perContract']);
     const revName = CADR_VIEW.revenue === 'fo' ? 'F&O ADR' : 'ADR';
+    const perName = contractsAdrPerLabel(CADR_VIEW.revenue);
+    const events = (CADR_EVENTS[ex] || []).map(e => ({ ...e, i: ser.findIndex(r => r.date >= e.date) })).filter(e => e.i > 0);
     const revHtml = escHtml(revName);
     const last = ser[ser.length - 1], lastIdx = idx[idx.length - 1];
     const ctrTxt = v => `${fmtNum(v, 2)} Cr`;
@@ -853,7 +881,7 @@ function buildContractsAdr(ex) {
       line(revName, 'adr', RX.rev, 1.75, axes ? 'y1' : 'y'),
     ];
     // Two axes: revenue per contract has no axis of its own; the tooltip gives it
-    if (!axes) datasets.push(line('Revenue per contract', 'perContract', RX.muted, 1, 'y'));
+    if (!axes) datasets.push(line(perName, 'perContract', RX.muted, 1, 'y'));
     const tickOpts = { maxTicksLimit: 8, maxRotation: 0, autoSkip: true };
     const scales = axes ? {
       x: { grid: { display: false }, ticks: tickOpts },
@@ -867,18 +895,19 @@ function buildContractsAdr(ex) {
     rxChart('shCadr', canvasId, 260, {
       type: 'line',
       data: { labels: ser.map(r => fmtChartDate(r.date)), datasets },
+      plugins: [CP_SWITCH_LINE],
       options: {
         interaction: { mode: 'index', intersect: false },
-        plugins: { tooltip: { callbacks: {
+        plugins: { cpSwitchLine: { indices: events.map(e => e.i) }, tooltip: { callbacks: {
           title: items => rxDate(ser[items[0].dataIndex].date),
           label: ctx => {
             const i = ctx.dataIndex, k = ctx.datasetIndex;
             return ` ${ctx.dataset.label}: ${fmts[k](ser[i][keys[k]])} · index ${fmtNum(idx[i][keys[k]], 1)}`;
           },
           footer: items => {
-            if (!axes) return '';
             const i = items[0].dataIndex;
-            return `Revenue per contract: ${perTxt(ser[i].perContract)} · index ${fmtNum(idx[i].perContract, 1)}`;
+            const ev = events.filter(e => e.i === i).map(e => e.short);
+            return [axes ? `${perName}: ${perTxt(ser[i].perContract)} · index ${fmtNum(idx[i].perContract, 1)}` : '', ...ev].filter(Boolean);
           },
         } } },
         scales,
@@ -891,10 +920,11 @@ function buildContractsAdr(ex) {
     ] : [
       { label: `Contracts ${fmtNum(lastIdx.contracts, 0)}`, color: RX.model, kind: 'line' },
       { label: `${revHtml} ${fmtNum(lastIdx.adr, 0)}`, color: RX.rev, kind: 'line' },
-      { label: `Revenue per contract ${fmtNum(lastIdx.perContract, 0)}`, color: RX.muted, kind: 'line' },
+      { label: `${escHtml(perName)} ${fmtNum(lastIdx.perContract, 0)}`, color: RX.muted, kind: 'line' },
     ]);
-    q('foot').textContent = `${w}-session means · ${rxDate(ser[0].date)} – ${rxDate(last.date)} · latest: ${ctrTxt(last.contracts)} contracts, ${revName} ${adrTxt(last.adr)}, ${perTxt(last.perContract)} per contract`
-      + (axes ? ' · revenue per contract is in the tooltip' : '');
+    q('foot').textContent = `${w}-session means · ${rxDate(ser[0].date)} – ${rxDate(last.date)} · latest: ${ctrTxt(last.contracts)} contracts, ${revName} ${adrTxt(last.adr)}, ${perName.toLowerCase().replace('f&o', 'F&O')} ${perTxt(last.perContract)}`
+      + (axes ? ` · ${perName.toLowerCase().replace('f&o', 'F&O')} is in the tooltip` : '')
+      + (events.length ? ` · dashed lines: ${events.map(e => e.short).join('; ')}` : '');
   }
 
   rxOnSeg(panel, 'cadrWin', v => { CADR_VIEW.window = +v; draw(); });
