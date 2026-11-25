@@ -528,10 +528,21 @@ def get_supabase_client():
     from supabase import create_client
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def get_existing_dates(supabase):
-    """Get all existing dates from nse_daily table."""
-    result = supabase.table("nse_daily").select("date").execute()
-    return {row["date"] for row in result.data}
+def get_existing_dates(supabase, batch_size=1000):
+    """Every date stored in nse_daily, read in pages: the API returns at most
+    1,000 rows a request, so a single select would miss dates once the table
+    holds more."""
+    dates, offset = set(), 0
+    while True:
+        result = (supabase.table("nse_daily")
+                  .select("date")
+                  .order("date")
+                  .range(offset, offset + batch_size - 1)
+                  .execute())
+        dates.update(row["date"] for row in result.data)
+        if len(result.data) < batch_size:
+            return dates
+        offset += batch_size
 
 def upsert_daily_records(supabase, records):
     """Upsert parsed daily records into Supabase."""
