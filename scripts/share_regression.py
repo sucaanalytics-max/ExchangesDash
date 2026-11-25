@@ -32,11 +32,22 @@ import math
 
 import numpy as np
 
+import trading_calendar
+
 MIN_N          = 60     # observations before a fair value is published
 MIN_T_STAT     = 2.0    # Newey-West t-stat of the slope
 MIN_SPREAD     = 0.10   # (max - min) / mean of the revenue MA over the window
 HOLDOUT_SHARE  = 0.20   # last 20 % of the window is the out-of-sample test
 MIN_HOLDOUT    = 10
+
+
+def drop_special_sessions(prices, exchange):
+    """(prices without the exchange's Muhurat / DR-test sessions, the dates dropped).
+    A one-hour special session's close is not a session's price: like its revenue,
+    which the pipelines move to `special_sessions`, it stays out of every fit,
+    session count and average (trading_calendar.SPECIAL_SESSIONS)."""
+    dropped = sorted(d for d in prices if trading_calendar.special_session(exchange, d))
+    return {d: p for d, p in prices.items() if d not in dropped}, dropped
 
 
 def revenue_ma(rev_rows, window):

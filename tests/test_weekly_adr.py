@@ -13,7 +13,7 @@ import unittest
 
 from helpers import NODE, js_eval
 
-ADR_JS = ["MONTHS_SHORT", "cpWeekStart", "EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry",
+ADR_JS = ["MONTHS_SHORT", "cpWeekStart", "EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry", "EQUITY_HOLIDAYS", "isExchangeHoliday", "expiryCanTrade",
           "computeWeekExpiryDates", "EXPIRY_DATES_CACHE", "expiryDateSet", "PRE_EXPIRY_DATES_CACHE", "preExpiryDateSet",
           "WEEKLY_ADR_EXCHANGES", "WEEKLY_NORMALISED", "weeklyAdrWeeks",
           "weeklyAdrCell", "weeklyAdrRow", "weeklyAdrOptions", "fmtTradeDate", "weeklyAdrHolidayText",

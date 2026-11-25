@@ -77,6 +77,65 @@ class OtherTransactionCharges(unittest.TestCase):
         self.assertIsNone(nse.nse_other_txn_charges(pnl, daily))     # Q1 reported below the daily sum
         self.assertIsNone(nse.nse_other_txn_charges(pnl[1:] + [self._pnl("Q3 FY 2027", 1)], daily[:5]))
 
+    def test_special_sessions_count_as_revenue_not_sessions(self):
+        # NSE's reported charges include a Muhurat; it must not read as other charges
+        pnl = [self._pnl("Q1 FY 2027", 60 * 50 + 42 + 8), self._pnl("Q2 FY 2027", 65 * 40 + 50)]
+        daily = self._days("Q1 FY 2027", 4, 30, 50) + self._days("Q1 FY 2027", 5, 30, 50) + self._days("Q2 FY 2027", 7, 65 // 2, 40) \
+            + self._days("Q2 FY 2027", 8, 65 - 65 // 2, 40)
+        special = [{"date": "2026-05-31", "fy_quarter": "Q1 FY 2027", "total_rev": 8, "session": "muhurat"}]
+        got = nse.nse_other_txn_charges(pnl, daily, special)
+        self.assertAlmostEqual(got["per_day"], round((42 / 60 + 50 / 65) / 2, 4), places=4)
+        self.assertEqual((got["quarters"][0]["special_rev"], got["quarters"][0]["days"]), (8, 60))
+        without = nse.nse_other_txn_charges(pnl, daily)
+        self.assertAlmostEqual(without["per_day"] - got["per_day"], 8 / 60 / 2, places=3)
+
+    def test_pipeline_passes_special_sessions_through(self):
+        from datetime import date, timedelta
+
+        def full(d, rev):
+            dt = date.fromisoformat(d)
+            return {"date": d, "day": dt.strftime("%A"), "fy_quarter": nse.date_to_fy_quarter(dt),
+                    "fy_month": nse.date_to_fy_month(dt), "fy": "FY 2027",
+                    "opt_rev": rev, "fut_rev": 0, "cash_rev": 0, "total_rev": rev}
+
+        def weekdays(start, n):
+            d, out = date.fromisoformat(start), []
+            while len(out) < n:
+                if d.weekday() < 5:
+                    out.append(d.isoformat())
+                d += timedelta(days=1)
+            return out
+
+        q2 = [full(d, 40) for d in weekdays("2026-07-01", 60)]
+        q3 = [full(d, 60) for d in weekdays("2026-10-01", 60)] + [full("2026-11-08", 19.33)]   # Sunday Muhurat
+        q4 = [full(d, 70) for d in weekdays("2027-01-01", 5)]
+        pnl = [self._pnl("Q2 FY 2027", 60 * 40 + 45), self._pnl("Q3 FY 2027", 60 * 60 + 19.33 + 48)]
+        out = nse.build_outputs(q2 + q3 + q4, pnl, [], {})
+        p = out["enriched"]["pnl_predictor"]
+        self.assertEqual(p["quarter"], "Q4 FY 2027")
+        self.assertEqual([(b["quarter"], b["days"], b["special_rev"]) for b in p["other_txn_basis"]],
+                         [("Q2 FY 2027", 60, 0), ("Q3 FY 2027", 60, 19.33)])
+        self.assertAlmostEqual(p["other_txn_per_day"], round((45 / 60 + 48 / 60) / 2, 4), places=4)
+        self.assertEqual(p["special_rev"], 0)      # Q4 FY 2027, the current quarter, has none
+
+    def test_current_quarter_special_sessions_are_banked(self):
+        from datetime import date, timedelta
+        days, d = [], date(2026, 10, 1)
+        while len(days) < 30:
+            if d.weekday() < 5:
+                days.append(d.isoformat())
+            d += timedelta(days=1)
+        rows = [{"date": x, "day": "", "fy_quarter": "Q3 FY 2027", "fy_month": "Oct", "fy": "FY 2027",
+                 "opt_rev": 60, "fut_rev": 0, "cash_rev": 0, "total_rev": 60} for x in days]
+        rows.append({"date": "2026-11-08", "day": "Sunday", "fy_quarter": "Q3 FY 2027", "fy_month": "Nov", "fy": "FY 2027",
+                     "opt_rev": 19.33, "fut_rev": 0, "cash_rev": 0, "total_rev": 19.33})
+        pnl = [self._pnl("Q1 FY 2027", 3000), self._pnl("Q2 FY 2027", 3100)]
+        p = nse.build_outputs(rows, pnl, [], {})["enriched"]["pnl_predictor"]
+        self.assertEqual((p["trading_days_so_far"], p["daily_avg_rev"], p["special_rev"]), (30, 60, 19.33))
+        # 30 sessions to Wed 11 Nov, then the weekdays to 31 Dec less 24 Nov and 25 Dec
+        self.assertEqual(p["expected_trading_days"], 64)
+        self.assertAlmostEqual(p["transaction_rev_extrapolated"], 60 * 64 + 19.33 + p["other_txn_rev"], places=2)
+
     def test_next_quarter_grows_only_the_daily_part(self):
         pnl = [self._pnl("Q1 FY 2026", 3000), self._pnl("Q2 FY 2026", 3100)]
         quarterly = [{"quarter": q, "days": 60, "total_rev": r} for q, r in

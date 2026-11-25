@@ -751,7 +751,8 @@ def compute_enriched(daily, quarterly):
     cq = quarterly[-1] if quarterly else None
     if cq:
         days_so_far = cq["days"]
-        expected_days = 62
+        expected_days, days_basis = trading_calendar.quarter_sessions(
+            "bse", cq["quarter"], days_so_far, max(r["date"] for r in daily if r.get("fy_quarter") == cq["quarter"]))
         daily_avg = float(cq["total_rev"]) / max(days_so_far, 1)
         other_income_ratio = 0.15  # BSE ~15% other income
         txn_rev_extrap = daily_avg * expected_days
@@ -760,6 +761,7 @@ def compute_enriched(daily, quarterly):
             "daily_avg_rev": round(daily_avg, 4),
             "trading_days_so_far": days_so_far,
             "expected_trading_days": expected_days,
+            "expected_days_basis": days_basis,
             "transaction_rev_extrapolated": round(txn_rev_extrap, 2),
             "other_income_ratio": round(other_income_ratio, 4),
             "total_revenue_predicted": round(total_rev_pred, 2),

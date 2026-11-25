@@ -1,6 +1,7 @@
 """
 Fail if the JS expiry calendar (const EXPIRY_RULES in dashboard/js/) drifts
-from scripts/expiry_calendar.py (the Python source of truth), or if the Python
+from scripts/expiry_calendar.py (the Python source of truth), if the JS holiday
+list (const EQUITY_HOLIDAYS) drifts from scripts/trading_calendar.py's, or if the Python
 table itself is malformed: per exchange the rules must be sorted, contiguous
 (no gap, no overlap), open-ended at both ends, and change only on week edges
 (effective_from a Monday, effective_to a Sunday) so every week has exactly one
@@ -16,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import expiry_calendar as ec
+import trading_calendar as tc
 
 # Searched across every dashboard script, so moving EXPIRY_RULES between files is safe
 JS_DIR = Path(__file__).parent.parent / "dashboard" / "js"
@@ -73,10 +75,23 @@ def main():
             w = want[i] if i < len(want) else None
             if g != w:
                 bad.append(f"  rule {i}: dashboard/js {g} vs python {w}")
+    js = "\n".join(p.read_text() for p in sorted(JS_DIR.glob("*.js")))
+    m = re.search(r"const EQUITY_HOLIDAYS\s*=\s*\[(.*?)\];", js, re.S)
+    if not m:
+        bad.append("const EQUITY_HOLIDAYS not found in dashboard/js/*.js")
+    else:
+        js_days = re.findall(r"'(\d{4}-\d{2}-\d{2})'", m.group(1))
+        if js_days != list(tc.EQUITY_HOLIDAYS):
+            missing = sorted(set(tc.EQUITY_HOLIDAYS) - set(js_days))
+            extra = sorted(set(js_days) - set(tc.EQUITY_HOLIDAYS))
+            bad.append(f"dashboard/js EQUITY_HOLIDAYS != trading_calendar.EQUITY_HOLIDAYS "
+                       f"(missing {missing}, extra {extra}{', order differs' if not (missing or extra) else ''})")
+    if tc.HOLIDAYS["nse"] != tc.HOLIDAYS["bse"]:
+        bad.append("trading_calendar: NSE and BSE holidays differ, but the dashboard keeps one equity list")
     if bad:
         print("Expiry calendar problems:\n  " + "\n  ".join(bad))
         sys.exit(1)
-    print(f"Expiry calendar consistent ({len(want)} rules checked)")
+    print(f"Expiry calendar consistent ({len(want)} rules, {len(tc.EQUITY_HOLIDAYS)} holidays checked)")
 
 
 if __name__ == "__main__":

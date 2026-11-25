@@ -418,6 +418,21 @@ class WriteIfChanged(unittest.TestCase):
         self.assertFalse(self.path.exists())
 
 
+class SpecialSessionPrices(unittest.TestCase):
+    """A Muhurat / DR-test close stays out of the fit and its session count, for the
+    exchanges that held the session only."""
+
+    def test_dropped_per_exchange(self):
+        prices = {"2025-10-20": 10.0, "2025-10-21": 11.0, "2024-03-02": 12.0, "2026-11-09": 13.0}
+        kept, dropped = sr.drop_special_sessions(prices, "nse")
+        self.assertEqual(dropped, ["2024-03-02", "2025-10-21"])          # Muhurat and DR test
+        self.assertEqual(kept, {"2025-10-20": 10.0, "2026-11-09": 13.0})
+        kept, dropped = sr.drop_special_sessions(prices, "mcx")        # MCX held no DR test
+        self.assertEqual(dropped, ["2025-10-21"])
+        self.assertIn("2024-03-02", kept)
+        self.assertEqual(prices["2025-10-21"], 11.0)                    # input left alone
+
+
 class BseRevenueMerge(unittest.TestCase):
     """bse_share_analysis.merge_revenue: the pipeline wins, the seed fills gaps, and
     a Muhurat / DR-test session the pipeline moved to special_sessions never comes

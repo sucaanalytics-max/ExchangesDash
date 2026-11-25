@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-25T06:22:58Z",
+  "updated_at": "2026-11-25T06:24:35Z",
   "ticker": "NSE.BO",
   "ma_window": 45,
   "regression_start": "2026-09-24",
@@ -37,17 +37,17 @@
     }
   },
   "regression": {
-    "slope": 22.0228,
-    "intercept": 714.03,
+    "slope": 22.0221,
+    "intercept": 714.07,
     "r_squared": 0.7504,
     "pearson_r": 0.8663,
-    "equation": "Price = 22.02 \u00d7 Rev_MA45[t-1] + 714.03",
+    "equation": "Price = 22.02 \u00d7 Rev_MA45[t-1] + 714.07",
     "fit": "strong"
   },
   "methodology": {
     "revenue_lag_days": 1,
     "ma_basis": "all revenue trading days",
-    "slope_se_newey_west": 4.4707,
+    "slope_se_newey_west": 4.4703,
     "t_stat_newey_west": 4.93,
     "newey_west_lags": 8,
     "durbin_watson": 0.132,
@@ -73,7 +73,7 @@
     "date": "2026-11-25",
     "revenue_cr": null,
     "rev_ma": 63.7561,
-    "price_actual": 2249.4,
+    "price_actual": 2249.3,
     "price_pred": null,
     "error_pct": null
   },
@@ -369,7 +369,7 @@
       "date": "2026-11-25",
       "revenue_cr": null,
       "rev_ma": 63.7561,
-      "price": 2249.4,
+      "price": 2249.3,
       "price_pred": null
     }
   ],

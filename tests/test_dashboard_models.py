@@ -24,7 +24,7 @@ def _nse_pnl():
     return json.loads((ROOT / "dashboard" / "data" / "nse_dashboard_data.json").read_text()).get("pnl") or []
 
 
-REST_MIX_JS = ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry", "EXPIRY_DATES_CACHE",
+REST_MIX_JS = ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry", "EQUITY_HOLIDAYS", "isExchangeHoliday", "expiryCanTrade", "EXPIRY_DATES_CACHE",
                "computeWeekExpiryDates", "expiryDateSet", "PRE_EXPIRY_DATES_CACHE", "preExpiryDateSet",
                "PREDICTOR_MIN_BUCKET", "PREDICTOR_BUCKETS", "quarterEndIso", "predictorNextIso", "predictorRestMix"]
 
@@ -51,14 +51,16 @@ class PredictorRestMix(unittest.TestCase):
 
     def test_split_adds_up_and_weights_each_kind(self):
         ctx, rows = self._quarter()
-        days = ctx["n"] + 29
+        days = ctx["n"] + 27
         got = js_eval(REST_MIX_JS, "predictorRestMix('nse', DATA.ctx, DATA.days, DATA.rows)", {"ctx": ctx, "days": days, "rows": rows})
         mix = got["mix"]
-        self.assertEqual(mix["e"] + mix["p"] + mix["o"], 29)
-        # 23 Nov – 31 Dec: 6 Tuesdays, 6 Mondays among 29 weekdays
-        self.assertEqual((mix["e"], mix["p"]), (6, 6))
+        self.assertEqual(mix["e"] + mix["p"] + mix["o"], 27)
+        # 23 Nov – 31 Dec: 29 weekdays less the 24 Nov and 25 Dec holidays. Tue 24 Nov
+        # is a holiday, so Mon 23 Nov is that week's expiry: 6 expiries (23 Nov and
+        # the five December Tuesdays) and 5 pre-expiry Mondays (30 Nov – 28 Dec)
+        self.assertEqual((mix["e"], mix["p"]), (6, 5))
         self.assertEqual(got["src"]["e"], "quarter to date")
-        want = (mix["e"] * 100 + mix["p"] * 60 + mix["o"] * 40) / 29
+        want = (mix["e"] * 100 + mix["p"] * 60 + mix["o"] * 40) / 27
         self.assertAlmostEqual(got["perSeg"]["opt"], want, places=9)
 
     def test_mcx_keeps_the_flat_pace(self):
@@ -118,6 +120,32 @@ class PredictorMirrorsPipeline(unittest.TestCase):
         self.assertAlmostEqual(js["otx"], py["other_txn_rev"], delta=0.011)
         self.assertAlmostEqual(js["txnRep"], py["transaction_rev"], delta=0.011)
         for k, pk in {"op": "operating_revenue", "oi": "non_operating_income", "pbt": "pbt", "pat": "pat", "eps": "eps"}.items():
+            with self.subTest(line=k):
+                self.assertAlmostEqual(js[k], py[pk], delta=0.011)
+
+    def test_nse_special_sessions_mirror(self):
+        # A Muhurat in the current quarter: banked in the forecast, not grown into the next
+        hist = _nse_pnl()
+        model = nse.nse_ratio_model(hist)
+        if not model:
+            self.skipTest("committed nse_pnl has no two actual quarters with a revenue split")
+        seg_txn, otx, spc = 3500.0, 0.74, 19.33
+        pred = {"transaction_rev_extrapolated": seg_txn + spc + otx * 62, "other_txn_rev": otx * 62, "special_rev": spc}
+        got = nse.compute_predicted_quarters(pred, hist, [{"quarter": "Q3 FY 2027", "days": 11, "total_rev": 620.0}])
+        py = got["Q3 FY 2027"]
+        self.assertEqual((py["segments_rev"], py["special_rev"]), (seg_txn, spc))
+        self.assertAlmostEqual(got["Q4 FY 2027"]["transaction_rev"], seg_txn * 1.10 + otx * 62, delta=0.011)  # 10 % default growth
+        self.assertEqual(got["Q4 FY 2027"]["special_rev"], 0)
+        rest_adr = (seg_txn - 620.0) / 51
+        ctx = {"segs": ["opt", "fut", "cash"], "n": 11, "banked": {"opt": 500.0, "fut": 40.0, "cash": 80.0}, "special": spc}
+        v = {"opt": rest_adr * 0.8, "fut": rest_adr * 0.05, "cash": rest_adr * 0.15, "days": 62, "otx": otx,
+             "oor": model["other_operating_revenue_ratio"] * 100, "oi": model["non_operating_income_ratio"] * 100,
+             "opex": model["operating_expense_ratio"] * 100, "dep": model["depreciation_ratio"] * 100,
+             "assoc": model["share_profit_associates"], "tax": model["tax_rate"] * 100,
+             "shares": 1 / model["eps_per_pat"]}
+        js = js_eval(PREDICTOR_JS, "predictorScenario('nse', DATA.ctx, DATA.v)", {"ctx": ctx, "v": v})
+        for k, pk in {"txn": "segments_rev", "spc": "special_rev", "otx": "other_txn_rev", "txnRep": "transaction_rev",
+                      "op": "operating_revenue", "pbt": "pbt", "pat": "pat", "eps": "eps"}.items():
             with self.subTest(line=k):
                 self.assertAlmostEqual(js[k], py[pk], delta=0.011)
 
@@ -900,7 +928,7 @@ class RevenueSummaryMonths(unittest.TestCase):
         self.assertTrue(got)
 
 
-LAST_FIVE_JS = ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry", "computeWeekExpiryDates",
+LAST_FIVE_JS = ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry", "EQUITY_HOLIDAYS", "isExchangeHoliday", "expiryCanTrade", "computeWeekExpiryDates",
                 "EXPIRY_DATES_CACHE", "expiryDateSet", "getRevFieldObj", "WEEKDAYS", "MONTHS_SHORT", "fmtNum",
                 "L5_DAY_MS", "l5DayAfter", "lastFiveBreakdown", "l5Date", "l5MixNote", "lastFiveTitle"]
 
