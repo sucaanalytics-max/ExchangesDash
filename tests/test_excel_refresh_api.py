@@ -12,16 +12,18 @@ API = DASHBOARD / "api"
 ENV = {"TEAM_PASSWORD": "open sesame", "TEAM_SESSION_SECRET": "s" * 32, "SUPABASE_URL": "https://example.supabase.co",
        "SUPABASE_SERVICE_KEY": "service-key", "GITHUB_DISPATCH_PAT": "pat"}
 
-# One handler call per step against in-memory excel_sync_runs; GitHub answers
-# cfg.ghStatus (204 by default) or throws when cfg.ghThrow. Prints
-# {out: [{status, body, headers}], rows, dispatches, sb: [{method, path, query}]}.
+# One handler call per step against in-memory excel_sync_runs; GitHub answers a
+# dispatch with cfg.ghStatus (204 by default) or throws when cfg.ghThrow, and a run
+# read (GET /actions/runs/{id}) with cfg.ghRuns[id] ({status}; 404 when absent, throws
+# when cfg.ghRunThrow). Prints {out: [{status, body, headers}], rows, dispatches,
+# ghReads: [run id], sb: [{method, path, query}]}.
 RUNNER = r"""
 const [dir, cfg] = [process.argv[1], JSON.parse(process.argv[2])];
 for (const k of ['TEAM_PASSWORD', 'TEAM_SESSION_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'GITHUB_DISPATCH_PAT']) delete process.env[k];
 Object.assign(process.env, cfg.env || {});
 const auth = require(dir + '/_team_auth.js');
 const rows = cfg.rows || [];
-const dispatches = [], sbCalls = [];
+const dispatches = [], sbCalls = [], ghReads = [];
 const reply = (status, body) => {
   const text = body === undefined ? '' : JSON.stringify(body);
   return { ok: status >= 200 && status < 300, status, text: async () => text, json: async () => JSON.parse(text) };
@@ -29,6 +31,13 @@ const reply = (status, body) => {
 let nextId = 500;
 global.fetch = async (url, opts = {}) => {
   const u = new URL(url), method = opts.method || 'GET';
+  if (u.hostname === 'api.github.com' && u.pathname.includes('/actions/runs/')) {
+    const id = u.pathname.split('/actions/runs/')[1];
+    ghReads.push({ id, timed: !!opts.signal });
+    if (cfg.ghRunThrow) throw new Error('network down');
+    const runInfo = (cfg.ghRuns || {})[id];
+    return runInfo ? reply(200, { id: Number(id), ...runInfo }) : reply(404, { message: 'Not Found' });
+  }
   if (u.hostname === 'api.github.com') {
     dispatches.push({ workflow: u.pathname.split('/workflows/')[1].split('/')[0], ...JSON.parse(opts.body), timed: !!opts.signal });
     if (cfg.ghThrow) throw new Error('network down');
@@ -61,7 +70,7 @@ global.fetch = async (url, opts = {}) => {
     let hit = rows.slice();
     if (q.get('id')) hit = hit.filter(r => r.id === Number(q.get('id').replace('eq.', '')));
     const st = q.get('status');
-    if (st) { const list = st.replace(/^in\.\(|\)$/g, '').split(','); hit = hit.filter(r => list.includes(r.status)); }
+    if (st) { const list = st.replace(/^eq\./, '').replace(/^in\.\(|\)$/g, '').split(','); hit = hit.filter(r => list.includes(r.status)); }
     const lt = q.get('requested_at');
     if (lt) hit = hit.filter(r => r.requested_at < lt.replace(/^lt\./, ''));
     hit.forEach(r => Object.assign(r, JSON.parse(opts.body)));
@@ -85,7 +94,7 @@ const now = Math.floor(Date.now() / 1000);
     await handler({ method: step.method, headers, query: {}, body: step.body }, res);
     out.push({ status: res.code, body: res.body, headers: res.headers });
   }
-  process.stdout.write(JSON.stringify({ out, rows, dispatches, sb: sbCalls }));
+  process.stdout.write(JSON.stringify({ out, rows, dispatches, ghReads, sb: sbCalls }));
 })();
 """
 
@@ -136,6 +145,49 @@ class ExcelRefresh(unittest.TestCase):
         self.assertFalse(out["body"]["dispatched"])
         self.assertEqual(r["dispatches"], [])
         self.assertEqual(len(r["rows"]), 1)
+
+    # Jay's review of #117: GitHub cancels a pending run when a newer one joins the
+    # concurrency group, so its row would stay queued and block Refresh for 45 min
+    def test_a_queued_run_whose_github_run_ended_is_closed_and_a_new_one_dispatched(self):
+        rows = [{"id": 7, "trigger": "manual", "status": "queued", "requested_at": iso_ago(5), "files": None,
+                 "error": None, "github_run_id": 9001}]
+        r = run([POST], rows=rows, ghRuns={"9001": {"status": "completed", "conclusion": "cancelled"}})
+        out = r["out"][0]
+        self.assertEqual(out["status"], 202)
+        self.assertTrue(out["body"]["dispatched"])
+        old = next(x for x in r["rows"] if x["id"] == 7)
+        self.assertEqual(old["status"], "failed")
+        self.assertIn("GitHub ended the workflow run before its job began", old["error"])
+        self.assertTrue(old["finished_at"])
+        self.assertEqual(r["ghReads"], [{"id": "9001", "timed": True}])
+        self.assertEqual(len(r["dispatches"]), 1)
+        self.assertEqual(r["dispatches"][0]["inputs"]["run_id"], str(out["body"]["run"]["id"]))
+        closing = [c for c in r["sb"] if c["method"] == "PATCH"]
+        self.assertTrue(any("id=eq.7" in c["query"] and "status=eq.queued" in c["query"] for c in closing))
+
+    def test_a_queued_run_still_pending_on_github_is_followed(self):
+        for why, kw in {"pending": {"ghRuns": {"9001": {"status": "queued"}}},
+                        "in progress": {"ghRuns": {"9001": {"status": "in_progress"}}},
+                        "GitHub does not know it": {},
+                        "GitHub does not answer": {"ghRunThrow": True}}.items():
+            with self.subTest(why=why):
+                rows = [{"id": 7, "trigger": "manual", "status": "queued", "requested_at": iso_ago(5), "files": None,
+                         "error": None, "github_run_id": 9001}]
+                r = run([POST], rows=rows, **kw)
+                out = r["out"][0]
+                self.assertEqual(out["status"], 200)
+                self.assertEqual(out["body"]["run"]["id"], 7)
+                self.assertFalse(out["body"]["dispatched"])
+                self.assertEqual(r["rows"][0]["status"], "queued")
+                self.assertEqual(r["dispatches"], [])
+
+    def test_a_queued_run_without_a_github_id_is_not_looked_up(self):
+        rows = [{"id": 7, "trigger": "manual", "status": "queued", "requested_at": iso_ago(1), "files": None,
+                 "error": None, "github_run_id": None}]
+        r = run([POST], rows=rows)
+        self.assertEqual(r["out"][0]["body"]["run"]["id"], 7)
+        self.assertEqual(r["ghReads"], [])
+        self.assertEqual(r["dispatches"], [])
 
     def test_a_running_run_does_not_block(self):
         # it read the inputs when it started: a press now must queue a run that sees the latest edits
@@ -275,6 +327,41 @@ class ExcelRefresh(unittest.TestCase):
         cfg = json.loads((DASHBOARD / "vercel.json").read_text())
         h = [x for x in cfg["headers"] if x["source"] == "/api/excel-refresh"]
         self.assertEqual(h[0]["headers"], [{"key": "Cache-Control", "value": "no-store"}])
+
+class OneQueuedManualRunIndex(unittest.TestCase):
+    """valuation_sync_schema.sql: the update before excel_sync_runs_one_manual leaves at
+    most one queued manual row, so the unique index can always be built (Jay's review of
+    #117: two rows queued within the same 45 minutes made it fail). Run in SQLite, which
+    accepts this partial index; Postgres-only bits (schema, now()) are swapped out."""
+
+    def block(self):
+        sql = (API.parent.parent / "valuation_sync_schema.sql").read_text()
+        start = sql.index("update public.excel_sync_runs\n   set status = 'failed'")
+        end = sql.index(";", sql.index("create unique index if not exists excel_sync_runs_one_manual")) + 1
+        return sql[start:end].replace("public.", "").replace("now()", "CURRENT_TIMESTAMP")
+
+    def db(self, rows):
+        import sqlite3
+        con = sqlite3.connect(":memory:")
+        con.execute("create table excel_sync_runs (id integer primary key, trigger text, status text, finished_at text, error text)")
+        con.executemany("insert into excel_sync_runs (id, trigger, status) values (?, ?, ?)", rows)
+        return con
+
+    def test_the_index_builds_with_several_queued_manual_rows(self):
+        con = self.db([(1, "manual", "queued"), (2, "manual", "queued"), (3, "scheduled", "queued"),
+                       (4, "manual", "running"), (5, "manual", "queued")])
+        con.executescript(self.block())
+        got = dict(con.execute("select id, status from excel_sync_runs").fetchall())
+        self.assertEqual(got, {1: "failed", 2: "failed", 3: "queued", 4: "running", 5: "queued"})   # the newest stays
+        with self.assertRaises(Exception):   # the index now holds: a second queued manual row is refused
+            con.execute("insert into excel_sync_runs (id, trigger, status) values (6, 'manual', 'queued')")
+        con.executescript(self.block())      # safe to run again
+        self.assertEqual(con.execute("select count(*) from excel_sync_runs where status = 'queued'").fetchone()[0], 2)
+
+    def test_no_queued_manual_rows_changes_nothing(self):
+        con = self.db([(1, "manual", "success")])
+        con.executescript(self.block())
+        self.assertEqual(con.execute("select status from excel_sync_runs").fetchall(), [("success",)])
 
 
 if __name__ == "__main__":

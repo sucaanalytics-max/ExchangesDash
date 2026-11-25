@@ -76,11 +76,17 @@ jobs:
       - name: Install dependencies
         run: pip install --quiet requests
 
+      # Also notes this GitHub run's id on a manual run's row (still queued), so the
+      # dashboard can tell when GitHub cancels the run before its mirror job starts
       - name: Is this run due
         id: gate
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
-        run: python scripts/excel_mirror.py --gate
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          args=(--gate)
+          if [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then args+=(--run-id "$RUN_ID"); fi
+          python scripts/excel_mirror.py "${args[@]}"
 
   mirror:
     needs: gate
@@ -89,7 +95,8 @@ jobs:
     timeout-minutes: 20
     # One mirror at a time. GitHub keeps one running and at most one pending: a newer
     # pending run replaces (cancels) the older one, whose job then never starts. Its
-    # row is closed as failed by /api/excel-refresh once it is 45 minutes old; a job
+    # row is closed as failed by /api/excel-refresh: on the next press, as soon as GitHub
+    # reports the run ended (the gate noted its id), else once it is 45 minutes old; a job
     # that starts but dies is closed by the last step below (the script notes its row id
     # in $RUNNER_TEMP/excel_run_id: the `runner` context is not allowed in a job's env).
     concurrency:

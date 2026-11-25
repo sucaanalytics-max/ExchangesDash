@@ -17,7 +17,10 @@
  *                    sheets, duration_s, dry_run, inputs_written, input_cells, error}]};
  *                    errors cut short
  *   POST (team session, /api/team-login) → Refresh Excel now:
- *        1. stale runs are closed as above; then a run still queued (its job has not
+ *        1. stale runs are closed as above, and so is a queued run whose GitHub run has
+ *           already ended (the workflow's gate job notes its id on the row; a newer run
+ *           in the concurrency group cancels a pending one before its job starts); then
+ *           a run still queued (its job has not
  *           read the inputs yet) is returned as it is (200 {run, dispatched: false}): it
  *           will carry the latest saved inputs, so a second press would only repeat it.
  *           A run already running read the inputs when it started, so a press then
@@ -39,13 +42,19 @@
 
 const { NO_STORE, isSignedIn } = require('./_team_auth');
 const { sb } = require('./valuation-inputs');
-const { REPO, dispatchWorkflow } = require('./_github_dispatch');
+const { REPO, DISPATCH_TIMEOUT_MS, dispatchWorkflow, workflowRunEnded } = require('./_github_dispatch');
 
 const WORKFLOW = 'excel-mirror.yml';
 const SCHEDULE = 'Daily at 01:00 IST';
 // A run is at most ~20 min pending behind another plus its own 20-min job timeout
 const STALE_MS = 45 * 60 * 1000;
 const STALE_ERROR = 'never finished: the workflow job did not start (superseded by a newer run) or ended without a result';
+const ENDED_ERROR = 'never started: GitHub ended the workflow run before its job began (a newer run took its place)';
+const UA = 'exchangesdash-excel-refresh';
+// The panel gives up after 10 s (VALUATION_API_TIMEOUT_MS): a POST that first asked
+// GitHub about a queued run gives the dispatch only what is left of DISPATCH_TIMEOUT_MS,
+// but at least MIN_DISPATCH_MS
+const MIN_DISPATCH_MS = 3000;
 const LIST = 10;
 const COLUMNS = 'id,trigger,status,requested_at,started_at,finished_at,files,error,github_run_id';
 
@@ -102,7 +111,20 @@ async function queuedRun() {
   return (rows && rows[0]) || null;
 }
 
+// A queued run whose GitHub run has already ended will never start: closed as failed
+// (only while still queued). True when it was closed; GitHub not answering keeps it.
+async function closeIfEnded(pat, run) {
+  if (!run || !run.github_run_id || (await workflowRunEnded(pat, run.github_run_id, UA)) !== true) return false;
+  await sb(`excel_sync_runs?id=eq.${run.id}&status=eq.queued`, {
+    method: 'PATCH',
+    headers: { Prefer: 'return=minimal' },
+    body: JSON.stringify({ status: 'failed', finished_at: new Date().toISOString(), error: ENDED_ERROR }),
+  });
+  return true;
+}
+
 module.exports = async function handler(req, res) {
+  const t0 = Date.now();
   res.setHeader('Cache-Control', NO_STORE);
   if (req.method !== 'GET' && req.method !== 'POST') {
     res.setHeader('Allow', 'GET, POST');
@@ -128,7 +150,8 @@ module.exports = async function handler(req, res) {
 
     await closeStaleRuns();
     const already = run => res.status(200).json({ run: publicRun(run), dispatched: false, reason: `run ${run.id} is already ${run.status}` });
-    const queued = await queuedRun();
+    let queued = await queuedRun();
+    if (queued && await closeIfEnded(pat, queued)) queued = await queuedRun();
     if (queued) return already(queued);
 
     let rows;
@@ -147,7 +170,8 @@ module.exports = async function handler(req, res) {
     const run = rows && rows[0];
     if (!run || run.id == null) throw new Error('insert returned no row');
 
-    const d = await dispatchWorkflow(pat, WORKFLOW, { trigger: 'manual', run_id: String(run.id) }, 'exchangesdash-excel-refresh');
+    const left = Math.max(MIN_DISPATCH_MS, DISPATCH_TIMEOUT_MS - (Date.now() - t0));
+    const d = await dispatchWorkflow(pat, WORKFLOW, { trigger: 'manual', run_id: String(run.id) }, UA, left);
     if (!d.ok) {
       const error = `GitHub dispatch failed (${d.status ? `HTTP ${d.status}` : 'no answer'})${d.detail ? `: ${d.detail}` : ''}`;
       console.error('excel-refresh:', error);

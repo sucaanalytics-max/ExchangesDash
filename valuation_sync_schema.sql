@@ -71,11 +71,15 @@ create table if not exists public.excel_sync_runs (
 -- count: it read the inputs when it started, so a press then queues a new one. Other
 -- rows (scheduled, or dispatched by hand from GitHub, which insert their own running
 -- row) are not limited: the workflow's concurrency group runs one job at a time.
--- Rows left queued from before are closed first, so the index can be built.
+-- Every queued manual row but the newest is closed first, so the index can always be
+-- built: under the old rule two could be queued within the same 45 minutes. The newest
+-- stays queued (its run may still start); if it is stale, /api/excel-refresh closes it.
+-- Safe to run again.
 update public.excel_sync_runs
    set status = 'failed', finished_at = now(),
        error = 'never finished: closed before the one-queued-run index was added'
- where trigger = 'manual' and status = 'queued' and requested_at < now() - interval '45 minutes';
+ where trigger = 'manual' and status = 'queued'
+   and id <> (select max(id) from public.excel_sync_runs where trigger = 'manual' and status = 'queued');
 
 create unique index if not exists excel_sync_runs_one_manual
   on public.excel_sync_runs ((true))

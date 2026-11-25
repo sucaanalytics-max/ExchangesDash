@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from unittest import mock
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import urllib3
 
@@ -24,22 +24,22 @@ SB = "https://sb.example.co"
 TARGETS = {
     "nse_vf": {"drive_id": "d1", "item_id": "nse"},
     "bse_vf": {"drive_id": "d1", "item_id": "bse"},
-    "mcx_vf": {"user": "tuskinvest@example.com", "path": f"/Tusk Equity/{xm.VF_FOLDER}/20250827_MCX vF.xlsx"},
+    "mcx_vf": {"user": "tuskinvest@example.com", "path": f"/{xm.VF_PATH}/20250827_MCX vF.xlsx"},
     "dashboard": {"drive_id": "d1", "item_id": "dash"},
 }
 DRYRUN = {k: {"drive_id": "dtest", "item_id": f"test-{k}"} for k in TARGETS}
-OWNER_URL = "https://tuskinvest-my.sharepoint.com/personal/tuskinvest_example_com/Documents"
+OWNER_URL = f"https://tuskinvest-my.sharepoint.com/personal/{xm.OWNER_ACCOUNT}/Documents"
 # The owner's consent, as these tests assume it: the dashboard workbook, and dry-run copies.
-DASHBOARD_FILE = {"folder": "Dashboard", "name": "20261027_Exchanges_Dashboard.xlsx"}
+DASHBOARD_FILE = {"folder": "Direct Equity/Exchanges-capital markets plays/Dashboard", "name": "20261027_Exchanges_Dashboard.xlsx"}
 TEST_FOLDER = "Mirror test copies"
 FILE_OF = {**{k: dict(v) for k, v in xm.ALLOWED_FILES.items()}, "dashboard": DASHBOARD_FILE}
 DRYRUN_FILE_OF = {k: {"folder": TEST_FOLDER, "name": v["name"]} for k, v in FILE_OF.items()}
 
 
 def placed(d, f, url=OWNER_URL):
-    """An item's Graph metadata: name, parent folder, owner's web address."""
-    d["meta"] = {"name": f["name"], "webUrl": f"{url}/Tusk Equity/{f['folder']}/{f['name']}",
-                 "parentReference": {"driveId": "d9", "path": f"/drives/d9/root:/Tusk Equity/{f['folder']}"}, "file": {}}
+    """An item's Graph metadata: name, folder path from the drive's root, owner's web address."""
+    d["meta"] = {"name": f["name"], "webUrl": f"{url}/{f['folder']}/{f['name']}",
+                 "parentReference": {"driveId": "d9", "path": f"/drives/d9/root:/{f['folder']}"}, "file": {}}
     return d
 
 
@@ -125,8 +125,8 @@ class FakeCloud:
                 if row is None:
                     row = {"id": rid}
                     self.runs.append(row)
-                only = re.search(r"status=in\.\(([^)]*)\)", path)
-                if only and row.get("status") not in only.group(1).split(","):
+                only = re.search(r"status=(?:in\.\(([^)]*)\)|eq\.(\w+))", path)
+                if only and row.get("status") not in (only.group(1) or only.group(2)).split(","):
                     return FakeResponse(204)
                 row.update(body)
                 return FakeResponse(204)
@@ -784,10 +784,20 @@ class Guardrail(MirrorTest):
 
     def test_look_alike_copies_and_other_drives_are_refused(self):
         cases = {
-            "a copy in another folder": dict(f={"folder": "Vanshika", "name": "20260718_BSE VF.xlsx"}),
-            "a backup with another name": dict(f={"folder": xm.VF_FOLDER, "name": "BSE VF (1).xlsx"}),
+            "a copy in another folder": dict(f={"folder": "Direct Equity/Vanshika", "name": "20260718_BSE VF.xlsx"}),
+            "a backup with another name": dict(f={"folder": xm.VF_PATH, "name": "BSE VF (1).xlsx"}),
+            # Jay's review of #117: a folder of the same name anywhere else
+            "a same-named folder under Backups": dict(f={"folder": f"Backups/{xm.VF_FOLDER}", "name": "20260718_BSE VF.xlsx"}),
+            "a same-named folder in the drive's root": dict(f={"folder": xm.VF_FOLDER, "name": "20260718_BSE VF.xlsx"}),
+            "a same-named folder one level down": dict(f={"folder": f"{xm.VF_PATH}/{xm.VF_FOLDER}", "name": "20260718_BSE VF.xlsx"}),
+            # one folder in the root whose name holds an encoded slash
+            "a folder named with %2F": dict(f={"folder": xm.VF_PATH.replace("/", "%2F"), "name": "20260718_BSE VF.xlsx"}),
             "the same file in someone else's OneDrive": dict(f=FILE_OF["bse_vf"], url="https://tuskinvest-my.sharepoint.com/personal/shreevar_example_com/Documents"),
-            "another tenant": dict(f=FILE_OF["bse_vf"], url="https://other-my.sharepoint.com/personal/tuskinvest_example_com/Documents"),
+            # Jay's review of #117: an account whose UPN starts the same (tuskinvest.ops@…)
+            "an account whose UPN starts the same": dict(f=FILE_OF["bse_vf"], url=f"https://tuskinvest-my.sharepoint.com/personal/tuskinvest_ops_{xm.OWNER_ACCOUNT.split('_', 1)[1]}/Documents"),
+            "an account that extends the owner's": dict(f=FILE_OF["bse_vf"], url=f"https://tuskinvest-my.sharepoint.com/personal/{xm.OWNER_ACCOUNT}2/Documents"),
+            "not a personal OneDrive": dict(f=FILE_OF["bse_vf"], url=f"https://tuskinvest-my.sharepoint.com/sites/{xm.OWNER_ACCOUNT}/Documents"),
+            "another tenant": dict(f=FILE_OF["bse_vf"], url=f"https://other-my.sharepoint.com/personal/{xm.OWNER_ACCOUNT}/Documents"),
         }
         for why, kw in cases.items():
             with self.subTest(why=why):
@@ -801,6 +811,14 @@ class Guardrail(MirrorTest):
                 self.assertFalse(any(x[1].endswith("createSession") and "/items/bse/" in x[1] for x in c.calls))
                 self.assertEqual(f["nse_vf"]["status"], "success")
 
+    def test_the_real_files_pass_with_an_encoded_path(self):
+        c = cloud()
+        m = c.items["bse"]["meta"]
+        m["parentReference"]["path"] = "/drives/d9/root:/" + "/".join(quote(x) for x in xm.VF_PATH.split("/"))
+        m["webUrl"] = m["webUrl"].replace(" ", "%20")
+        self.run_main(cloud_=c)
+        self.assertEqual(self.files()["bse_vf"]["status"], "success", self.files()["bse_vf"])
+
     def test_a_folder_is_refused(self):
         c = cloud()
         del c.items["nse"]["meta"]["file"]
@@ -810,7 +828,7 @@ class Guardrail(MirrorTest):
 
     def test_a_path_target_outside_the_list_is_refused_before_any_call(self):
         c = self.run_main(EXCEL_TARGETS=json.dumps({"mcx_vf": {"user": "tuskinvest@example.com", "path": "/Direct Equity/Vanshika/20250827_MCX vF.xlsx"}}))
-        self.assertIn("is not Portfolio Stock Valuations", self.files()["mcx_vf"]["errors"][0])
+        self.assertIn("is not Tusk Equity/Portfolio Stock Valuations", self.files()["mcx_vf"]["errors"][0])
         self.assertFalse(any("graph.microsoft.com" in x[1] and "/drive" in x[1] for x in c.calls))
 
     def test_dry_run_needs_consent_and_never_writes_a_real_vf_file(self):
@@ -842,7 +860,8 @@ class Guardrail(MirrorTest):
     def test_the_list_is_the_three_vf_files(self):
         self.assertEqual({k: v["name"] for k, v in xm.ALLOWED_FILES.items()},
                          {"nse_vf": "20250809_NSE vF.xlsx", "bse_vf": "20260718_BSE VF.xlsx", "mcx_vf": "20250827_MCX vF.xlsx"})
-        self.assertEqual({v["folder"] for v in xm.ALLOWED_FILES.values()}, {"Portfolio Stock Valuations - Bull Base Bear (Tusk Prop)"})
+        self.assertEqual({v["folder"] for v in xm.ALLOWED_FILES.values()}, {"Tusk Equity/Portfolio Stock Valuations - Bull Base Bear (Tusk Prop)"})
+        self.assertEqual((xm.OWNER_HOST, xm.OWNER_ACCOUNT), ("tuskinvest-my.sharepoint.com", "tuskinvest_tuskinvest_com"))
         self.assertEqual(xm.CONSENTED_FILES, {})
         self.assertEqual(xm.DRYRUN_FILES, {})
 
@@ -1067,6 +1086,20 @@ class Gate(MirrorTest):
             self.assertEqual(open(out).read(), "run=false\nrun=true\n")
         self.assertFalse(any("graph.microsoft" in x[1] for x in c.calls))
 
+    # Jay's review of #117: the gate (outside the concurrency group) notes this GitHub
+    # run on the manual row, so /api/excel-refresh can see GitHub cancelled it
+    def test_gate_notes_the_github_run_on_a_queued_manual_row(self):
+        c = cloud()
+        c.runs.extend([{"id": 42, "trigger": "manual", "status": "queued", "github_run_id": None},
+                       {"id": 43, "trigger": "manual", "status": "running", "github_run_id": 5}])
+        self.run_main(["--gate", "--run-id", "42"], cloud_=c, GITHUB_EVENT_NAME="workflow_dispatch")
+        self.run_main(["--gate", "--run-id", "43"], cloud_=c, GITHUB_EVENT_NAME="workflow_dispatch")
+        self.assertEqual([r["github_run_id"] for r in c.runs], [777, 5])   # only while queued
+        self.assertEqual([r["status"] for r in c.runs], ["queued", "running"])
+        c = cloud()
+        c.supabase_down = True
+        self.run_main(["--gate", "--run-id", "42"], cloud_=c, GITHUB_EVENT_NAME="workflow_dispatch")   # not fatal
+
     def test_gate_runs_when_the_log_cannot_be_read(self):
         c = cloud()
         c.supabase_down = True
@@ -1091,6 +1124,8 @@ class WorkflowFile(unittest.TestCase):
         gate, mirror = self.job("gate"), self.job("mirror")
         self.assertNotIn("concurrency", gate)
         self.assertIn("--gate", gate)
+        self.assertIn("RUN_ID: ${{ inputs.run_id }}", gate)          # notes the GitHub run on the row
+        self.assertIn('args+=(--run-id "$RUN_ID")', gate)
         self.assertIn("run: ${{ steps.gate.outputs.run }}", gate)
         self.assertIn("needs: gate", mirror)
         self.assertIn("if: ${{ needs.gate.outputs.run == 'true' }}", mirror)

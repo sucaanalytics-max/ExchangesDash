@@ -13,16 +13,19 @@
 const REPO = 'sucaanalytics-max/ExchangesDash';
 const GITHUB_API = `https://api.github.com/repos/${REPO}/actions/workflows`;
 const DISPATCH_TIMEOUT_MS = 8000;
+// A run-status read comes before a dispatch in the same request, so it gets less
+const RUN_READ_TIMEOUT_MS = 2000;
 
 // Dispatches `workflow` (a file name in .github/workflows) on main, with `inputs`
 // when given. Never rejects: resolves to { workflow, status, ok, detail }, where
 // detail is GitHub's answer (refused) or the network error, cut to 300 characters.
-async function dispatchWorkflow(pat, workflow, inputs, userAgent = 'exchangesdash-dispatch') {
+// timeoutMs: a caller that already spent part of its budget passes what is left.
+async function dispatchWorkflow(pat, workflow, inputs, userAgent = 'exchangesdash-dispatch', timeoutMs = DISPATCH_TIMEOUT_MS) {
   let status = null, detail = '';
   try {
     const ghRes = await fetch(`${GITHUB_API}/${workflow}/dispatches`, {
       method: 'POST',
-      signal: AbortSignal.timeout(DISPATCH_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
       headers: {
         'Authorization': `Bearer ${pat}`,
         'Accept':        'application/vnd.github+json',
@@ -33,9 +36,28 @@ async function dispatchWorkflow(pat, workflow, inputs, userAgent = 'exchangesdas
     status = ghRes.status;
     if (!ghRes.ok) detail = String(await ghRes.text().catch(() => '')).slice(0, 300);
   } catch (err) {
-    detail = (err && err.name === 'TimeoutError' ? `no answer in ${DISPATCH_TIMEOUT_MS / 1000} s` : String((err && err.message) || err)).slice(0, 300);
+    detail = (err && err.name === 'TimeoutError' ? `no answer in ${Math.round(timeoutMs / 100) / 10} s` : String((err && err.message) || err)).slice(0, 300);
   }
   return { workflow, status, ok: status >= 200 && status < 300, detail };
 }
 
-module.exports = { REPO, GITHUB_API, DISPATCH_TIMEOUT_MS, dispatchWorkflow };
+// Whether a workflow run has ended (GitHub status "completed": success, failure,
+// cancelled …): true / false, or null when GitHub does not answer within
+// RUN_READ_TIMEOUT_MS or refuses (the token needs Actions: read, which Actions: write
+// includes). Never rejects.
+async function workflowRunEnded(pat, runId, userAgent = 'exchangesdash-dispatch') {
+  if (!/^\d+$/.test(String(runId))) return null;
+  try {
+    const ghRes = await fetch(`https://api.github.com/repos/${REPO}/actions/runs/${runId}`, {
+      signal: AbortSignal.timeout(RUN_READ_TIMEOUT_MS),
+      headers: { 'Authorization': `Bearer ${pat}`, 'Accept': 'application/vnd.github+json', 'User-Agent': userAgent },
+    });
+    if (!ghRes.ok) return null;
+    const run = await ghRes.json();
+    return run && typeof run.status === 'string' ? run.status === 'completed' : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+module.exports = { REPO, GITHUB_API, DISPATCH_TIMEOUT_MS, RUN_READ_TIMEOUT_MS, dispatchWorkflow, workflowRunEnded };

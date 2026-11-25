@@ -452,19 +452,27 @@ def resolve_target(graph, key, t):
 # below, in the Tusk Invest OneDrive. Any other file, including the Exchanges
 # Dashboard workbook and the copies a dry run writes, needs the owner's explicit
 # consent, recorded in CONSENTED_FILES / DRYRUN_FILES by a reviewed PR. Every target is
-# checked against Graph's own metadata for the item (drive owner, parent folder, file
-# name) before a session is opened, so a wrong id or path, a look-alike copy in another
-# folder or another person's drive is refused and nothing in it is read or written.
+# checked against Graph's own metadata for the item (drive owner, folder path from the
+# drive's root, file name) before a session is opened, so a wrong id or path, a
+# look-alike copy in another folder (a same-named folder anywhere else included) or
+# another person's drive is refused and nothing in it is read or written.
 OWNER_HOST = "tuskinvest-my.sharepoint.com"
-OWNER_SITE = "/personal/tuskinvest_"           # the Tusk Invest account's OneDrive
+# The Tusk Invest account's OneDrive, /personal/<this>/: its UPN with _ for @ and .
+# (tuskinvest@tuskinvest.com). Compared as the whole path segment, so another account
+# whose UPN merely starts the same (tuskinvest.ops@…) is refused. A refusal names the
+# segment Graph reported, so --check shows it if this account is not the right one.
+OWNER_ACCOUNT = "tuskinvest_tuskinvest_com"
 VF_FOLDER = "Portfolio Stock Valuations - Bull Base Bear (Tusk Prop)"
+VF_PATH = f"Tusk Equity/{VF_FOLDER}"            # from the drive's root
+# "folder" is the file's folder path from the drive's root, compared whole
 ALLOWED_FILES = {
-    "nse_vf": {"folder": VF_FOLDER, "name": "20250809_NSE vF.xlsx"},
-    "bse_vf": {"folder": VF_FOLDER, "name": "20260718_BSE VF.xlsx"},
-    "mcx_vf": {"folder": VF_FOLDER, "name": "20250827_MCX vF.xlsx"},
+    "nse_vf": {"folder": VF_PATH, "name": "20250809_NSE vF.xlsx"},
+    "bse_vf": {"folder": VF_PATH, "name": "20260718_BSE VF.xlsx"},
+    "mcx_vf": {"folder": VF_PATH, "name": "20250827_MCX vF.xlsx"},
 }
 # Files the owner has explicitly agreed to, e.g.
-#   "dashboard": {"folder": "Dashboard", "name": "20261027_Exchanges_Dashboard.xlsx"}
+#   "dashboard": {"folder": "Direct Equity/Exchanges-capital markets plays/Dashboard",
+#                 "name": "20261027_Exchanges_Dashboard.xlsx"}
 CONSENTED_FILES = {}
 # Copies for --dry-run, also only with the owner's consent; never a real file
 # (ALLOWED_FILES or CONSENTED_FILES), whatever id or path a dry-run target gives.
@@ -475,8 +483,30 @@ def _norm(s):
     return unicodedata.normalize("NFC", str(s or "")).strip().casefold()
 
 
+def _folder_parts(p):
+    """A folder path as its segments, compared whole: 'Tusk Equity/Portfolio …' or a list
+    of already split segments; empty ones dropped, case and Unicode form ignored."""
+    parts = p if isinstance(p, (list, tuple)) else str(p or "").split("/")
+    return tuple(_norm(x) for x in parts if str(x).strip())
+
+
 def _same_file(a, b):
-    return _norm(a["folder"]) == _norm(b["folder"]) and _norm(a["name"]) == _norm(b["name"])
+    return _folder_parts(a["folder"]) == _folder_parts(b["folder"]) and _norm(a["name"]) == _norm(b["name"])
+
+
+def _split_unquote(path):
+    """A URL path's segments, each percent-decoded after splitting, so an encoded slash
+    (%2F) stays inside its segment and cannot make one folder look like two."""
+    return [unquote(x) for x in str(path or "").split("/")]
+
+
+def owner_account(web_url):
+    """The /personal/<account>/ segment of a OneDrive web address on OWNER_HOST, else None."""
+    url = urlparse(web_url or "")
+    parts = _split_unquote(url.path)
+    if _norm(url.hostname) != OWNER_HOST or len(parts) < 3 or _norm(parts[1]) != "personal":
+        return None
+    return parts[2]
 
 
 def real_files():
@@ -501,7 +531,7 @@ def guard_target(key, t, dry_run):
         raise NotAllowed(f"drive guardrail: {key} refused, a dry run may not write a real file; not opened")
     if t.get("path"):
         parts = [p for p in str(t["path"]).split("/") if p]
-        if len(parts) < 2 or not _same_file({"folder": parts[-2], "name": parts[-1]}, spec):
+        if len(parts) < 2 or not _same_file({"folder": "/".join(parts[:-1]), "name": parts[-1]}, spec):
             raise NotAllowed(f"drive guardrail: {key} refused, path {t['path']!r} is not "
                              f"{spec['folder']}/{spec['name']}; not opened")
     return spec
@@ -509,19 +539,25 @@ def guard_target(key, t, dry_run):
 
 def guard_item(graph, key, spec, drive_id, item_id, dry_run):
     """After the ids are known, before a session: Graph's metadata for the item must show
-    a file named spec["name"], directly in spec["folder"], in the Tusk Invest OneDrive."""
+    a file named spec["name"], directly in spec["folder"] (its whole path from the drive's
+    root), in the Tusk Invest OneDrive (the whole /personal/ segment)."""
     meta = graph.request("GET", f"{GRAPH}/drives/{quote(drive_id, safe='')}/items/{quote(item_id, safe='')}"
                          "?$select=id,name,webUrl,parentReference,file") or {}
-    parent = unquote((meta.get("parentReference") or {}).get("path") or "").rstrip("/")
-    seen = {"folder": parent.rsplit("/", 1)[-1].split("root:")[-1], "name": meta.get("name") or ""}
-    url = urlparse(meta.get("webUrl") or "")
+    parent = str((meta.get("parentReference") or {}).get("path") or "")
+    # "/drives/{id}/root:/Tusk%20Equity/Portfolio …" → ["Tusk Equity", "Portfolio …"],
+    # split before decoding; anything not under the drive's root reads as a folder "?"
+    # and fails the comparison
+    folder = _split_unquote(parent.split("root:", 1)[1]) if "root:" in parent else ["?"]
+    seen = {"folder": [x for x in folder if x], "name": meta.get("name") or ""}
+    account = owner_account(meta.get("webUrl"))
     problems = []
     if "file" not in meta:
         problems.append("not a file")
     if not _same_file(seen, spec):
-        problems.append(f"it is {seen['folder'] or '(root)'}/{seen['name']}, expected {spec['folder']}/{spec['name']}")
-    if _norm(url.hostname) != OWNER_HOST or not _norm(unquote(url.path)).startswith(OWNER_SITE):
-        problems.append(f"not in the Tusk Invest OneDrive ({url.hostname or 'no web address'})")
+        problems.append(f"it is {'/'.join(seen['folder']) or '(root)'}/{seen['name']}, expected {spec['folder']}/{spec['name']}")
+    if account is None or _norm(account) != _norm(OWNER_ACCOUNT):
+        where = f"/personal/{account}" if account else (urlparse(meta.get("webUrl") or "").hostname or "no web address")
+        problems.append(f"not in the Tusk Invest OneDrive ({where}, expected /personal/{OWNER_ACCOUNT})")
     if dry_run and any(_same_file(seen, real) for real in real_files()):
         problems.append("a real file: a dry run may only write copies")
     if problems:
@@ -614,6 +650,21 @@ def run_id_file():
     excel_run_id in the runner's temp directory (RUNNER_TEMP, emptied per job; the
     `runner` context cannot be used in a job-level env: in the workflow)."""
     return os.environ.get("EXCEL_RUN_ID_FILE") or os.path.join(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir(), "excel_run_id")
+
+
+def note_github_run(run_id):
+    """The gate job's note on a manual run's row, while it is still queued: this
+    workflow run's GitHub id. The gate runs outside the concurrency group, so the id is
+    recorded even when a newer run cancels this one before its mirror job starts;
+    /api/excel-refresh then sees the GitHub run ended and stops waiting on the row.
+    Failures are printed, not fatal."""
+    gh = os.environ.get("GITHUB_RUN_ID", "")
+    if not run_id or not str(run_id).isdigit() or not gh.isdigit():
+        return
+    try:
+        sb("PATCH", f"excel_sync_runs?id=eq.{int(run_id)}&status=eq.queued", {"github_run_id": int(gh)}, "return=minimal")
+    except SupabaseError as e:
+        print(f"WARNING: could not note the GitHub run on row {run_id}: {e}")
 
 
 def finalize(run_id, conclusion):
@@ -1152,6 +1203,7 @@ def main(argv=None):
     run_id = args.run_id if args.run_id and str(args.run_id).strip() else None
 
     if args.gate:
+        note_github_run(run_id)
         run, why = gate(os.environ.get("GITHUB_EVENT_NAME", ""))
         print(f"Gate: {'run' if run else 'skip'} ({why})")
         out = os.environ.get("GITHUB_OUTPUT")

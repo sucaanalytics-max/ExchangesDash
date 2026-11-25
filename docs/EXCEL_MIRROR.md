@@ -11,12 +11,14 @@
 
 The drive owner's rule: the job may open **only the three vF files**, in `Portfolio Stock Valuations - Bull Base Bear (Tusk Prop)` in the Tusk Invest OneDrive. Any other file in the drive needs the owner's explicit consent. That includes the Exchanges Dashboard workbook and the copies a dry run writes.
 
-- **The list.** `ALLOWED_FILES` in `scripts/excel_mirror.py` names the three vF files by folder and file name. A file the owner agrees to is added to `CONSENTED_FILES`, and dry-run copies to `DRYRUN_FILES`, each in a reviewed PR. Both start empty. A test pins all three lists.
+- **The list.** `ALLOWED_FILES` in `scripts/excel_mirror.py` names the three vF files by their folder's whole path from the drive's root (`Tusk Equity/Portfolio Stock Valuations - Bull Base Bear (Tusk Prop)`) and file name. A file the owner agrees to is added to `CONSENTED_FILES`, and dry-run copies to `DRYRUN_FILES`, each in a reviewed PR. Both start empty. A test pins all three lists.
 - **The check.** Every target is checked before a session is opened, in a write run and in `--check`:
   1. A path target must name the listed folder and file. Otherwise it is refused before any Graph call.
-  2. Graph's own metadata for the item must show a file of that name, directly in that folder, at `tuskinvest-my.sharepoint.com/personal/tuskinvest_…`.
+  2. Graph's own metadata for the item must show a file of that name, directly in that folder (the whole path after `root:`, so a same-named folder elsewhere fails), at `tuskinvest-my.sharepoint.com/personal/tuskinvest_tuskinvest_com/` (the whole segment, `OWNER_ACCOUNT`, so another account whose UPN starts `tuskinvest` fails).
 
-  This refuses a wrong id, a look-alike copy in another folder (there are vF copies under `Direct Equity/Vanshika`, `ANKIT`, `Backups` and `Unclassified Files`), a renamed backup, and the same file name in another person's OneDrive.
+  `OWNER_ACCOUNT` assumes the account is `tuskinvest@tuskinvest.com`. If it is not, every target is refused with the segment Graph reported: correct `OWNER_ACCOUNT` in a PR after the `--check` in the go-live order.
+
+  This refuses a wrong id, a look-alike copy in another folder, even one named like the real folder (there are vF copies under `Direct Equity/Vanshika`, `ANKIT`, `Backups` and `Unclassified Files`), a renamed backup, and the same file name in another person's OneDrive.
 - **Dry runs.** A dry run may open only `DRYRUN_FILES`, and never a file on `ALLOWED_FILES`, even when given a real file's id.
 - **Until the owner consents to the workbook,** leave `dashboard` out of `EXCEL_TARGETS`: it is then recorded as `skipped`, and runs stay `success`.
 - **On a refusal** the target is `failed` with "drive guardrail: … refused", and nothing in it is read or written. The other targets still run.
@@ -57,7 +59,7 @@ Each run, scheduled or manual, writes the latest **saved** shared inputs. Saving
    - `files` holds one entry per target: `target`, `status` (`success`, `partial`, `failed` or `skipped`), `cells`, `sheets`, `errors`, `duration_s`, `dry_run`, the resolved `item` ids, and for vF files `inputs_written` (true only when every input cell was written; the panel's tooltip shows it).
    - `github_run_id` links the run to the Actions log.
    - **No row stays open.** The mirror job's last step runs `if: always()` (`--finalize`) and closes the row as `failed` if the job died, timed out or was cancelled before recording a result.
-   - GitHub keeps one running and at most one pending run per concurrency group. A newer pending run cancels the older, whose job then never starts. A run still `queued` or `running` 45 minutes after it was requested is closed as `failed` by `/api/excel-refresh`: on every Refresh press, and on a GET only when the listed runs include one (an ordinary GET only reads).
+   - GitHub keeps one running and at most one pending run per concurrency group. A newer pending run cancels the older, whose job then never starts. The workflow's gate job, which runs outside the group, notes its GitHub run id on a manual run's row, so a Refresh press that finds a queued run whose GitHub run has already ended closes it as `failed` and dispatches a new one. Any run still `queued` or `running` 45 minutes after it was requested is closed as `failed` by `/api/excel-refresh`: on every Refresh press, and on a GET only when the listed runs include one (an ordinary GET only reads).
    - **One queued manual run at a time.** A press while a run is still queued follows that run, which will read the latest saved inputs when it starts. A press while a run is already running queues a new one, as the running one read the inputs before the press. The partial unique index `excel_sync_runs_one_manual` (`valuation_sync_schema.sql`) also stops two presses at the same moment from both queueing one.
 
    Run status:
@@ -119,7 +121,7 @@ Without Supabase or the PAT, `/api/excel-refresh` answers 503 and the panel says
 
 ### 3b. Supabase (once)
 
-Run the `excel_sync_runs_one_manual` block from `valuation_sync_schema.sql` in the SQL editor. That is the `update` that closes manual rows left queued for over 45 minutes, then the `create unique index`. It is the one addition since the file was first applied, and running it again does nothing.
+Run the `excel_sync_runs_one_manual` block from `valuation_sync_schema.sql` in the SQL editor. That is the `update` that closes every queued manual row but the newest, then the `create unique index`. It is the one addition since the file was first applied, and running it again does nothing.
 
 ### 4. Fill `EXCEL_TARGETS`
 
