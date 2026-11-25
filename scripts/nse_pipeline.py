@@ -1150,7 +1150,8 @@ def compute_enriched(daily, quarterly, pnl, special_sessions=None):
     cq = quarterly[-1] if quarterly else None
     if cq and pnl:
         days_so_far = cq["days"]
-        expected_days = 62
+        expected_days, days_basis = trading_calendar.quarter_sessions(
+            "nse", cq["quarter"], days_so_far, max(r["date"] for r in daily if r.get("fy_quarter") == cq["quarter"]))
         daily_avg = float(cq["total_rev"]) / max(days_so_far, 1)
         # All non-transaction revenue (other operating revenue + non-operating
         # income) per ₹ of transaction revenue, from the ratio model.
@@ -1176,6 +1177,7 @@ def compute_enriched(daily, quarterly, pnl, special_sessions=None):
             "daily_avg_rev": round(daily_avg, 4),
             "trading_days_so_far": days_so_far,
             "expected_trading_days": expected_days,
+            "expected_days_basis": days_basis,
             "segments_rev_extrapolated": segments_extrap,
             "special_rev": special_rev,
             "other_txn_per_day": other_per_day,
