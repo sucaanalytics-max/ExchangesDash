@@ -1051,11 +1051,13 @@ def compute_predicted_quarters(pnl_predictor, pnl_history, quarterly):
         transaction revenue extrapolated by pnl_predictor
       - the next quarter, the daily-file part of that transaction revenue
         grown at the current quarter's YoY per-day rate, plus the same other
-        transaction charges (nse_other_txn_charges)
+        transaction charges (nse_other_txn_charges); the current quarter's
+        special sessions are not carried over
 
     EBITDA is operating EBITDA (EBITDA_DEFINITION); forecasts carry no one-offs.
-    transaction_rev is on NSE's reported basis (daily files + other transaction
-    charges), the basis the ratio model's ratios are taken on.
+    transaction_rev is on NSE's reported basis (daily files + the quarter's
+    special sessions + other transaction charges), the basis the ratio model's
+    ratios are taken on.
     """
     if not pnl_predictor or not pnl_history:
         return {}
@@ -1064,8 +1066,9 @@ def compute_predicted_quarters(pnl_predictor, pnl_history, quarterly):
         return {}
 
     other_txn = float(pnl_predictor.get("other_txn_rev") or 0)
+    special = float(pnl_predictor.get("special_rev") or 0)
 
-    def build_entry(txn_rev):
+    def build_entry(txn_rev, special_rev=0.0):
         op_rev  = txn_rev * (1 + m["other_operating_revenue_ratio"])
         non_op  = txn_rev * m["non_operating_income_ratio"]
         total   = op_rev + non_op
@@ -1078,7 +1081,8 @@ def compute_predicted_quarters(pnl_predictor, pnl_history, quarterly):
         margin  = round(ebitda / op_rev, 4) if op_rev else 0
         return {
             "transaction_rev":         round(txn_rev, 2),
-            "segments_rev":            round(txn_rev - other_txn, 2),
+            "segments_rev":            round(txn_rev - other_txn - special_rev, 2),
+            "special_rev":             round(special_rev, 2),
             "other_txn_rev":           round(other_txn, 2),
             "operating_revenue":       round(op_rev, 2),
             "non_operating_income":    round(non_op, 2),
@@ -1105,7 +1109,7 @@ def compute_predicted_quarters(pnl_predictor, pnl_history, quarterly):
     # Current quarter: from live trading data via pnl_predictor. Named from the
     # data (latest quarter with trading days), not the wall clock.
     cq_name = quarterly[-1]["quarter"] if quarterly else date_to_fy_quarter(datetime.now())
-    result[cq_name] = build_entry(pnl_predictor["transaction_rev_extrapolated"])
+    result[cq_name] = build_entry(pnl_predictor["transaction_rev_extrapolated"], special)
 
     # Next quarter: YoY-growth projection
     nq_name = _next_quarter(cq_name)
@@ -1127,7 +1131,8 @@ def compute_predicted_quarters(pnl_predictor, pnl_history, quarterly):
     else:
         yoy_growth = 0.10
 
-    segments = pnl_predictor["transaction_rev_extrapolated"] - other_txn
+    # A Muhurat or DR test is a one-off: only the regular sessions grow
+    segments = pnl_predictor["transaction_rev_extrapolated"] - other_txn - special
     result[nq_name] = build_entry(segments * (1 + yoy_growth) + other_txn)
 
     return result
@@ -1159,7 +1164,12 @@ def compute_enriched(daily, quarterly, pnl, special_sessions=None):
         other_per_day = other["per_day"] if other else 0.0
         segments_extrap = round(daily_avg * expected_days, 2)
         other_txn_rev = round(other_per_day * expected_days, 2)
-        txn_rev_extrap = round(segments_extrap + other_txn_rev, 2)
+        # This quarter's special sessions (Muhurat, DR tests) are in NSE's
+        # reported charges but kept out of the session average: add them as
+        # banked, at today's rates like every row here.
+        special_rev = round(sum(_num(d, "total_rev") for d in (special_sessions or [])
+                                if d.get("fy_quarter") == cq["quarter"]), 2)
+        txn_rev_extrap = round(segments_extrap + special_rev + other_txn_rev, 2)
         total_rev_pred = txn_rev_extrap * (1 + other_income_ratio)
         enriched["pnl_predictor"] = {
             "quarter": cq["quarter"],
@@ -1167,6 +1177,7 @@ def compute_enriched(daily, quarterly, pnl, special_sessions=None):
             "trading_days_so_far": days_so_far,
             "expected_trading_days": expected_days,
             "segments_rev_extrapolated": segments_extrap,
+            "special_rev": special_rev,
             "other_txn_per_day": other_per_day,
             "other_txn_rev": other_txn_rev,
             "other_txn_basis": other["quarters"] if other else [],

@@ -116,6 +116,23 @@ class OtherTransactionCharges(unittest.TestCase):
         self.assertEqual([(b["quarter"], b["days"], b["special_rev"]) for b in p["other_txn_basis"]],
                          [("Q2 FY 2027", 60, 0), ("Q3 FY 2027", 60, 19.33)])
         self.assertAlmostEqual(p["other_txn_per_day"], round((45 / 60 + 48 / 60) / 2, 4), places=4)
+        self.assertEqual(p["special_rev"], 0)      # Q4 FY 2027, the current quarter, has none
+
+    def test_current_quarter_special_sessions_are_banked(self):
+        from datetime import date, timedelta
+        days, d = [], date(2026, 10, 1)
+        while len(days) < 30:
+            if d.weekday() < 5:
+                days.append(d.isoformat())
+            d += timedelta(days=1)
+        rows = [{"date": x, "day": "", "fy_quarter": "Q3 FY 2027", "fy_month": "Oct", "fy": "FY 2027",
+                 "opt_rev": 60, "fut_rev": 0, "cash_rev": 0, "total_rev": 60} for x in days]
+        rows.append({"date": "2026-11-08", "day": "Sunday", "fy_quarter": "Q3 FY 2027", "fy_month": "Nov", "fy": "FY 2027",
+                     "opt_rev": 19.33, "fut_rev": 0, "cash_rev": 0, "total_rev": 19.33})
+        pnl = [self._pnl("Q1 FY 2027", 3000), self._pnl("Q2 FY 2027", 3100)]
+        p = nse.build_outputs(rows, pnl, [], {})["enriched"]["pnl_predictor"]
+        self.assertEqual((p["trading_days_so_far"], p["daily_avg_rev"], p["special_rev"]), (30, 60, 19.33))
+        self.assertAlmostEqual(p["transaction_rev_extrapolated"], 60 * 62 + 19.33 + p["other_txn_rev"], places=2)
 
     def test_next_quarter_grows_only_the_daily_part(self):
         pnl = [self._pnl("Q1 FY 2026", 3000), self._pnl("Q2 FY 2026", 3100)]
