@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-25T11:08:50Z",
+  "updated_at": "2026-11-25T15:31:38Z",
   "ticker": "NSE.BO",
   "ma_window": 45,
   "regression_start": "2026-09-24",
@@ -71,7 +71,7 @@
   },
   "latest": {
     "date": "2026-11-25",
-    "revenue_cr": null,
+    "revenue_cr": 65.6164,
     "rev_ma": 63.7561,
     "price_actual": 2317.65,
     "price_pred": null,
@@ -360,7 +360,7 @@
     },
     {
       "date": "2026-11-25",
-      "revenue_cr": null,
+      "revenue_cr": 65.6164,
       "rev_ma": 63.7561,
       "price": 2317.65,
       "price_pred": null
@@ -1130,6 +1130,10 @@
     {
       "date": "2026-11-23",
       "revenue_cr": 109.7077
+    },
+    {
+      "date": "2026-11-25",
+      "revenue_cr": 65.6164
     }
   ],
   "status": "collecting",
