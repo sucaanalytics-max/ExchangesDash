@@ -370,11 +370,17 @@ function buildRevenuePredictor(ex) {
       ? `Base runs the sessions left at the expiry-aware pace: ${predictorMixText(restMix.mix, restMix.rest)}, each kind at its average (${PREDICTOR_BUCKETS.map(([k, l]) => `${l}: ${restMix.src[k]}`).join('; ')}). The expiries counted are ${name}’s own weekly expiries, scheduled over the weekdays left; holidays are not known in advance, so the split is scaled to the sessions left.`
       : 'Base runs the sessions left at the quarter-to-date average.'}</li>
       <li>Bear / Bull: the Base daily revenue for the sessions left ∓ ${fmtNum(spread, 0)} % (the spread is an input).</li>`;
+  // The pipeline lists the base quarters it measured the other charges on
+  // (other_txn_basis); none means it could not (or the file predates them).
+  const otxBasis = ENRICHED_DATA.pnl_predictor?.other_txn_basis || [];
+  const otxHow = otxBasis.length
+    ? `Those are carried at ${fmtNum(ENRICHED_DATA.pnl_predictor.other_txn_per_day, 2)} ₹ Cr a session, the ${shortQuarterRange(otxBasis.map(b => b.quarter))} average of reported less daily-file revenue (special sessions count in the daily files but not as sessions).`
+    : 'The data file carries no measure of them, so the published forecast leaves them out (0 in the Assumptions drawer).';
   const howNSE = model ? rxHow('How the forecast works', `<ul>${baseHow}
-      <li>Transaction revenue is on NSE's reported basis: the daily files' equity F&amp;O and cash, plus NSE's other transaction charges (mutual fund platform, currency derivatives, NSEIX), which the daily files miss. Those are carried at ${fmtNum(ENRICHED_DATA.pnl_predictor?.other_txn_per_day || 0, 2)} ₹ Cr a session, the ${shortQuarterRange(model.base_quarters || [])} average of reported less daily-file revenue.</li>
+      <li>Transaction revenue is on NSE's reported basis: the daily files' equity F&amp;O and cash, plus NSE's other transaction charges (mutual fund platform, currency derivatives, NSEIX), which the daily files miss. ${otxHow}</li>
       <li>Other operating revenue (${fmtPct(model.other_operating_revenue_ratio)}) and other income (${fmtPct(model.non_operating_income_ratio)}) scale with transaction revenue; operating expenses (${fmtPct(model.operating_expense_ratio)}) and depreciation (${fmtPct(model.depreciation_ratio)}) scale with operating revenue; associates ${rxCr(model.share_profit_associates)}; tax at the ${shortQuarterRange(model.tax_rate_quarters)} effective rate (${fmtPct(model.tax_rate)}).</li>
       <li>Ratios come from actual ${nseQuarterRange(model.base_quarters)}${Object.keys(model.one_offs_excluded || {}).length ? `, one-offs excluded (${Object.entries(model.one_offs_excluded).map(([q, o]) => `${nseOneOffText(o)} in ${q}`).join('; ')})` : ''}. Forecasts carry no one-offs.</li>
-      <li>“Published” is the pipeline’s own default forecast (flat quarter-to-date pace). ${nextL} grows transaction revenue at the current quarter’s year-on-year per-session rate. ${NSE_EBITDA_DEF}</li>
+      <li>“Published” is the pipeline’s own default forecast (flat quarter-to-date pace). ${nextL} grows the daily files’ revenue at the current quarter’s year-on-year per-session rate and carries the other transaction charges flat. ${NSE_EBITDA_DEF}</li>
     </ul>`) : '';
   const howBSE = rxHow('How this estimate works', `<ul>${baseHow}
       <li>Other income and PAT margin are the starting values of the Excel “Quarterly Predictor”; BSE’s reported P&amp;L is not in this repo, so there are no actuals to compare against.</li>
