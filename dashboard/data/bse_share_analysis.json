@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-25T11:08:54Z",
+  "updated_at": "2026-11-25T11:10:41Z",
   "ticker": "BSE.NS",
   "ma_window": 45,
   "regression_start": "2025-03-01",
@@ -69,7 +69,7 @@
   },
   "latest": {
     "date": "2026-11-25",
-    "revenue_cr": null,
+    "revenue_cr": 1.0773,
     "rev_ma": 21.411,
     "price_actual": 3775.2,
     "price_pred": 3809.3,
@@ -6042,7 +6042,7 @@
     },
     {
       "date": "2026-11-25",
-      "revenue_cr": null,
+      "revenue_cr": 1.0773,
       "rev_ma": 21.411,
       "price": 3775.2,
       "price_pred": 3809.3
@@ -9636,6 +9636,10 @@
     {
       "date": "2026-11-23",
       "revenue_cr": 9.552
+    },
+    {
+      "date": "2026-11-25",
+      "revenue_cr": 1.0773
     }
   ]
 }
