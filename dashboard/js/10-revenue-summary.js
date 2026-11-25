@@ -76,6 +76,22 @@ const EXPIRY_RULES = [
 ];
 const EXPIRY_DOW_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
+// NSE / BSE full-day weekday holidays: a JS copy of trading_calendar.EQUITY_HOLIDAYS
+// (scripts/check_expiry_calendar.py checks the two match). They let a week's or
+// month's expiry move off a holiday as soon as the holiday is known, rather than
+// once the data has passed it. A date the daily files show trading always wins.
+const EQUITY_HOLIDAYS = [
+  '2025-02-26', '2025-03-14', '2025-03-31', '2025-04-10', '2025-04-14', '2025-04-18',
+  '2025-05-01', '2025-08-15', '2025-08-27', '2025-10-02', '2025-10-21', '2025-10-22',
+  '2025-11-05', '2025-12-25', '2026-01-15', '2026-01-26', '2026-03-03', '2026-03-26',
+  '2026-03-31', '2026-04-03', '2026-04-14', '2026-05-01', '2026-05-28', '2026-06-26',
+  '2026-09-14', '2026-10-02', '2026-10-20', '2026-11-10', '2026-11-24', '2026-12-25',
+];
+
+function isExchangeHoliday(exchange, dateStr) {
+  return (exchange === 'nse' || exchange === 'bse') && EQUITY_HOLIDAYS.includes(dateStr);
+}
+
 function expiryRuleFor(exchange, dateStr) {
   return EXPIRY_RULES.find(r => r.exchange === exchange
     && (r.effective_from === null || dateStr >= r.effective_from)
@@ -106,12 +122,22 @@ function monthEndExpiryWeekdayLabel(exchange, dailyAll) {
   return `expiry weekday (${steps.join(' → ')})`;
 }
 
+// Whether `dateStr` can hold an expiry: a date the data shows trading; else not a
+// weekend or listed holiday, and after the data's last date (a weekday the data has
+// passed and lacks was a closure)
+function expiryCanTrade(exchange, dateStr, tradingDates, lastDataDate) {
+  if (tradingDates.has(dateStr)) return true;
+  const wd = new Date(dateStr + 'T00:00:00Z').getUTCDay();
+  if (wd === 0 || wd === 6 || isExchangeHoliday(exchange, dateStr)) return false;
+  return dateStr > lastDataDate;
+}
+
 // ── Month-end expiry comparison (NSE & BSE only) ──────────────────────────────
-// Derived purely from observed trading dates in DATA.daily_all — no separate
-// holiday calendar needed. Expiry = the calendar month's last scheduled expiry
+// Derived from observed trading dates in DATA.daily_all, plus EQUITY_HOLIDAYS for
+// days after the data. Expiry = the calendar month's last scheduled expiry
 // day per EXPIRY_RULES (last Tuesday for NSE since Sep 2025, last Thursday
-// before; see the table for BSE); if that exact date isn't an actual trading
-// day (holiday), walk back one calendar day at a time until landing on one that is.
+// before; see the table for BSE); if that exact date isn't a trading day
+// (expiryCanTrade), walk back one calendar day at a time until landing on one that is.
 // Rows that leave some sessions out carry every session's date as tradingDates
 // (the contracts view, 23-contracts-view.js, drops days without contract counts),
 // so a session without figures is never taken for a holiday; likewise below.
@@ -134,17 +160,18 @@ function computeMonthExpiryDates(dailyAll, exchange) {
     while (cursor.getUTCDate() > 1 && !isScheduledExpiry(exchange, toStr(cursor))) cursor.setUTCDate(cursor.getUTCDate() - 1);
     if (!isScheduledExpiry(exchange, toStr(cursor))) return; // no rule covers this month
 
-    // Expiry still in the future (e.g. this month's last Tuesday hasn't happened
-    // yet): skip it. Otherwise the holiday walk-back below would misread the
-    // missing date as a holiday and label an ordinary earlier day as the expiry.
-    if (toStr(cursor) > lastDataDate) return;
-
+    // Walk back off non-trading days: a day the data has passed and lacks, a weekend,
+    // or a listed holiday (EQUITY_HOLIDAYS); a weekday after the data that is not a
+    // listed holiday is taken to trade. An expiry that lands after the data (this
+    // month's last Tuesday hasn't happened yet) is skipped, so a missing future
+    // date is never misread as a holiday.
     let dateStr = toStr(cursor);
     let guard = 10; // holidays cluster at most a few days; bail out rather than loop unbounded
-    while (!tradingDates.has(dateStr) && guard-- > 0) {
+    while (!expiryCanTrade(exchange, dateStr, tradingDates, lastDataDate) && guard-- > 0) {
       cursor.setUTCDate(cursor.getUTCDate() - 1);
       dateStr = toStr(cursor);
     }
+    if (dateStr > lastDataDate) return;
     if (tradingDates.has(dateStr)) results.push({ monthKey, expiryDate: dateStr });
   });
   return results.sort((a, b) => a.monthKey.localeCompare(b.monthKey));
@@ -185,15 +212,16 @@ function computeWeekExpiryDates(dailyAll, exchange) {
       if (isScheduledExpiry(exchange, toStr(c))) target = c;
     }
     if (!target) return;
-    // Same future-expiry guard as computeMonthExpiryDates: this week's expiry
-    // day may not have happened yet.
-    if (toStr(target) > lastDataDate) return;
+    // Same walk-back and future-expiry guard as computeMonthExpiryDates: a listed
+    // holiday moves the expiry at once (Tue 24 Nov 2026 → Mon 23 Nov with data to
+    // the 23rd), but an expiry day still after the data has not happened yet.
     const cursor = new Date(target);
     let dateStr = toStr(cursor);
-    while (!tradingDates.has(dateStr) && cursor.getTime() >= monday.getTime()) {
+    while (!expiryCanTrade(exchange, dateStr, tradingDates, lastDataDate) && cursor.getTime() >= monday.getTime()) {
       cursor.setUTCDate(cursor.getUTCDate() - 1);
       dateStr = toStr(cursor);
     }
+    if (dateStr > lastDataDate) return;
     if (tradingDates.has(dateStr) && cursor.getTime() >= monday.getTime()) {
       results.push({ weekStart: weekStartStr, expiryDate: dateStr });
     }

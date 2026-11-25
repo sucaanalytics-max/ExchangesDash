@@ -273,13 +273,24 @@ function predictorRestMix(ex, ctx, days, dailyAll) {
   if (!EXPIRY_RULES.some(r => r.exchange === ex) || !rest || !ctx.daily.length) return out;
   const end = quarterEndIso(ctx.cq.quarter);
   if (!end) return out;
+  // The weekdays left, less listed holidays (EQUITY_HOLIDAYS); a day is an expiry
+  // when it is the scheduled one or every day from it to the scheduled one is a
+  // holiday (Tue 24 Nov 2026 → Mon 23 Nov), and pre-expiry the day before an expiry
+  const weekend = d => { const wd = new Date(d + 'T00:00:00Z').getUTCDay(); return wd === 0 || wd === 6; };
+  const isExp = d => {
+    if (weekend(d) || isExchangeHoliday(ex, d)) return false;
+    for (let x = d; ; ) {
+      if (isScheduledExpiry(ex, x)) return true;
+      x = predictorNextIso(x);
+      if (weekend(x) || !isExchangeHoliday(ex, x)) return false;
+    }
+  };
   let e = 0, p = 0, w = 0;
   for (let d = predictorNextIso(ctx.daily[ctx.daily.length - 1].date); d <= end; d = predictorNextIso(d)) {
-    const wd = new Date(d + 'T00:00:00Z').getUTCDay();
-    if (wd === 0 || wd === 6) continue;
+    if (weekend(d) || isExchangeHoliday(ex, d)) continue;
     w++;
-    if (isScheduledExpiry(ex, d)) e++;
-    else if (isScheduledExpiry(ex, predictorNextIso(d))) p++;
+    if (isExp(d)) e++;
+    else if (isExp(predictorNextIso(d))) p++;
   }
   if (!w) return out;
   const scale = Math.min(1, rest / w);

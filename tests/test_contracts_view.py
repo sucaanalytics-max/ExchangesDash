@@ -216,7 +216,7 @@ class DailyRows(unittest.TestCase):
         # but the month-end and weekly expiries stay on it rather than moving to Thursday
         rows = [bse_row(d, 1e6, 1.0) for d in ("2023-04-24", "2023-04-25", "2023-04-26", "2023-04-27")]
         rows += [bse_row("2023-04-28", 0, 0), bse_row("2023-05-09", 1e6, 1.0)]
-        names = CV_JS + ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry",
+        names = CV_JS + ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry", "EQUITY_HOLIDAYS", "isExchangeHoliday", "expiryCanTrade",
                          "computeMonthExpiryDates", "computeWeekExpiryDates", "EXPIRY_DATES_CACHE", "expiryDateSet"]
         got = js_eval(names, "(c => [c.map(r => r.date), computeMonthExpiryDates(c, 'bse').map(e => e.expiryDate),"
                              " [...expiryDateSet(c, 'bse')]])(contractsDailyRows(DATA, 'bse'))", rows)

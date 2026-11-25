@@ -132,7 +132,9 @@ class OtherTransactionCharges(unittest.TestCase):
         pnl = [self._pnl("Q1 FY 2027", 3000), self._pnl("Q2 FY 2027", 3100)]
         p = nse.build_outputs(rows, pnl, [], {})["enriched"]["pnl_predictor"]
         self.assertEqual((p["trading_days_so_far"], p["daily_avg_rev"], p["special_rev"]), (30, 60, 19.33))
-        self.assertAlmostEqual(p["transaction_rev_extrapolated"], 60 * 62 + 19.33 + p["other_txn_rev"], places=2)
+        # 30 sessions to Wed 11 Nov, then the weekdays to 31 Dec less 24 Nov and 25 Dec
+        self.assertEqual(p["expected_trading_days"], 64)
+        self.assertAlmostEqual(p["transaction_rev_extrapolated"], 60 * 64 + 19.33 + p["other_txn_rev"], places=2)
 
     def test_next_quarter_grows_only_the_daily_part(self):
         pnl = [self._pnl("Q1 FY 2026", 3000), self._pnl("Q2 FY 2026", 3100)]

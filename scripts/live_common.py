@@ -71,6 +71,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from expiry_calendar import is_scheduled_expiry, next_scheduled_expiry
+from trading_calendar import HOLIDAYS
 
 MARKET_OPEN_MIN  = 9 * 60 + 15   # 9:15 AM IST
 # SEBI's Closing Auction Session (effective 2026-08-03) moved the cash segment's
@@ -124,25 +125,36 @@ def classify_day(d: date, exchange: str, market_dates: set = None) -> str:
         return "normal"
 
     if market_dates:
-        canonical_str = canonical_expiry.strftime("%Y-%m-%d")
-
-        # Only apply holiday-shift logic if the canonical expiry is in the past
-        # (i.e. we would already have it in market_dates if it were a trading day).
-        # If it's today or in the future we can't know yet → use simple weekday rule.
         max_known = max(market_dates) if market_dates else ""
-        expiry_is_holiday = (canonical_str <= max_known) and (canonical_str not in market_dates)
+        holidays = HOLIDAYS.get(exchange.lower(), frozenset())
+
+        def trades(x):
+            """A day in market_dates trades; otherwise a weekend or a listed holiday
+            (trading_calendar.HOLIDAYS) does not, nor a weekday the data has passed
+            and lacks; a weekday after the data is taken to trade."""
+            s = x.strftime("%Y-%m-%d")
+            if s in market_dates:
+                return True
+            if x.weekday() > 4 or s in holidays:
+                return False
+            return s > max_known
+
+        # The canonical expiry is a holiday when the data has passed it without
+        # it, or when it is a listed holiday (known ahead, so a Monday before a
+        # Tuesday holiday is the expiry on the day itself, 23 Nov 2026).
+        expiry_is_holiday = not trades(canonical_expiry)
 
         if expiry_is_holiday:
             # Expiry shifts to the trading day just before canonical expiry
             # that day is the new expiry
             shifted = canonical_expiry - timedelta(days=1)
-            while shifted.strftime("%Y-%m-%d") not in market_dates and shifted > d:
+            while not trades(shifted) and shifted > d:
                 shifted -= timedelta(days=1)
             if d == shifted:
                 return "expiry"
             # Pre-expiry = day before shifted expiry
             pre_shifted = shifted - timedelta(days=1)
-            while pre_shifted.strftime("%Y-%m-%d") not in market_dates and pre_shifted > d:
+            while not trades(pre_shifted) and pre_shifted > d:
                 pre_shifted -= timedelta(days=1)
             if d == pre_shifted:
                 return "pre_expiry"

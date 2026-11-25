@@ -8,7 +8,7 @@ import expiry_calendar as ec
 from live_common import classify_day
 from nse_pipeline import date_to_fy_month, date_to_fy_quarter
 
-EXPIRY_JS = ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry",
+EXPIRY_JS = ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry", "EQUITY_HOLIDAYS", "isExchangeHoliday", "expiryCanTrade",
              "computeMonthExpiryDates"]
 
 
@@ -109,10 +109,38 @@ class DashboardExpiryCounts(unittest.TestCase):
                 self.assertEqual(got, want)
 
     def test_expiry_not_yet_traded_is_not_counted(self):
-        # Data ends Mon 19 Oct 2026; NSE's Tuesday expiry on the 20th has not happened
-        daily = labelled(trading_days("2026-10-01", "2026-10-19", {"2026-10-02"}))
-        self.assertEqual(month_counts(daily, "nse", ["FY 2027 October"]), [2])   # 6th, 13th
-        self.assertEqual(month_counts(daily, "bse", ["FY 2027 October"]), [3])   # 1st, 8th, 15th
+        # Data ends Mon 26 Oct 2026; NSE's Tuesday expiry on the 27th has not happened
+        # (Tue 20 Oct was a holiday, so that week's expiry was Mon 19 Oct)
+        daily = labelled(trading_days("2026-10-01", "2026-10-26", {"2026-10-02", "2026-10-20"}))
+        self.assertEqual(month_counts(daily, "nse", ["FY 2027 October"]), [3])   # 6th, 13th, 19th
+        self.assertEqual(month_counts(daily, "bse", ["FY 2027 October"]), [4])   # 1st, 8th, 15th, 22nd
+
+    def test_listed_holiday_moves_expiry_before_the_data_passes_it(self):
+        # Data ends Mon 23 Nov 2026 and Tue 24 Nov is a listed holiday: Monday is
+        # NSE's expiry at once (weekly and November's month-end), with no
+        # pre-expiry session that week; BSE's Thursday 26th is still ahead
+        days = trading_days("2026-11-02", "2026-11-23", {"2026-11-10"})
+        daily = [{"date": d} for d in days]
+        nse = js_eval(COUNT_JS + ["PRE_EXPIRY_DATES_CACHE", "preExpiryDateSet"],
+                      "[[...expiryDateSet(DATA, 'nse')].sort(), [...preExpiryDateSet(DATA, 'nse')].sort(),"
+                      " computeMonthExpiryDates(DATA, 'nse').map(e => e.expiryDate)]", daily)
+        self.assertEqual(nse[0], ["2026-11-03", "2026-11-09", "2026-11-17", "2026-11-23"])
+        self.assertEqual(nse[1], ["2026-11-02", "2026-11-16"])
+        self.assertEqual(nse[2], ["2026-11-23"])
+        bse = js_eval(COUNT_JS, "[...expiryDateSet(DATA, 'bse')].sort()", daily)
+        self.assertEqual(bse, ["2026-11-05", "2026-11-12", "2026-11-19"])
+        # A date the data shows trading wins over the list
+        traded = js_eval(COUNT_JS, "[...expiryDateSet(DATA, 'nse')].sort()", daily + [{"date": "2026-11-24"}])
+        self.assertIn("2026-11-24", traded)
+        self.assertNotIn("2026-11-23", traded)
+
+    def test_live_classification_knows_listed_holidays(self):
+        # The live poller classifies the session as it happens: Mon 23 Nov 2026 is
+        # NSE's expiry (Tue 24 Nov a listed holiday) before 24 Nov is in any data
+        market = set(trading_days("2026-11-02", "2026-11-23", {"2026-11-10"}))
+        self.assertEqual(classify_day(date(2026, 11, 23), "nse", market), "expiry")
+        self.assertEqual(classify_day(date(2026, 11, 20), "nse", market - {"2026-11-23"}), "pre_expiry")
+        self.assertEqual(classify_day(date(2026, 11, 25), "bse", market | {"2026-11-25"}), "pre_expiry")
 
     def test_mcx_has_no_count(self):
         self.assertIsNone(js_eval(COUNT_JS, "countExpiryDays(DATA, DATA, 'mcx')", [{"date": "2026-10-13"}]))

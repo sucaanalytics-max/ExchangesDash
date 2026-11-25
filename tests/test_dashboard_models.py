@@ -24,7 +24,7 @@ def _nse_pnl():
     return json.loads((ROOT / "dashboard" / "data" / "nse_dashboard_data.json").read_text()).get("pnl") or []
 
 
-REST_MIX_JS = ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry", "EXPIRY_DATES_CACHE",
+REST_MIX_JS = ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry", "EQUITY_HOLIDAYS", "isExchangeHoliday", "expiryCanTrade", "EXPIRY_DATES_CACHE",
                "computeWeekExpiryDates", "expiryDateSet", "PRE_EXPIRY_DATES_CACHE", "preExpiryDateSet",
                "PREDICTOR_MIN_BUCKET", "PREDICTOR_BUCKETS", "quarterEndIso", "predictorNextIso", "predictorRestMix"]
 
@@ -51,14 +51,16 @@ class PredictorRestMix(unittest.TestCase):
 
     def test_split_adds_up_and_weights_each_kind(self):
         ctx, rows = self._quarter()
-        days = ctx["n"] + 29
+        days = ctx["n"] + 27
         got = js_eval(REST_MIX_JS, "predictorRestMix('nse', DATA.ctx, DATA.days, DATA.rows)", {"ctx": ctx, "days": days, "rows": rows})
         mix = got["mix"]
-        self.assertEqual(mix["e"] + mix["p"] + mix["o"], 29)
-        # 23 Nov – 31 Dec: 6 Tuesdays, 6 Mondays among 29 weekdays
-        self.assertEqual((mix["e"], mix["p"]), (6, 6))
+        self.assertEqual(mix["e"] + mix["p"] + mix["o"], 27)
+        # 23 Nov – 31 Dec: 29 weekdays less the 24 Nov and 25 Dec holidays. Tue 24 Nov
+        # is a holiday, so Mon 23 Nov is that week's expiry: 6 expiries (23 Nov and
+        # the five December Tuesdays) and 5 pre-expiry Mondays (30 Nov – 28 Dec)
+        self.assertEqual((mix["e"], mix["p"]), (6, 5))
         self.assertEqual(got["src"]["e"], "quarter to date")
-        want = (mix["e"] * 100 + mix["p"] * 60 + mix["o"] * 40) / 29
+        want = (mix["e"] * 100 + mix["p"] * 60 + mix["o"] * 40) / 27
         self.assertAlmostEqual(got["perSeg"]["opt"], want, places=9)
 
     def test_mcx_keeps_the_flat_pace(self):
@@ -926,7 +928,7 @@ class RevenueSummaryMonths(unittest.TestCase):
         self.assertTrue(got)
 
 
-LAST_FIVE_JS = ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry", "computeWeekExpiryDates",
+LAST_FIVE_JS = ["EXPIRY_RULES", "EXPIRY_DOW_NAMES", "expiryRuleFor", "isScheduledExpiry", "EQUITY_HOLIDAYS", "isExchangeHoliday", "expiryCanTrade", "computeWeekExpiryDates",
                 "EXPIRY_DATES_CACHE", "expiryDateSet", "getRevFieldObj", "WEEKDAYS", "MONTHS_SHORT", "fmtNum",
                 "L5_DAY_MS", "l5DayAfter", "lastFiveBreakdown", "l5Date", "l5MixNote", "lastFiveTitle"]
 
