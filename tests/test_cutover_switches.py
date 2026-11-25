@@ -28,6 +28,57 @@ class FakeSupabase:
         return FakeTable(self.rows)
 
 
+class CappedQuery:
+    """A select that, like PostgREST, returns at most `cap` rows a request."""
+    def __init__(self, dates, cap, calls):
+        self.dates, self.cap, self.calls = dates, cap, calls
+        self.lo, self.hi = 0, None
+
+    def select(self, _cols):
+        return self
+
+    def order(self, _col):
+        return self
+
+    def range(self, lo, hi):
+        self.lo, self.hi = lo, hi
+        return self
+
+    def execute(self):
+        self.calls.append((self.lo, self.hi))
+        hi = len(self.dates) - 1 if self.hi is None else self.hi
+        rows = sorted(self.dates)[self.lo:hi + 1][:self.cap]
+        self.data = [{"date": d} for d in rows]
+        return self
+
+
+class CappedSupabase:
+    def __init__(self, dates, cap):
+        self.dates, self.cap, self.calls = dates, cap, []
+
+    def table(self, _name):
+        return CappedQuery(self.dates, self.cap, self.calls)
+
+
+class ExistingDatesPaging(unittest.TestCase):
+    """get_existing_dates must see every stored date, past the API's row cap."""
+    def test_reads_every_page(self):
+        dates = {f"2026-01-{d:02d}" for d in range(1, 26)}   # 25 dates, cap 10
+        for mod in (nse, bse):
+            with self.subTest(mod=mod.__name__):
+                sb = CappedSupabase(dates, cap=10)
+                self.assertEqual(mod.get_existing_dates(sb, batch_size=10), dates)
+                self.assertEqual(sb.calls, [(0, 9), (10, 19), (20, 29)])
+
+    def test_exact_multiple_of_the_page(self):
+        dates = {f"2026-02-{d:02d}" for d in range(1, 21)}   # 20 dates, two full pages
+        for mod in (nse, bse):
+            with self.subTest(mod=mod.__name__):
+                sb = CappedSupabase(dates, cap=10)
+                self.assertEqual(mod.get_existing_dates(sb, batch_size=10), dates)
+                self.assertEqual(len(sb.calls), 3)
+
+
 class PipelineSourceTag(unittest.TestCase):
     def check(self, mod, value):
         saved = mod.PIPELINE_SOURCE
