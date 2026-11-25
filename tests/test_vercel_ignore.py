@@ -76,9 +76,20 @@ class VercelIgnoreBuild(unittest.TestCase):
                     "📈 MCX share analysis: 2026-10-19",
                     "📡 Live update: 2026-10-19 09:15 UTC",
                     "📡 BSE Live update: 2026-10-19 09:15 UTC",
-                    "📡 MCX Live update: 2026-10-19 09:15 UTC"]:
+                    "📡 MCX Live update: 2026-10-19 09:15 UTC",
+                    "📈 Intraday prices: 2026-11-23 — 1 session(s)"]:
             with self.subTest(msg=msg):
                 self.assertEqual(self.run_script(self.data_commit(msg)), SKIP)
+
+    def test_intraday_prices_over_undeployed_bot_data_skips(self):
+        # The day's exchange data waits for the [deploy] commit; a later intraday-prices
+        # commit (repo-root data/intraday only) must not deploy it early.
+        self.data_commit("📊 NSE update: 2026-11-23 — 1 new day(s)")
+        msg = "📈 Intraday prices: 2026-11-23 — 1 session(s)"
+        self.commit(msg, **{"data/intraday/5m/2026-11.csv": "ts,symbol\n"})
+        self.assertEqual(self.run_script(msg), SKIP)
+        # Without the bot message the undeployed exchange data would go out with it.
+        self.assertEqual(self.run_script("Save intraday prices"), BUILD)
 
     def test_deploy_marker_builds(self):
         self.data_commit("📊 NSE update: 2026-10-19 — 1 new day(s)")

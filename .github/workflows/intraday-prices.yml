@@ -1,0 +1,94 @@
+name: Intraday Prices
+
+# Five-minute share-price bars for the listed capital-market stocks (scripts/intraday_prices.py),
+# saved after each session to data/intraday/5m/ for the signal book's intraday test. Yahoo keeps
+# 5-minute bars for about 60 days and each run reads the last 7, so a scheduled run that GitHub
+# starts late or drops is caught up by the next one; no Vercel Cron slot is needed. A manual run
+# with days = 59 backfills everything Yahoo still has. Its commits ("📈 Intraday prices: …")
+# touch nothing under dashboard/ and never trigger a Vercel build (vercel-ignore-build.sh).
+
+on:
+  schedule:
+    - cron: '47 11 * * 1-5'   # 17:17 IST Mon–Fri, after the 15:30 close and the 16:00 cut-off
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Days of bars to read (1–59; 59 = everything Yahoo still has)'
+        required: false
+        default: '7'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  save:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-intraday-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-intraday-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Save the bars
+        id: save
+        env:
+          DAYS: ${{ github.event.inputs.days || '7' }}
+        run: |
+          case "$DAYS" in ''|*[!0-9]*) echo "::error::days must be a whole number, got '$DAYS'"; exit 1 ;; esac
+          python scripts/intraday_prices.py --days "$DAYS"
+
+      - name: Commit and push
+        if: steps.save.outputs.added_rows != '0'
+        env:
+          LATEST: ${{ steps.save.outputs.latest }}
+          SESSIONS: ${{ steps.save.outputs.added_sessions }}
+        run: |
+          git config user.name "Research-Tusk"
+          git config user.email "research@tuskinvest.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git add data/intraday
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "📈 Intraday prices: $LATEST — $SESSIONS session(s)"
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            echo "Push rejected (a concurrent job likely pushed first) — retrying with rebase, attempt $i…"
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; echo "::error::Rebase conflict with origin/main"; exit 1; }
+            sleep $((RANDOM % 5 + 1))
+          done
+          echo "::error::Push still rejected after 5 attempts — the bars were NOT saved"
+          exit 1
+
+      - name: Summary
+        if: always()
+        env:
+          LATEST: ${{ steps.save.outputs.latest }}
+          SESSIONS: ${{ steps.save.outputs.added_sessions }}
+          ROWS: ${{ steps.save.outputs.added_rows }}
+        run: |
+          {
+            echo "### Intraday prices"
+            echo "- **Added:** ${ROWS:-0} bars over ${SESSIONS:-0} session(s); newest ${LATEST:-none}"
+            echo "- **Files:** $(ls data/intraday/5m 2>/dev/null | tr '\n' ' ')"
+          } >> "$GITHUB_STEP_SUMMARY"
