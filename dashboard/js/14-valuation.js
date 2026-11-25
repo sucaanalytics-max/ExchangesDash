@@ -721,6 +721,11 @@ function valuationInputsFor(defaults, overrides, ex, latest) {
     v[k] = x;
     edited.push(k);
   });
+  // An ADR estimate saved without a basis (before the basis existed) is a custom one
+  if (!('eb' in o) && edited.includes('adr') && v.adr != null && v.eb !== 'custom') {
+    v.eb = 'custom';
+    edited.push('eb');
+  }
   return { v, edited };
 }
 
@@ -1115,9 +1120,7 @@ function valuationQuickSelect(ctx, key, raw) {
   const latest = ctx.data && ctx.data.c && ctx.data.c.lastDate;
   const value = key === 'eb' ? raw : parseFloat(raw);
   if (key === 'eb' && value === 'custom' && valuationInputsFor(ctx.defaults, readValuationOverrides(), ctx.ex, latest).v.adr == null) {
-    openValuationDrawer(ctx);
-    const i = document.querySelector('.rx-drawer input[data-vd="adr"]');
-    if (i) i.focus();
+    openValuationDrawer(ctx, 'input[data-vd="adr"]');
     return false;
   }
   if (!valuationInputOk(key, value, latest)) return false;

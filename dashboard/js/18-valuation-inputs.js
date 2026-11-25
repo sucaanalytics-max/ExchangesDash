@@ -175,8 +175,9 @@ function valuationSaveStatusHTML(S, ex) {
 }
 
 // Opens the drawer on one exchange's inputs. ctx: { ex, defaults, data (its
-// valuationExchange result), onChange (re-renders the Valuation Model) }
-function openValuationDrawer(ctx) {
+// valuationExchange result), onChange (re-renders the Valuation Model) }; focus: a selector for
+// the control to focus when it opens (default: the first)
+function openValuationDrawer(ctx, focus = null) {
   const { ex, defaults, data, onChange } = ctx;
   const name = SHARE_EXCHANGE_NAMES[ex];
   const latest = () => data.c && data.c.lastDate;
@@ -209,6 +210,7 @@ function openValuationDrawer(ctx) {
   const listener = () => refresh();
   const el = openRxDrawer({
     title: `${name} valuation inputs`,
+    focus,
     body: `<p class="rx-drawer-note" data-vd-note></p>
       <div class="rx-vi-access" data-vd-access></div>
       <div class="rx-vi-access rx-vi-unpub" data-vd-notice role="status" aria-live="polite"></div>

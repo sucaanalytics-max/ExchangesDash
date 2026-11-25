@@ -479,7 +479,8 @@ function rxCanvas(id, cls = '') {
 
 // ── Side drawer (rx) ─────────────────────────────────────────────────────────
 // One drawer for the page: a dialog on the right (a full-screen sheet on phones)
-// over a scrim. openRxDrawer({ title, body, onClose }) fills and shows it;
+// over a scrim. openRxDrawer({ title, body, onClose, focus }) fills and shows it (focus: a selector
+// for the control to focus, else the first one);
 // rxDrawerBody() is its content element, for the caller's handlers. Esc, the
 // scrim and the X close it; Tab stays inside while it is open, and focus goes
 // back to whatever opened it. A tab or exchange switch closes it.
@@ -516,7 +517,7 @@ function rxDrawerEl() {
 }
 function rxDrawerOpen() { return !!RX_DRAWER && !RX_DRAWER.box.hidden; }
 function rxDrawerBody() { return rxDrawerEl().body; }
-function openRxDrawer({ title, body = '', onClose = null } = {}) {
+function openRxDrawer({ title, body = '', onClose = null, focus = null } = {}) {
   const d = rxDrawerEl();
   if (rxDrawerOpen() && d.onClose) d.onClose();
   d.opener = rxDrawerOpen() ? d.opener : document.activeElement;
@@ -533,7 +534,7 @@ function openRxDrawer({ title, body = '', onClose = null } = {}) {
   requestAnimationFrame(() => {
     d.box.classList.add('is-open');
     d.scrim.classList.add('is-open');
-    const target = d.body.querySelector('input, select, button') || d.box.querySelector('.rx-drawer-x');
+    const target = (focus && d.body.querySelector(focus)) || d.body.querySelector('input, select, button') || d.box.querySelector('.rx-drawer-x');
     if (target) target.focus({ preventScroll: true });
   });
   return d.body;

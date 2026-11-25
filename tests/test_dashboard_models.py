@@ -290,6 +290,20 @@ class ValuationGoldenNumbers(unittest.TestCase):
         self.assertEqual((blank["adr"], blank["basis"]["blank"]), (21.2, True))
         self.assertEqual(run({"dma": 30})["dma"]["window"], 45)   # an unusable saved window is ignored
 
+    def test_adr_saved_without_basis_is_custom(self):
+        """An ADR estimate saved before `eb` existed ({"nse": {"adr": 70}}) is used, not the default dma45."""
+        run = lambda o: js_eval(VALUATION_JS, """(() => {
+          const d = valuationDefaultsFrom(DATA.file);
+          return valuationInputsFor(d, DATA.o, 'nse');
+        })()""", {"o": {"nse": o}, "file": _valuation_inputs_file()})
+        self.assertEqual(run({})["v"]["eb"], "dma45")   # NSE's file has no ADR estimate
+        r = run({"adr": 70})
+        self.assertEqual((r["v"]["eb"], r["v"]["adr"]), ("custom", 70))
+        self.assertEqual(r["edited"], ["adr", "eb"])
+        # A basis saved with it wins; an unusable ADR leaves the default basis
+        self.assertEqual(run({"adr": 70, "eb": "dma20"})["v"]["eb"], "dma20")
+        self.assertEqual(run({"adr": -5})["v"]["eb"], "dma45")
+
 
 @unittest.skipUnless(NODE, "node not installed")
 class ValuationWeights(unittest.TestCase):
