@@ -993,22 +993,64 @@ def nse_ratio_model(pnl_history):
     }
 
 
+def nse_other_txn_charges(pnl_history, daily):
+    """NSE's transaction charges that are not in the daily equity F&O and cash
+    files (mutual fund platform, currency derivatives, NSEIX), in ₹ Cr per
+    trading session: reported transaction_rev less the daily sum, averaged over
+    the ratio model's base quarters. The daily sum is priced at the fee rules
+    then in force (reprice_date_effective), since it is compared with what NSE
+    actually charged; at today's rates a fee change would show up as a gap.
+
+    Our daily sum fell short of reported transaction charges by ₹27–50 Cr a
+    quarter from Q3 FY 2025 (flat fees) to Q2 FY 2027; NSE's own model types
+    these charges in (₹39 Cr in Q1 FY 2027, ₹49 Cr in Q2). Returns None when a
+    base quarter has no daily rows or a negative gap."""
+    m = nse_ratio_model(pnl_history)
+    if not m:
+        return None
+    base = set(m["base_quarters"])
+    rows = reprice_date_effective([d for d in (daily or []) if d.get("fy_quarter") in base])
+    by_q = {}
+    for d in rows:
+        s = by_q.setdefault(d["fy_quarter"], [0.0, 0])
+        s[0] += _num(d, "total_rev")
+        s[1] += 1
+    reported = {r["quarter"]: _pnl_num(r, "transaction_rev") for r in pnl_history
+                if r.get("quarter") in base and not r.get("is_predicted")}
+    per_q = []
+    for q in m["base_quarters"]:
+        daily_sum, days = by_q.get(q, (0.0, 0))
+        if not days or q not in reported or reported[q] < daily_sum:
+            return None
+        per_q.append({"quarter": q, "reported": round(reported[q], 2), "daily_sum": round(daily_sum, 2),
+                      "days": days, "per_day": round((reported[q] - daily_sum) / days, 4)})
+    return {
+        "per_day": round(sum(x["per_day"] for x in per_q) / len(per_q), 4),
+        "quarters": per_q,
+    }
+
+
 def compute_predicted_quarters(pnl_predictor, pnl_history, quarterly):
     """Build the pnl_predicted_quarters dict: the default NSE forecast (ratio
     model, see nse_ratio_model) for
 
       - the current quarter (label "CURRENT" in the dashboard), from the
         transaction revenue extrapolated by pnl_predictor
-      - the next quarter, that transaction revenue grown at the current
-        quarter's YoY per-day rate
+      - the next quarter, the daily-file part of that transaction revenue
+        grown at the current quarter's YoY per-day rate, plus the same other
+        transaction charges (nse_other_txn_charges)
 
     EBITDA is operating EBITDA (EBITDA_DEFINITION); forecasts carry no one-offs.
+    transaction_rev is on NSE's reported basis (daily files + other transaction
+    charges), the basis the ratio model's ratios are taken on.
     """
     if not pnl_predictor or not pnl_history:
         return {}
     m = nse_ratio_model(pnl_history)
     if not m:
         return {}
+
+    other_txn = float(pnl_predictor.get("other_txn_rev") or 0)
 
     def build_entry(txn_rev):
         op_rev  = txn_rev * (1 + m["other_operating_revenue_ratio"])
@@ -1023,6 +1065,8 @@ def compute_predicted_quarters(pnl_predictor, pnl_history, quarterly):
         margin  = round(ebitda / op_rev, 4) if op_rev else 0
         return {
             "transaction_rev":         round(txn_rev, 2),
+            "segments_rev":            round(txn_rev - other_txn, 2),
+            "other_txn_rev":           round(other_txn, 2),
             "operating_revenue":       round(op_rev, 2),
             "non_operating_income":    round(non_op, 2),
             "total_revenue":           round(total, 2),
@@ -1070,7 +1114,8 @@ def compute_predicted_quarters(pnl_predictor, pnl_history, quarterly):
     else:
         yoy_growth = 0.10
 
-    result[nq_name] = build_entry(pnl_predictor["transaction_rev_extrapolated"] * (1 + yoy_growth))
+    segments = pnl_predictor["transaction_rev_extrapolated"] - other_txn
+    result[nq_name] = build_entry(segments * (1 + yoy_growth) + other_txn)
 
     return result
 
@@ -1094,13 +1139,24 @@ def compute_enriched(daily, quarterly, pnl):
         other_income_ratio = 0.4714
         if model:
             other_income_ratio = model["other_operating_revenue_ratio"] + model["non_operating_income_ratio"]
-        txn_rev_extrap = round(daily_avg * expected_days, 2)
+        # The daily files cover equity F&O and cash only; NSE's reported
+        # transaction charges (the ratio model's base) also hold its MF,
+        # currency and NSEIX charges, carried here per session.
+        other = nse_other_txn_charges(pnl, daily)
+        other_per_day = other["per_day"] if other else 0.0
+        segments_extrap = round(daily_avg * expected_days, 2)
+        other_txn_rev = round(other_per_day * expected_days, 2)
+        txn_rev_extrap = round(segments_extrap + other_txn_rev, 2)
         total_rev_pred = txn_rev_extrap * (1 + other_income_ratio)
         enriched["pnl_predictor"] = {
             "quarter": cq["quarter"],
             "daily_avg_rev": round(daily_avg, 4),
             "trading_days_so_far": days_so_far,
             "expected_trading_days": expected_days,
+            "segments_rev_extrapolated": segments_extrap,
+            "other_txn_per_day": other_per_day,
+            "other_txn_rev": other_txn_rev,
+            "other_txn_basis": other["quarters"] if other else [],
             "transaction_rev_extrapolated": txn_rev_extrap,
             "other_income_ratio": round(other_income_ratio, 4),
             "total_revenue_predicted": round(total_rev_pred, 2),
