@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-25T11:08:48Z",
+  "updated_at": "2026-11-25T21:58:09Z",
   "ticker": "MCX.NS",
   "ma_window": 45,
   "regression_start": "2025-01-01",
@@ -69,7 +69,7 @@
   },
   "latest": {
     "date": "2026-11-25",
-    "revenue_cr": null,
+    "revenue_cr": 24.362,
     "rev_ma": 13.756,
     "price_actual": 3565.0,
     "price_pred": 3333.54,
@@ -3481,7 +3481,7 @@
       "revenue_cr": 3.003,
       "rev_ma": 2.896,
       "price": 621.21,
-      "price_pred": 1010.81,
+      "price_pred": 1010.82,
       "modelled": true
     },
     {
@@ -3601,7 +3601,7 @@
       "revenue_cr": 2.1284,
       "rev_ma": 2.8514,
       "price": 633.83,
-      "price_pred": 1001.27,
+      "price_pred": 1001.28,
       "modelled": true
     },
     {
@@ -3881,7 +3881,7 @@
       "revenue_cr": 2.1802,
       "rev_ma": 2.5785,
       "price": 760.2,
-      "price_pred": 942.9,
+      "price_pred": 942.91,
       "modelled": true
     },
     {
@@ -4409,7 +4409,7 @@
       "revenue_cr": 4.456,
       "rev_ma": 3.1972,
       "price": 749.51,
-      "price_pred": 1075.22,
+      "price_pred": 1075.23,
       "modelled": true
     },
     {
@@ -5577,7 +5577,7 @@
       "revenue_cr": 3.6864,
       "rev_ma": 4.0935,
       "price": 1266.71,
-      "price_pred": 1266.93,
+      "price_pred": 1266.94,
       "modelled": false
     },
     {
@@ -6728,7 +6728,7 @@
       "date": "2025-07-22",
       "revenue_cr": 4.8264,
       "rev_ma": 4.9718,
-      "price": 1620.52,
+      "price": 1620.53,
       "price_pred": 1454.77,
       "modelled": false
     },
@@ -9374,7 +9374,7 @@
     },
     {
       "date": "2026-11-25",
-      "revenue_cr": null,
+      "revenue_cr": 24.362,
       "rev_ma": 13.756,
       "price": 3565.0,
       "price_pred": 3333.54,
@@ -14943,6 +14943,10 @@
     {
       "date": "2026-11-24",
       "revenue_cr": 11.8596
+    },
+    {
+      "date": "2026-11-25",
+      "revenue_cr": 24.362
     }
   ],
   "modelled_excluded": 0
