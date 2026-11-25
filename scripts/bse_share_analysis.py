@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 
 import share_regression as sr
+import trading_calendar
 
 warnings.filterwarnings("ignore")
 
@@ -116,6 +117,17 @@ def fetch_screener_prices(start_date_str):
     return result
 
 
+def merge_revenue(seed, pipeline):
+    """Sorted [(date, revenue)]: the pipeline's days, with the seed filling dates
+    the pipeline lacks. A Muhurat or DR-test session is never taken from the seed:
+    the pipeline moves those to `special_sessions` so they stay out of every
+    average, and the seed still lists them (2023-11-12 … 2025-10-21)."""
+    revenue = {d: v["revenue_cr"] for d, v in seed.items()
+               if v.get("revenue_cr") is not None and not trading_calendar.special_session("bse", d)}
+    revenue.update(pipeline)
+    return sorted(revenue.items())
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -159,10 +171,8 @@ def main():
     print(f"Seed:     {len(seed)} rows  ({min(seed)} → {max(seed)})")
     print(f"Pipeline: {len(pipeline)} rows  ({min(pipeline)} → {max(pipeline)})")
 
-    # Revenue: pipeline > seed for overlapping dates.
-    revenue = {d: v["revenue_cr"] for d, v in seed.items() if v.get("revenue_cr") is not None}
-    revenue.update(pipeline)
-    rev_rows = sorted(revenue.items())
+    # Revenue: pipeline > seed for overlapping dates; special sessions stay out.
+    rev_rows = merge_revenue(seed, pipeline)
 
     prices = collect_prices(seed)
     if not prices:

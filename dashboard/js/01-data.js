@@ -59,6 +59,15 @@ async function applyLiveStockPrice(shareData, exchange) {
     shareData.latest.live_date = liveDate;
     shareData.latest.live_updated_at = live.updated_at;
     shareData.latest.live_pct_change = sp.pct_change;
+    // The fair value a live price is set against: the published fit at the revenue MA up to
+    // the session before today (shareLiveMa), not the latest close's MA, which ends a session
+    // or more earlier; the close's own fair value stays in `series`
+    const reg = shareData.regression;
+    const liveMa = reg && shareData.latest.price_pred != null ? shareLiveMa(shareData, shareData.ma_window || 45) : null;
+    if (liveMa != null) {
+      shareData.latest.price_pred = Math.round((reg.slope * liveMa + reg.intercept) * 100) / 100;
+      shareData.latest.live_rev_ma = liveMa;
+    }
     if (shareData.latest.price_pred != null && sp.last_price) {
       shareData.latest.error_pct = Math.round(
         Math.abs(shareData.latest.price_pred - sp.last_price) / sp.last_price * 1000

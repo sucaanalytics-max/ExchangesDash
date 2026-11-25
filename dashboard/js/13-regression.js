@@ -138,6 +138,23 @@ function shareFitFrom(regStart, fitStart) {
   return fitStart && fitStart > regStart ? fitStart : regStart;
 }
 
+// The revenue MA a live quote pairs with, as each close is paired: the `window`-session
+// MA ending on the last revenue day before the quote's date (latest.live_date), shifted
+// back `extraLag` sessions. The latest close's own MA ends a session or more earlier, so a
+// live price set against it compares today's price with a stale fair value. null without a
+// live quote, daily revenue (files before Phase 5) or enough sessions.
+function shareLiveMa(shareData, window, extraLag = 0) {
+  const lat = shareData && shareData.latest, rev = shareData && shareData.revenue_daily;
+  if (!lat || !lat.is_live || !lat.live_date || !rev) return null;
+  let j = 0;
+  while (j < rev.length && rev[j].date < lat.live_date) j++;
+  const idx = j - 1 - extraLag;
+  if (idx < window - 1) return null;
+  let s = 0;
+  for (let i = idx - window + 1; i <= idx; i++) s += rev[i].revenue_cr;
+  return s / window;
+}
+
 // Model for one DMA window / extra lag. Files written before the Phase 5
 // method (no `revenue_daily`) fall back to the old same-day fit. `fitStart`
 // (ISO date, optional) re-fits on the sessions from that date only; the MA
@@ -181,8 +198,14 @@ function computeShareModel(shareData, dmaWindow, extraLag = 0, fitStart) {
   }));
   const maMin = Math.min(...X), maMax = Math.max(...X);
   const maMean = X.reduce((a, b) => a + b, 0) / X.length;
+  const liveMa = shareLiveMa(shareData, dmaWindow, extraLag);
   return {
     series,
+    // The live quote's MA and fair value (null without a live quote)
+    live: liveMa == null ? null : {
+      date: shareData.latest.live_date, rev_ma: liveMa,
+      price_pred: supported ? Math.round((st.slope * liveMa + st.intercept) * 100) / 100 : null,
+    },
     n: st.n,
     reg: {
       slope: st.slope, intercept: st.intercept, r_squared: st.r2, pearson_r: st.r,
@@ -311,8 +334,12 @@ function shareHeroHTML(ex, s, d, fit, w, lag) {
   const fitSpan = inFit.length ? `${rxDate(inFit[0].date)} – ${rxDate(inFit[inFit.length - 1].date)}` : `from ${rxDate(fit.from)}`;
   const lat = s.latest || {};
   const row = latestShareRow(d.series, lat.date);
+  // A live price is set against the MA up to the session before today (d.live), not the
+  // latest close's MA, which ends a session or more earlier
+  const live = lat.is_live ? d.live : null;
   const price = lat.is_live ? lat.price_actual : row.price;
-  const fv = row.price_pred;
+  const fv = live ? live.price_pred : row.price_pred;
+  const ma = live ? live.rev_ma : row.rev_ma;
   const m = d.meth, h = m && m.holdout;
   const priceWhen = lat.is_live ? `${s.ticker} live ${rxChip('Live', 'ok')}` : `${s.ticker} close ${rxDate(lat.date)}`;
   const lagTxt = 1 + lag === 1 ? 'one session' : `${1 + lag} sessions`;
@@ -344,8 +371,8 @@ function shareHeroHTML(ex, s, d, fit, w, lag) {
 
   const rs = shareRatioStats(d.series, fit.from);
   let side = '';
-  if (rs && rs.sd > 0 && row.rev_ma > 0) {
-    const ratio = price / row.rev_ma;
+  if (rs && rs.sd > 0 && ma > 0) {
+    const ratio = price / ma;
     const z = (ratio - rs.mean) / rs.sd;
     const where = z <= -1 ? 'low against' : z >= 1 ? 'high against' : 'near';
     const pin = Math.max(0, Math.min(100, (z + 2) / 4 * 100));
@@ -358,7 +385,7 @@ function shareHeroHTML(ex, s, d, fit, w, lag) {
         <div class="rx-gauge-pin" style="left:${pin.toFixed(1)}%"></div>
       </div>
       <div class="rx-gauge-axis"><span>−2σ ${fmtNum(rs.mean - 2 * rs.sd, 0)}</span><span>mean</span><span>+2σ ${fmtNum(rs.mean + 2 * rs.sd, 0)}</span></div>
-      <p class="rx-foot" style="margin-top:6px">At the average ratio the price would be ${rxRupee(rs.mean * row.rev_ma)} (MA ₹${fmtNum(row.rev_ma, 2)} Cr).</p>`;
+      <p class="rx-foot" style="margin-top:6px">At the average ratio the price would be ${rxRupee(rs.mean * ma)} (MA ₹${fmtNum(ma, 2)} Cr).</p>`;
   }
 
   const how = rxHow('How this model works', `<ul>
@@ -557,15 +584,18 @@ function buildShareAnalysis(ex) {
     } else q('legRatio').innerHTML = '';
 
     const last = view[view.length - 1];
-    const lastPrice = last.date === lat.date && lat.is_live ? lat.price_actual : last.price;
-    const pts = view.slice(0, -1);
-    const xs = view.map(r => r.rev_ma);
+    // Ringed point: the live quote at its own MA (to the session before today) when there is
+    // one, with every close among the sessions; otherwise the last close
+    const live = last.date === lat.date && lat.is_live && d.live ? d.live : null;
+    const latestPt = live ? { x: live.rev_ma, y: lat.price_actual, date: live.date } : { x: last.rev_ma, y: last.price, date: last.date };
+    const pts = live ? view : view.slice(0, -1);
+    const xs = view.map(r => r.rev_ma).concat(latestPt.x);
     const xMin = Math.min(...xs), xMax = Math.max(...xs);
     const scatterSets = [
       { type: 'scatter', label: 'Session', data: pts.map(r => ({ x: r.rev_ma, y: r.price, date: r.date })),
         pointBackgroundColor: pts.map((r, i) => RX.seq[Math.min(4, Math.floor(i / Math.max(pts.length, 1) * 5))]),
         pointBorderColor: '#FFFFFF', pointBorderWidth: 0.5, pointRadius: 3.2, pointHoverRadius: 5 },
-      { type: 'scatter', label: 'Latest', data: [{ x: last.rev_ma, y: lastPrice, date: last.date }],
+      { type: 'scatter', label: 'Latest', data: [latestPt],
         pointBackgroundColor: '#FFFFFF', pointBorderColor: RX.ink, pointBorderWidth: 2, pointRadius: 6, pointHoverRadius: 7 },
     ];
     if (hasFv) scatterSets.push({ type: 'line', label: 'Fit', data: [{ x: xMin, y: d.reg.slope * xMin + d.reg.intercept }, { x: xMax, y: d.reg.slope * xMax + d.reg.intercept }],
@@ -589,7 +619,7 @@ function buildShareAnalysis(ex) {
     });
     q('legScatter').innerHTML = rxLegend([
       { label: 'Older', color: RX.seq[0] }, { label: 'Recent', color: RX.seq[4] },
-      { label: `Latest (${fmtTradeDate(last.date)})`, color: '#FFFFFF', style: `border:2px solid ${RX.ink};border-radius:50%;width:11px;height:11px` },
+      { label: `${live ? 'Live' : 'Latest'} (${fmtTradeDate(latestPt.date)})`, color: '#FFFFFF', style: `border:2px solid ${RX.ink};border-radius:50%;width:11px;height:11px` },
     ].concat(hasFv ? [{ label: 'Fit', color: RX.model, kind: 'dash' }] : []));
 
     const p0 = view[0].price, m0 = view[0].rev_ma;

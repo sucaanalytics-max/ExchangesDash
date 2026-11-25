@@ -121,7 +121,7 @@ VALUATION_JS = ["valuationNum", "valuationIsoDate", "VALUATION_EXCHANGES", "VALU
                 "valuationInputsFor", "setValuationOverride", "valuationAdrPath", "valuationAdrModel",
                 "valuationRegression", "valuationRatio", "valuationTriangulate", "valuationModel"]
 SHARE_FIT_JS = ["computeRollingMA", "SHARE_GATE", "shareOlsStats", "shareHoldout", "shareGateReasons", "shareFitFrom",
-                "computeShareModel", "shareRatioStats", "shareResidualSE"]
+                "shareLiveMa", "computeShareModel", "shareRatioStats", "shareResidualSE"]
 
 
 def js_eval_async(names, body, data=None):

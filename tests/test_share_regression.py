@@ -11,7 +11,7 @@ from helpers import NODE, ROOT, js_eval
 import share_regression as sr
 
 SHARE_JS = ["computeRollingMA", "computeOLS", "buildSeriesWithDMA", "SHARE_GATE",
-            "shareOlsStats", "shareHoldout", "shareGateReasons", "shareFitFrom", "computeShareModel"]
+            "shareOlsStats", "shareHoldout", "shareGateReasons", "shareFitFrom", "shareLiveMa", "computeShareModel"]
 
 
 def weekdays(start, n):
@@ -141,6 +141,50 @@ class DashboardMirror(unittest.TestCase):
                 continue
             with self.subTest(ex=ex):
                 self.check(out, window=out["ma_window"])
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class LiveQuote(unittest.TestCase):
+    """A live price is paired with the MA up to the last revenue day before its date,
+    as each close is, not with the latest close's (older) MA."""
+
+    def out(self):
+        rev, prices = fixture(noise=5)
+        out = sr.build_output(ticker="T", prices=prices, rev_rows=rev, reg_start="2025-01-01",
+                              window=5, ma_windows=[5], updated_at="x")
+        # the file's latest close is two revenue days behind the last revenue day
+        last = out["series"][-1]["date"]
+        out["series"] = [r for r in out["series"] if r["date"] < rev[-3][0]]
+        out["latest"] = {"date": out["series"][-1]["date"], "price_actual": 1700.0, "is_live": True,
+                         "live_date": "2099-01-01"}
+        self.assertLess(out["latest"]["date"], last)
+        return rev, out
+
+    def test_live_pairs_with_the_ma_before_its_date(self):
+        rev, out = self.out()
+        m = js_eval(SHARE_JS, "computeShareModel(DATA, 5, 0)", out)
+        rd = [r["revenue_cr"] for r in out["revenue_daily"]]   # as the file stores it
+        want = sum(rd[-5:]) / 5                         # every revenue day is before 2099
+        self.assertAlmostEqual(m["live"]["rev_ma"], want, places=9)
+        self.assertAlmostEqual(m["live"]["price_pred"], m["reg"]["slope"] * want + m["reg"]["intercept"], places=1)
+        self.assertNotAlmostEqual(m["live"]["rev_ma"], m["series"][-1]["rev_ma"], places=3)
+        lagged = js_eval(SHARE_JS, "computeShareModel(DATA, 5, 2).live.rev_ma", out)
+        self.assertAlmostEqual(lagged, sum(rd[-7:-2]) / 5, places=9)
+
+    def test_live_date_inside_the_revenue(self):
+        rev, out = self.out()
+        out["latest"]["live_date"] = rev[-2][0]           # revenue up to the day before it
+        ma = js_eval(SHARE_JS, "shareLiveMa(DATA, 5)", out)
+        rd = [r["revenue_cr"] for r in out["revenue_daily"]]
+        self.assertAlmostEqual(ma, sum(rd[-7:-2]) / 5, places=9)
+
+    def test_no_live_quote(self):
+        rev, out = self.out()
+        out["latest"]["is_live"] = False
+        self.assertIsNone(js_eval(SHARE_JS, "computeShareModel(DATA, 5, 0).live", out))
+        out["latest"]["is_live"] = True
+        del out["revenue_daily"]                          # legacy file: no daily revenue
+        self.assertIsNone(js_eval(SHARE_JS, "shareLiveMa(DATA, 5)", out))
 
 
 SHARE_RANGE_JS = SHARE_JS + ["shareRatioStats"]
@@ -372,6 +416,22 @@ class WriteIfChanged(unittest.TestCase):
         with self.assertRaises(ValueError):
             sr.write_if_changed(self.path, {"x": float("nan")})
         self.assertFalse(self.path.exists())
+
+
+class BseRevenueMerge(unittest.TestCase):
+    """bse_share_analysis.merge_revenue: the pipeline wins, the seed fills gaps, and
+    a Muhurat / DR-test session the pipeline moved to special_sessions never comes
+    back from the seed into the revenue MA."""
+
+    def test_special_sessions_stay_out(self):
+        import bse_share_analysis as bsa
+        seed = {"2025-10-20": {"revenue_cr": 9.0}, "2025-10-21": {"revenue_cr": 2.33},   # 21 Oct 2025: Muhurat
+                "2025-10-23": {"revenue_cr": 7.0}, "2024-03-02": {"revenue_cr": 0.3},    # 2 Mar 2024: DR test
+                "2025-10-24": {"revenue_cr": None}}
+        pipeline = {"2025-10-20": 20.0, "2025-10-23": 21.0}
+        self.assertEqual(bsa.merge_revenue(seed, pipeline), [("2025-10-20", 20.0), ("2025-10-23", 21.0)])
+        self.assertEqual(bsa.merge_revenue({"2025-10-22": {"revenue_cr": 5.0}}, pipeline),
+                         [("2025-10-20", 20.0), ("2025-10-22", 5.0), ("2025-10-23", 21.0)])
 
 
 if __name__ == "__main__":
