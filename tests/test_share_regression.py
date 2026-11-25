@@ -95,6 +95,21 @@ class RegressionMaths(unittest.TestCase):
         self.assertEqual(out["n_days"] + out["modelled_excluded"], clean["n"])
         self.assertTrue(all(r.get("modelled") for r in out["revenue_daily"][:5]))
 
+    def test_special_session_closes_dropped(self):
+        """A Muhurat / DR-test close is never an observation or a series row: the
+        price sources still list them, and special sessions stay out of every count."""
+        rev, prices = fixture(n=240)
+        muhurat = "2025-10-21"                       # trading_calendar: Muhurat, Samvat 2082
+        self.assertIn(muhurat, sr.SPECIAL_SESSION_DATES)
+        rev = [(d, v) for d, v in rev if d != muhurat]   # the pipelines keep its revenue out too
+        prices.pop(muhurat, None)
+        kw = dict(ticker="T", rev_rows=rev, reg_start="2025-01-01", window=5, ma_windows=[5], updated_at="x")
+        clean = sr.build_output(prices=prices, **kw)
+        with_special = sr.build_output(prices=dict(prices, **{muhurat: 99999.0, "2024-03-02": 1.0}), **kw)
+        self.assertGreater(clean["series"][-1]["date"], muhurat)     # the date is inside the fit
+        self.assertEqual(with_special, clean)
+        self.assertNotIn(muhurat, [r["date"] for r in with_special["series"]])
+
     def test_unsupported_fit_publishes_no_price(self):
         rev, prices = fixture(n=40)
         out = sr.build_output(ticker="T", prices=prices, rev_rows=rev, reg_start="2025-01-01",

@@ -10,6 +10,11 @@ Method (remediation plan, Phase 5):
   close, so the close on date d is paired with the MA ending on the last
   revenue day strictly before d. `extra_lag` shifts it further back (in revenue
   trading days) for the lead/lag toggles.
+- A close on a Muhurat or DR-test session (trading_calendar.SPECIAL_SESSIONS)
+  is never an observation: those sessions stay out of every average and day
+  count, and the price sources (seed CSV, yfinance, screener.in) still list
+  them. Such a date is a special session on every exchange that traded on it,
+  so it is dropped whichever exchange the share is listed on.
 - Price levels on revenue levels have strongly autocorrelated residuals
   (Durbin-Watson far below 2), so plain OLS standard errors overstate
   precision. The slope's standard error is Newey-West (Bartlett kernel,
@@ -32,7 +37,11 @@ import math
 
 import numpy as np
 
-MIN_N          = 60     # observations before a fair value is published
+from trading_calendar import SPECIAL_SESSIONS
+
+SPECIAL_SESSION_DATES = frozenset(s["date"] for s in SPECIAL_SESSIONS)
+
+MIN_N         = 60     # observations before a fair value is published
 MIN_T_STAT     = 2.0    # Newey-West t-stat of the slope
 MIN_SPREAD     = 0.10   # (max - min) / mean of the revenue MA over the window
 HOLDOUT_SHARE  = 0.20   # last 20 % of the window is the out-of-sample test
@@ -199,10 +208,14 @@ def build_output(*, ticker, prices, rev_rows, reg_start, window, ma_windows,
                  updated_at, modelled=None, prefix_rows=150):
     """Fit the published model and assemble *_share_analysis.json.
 
-    prices: {date: close}; rev_rows: sorted [(date, revenue)] (full history);
+    prices: {date: close}; a close on a special session (SPECIAL_SESSION_DATES)
+    is dropped, from the fits and from `series` alike, so the dashboard's
+    re-fits (computeShareModel, which reads `series`) leave it out too;
+    rev_rows: sorted [(date, revenue)] (full history);
     modelled: optional set of revenue dates that must stay out of any fit (a
     row is excluded when any day in its MA window is modelled).
     Returns None when the published window cannot be fitted at all."""
+    prices = {d: p for d, p in prices.items() if d not in SPECIAL_SESSION_DATES}
     rev_dates = [d for d, _ in rev_rows]
     rev_by_date = dict(rev_rows)
     modelled = modelled or set()
