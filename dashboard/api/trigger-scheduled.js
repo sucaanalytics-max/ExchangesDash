@@ -27,8 +27,10 @@
  * - brokers-mirror.yml copies at 15:02 and again at 23:32 UTC. The brokers
  *   engine's own "14:17 UTC" job hits the same GitHub delay, and has published
  *   as late as 22:49 UTC.
+ * - excel-mirror.yml writes the workbooks daily at 19:30 UTC (01:00 IST), with
+ *   `trigger: scheduled`; a repeat run rewrites the same values.
  *
- * Both workflows keep their own `schedule:` as a late fallback. A repeat run of
+ * Each workflow keeps its own `schedule:` as a late fallback. A repeat run of
  * a slot is harmless: the pipelines find no new days and commit nothing, and
  * the mirror copy is an idempotent upsert.
  *
@@ -40,16 +42,15 @@
  */
 
 const { secretMatches } = require('./trigger-live-polls');
-
-const REPO = 'sucaanalytics-max/ExchangesDash';
-const GITHUB_API = `https://api.github.com/repos/${REPO}/actions/workflows`;
+const { dispatchWorkflow } = require('./_github_dispatch');
 
 // One entry per Vercel Cron schedule for this path in vercel.json, keyed by
-// that schedule (UTC). The exchange-update and brokers-mirror keys equal those
-// workflows' own `schedule:` crons; tests/test_trigger_scheduled.py checks that
-// all three lists match.
+// that schedule (UTC). Each key equals a `schedule:` cron of its workflow
+// (exchange-update, brokers-mirror, excel-mirror); tests/test_trigger_scheduled.py
+// checks that the lists match.
 const EXCHANGE = (cron, job, exchange = 'all') => ({ job, workflow: 'exchange-update.yml', inputs: { exchange, cron } });
 const MIRROR = (job) => ({ job, workflow: 'brokers-mirror.yml', inputs: { mode: 'mirror' } });
+const EXCEL = (job) => ({ job, workflow: 'excel-mirror.yml', inputs: { trigger: 'scheduled' } });
 const SLOTS = {
   '30 0 * * 1-5':  EXCHANGE('30 0 * * 1-5', 'exchange-update-0030'),
   '45 1 * * 2-6':  EXCHANGE('45 1 * * 2-6', 'exchange-update-0145-mcx', 'mcx'),
@@ -59,6 +60,7 @@ const SLOTS = {
   '15 19 * * 1-5': EXCHANGE('15 19 * * 1-5', 'exchange-update-1915-mtf', 'mtf'),
   '2 15 * * 1-5':  MIRROR('brokers-mirror-1502'),
   '32 23 * * 1-5': MIRROR('brokers-mirror-2332'),
+  '30 19 * * *':   EXCEL('excel-mirror-0100'),
 };
 
 function slotFor(req) {
@@ -88,23 +90,7 @@ module.exports = async function handler(req, res) {
     return res.status(500).json({ error: 'GITHUB_DISPATCH_PAT env var not set' });
   }
 
-  let status, detail = '';
-  try {
-    const ghRes = await fetch(`${GITHUB_API}/${slot.workflow}/dispatches`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${pat}`,
-        'Accept':        'application/vnd.github+json',
-        'User-Agent':    'exchangesdash-cron-trigger',
-      },
-      body: JSON.stringify({ ref: 'main', inputs: slot.inputs }),
-    });
-    status = ghRes.status;   // GitHub returns 204 No Content on a successful dispatch
-    if (!ghRes.ok) detail = (await ghRes.text().catch(() => '')).slice(0, 300);
-  } catch (err) {
-    detail = err.message || String(err);
-  }
-  const ok = status >= 200 && status < 300;
+  const { status, ok, detail } = await dispatchWorkflow(pat, slot.workflow, slot.inputs, 'exchangesdash-cron-trigger');
   console.log(`trigger-scheduled: ${caller}, ${slot.job} -> ${slot.workflow} ${status || 'error'}${detail ? ` ${detail}` : ''}`);
 
   return res.status(ok ? 200 : 502).json({

@@ -36,6 +36,10 @@
     {
       "path": "/api/trigger-scheduled",
       "schedule": "32 23 * * 1-5"
+    },
+    {
+      "path": "/api/trigger-scheduled",
+      "schedule": "30 19 * * *"
     }
   ],
   "rewrites": [
@@ -83,6 +87,33 @@
     },
     {
       "source": "/api/trigger-scheduled",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
+      ]
+    },
+    {
+      "source": "/api/team-login",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
+      ]
+    },
+    {
+      "source": "/api/excel-refresh",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
+      ]
+    },
+    {
+      "source": "/api/valuation-inputs",
       "headers": [
         {
           "key": "Cache-Control",

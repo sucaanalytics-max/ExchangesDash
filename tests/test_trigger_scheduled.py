@@ -1,6 +1,6 @@
 """dashboard/api/trigger-scheduled.js in Node with a stubbed GitHub API. Covered:
 who may call it, which workflow each Vercel Cron slot dispatches and with what
-inputs, and that the slots in vercel.json, the function and the two workflows'
+inputs, and that the slots in vercel.json, the function and the workflows'
 own `schedule:` crons stay the same. Also checks that a dispatched slot run of
 the daily update is treated like the scheduled run, not like a manual run."""
 
@@ -144,9 +144,18 @@ class TriggerScheduled(unittest.TestCase):
         self.assertEqual(len(scheduled), len(set(scheduled)))
         self.assertEqual(set(scheduled), set(self.slots()))
 
+    def test_excel_mirror_slot_dispatches_a_scheduled_mirror(self):
+        r = self.call(schedule="30 19 * * *")
+        self.assertEqual(r["status"], 200)
+        self.assertEqual(r["calls"], [{"workflow": "excel-mirror.yml", "ref": "main", "inputs": {"trigger": "scheduled"}}])
+        r = self.call("Bearer external-secret", query={"job": "excel-mirror-0100"})
+        self.assertEqual(r["calls"][0]["workflow"], "excel-mirror.yml")
+
     def test_workflow_fallback_schedules_match_the_slots(self):
         slots = self.slots()
-        for workflow in ("exchange-update.yml", "brokers-mirror.yml"):
+        workflows = {s["workflow"] for s in slots.values()}
+        self.assertEqual(workflows, {"exchange-update.yml", "brokers-mirror.yml", "excel-mirror.yml"})
+        for workflow in sorted(workflows):
             with self.subTest(workflow=workflow):
                 mine = {k for k, s in slots.items() if s["workflow"] == workflow}
                 self.assertEqual(workflow_crons(workflow), mine)

@@ -793,11 +793,20 @@ function buildRevenuePredictor(ex) {
       }
       if (e.target.closest('[data-rp-send]')) {
         const adr = +scenarios().base.adr.toFixed(2);
-        const vd = await loadValuationDefaults();
+        // The valuation inputs are shared once the API answers (14-valuation.js): wait for its first answer
+        const [vd] = await Promise.all([loadValuationDefaults(), VALUATION_SHARED.mode === 'pending' ? loadSharedValuationInputs() : null]);
         const out = body.querySelector('[data-rp-sent]');
+        const open = '<button type="button" class="rx-link" data-rx-goto="valuation">Open Valuation Model →</button>';
         if (vd.error) { out.textContent = `Valuation inputs not loaded (${vd.error}).`; return; }
-        writeValuationOverrides(setValuationOverride(readValuationOverrides(), vd, ex, 'adr', adr));
-        out.innerHTML = `Set: ${name}’s ADR estimate is ₹${fmtNum(adr, 2)} Cr. <button type="button" class="rx-link" data-rx-goto="valuation">Open Valuation Model →</button>`;
+        if (!writeValuationOverrides(setValuationOverride(readValuationOverrides(), vd, ex, 'adr', adr))) {
+          out.innerHTML = VALUATION_SHARED.mode === 'pending'
+            ? 'The shared valuation inputs have not loaded yet: try again in a moment.'
+            : `Not set: the valuation inputs are shared, and only a signed-in team member can change them (Edit inputs on the Valuation Model). ${open}`;
+          return;
+        }
+        out.innerHTML = VALUATION_SHARED.mode === 'shared'
+          ? `Set for everyone: ${name}’s shared ADR estimate is ₹${fmtNum(adr, 2)} Cr. ${open}`
+          : `Set in this browser: ${name}’s ADR estimate is ₹${fmtNum(adr, 2)} Cr. ${open}`;
       }
     });
     sync();
