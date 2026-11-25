@@ -97,6 +97,30 @@ class PredictorMirrorsPipeline(unittest.TestCase):
             with self.subTest(line=k):
                 self.assertAlmostEqual(js[k], py[pk], delta=0.011)
 
+    def test_nse_other_txn_charges_mirror(self):
+        # MF, currency and NSEIX charges per session (pipeline nse_other_txn_charges)
+        hist = _nse_pnl()
+        model = nse.nse_ratio_model(hist)
+        if not model:
+            self.skipTest("committed nse_pnl has no two actual quarters with a revenue split")
+        seg_txn, otx = 3500.0, 0.74
+        py = nse.compute_predicted_quarters({"transaction_rev_extrapolated": seg_txn + otx * 62, "other_txn_rev": otx * 62},
+                                            hist, [{"quarter": "Q3 FY 2027", "days": 11, "total_rev": 620.0}])["Q3 FY 2027"]
+        rest_adr = (seg_txn - 620.0) / 51
+        ctx = {"segs": ["opt", "fut", "cash"], "n": 11, "banked": {"opt": 500.0, "fut": 40.0, "cash": 80.0}}
+        v = {"opt": rest_adr * 0.8, "fut": rest_adr * 0.05, "cash": rest_adr * 0.15, "days": 62, "otx": otx,
+             "oor": model["other_operating_revenue_ratio"] * 100, "oi": model["non_operating_income_ratio"] * 100,
+             "opex": model["operating_expense_ratio"] * 100, "dep": model["depreciation_ratio"] * 100,
+             "assoc": model["share_profit_associates"], "tax": model["tax_rate"] * 100,
+             "shares": 1 / model["eps_per_pat"]}
+        js = js_eval(PREDICTOR_JS, "predictorScenario('nse', DATA.ctx, DATA.v)", {"ctx": ctx, "v": v})
+        self.assertAlmostEqual(js["txn"], py["segments_rev"], delta=0.011)
+        self.assertAlmostEqual(js["otx"], py["other_txn_rev"], delta=0.011)
+        self.assertAlmostEqual(js["txnRep"], py["transaction_rev"], delta=0.011)
+        for k, pk in {"op": "operating_revenue", "oi": "non_operating_income", "pbt": "pbt", "pat": "pat", "eps": "eps"}.items():
+            with self.subTest(line=k):
+                self.assertAlmostEqual(js[k], py[pk], delta=0.011)
+
     def test_base_rate_is_the_extrapolation(self):
         # Rest-of-quarter rate = quarter-to-date average → banked + avg × left = avg × all sessions
         ctx = {"segs": ["opt", "fut"], "n": 11, "banked": {"opt": 106.6, "fut": 23.3}}

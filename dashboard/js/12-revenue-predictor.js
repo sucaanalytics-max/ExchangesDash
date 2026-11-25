@@ -107,6 +107,7 @@ function predictorDefaults(ex, ctx) {
   ctx.segs.forEach(k => { v[k] = ctx.adr[k]; });
   const m = ex === 'nse' ? nseForecastModel() : null;
   if (m) Object.assign(v, {
+    otx: +(ENRICHED_DATA.pnl_predictor?.other_txn_per_day || 0),
     oor: m.other_operating_revenue_ratio * 100,
     oi: m.non_operating_income_ratio * 100,
     opex: m.operating_expense_ratio * 100,
@@ -121,6 +122,9 @@ function predictorDefaults(ex, ctx) {
 
 // Scenario P&L for input values `v` (ctx from predictorContext). The NSE branch
 // is scripts/nse_pipeline.py's ratio model (build_entry) with editable ratios.
+// txn is the daily files' revenue (equity F&O and cash); for NSE the P&L runs on
+// txnRep = txn + otx, NSE's reported basis, which adds its MF, currency and NSEIX
+// charges (v.otx ₹ Cr a session × sessions; pipeline nse_other_txn_charges).
 function predictorScenario(ex, ctx, v) {
   const rest = Math.max(v.days - ctx.n, 0);
   const seg = {};
@@ -128,9 +132,11 @@ function predictorScenario(ex, ctx, v) {
   ctx.segs.forEach(k => { seg[k] = ctx.banked[k] + v[k] * rest; txn += seg[k]; });
   const out = { seg, txn, rest, adr: v.days ? txn / v.days : 0, adrRest: ctx.segs.reduce((s, k) => s + v[k], 0) };
   if (ex === 'nse' && v.oor != null) {
-    out.oorV = txn * v.oor / 100;
-    out.op = txn + out.oorV;
-    out.oi = txn * v.oi / 100;
+    out.otx = (v.otx || 0) * v.days;
+    out.txnRep = txn + out.otx;
+    out.oorV = out.txnRep * v.oor / 100;
+    out.op = out.txnRep + out.oorV;
+    out.oi = out.txnRep * v.oi / 100;
     out.total = out.op + out.oi;
     out.opx = out.op * v.opex / 100;
     out.ebitda = out.op - out.opx;
@@ -167,6 +173,7 @@ function predictorFields(ex, ctx) {
     groups.push({
       title: `Ratios · actual ${base}, one-offs excluded`,
       fields: [
+        { key: 'otx', label: 'Other transaction charges (MF, currency, NSEIX), ₹ Cr a session', step: 0.01, tag: rxChip(`${base} reported − daily files`) },
         { key: 'oor', label: 'Other operating revenue, % of txn revenue', step: 0.1, tag: rxChip(base) },
         { key: 'oi', label: 'Other income, % of txn revenue', step: 0.1, tag: rxChip(base) },
         { key: 'opex', label: 'Operating expenses, % of operating revenue', step: 0.1, tag: rxChip(base) },
@@ -190,7 +197,8 @@ function predictorFields(ex, ctx) {
 
 // P&L rows for NSE: [label, key, row class]; ratio rows divide `key` by `base`
 const NSE_PNL_ROWS = [
-  ['Transaction revenue', 'txn'], ['Other operating revenue', 'oorV'], ['Operating revenue', 'op', 'rx-sub'],
+  ['Equity F&amp;O and cash (daily files)', 'txn'], ['Other transaction charges', 'otx'],
+  ['Transaction revenue', 'txnRep', 'rx-sub'], ['Other operating revenue', 'oorV'], ['Operating revenue', 'op', 'rx-sub'],
   ['Other income', 'oi'], ['Total income', 'total', 'rx-sub'], ['Operating expenses', 'opx'],
   ['Operating EBITDA', 'ebitda', 'rx-sub'], ['EBITDA margin', 'ebitda', 'rx-pct', 'op'], ['Depreciation', 'dep'],
   ['Share of associates', 'assoc'], ['PBT', 'pbt', 'rx-sub'], ['Tax', 'tax'], ['PAT', 'pat', 'rx-sub'],
@@ -204,7 +212,7 @@ function nseActualPnl(quarter) {
   const op = (ENRICHED_DATA.pnl_operating || []).find(x => x.quarter === quarter) || {};
   const opRev = op.operating_revenue;
   return {
-    txn: r.transaction_rev, oorV: opRev != null ? opRev - r.transaction_rev : null, op: opRev,
+    txn: null, otx: null, txnRep: r.transaction_rev, oorV: opRev != null ? opRev - r.transaction_rev : null, op: opRev,
     oi: op.non_operating_income, total: r.total_revenue, opx: op.operating_expenses, ebitda: op.operating_ebitda,
     dep: op.depreciation ?? r.depreciation, assoc: r.share_profit_associates, pbt: r.pbt, tax: r.income_tax,
     pat: r.pat, eps: r.eps, oneOffs: op.one_offs || {},
@@ -215,8 +223,11 @@ function nseActualPnl(quarter) {
 function nseDefaultPnl(quarter) {
   const f = ENRICHED_DATA.pnl_predicted_quarters?.[quarter];
   if (!f) return null;
+  // Files written before other_txn_rev existed: all transaction revenue is daily-file.
+  const otx = f.other_txn_rev || 0;
   return {
-    txn: f.transaction_rev, oorV: f.operating_revenue - f.transaction_rev, op: f.operating_revenue,
+    txn: f.segments_rev ?? f.transaction_rev - otx, otx, txnRep: f.transaction_rev,
+    oorV: f.operating_revenue - f.transaction_rev, op: f.operating_revenue,
     oi: f.non_operating_income, total: f.total_revenue, opx: f.operating_expenses, ebitda: f.operating_ebitda,
     dep: f.depreciation, assoc: f.share_profit_associates, pbt: f.pbt, tax: f.income_tax, pat: f.pat, eps: f.eps,
   };
@@ -360,6 +371,7 @@ function buildRevenuePredictor(ex) {
       : 'Base runs the sessions left at the quarter-to-date average.'}</li>
       <li>Bear / Bull: the Base daily revenue for the sessions left ∓ ${fmtNum(spread, 0)} % (the spread is an input).</li>`;
   const howNSE = model ? rxHow('How the forecast works', `<ul>${baseHow}
+      <li>Transaction revenue is on NSE's reported basis: the daily files' equity F&amp;O and cash, plus NSE's other transaction charges (mutual fund platform, currency derivatives, NSEIX), which the daily files miss. Those are carried at ${fmtNum(ENRICHED_DATA.pnl_predictor?.other_txn_per_day || 0, 2)} ₹ Cr a session, the ${shortQuarterRange(model.base_quarters || [])} average of reported less daily-file revenue.</li>
       <li>Other operating revenue (${fmtPct(model.other_operating_revenue_ratio)}) and other income (${fmtPct(model.non_operating_income_ratio)}) scale with transaction revenue; operating expenses (${fmtPct(model.operating_expense_ratio)}) and depreciation (${fmtPct(model.depreciation_ratio)}) scale with operating revenue; associates ${rxCr(model.share_profit_associates)}; tax at the ${shortQuarterRange(model.tax_rate_quarters)} effective rate (${fmtPct(model.tax_rate)}).</li>
       <li>Ratios come from actual ${nseQuarterRange(model.base_quarters)}${Object.keys(model.one_offs_excluded || {}).length ? `, one-offs excluded (${Object.entries(model.one_offs_excluded).map(([q, o]) => `${nseOneOffText(o)} in ${q}`).join('; ')})` : ''}. Forecasts carry no one-offs.</li>
       <li>“Published” is the pipeline’s own default forecast (flat quarter-to-date pace). ${nextL} grows transaction revenue at the current quarter’s year-on-year per-session rate. ${NSE_EBITDA_DEF}</li>
@@ -508,7 +520,7 @@ function buildRevenuePredictor(ex) {
         if (base) return o[base] ? fmtPct(o[key] / o[base]) : '—';
         return key === 'eps' ? fmtNum(o[key], 2) : fmtNum(o[key], 1);
       };
-      const pubSame = defCur && Math.abs(defCur.txn - s.txn) < 0.5;
+      const pubSame = defCur && Math.abs(defCur.txnRep - s.txnRep) < 0.5;
       const body = NSE_PNL_ROWS.map(([label, key, cls, base]) => {
         let yoy = '';
         if (!base && actualLY && actualLY[key]) {
@@ -552,7 +564,8 @@ function buildRevenuePredictor(ex) {
       return;
     }
     const steps = ex === 'nse'
-      ? [['Transaction rev', s.txn, 'tot'], ['Other op. revenue', s.oorV, 'add'], ['Operating rev', s.op, 'tot'], ['Op. expenses', -s.opx, 'sub'],
+      ? [['F&amp;O + cash', s.txn, 'tot'], ['Other txn charges', s.otx, 'add'], ['Transaction rev', s.txnRep, 'tot'],
+         ['Other op. revenue', s.oorV, 'add'], ['Operating rev', s.op, 'tot'], ['Op. expenses', -s.opx, 'sub'],
          ['Op. EBITDA', s.ebitda, 'tot'], ['Depreciation', -s.dep, 'sub'], ['Other income', s.oi, 'add'], ['Associates', s.assoc, 'add'],
          ['PBT', s.pbt, 'tot'], ['Tax', -s.tax, 'sub'], ['PAT', s.pat, 'tot']]
       : [['Transaction rev', s.txn, 'tot'], ['Other income', s.oi, 'add'], ['Total income', s.total, 'tot'], ['Costs and tax', -s.costs, 'sub'], ['PAT', s.pat, 'tot']];
