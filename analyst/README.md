@@ -37,7 +37,7 @@ The loader uses only Python's standard library. `.to_frame()` needs `pandas`.
 Open the clone in Claude Code. It reads `CLAUDE.md`: the data flow, the business rules and the verification steps. It also loads the repo's skills in `.claude/skills/` (`results-day`, `broker-mtf`). `.claude/settings.json` stops Claude reading the large generated JSON whole; ask it to query them, or use the loader.
 
 ### Proposing changes
-You have the **Triage** role: you can't push to this repository. Work on a branch of your fork, run the checks in `CLAUDE.md` ("Verify before pushing"), and open a PR to `main`. `checks.yml` runs the tests on it, and Jay reviews and merges. Never edit committed `dashboard/data/*.json` or `data/*` by hand: the bots rewrite them, so fix the generating script instead.
+The repository is public, so you need no invite: fork it and work on a branch of your fork (you can't push to this repository itself), run the checks in `CLAUDE.md` ("Verify before pushing"), and open a PR to `main`. `checks.yml` runs the tests on it, and Jay reviews and merges. Never edit committed `dashboard/data/*.json` or `data/*` by hand: the bots rewrite them, so fix the generating script instead.
 
 ## 3. The loader
 
