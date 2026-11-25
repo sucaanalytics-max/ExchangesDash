@@ -424,9 +424,15 @@ def get_existing_dates(supabase, batch_size=1000):
 # BSE posts the derivatives and the cash files separately. A day stored with
 # one of them missing used to stay that way: only zero-F&O days were ever
 # re-fetched, so a day whose cash had not posted kept cash_rev = 0 for good
-# (2026-06-15 and 2026-09-08). Recent days without cash are now held back,
-# and stored days missing either part are corrected when it appears.
+# (2026-06-15 and 2026-09-08). Recent days missing either part are now held
+# back, and stored days missing either part are corrected when it appears.
+# A recent day whose F&O had not posted used to be stored cash-only and
+# published as the day's close until the correction (2026-11-25, stored at
+# 16:37 IST with ₹1.08 Cr of cash against ₹42.8 Cr traded): such days are held
+# back too, and a recent cash-only day already stored is left out of the
+# published files until its F&O arrives.
 CASH_HOLD_BACK_DAYS = 7   # older than this, store the F&O day and correct cash later
+FO_HOLD_BACK_DAYS = 7     # older than this, store the cash-only day and correct F&O later
 
 
 def missing_parts(row):
@@ -455,6 +461,22 @@ def hold_back_missing_cash(new_parsed, cash_dates, today):
             kept.append(r)
     if held:
         print(f"WARNING: holding back {sorted(held)}: F&O posted but cash not yet — stored once BSE publishes it")
+    return kept
+
+
+def hold_back_missing_fo(rows, today, what="holding back"):
+    """Drop recent cash-only days (F&O not posted yet): new ones are stored, and
+    stored ones published, on a later run once both parts are in. Older ones are
+    kept (F&O corrected later, as before)."""
+    kept, held = [], []
+    for r in rows:
+        recent = (today - datetime.strptime(r["date"], "%Y-%m-%d")).days <= FO_HOLD_BACK_DAYS
+        if recent and missing_parts(r) == "fo":
+            held.append(r["date"])
+        else:
+            kept.append(r)
+    if held:
+        print(f"WARNING: {what} {sorted(held)}: cash posted but F&O not yet — published once BSE publishes it")
     return kept
 
 
@@ -942,6 +964,7 @@ def main():
               "re-run pipeline after BSE publishes F&O data.")
 
     new_parsed = hold_back_missing_cash(new_parsed, cash_dates, datetime.now())
+    new_parsed = hold_back_missing_fo(new_parsed, datetime.now())
     print(f"Parsed {len(new_parsed)} records from BSE")
 
     # Known BSE trading holidays whose data must never enter the DB.
@@ -1013,6 +1036,9 @@ def main():
         else:
             all_daily = sorted(new_parsed, key=lambda x: x["date"])
 
+    # A recent day stored before its F&O posted stays out of the published files
+    # (it is corrected, or stored afresh, once both parts are in)
+    all_daily = hold_back_missing_fo(all_daily, datetime.now(), what="leaving out of the published files")
     print(f"Total daily records: {len(all_daily)}")
 
     # Steps 5-6: Recompute aggregates and enriched data (at today's rates)
