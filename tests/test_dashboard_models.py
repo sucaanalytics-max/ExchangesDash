@@ -121,6 +121,32 @@ class PredictorMirrorsPipeline(unittest.TestCase):
             with self.subTest(line=k):
                 self.assertAlmostEqual(js[k], py[pk], delta=0.011)
 
+    def test_nse_special_sessions_mirror(self):
+        # A Muhurat in the current quarter: banked in the forecast, not grown into the next
+        hist = _nse_pnl()
+        model = nse.nse_ratio_model(hist)
+        if not model:
+            self.skipTest("committed nse_pnl has no two actual quarters with a revenue split")
+        seg_txn, otx, spc = 3500.0, 0.74, 19.33
+        pred = {"transaction_rev_extrapolated": seg_txn + spc + otx * 62, "other_txn_rev": otx * 62, "special_rev": spc}
+        got = nse.compute_predicted_quarters(pred, hist, [{"quarter": "Q3 FY 2027", "days": 11, "total_rev": 620.0}])
+        py = got["Q3 FY 2027"]
+        self.assertEqual((py["segments_rev"], py["special_rev"]), (seg_txn, spc))
+        self.assertAlmostEqual(got["Q4 FY 2027"]["transaction_rev"], seg_txn * 1.10 + otx * 62, delta=0.011)  # 10 % default growth
+        self.assertEqual(got["Q4 FY 2027"]["special_rev"], 0)
+        rest_adr = (seg_txn - 620.0) / 51
+        ctx = {"segs": ["opt", "fut", "cash"], "n": 11, "banked": {"opt": 500.0, "fut": 40.0, "cash": 80.0}, "special": spc}
+        v = {"opt": rest_adr * 0.8, "fut": rest_adr * 0.05, "cash": rest_adr * 0.15, "days": 62, "otx": otx,
+             "oor": model["other_operating_revenue_ratio"] * 100, "oi": model["non_operating_income_ratio"] * 100,
+             "opex": model["operating_expense_ratio"] * 100, "dep": model["depreciation_ratio"] * 100,
+             "assoc": model["share_profit_associates"], "tax": model["tax_rate"] * 100,
+             "shares": 1 / model["eps_per_pat"]}
+        js = js_eval(PREDICTOR_JS, "predictorScenario('nse', DATA.ctx, DATA.v)", {"ctx": ctx, "v": v})
+        for k, pk in {"txn": "segments_rev", "spc": "special_rev", "otx": "other_txn_rev", "txnRep": "transaction_rev",
+                      "op": "operating_revenue", "pbt": "pbt", "pat": "pat", "eps": "eps"}.items():
+            with self.subTest(line=k):
+                self.assertAlmostEqual(js[k], py[pk], delta=0.011)
+
     def test_base_rate_is_the_extrapolation(self):
         # Rest-of-quarter rate = quarter-to-date average → banked + avg × left = avg × all sessions
         ctx = {"segs": ["opt", "fut"], "n": 11, "banked": {"opt": 106.6, "fut": 23.3}}
