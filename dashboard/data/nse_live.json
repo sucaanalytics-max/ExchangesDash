@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-25T10:20:38Z",
+  "updated_at": "2026-11-25T10:25:32Z",
   "market_status": {
     "marketState": [
       {
@@ -54,14 +54,14 @@
         "marketStatus": "Open",
         "tradeDate": "25-Nov-2026",
         "index": "",
-        "last": "92.2000",
+        "last": "92.1750",
         "variation": "",
         "percentChange": "",
         "marketStatusMessage": "Market is Open",
         "expiryDate": "26-Nov-2026",
         "underlying": "USDINR",
-        "updated_time": "25-Nov-2026 15:50",
-        "tradeDateFormatted": "25-Nov-2026 15:50",
+        "updated_time": "25-Nov-2026 15:55",
+        "tradeDateFormatted": "25-Nov-2026 15:55",
         "slickclass": "slick-item"
       }
     ],
@@ -116,14 +116,14 @@
     "index_options_premium": 64871.2,
     "stock_options_premium": 10170.55,
     "options_premium": 75041.75,
-    "cash_traded_value": 129440.45,
+    "cash_traded_value": 129462.71,
     "take_rate_futures": 3.66e-05,
     "take_rate_options": 0.0007106,
     "take_rate_cash": 6.14e-05,
     "futures_revenue": 3.8675,
     "options_revenue": 53.3247,
-    "cash_revenue": 7.9476,
-    "total_revenue": 65.1398,
+    "cash_revenue": 7.949,
+    "total_revenue": 65.1412,
     "has_data": true,
     "source": "live"
   },
@@ -423,14 +423,14 @@
         "index_options_premium": 64871.2,
         "stock_options_premium": 10170.55,
         "options_premium": 75041.75,
-        "cash_traded_value": 129440.45,
+        "cash_traded_value": 129462.71,
         "take_rate_futures": 3.66e-05,
         "take_rate_options": 0.0007106,
         "take_rate_cash": 6.14e-05,
         "futures_revenue": 3.8675,
         "options_revenue": 53.3247,
-        "cash_revenue": 7.9476,
-        "total_revenue": 65.1398,
+        "cash_revenue": 7.949,
+        "total_revenue": 65.1412,
         "has_data": true,
         "source": "live"
       }
@@ -468,7 +468,7 @@
     "previous_close": 17.7,
     "change": -0.01,
     "pct_change": -0.02,
-    "as_of": "2026-11-25T10:20:38Z",
+    "as_of": "2026-11-25T10:25:32Z",
     "source": "nse",
     "trade_date": "2026-11-25"
   }
