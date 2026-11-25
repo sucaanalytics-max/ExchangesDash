@@ -113,6 +113,9 @@ def main():
     for d in filled:
         prices[d] = screener[d]
     prices = {d: p for d, p in prices.items() if d >= LISTING_DATE}
+    prices, special = sr.drop_special_sessions(prices, "nse")
+    if special:
+        print(f"Left out special-session closes: {special}")
     if not prices:
         raise SystemExit("ERROR: No price data from Yahoo or screener")
 
