@@ -641,6 +641,8 @@ const NAV_ICONS = {
 // its own exchange's participant data and NSDL's market-wide FPI flows
 // Valuation inputs are a drawer on the Valuation Model tab (js/18-valuation-inputs.js),
 // not a tab of their own
+// Results Signals (js/24-signals.js) reads NSE, BSE and MCX together, so it is
+// under the All view only
 const EXCHANGE_TABS = {
   nse: [
     { id: 'revenue',    label: 'Revenue Summary',    icon: 'revenue' },
@@ -670,6 +672,7 @@ const EXCHANGE_TABS = {
   all: [
     { id: 'revenue',    label: 'Revenue Summary',     icon: 'revenue' },
     { id: 'contracts',  label: 'Contracts to Premium', icon: 'ratio' },
+    { id: 'signals',    label: 'Results Signals',     icon: 'list' },
   ],
   nsebse: [
     { id: 'revenue',      label: 'Revenue Summary',     icon: 'revenue' },
@@ -707,6 +710,7 @@ const TAB_TITLES = {
   all: {
     revenue: 'Combined Revenue — NSE + BSE + MCX',
     contracts: 'Contracts to Premium — NSE + BSE',
+    signals: 'Results Signals — activity into results',
   },
   nsebse: {
     revenue: 'NSE + BSE Revenue Summary',
