@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-26T10:20:29Z",
+  "updated_at": "2026-11-26T10:25:29Z",
   "market_status": {
     "marketState": [
       {
@@ -116,14 +116,14 @@
     "index_options_premium": 47847.5,
     "stock_options_premium": 8415.86,
     "options_premium": 56263.36,
-    "cash_traded_value": 119340.45,
+    "cash_traded_value": 119377.49,
     "take_rate_futures": 3.66e-05,
     "take_rate_options": 0.0007106,
     "take_rate_cash": 6.14e-05,
     "futures_revenue": 3.0752,
     "options_revenue": 39.9807,
-    "cash_revenue": 7.3275,
-    "total_revenue": 50.3835,
+    "cash_revenue": 7.3298,
+    "total_revenue": 50.3858,
     "has_data": true,
     "source": "live"
   },
@@ -423,14 +423,14 @@
         "index_options_premium": 47847.5,
         "stock_options_premium": 8415.86,
         "options_premium": 56263.36,
-        "cash_traded_value": 119340.45,
+        "cash_traded_value": 119377.49,
         "take_rate_futures": 3.66e-05,
         "take_rate_options": 0.0007106,
         "take_rate_cash": 6.14e-05,
         "futures_revenue": 3.0752,
         "options_revenue": 39.9807,
-        "cash_revenue": 7.3275,
-        "total_revenue": 50.3835,
+        "cash_revenue": 7.3298,
+        "total_revenue": 50.3858,
         "has_data": true,
         "source": "live"
       }
@@ -487,7 +487,7 @@
     "previous_close": 17.67,
     "change": -0.86,
     "pct_change": -4.88,
-    "as_of": "2026-11-26T10:20:29Z",
+    "as_of": "2026-11-26T10:25:29Z",
     "source": "nse",
     "trade_date": "2026-11-26"
   }
