@@ -5,7 +5,7 @@
 # 1. A commit message containing "[deploy]" always builds. The daily workflow
 #    pushes one after the day's last exchange update (and after manual runs).
 # 2. Bot data commits ("📊 NSE update: …", "📊 MTF update: …", "📊 Participants update: …", "📈 BSE share analysis: …",
-#    "📡 Live update: …", "📈 Intraday prices: …") are skipped when everything
+#    "📡 Live update: …", "📈 Intraday prices: …", "📈 Options history: …") are skipped when everything
 #    changed since the last deploy is under data/: the day's data goes out with
 #    the "[deploy]" commit.
 # 3. Any other commit is skipped only when the live/intraday JSON alone
@@ -19,7 +19,7 @@ case "$MSG" in
     echo "Commit asks for a deploy — building"
     exit 1 ;;
   "📊 "[NBM][SC][EX]" update: "* | "📊 MTF update: "* | "📊 Participants update: "* | \
-  "📈 "[NBM][SC][EX]" share analysis: "* | "📈 Intraday prices: "* | \
+  "📈 "[NBM][SC][EX]" share analysis: "* | "📈 Intraday prices: "* | "📈 Options history: "* | \
   "📡 Live update: "* | "📡 "[BM][SC][EX]" Live update: "*)
     BOT=1 ;;
 esac

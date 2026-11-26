@@ -12,48 +12,50 @@ put, at base sell a covered call, between base and bull cut the futures, at bull
 with revenue also below the 45-day, go short. A 30 % override lets a long through when the short
 window beats the 45-day by 30 % even if price is not cheap (up to +0.5σ).
 
+**Caveat.** Not point-in-time: every day uses today's valuation_inputs.json for Gate 3 (P/E, the next FY's other income, PAT margin, sessions and both discount rates) and for the fit's start date (regression_from, an analyst's later choice). The price and revenue fits use only sessions before each day, but these inputs were set later, so results before they were set are not a clean out-of-sample test.
+
 ## BSE
 
 Fit from 2025-01-01; first signal 2025-03-05, first day with bands and option data 2025-06-05, last 2026-11-25; 492 days of NSE option data.
 
-Elasticity of price to the 45-session ADR: log–log slope 0.673 (ratio model assumes 1; the linear regression implies 0.733 at today's MA).
+Elasticity of price to the 45-session ADR: log–log slope 0.672 (ratio model assumes 1; the linear regression implies 0.732 at today's MA).
 
 | Config | Trades | Episodes | Win % | Mean % | Sum % | Worst % | Train n / sum % | Test n / sum % |
 |---|---|---|---|---|---|---|---|---|
-| 10d-T10-and-not_falling | 6 | 6 | 66.7 | 17.87 | 107.24 | -4.13 | 4 / 102.58 | 2 / 4.66 |
-| 10d-T10-ratio-not_falling | 7 | 7 | 57.1 | 15.14 | 105.98 | -4.13 | 4 / 102.58 | 3 / 3.4 |
-| 10d-T10-or-not_falling | 7 | 7 | 57.1 | 15.14 | 105.98 | -4.13 | 4 / 102.58 | 3 / 3.4 |
-| 2w-T10-and-not_falling | 6 | 6 | 66.7 | 17.01 | 102.05 | -4.13 | 4 / 97.39 | 2 / 4.66 |
-| 2w-T10-ratio-not_falling | 7 | 7 | 57.1 | 14.4 | 100.78 | -4.13 | 4 / 97.39 | 3 / 3.4 |
-| 2w-T10-or-not_falling | 7 | 7 | 57.1 | 14.4 | 100.78 | -4.13 | 4 / 97.39 | 3 / 3.4 |
-| 10d-T10-ratio-rising | 5 | 5 | 80.0 | 17.1 | 85.51 | -4.13 | 4 / 80.85 | 1 / 4.66 |
-| 10d-T10-and-rising | 5 | 5 | 80.0 | 17.1 | 85.51 | -4.13 | 4 / 80.85 | 1 / 4.66 |
-| 10d-T10-or-rising | 5 | 5 | 80.0 | 17.1 | 85.51 | -4.13 | 4 / 80.85 | 1 / 4.66 |
-| 10d-T20-ratio-not_falling | 7 | 7 | 71.4 | 10.83 | 75.78 | -4.13 | 5 / 71.12 | 2 / 4.66 |
-| 10d-T20-and-not_falling | 7 | 7 | 71.4 | 10.83 | 75.78 | -4.13 | 5 / 71.12 | 2 / 4.66 |
-| 10d-T20-or-not_falling | 7 | 7 | 71.4 | 10.83 | 75.78 | -4.13 | 5 / 71.12 | 2 / 4.66 |
-| 2w-T20-ratio-not_falling | 7 | 7 | 71.4 | 10.08 | 70.59 | -4.13 | 5 / 65.93 | 2 / 4.66 |
-| 2w-T20-and-not_falling | 7 | 7 | 71.4 | 10.08 | 70.59 | -4.13 | 5 / 65.93 | 2 / 4.66 |
-| 2w-T20-or-not_falling | 7 | 7 | 71.4 | 10.08 | 70.59 | -4.13 | 5 / 65.93 | 2 / 4.66 |
-| 2w-T10-ratio-rising | 6 | 5 | 83.3 | 11.0 | 66.01 | -4.13 | 5 / 61.35 | 1 / 4.66 |
+| 10d-T10-and-not_falling | 5 | 5 | 80.0 | 23.3 | 116.49 | -4.13 | 4 / 102.58 | 1 / 13.91 |
+| 10d-T10-ratio-not_falling | 7 | 7 | 57.1 | 15.03 | 105.22 | -4.13 | 4 / 102.58 | 3 / 2.65 |
+| 10d-T10-or-not_falling | 7 | 7 | 57.1 | 15.03 | 105.22 | -4.13 | 4 / 102.58 | 3 / 2.65 |
+| 2w-T10-and-not_falling | 6 | 5 | 66.7 | 17.01 | 102.05 | -4.13 | 4 / 97.39 | 2 / 4.66 |
+| 2w-T10-ratio-not_falling | 7 | 7 | 57.1 | 14.07 | 98.46 | -4.13 | 4 / 97.39 | 3 / 1.07 |
+| 2w-T10-or-not_falling | 7 | 7 | 57.1 | 14.07 | 98.46 | -4.13 | 4 / 97.39 | 3 / 1.07 |
+| 10d-T10-and-rising | 5 | 5 | 80.0 | 18.95 | 94.76 | -4.13 | 4 / 80.85 | 1 / 13.91 |
+| 10d-T20-and-not_falling | 6 | 6 | 83.3 | 14.17 | 85.04 | -4.13 | 5 / 71.12 | 1 / 13.91 |
+| 10d-T10-ratio-rising | 5 | 5 | 80.0 | 16.95 | 84.75 | -4.13 | 4 / 80.85 | 1 / 3.91 |
+| 10d-T10-or-rising | 5 | 5 | 80.0 | 16.95 | 84.75 | -4.13 | 4 / 80.85 | 1 / 3.91 |
+| 10d-T20-ratio-not_falling | 7 | 7 | 71.4 | 10.72 | 75.03 | -4.13 | 5 / 71.12 | 2 / 3.91 |
+| 10d-T20-or-not_falling | 7 | 7 | 71.4 | 10.72 | 75.03 | -4.13 | 5 / 71.12 | 2 / 3.91 |
+| 2w-T20-and-not_falling | 7 | 6 | 71.4 | 10.08 | 70.59 | -4.13 | 5 / 65.93 | 2 / 4.66 |
+| 2w-T20-ratio-not_falling | 7 | 7 | 71.4 | 9.98 | 69.84 | -4.13 | 5 / 65.93 | 2 / 3.91 |
+| 2w-T20-or-not_falling | 7 | 7 | 71.4 | 9.98 | 69.84 | -4.13 | 5 / 65.93 | 2 / 3.91 |
 | 2w-T10-and-rising | 6 | 5 | 83.3 | 11.0 | 66.01 | -4.13 | 5 / 61.35 | 1 / 4.66 |
-| 2w-T10-or-rising | 6 | 5 | 83.3 | 11.0 | 66.01 | -4.13 | 5 / 61.35 | 1 / 4.66 |
-| 10d-T20-ratio-rising | 6 | 6 | 83.3 | 7.32 | 43.93 | -5.5 | 5 / 39.27 | 1 / 4.66 |
-| 10d-T20-and-rising | 6 | 6 | 83.3 | 7.32 | 43.93 | -5.5 | 5 / 39.27 | 1 / 4.66 |
-| 10d-T20-or-rising | 6 | 6 | 83.3 | 7.32 | 43.93 | -5.5 | 5 / 39.27 | 1 / 4.66 |
-| 2w-T20-ratio-rising | 7 | 7 | 85.7 | 6.06 | 42.45 | -4.13 | 6 / 38.55 | 1 / 3.9 |
+| 2w-T10-ratio-rising | 6 | 5 | 83.3 | 10.88 | 65.26 | -4.13 | 5 / 61.35 | 1 / 3.91 |
+| 2w-T10-or-rising | 6 | 5 | 83.3 | 10.88 | 65.26 | -4.13 | 5 / 61.35 | 1 / 3.91 |
+| 10d-T20-and-rising | 6 | 6 | 83.3 | 8.86 | 53.18 | -5.5 | 5 / 39.27 | 1 / 13.91 |
+| 10d-T20-ratio-rising | 6 | 6 | 83.3 | 7.2 | 43.18 | -5.5 | 5 / 39.27 | 1 / 3.91 |
+| 10d-T20-or-rising | 6 | 6 | 83.3 | 7.2 | 43.18 | -5.5 | 5 / 39.27 | 1 / 3.91 |
+| 2w-T20-ratio-rising | 7 | 7 | 85.7 | 6.07 | 42.46 | -4.13 | 6 / 38.55 | 1 / 3.91 |
+| 2w-T20-or-rising | 7 | 7 | 85.7 | 6.07 | 42.46 | -4.13 | 6 / 38.55 | 1 / 3.91 |
 | 2w-T20-and-rising | 7 | 7 | 85.7 | 6.06 | 42.45 | -4.13 | 6 / 38.55 | 1 / 3.9 |
-| 2w-T20-or-rising | 7 | 7 | 85.7 | 6.06 | 42.45 | -4.13 | 6 / 38.55 | 1 / 3.9 |
 
-Today (2026-11-25): price 3830.7, 45-day ADR 21.41, 10-session 20.8, 2 whole weeks 22.04; ratio [3749, 4439, 5129], regression [3478, 3807, 4136], ADR model [3362, 3782, 4203] → ladder **bear-base**.
+Today (2026-11-25): price 3775.2, 45-day ADR 21.41, 10-session 20.8, 2 whole weeks 22.04; ratio [3749, 4440, 5131], regression [3476, 3806, 4135], ADR model [3433, 3862, 4291] → ladder **bear-base**.
 
-All three gates pass today in 0 of 24 configs.
+All three gates pass today in 12 of 24 configs: 10d-T10-ratio-not_falling, 10d-T10-and-not_falling, 10d-T10-or-not_falling, 10d-T20-ratio-not_falling, 10d-T20-and-not_falling, 10d-T20-or-not_falling, 2w-T10-ratio-not_falling, 2w-T10-and-not_falling, 2w-T10-or-not_falling, 2w-T20-ratio-not_falling, 2w-T20-and-not_falling, 2w-T20-or-not_falling.
 
 ## MCX
 
-Fit from 2024-11-01; first signal 2025-01-07, first day with bands and option data 2025-04-03, last 2026-11-23; 657 days of NSE option data.
+Fit from 2024-11-01; first signal 2025-01-07, first day with bands and option data 2025-04-03, last 2026-11-25; 657 days of NSE option data.
 
-Elasticity of price to the 45-session ADR: log–log slope 0.833 (ratio model assumes 1; the linear regression implies 0.88 at today's MA).
+Elasticity of price to the 45-session ADR: log–log slope 0.833 (ratio model assumes 1; the linear regression implies 0.882 at today's MA).
 
 | Config | Trades | Episodes | Win % | Mean % | Sum % | Worst % | Train n / sum % | Test n / sum % |
 |---|---|---|---|---|---|---|---|---|
@@ -82,38 +84,38 @@ Elasticity of price to the 45-session ADR: log–log slope 0.833 (ratio model as
 | 2w-T20-or-rising | 5 | 4 | 100.0 | 18.88 | 94.38 | 1.54 | 5 / 94.38 | 0 / 0 |
 | 10d-T10-and-not_falling | 6 | 4 | 100.0 | 15.24 | 91.46 | 1.54 | 6 / 91.46 | 0 / 0 |
 
-Today (2026-11-23): price 3581.6, 45-day ADR 13.45, 10-session 15.51, 2 whole weeks 15.51; ratio [3079, 3624, 4170], regression [2920, 3267, 3614], ADR model [3482, 3906, 4331] → ladder **bear-base**.
+Today (2026-11-25): price 3565.0, 45-day ADR 13.76, 10-session 16.74, 2 whole weeks 15.51; ratio [3148, 3706, 4265], regression [2984, 3331, 3678], ADR model [3628, 4070, 4513] → ladder **bear-base**.
 
-All three gates pass today in 12 of 24 configs: 10d-T10-ratio-rising, 10d-T10-ratio-not_falling, 10d-T10-or-rising, 10d-T10-or-not_falling, 10d-T20-ratio-not_falling, 10d-T20-or-not_falling, 2w-T10-ratio-rising, 2w-T10-ratio-not_falling, 2w-T10-or-rising, 2w-T10-or-not_falling, 2w-T20-ratio-not_falling, 2w-T20-or-not_falling.
+All three gates pass today in 14 of 24 configs: 10d-T10-ratio-rising, 10d-T10-ratio-not_falling, 10d-T10-or-rising, 10d-T10-or-not_falling, 10d-T20-ratio-rising, 10d-T20-ratio-not_falling, 10d-T20-or-rising, 10d-T20-or-not_falling, 2w-T10-ratio-rising, 2w-T10-ratio-not_falling, 2w-T10-or-rising, 2w-T10-or-not_falling, 2w-T20-ratio-not_falling, 2w-T20-or-not_falling.
 
 ## Replay cases
 
 ### BSE from 1 Oct 2026: the tree should catch the run
 
-- `10d-T10-and-not_falling`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
-- `10d-T10-and-rising`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
-- `10d-T10-or-not_falling`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
-- `10d-T10-or-rising`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
-- `10d-T10-ratio-not_falling`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
-- `10d-T10-ratio-rising`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
-- `10d-T20-and-not_falling`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
-- `10d-T20-and-rising`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
-- `10d-T20-or-not_falling`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
-- `10d-T20-or-rising`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
-- `10d-T20-ratio-not_falling`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
-- `10d-T20-ratio-rising`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
+- `10d-T10-and-not_falling`: futures long 2026-10-22 at 3265.0 → 2026-11-23 (open at end) 13.913 %
+- `10d-T10-and-rising`: futures long 2026-10-22 at 3265.0 → 2026-11-23 (open at end) 13.913 %
+- `10d-T10-or-not_falling`: put sold 2026-10-22 at 3265.0 → 2026-11-23 (expiry) 3.908 %
+- `10d-T10-or-rising`: put sold 2026-10-22 at 3265.0 → 2026-11-23 (expiry) 3.908 %
+- `10d-T10-ratio-not_falling`: put sold 2026-10-22 at 3265.0 → 2026-11-23 (expiry) 3.908 %
+- `10d-T10-ratio-rising`: put sold 2026-10-22 at 3265.0 → 2026-11-23 (expiry) 3.908 %
+- `10d-T20-and-not_falling`: futures long 2026-10-22 at 3265.0 → 2026-11-23 (open at end) 13.913 %
+- `10d-T20-and-rising`: futures long 2026-10-22 at 3265.0 → 2026-11-23 (open at end) 13.913 %
+- `10d-T20-or-not_falling`: put sold 2026-10-22 at 3265.0 → 2026-11-23 (expiry) 3.908 %
+- `10d-T20-or-rising`: put sold 2026-10-22 at 3265.0 → 2026-11-23 (expiry) 3.908 %
+- `10d-T20-ratio-not_falling`: put sold 2026-10-22 at 3265.0 → 2026-11-23 (expiry) 3.908 %
+- `10d-T20-ratio-rising`: put sold 2026-10-22 at 3265.0 → 2026-11-23 (expiry) 3.908 %
 - `2w-T10-and-not_falling`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
 - `2w-T10-and-rising`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
-- `2w-T10-or-not_falling`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
-- `2w-T10-or-rising`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
-- `2w-T10-ratio-not_falling`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
-- `2w-T10-ratio-rising`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
+- `2w-T10-or-not_falling`: put sold 2026-10-22 at 3265.0 → 2026-11-23 (expiry) 3.908 %
+- `2w-T10-or-rising`: put sold 2026-10-22 at 3265.0 → 2026-11-23 (expiry) 3.908 %
+- `2w-T10-ratio-not_falling`: put sold 2026-10-22 at 3265.0 → 2026-11-23 (expiry) 3.908 %
+- `2w-T10-ratio-rising`: put sold 2026-10-22 at 3265.0 → 2026-11-23 (expiry) 3.908 %
 - `2w-T20-and-not_falling`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
 - `2w-T20-and-rising`: put sold 2026-10-26 at 3359.0 → 2026-11-23 (expiry) 3.903 %
-- `2w-T20-or-not_falling`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
-- `2w-T20-or-rising`: put sold 2026-10-26 at 3359.0 → 2026-11-23 (expiry) 3.903 %
-- `2w-T20-ratio-not_falling`: put sold 2026-10-23 at 3230.8 → 2026-11-23 (expiry) 4.66 %
-- `2w-T20-ratio-rising`: put sold 2026-10-26 at 3359.0 → 2026-11-23 (expiry) 3.903 %
+- `2w-T20-or-not_falling`: put sold 2026-10-22 at 3265.0 → 2026-11-23 (expiry) 3.908 %
+- `2w-T20-or-rising`: put sold 2026-10-22 at 3265.0 → 2026-11-23 (expiry) 3.908 %
+- `2w-T20-ratio-not_falling`: put sold 2026-10-22 at 3265.0 → 2026-11-23 (expiry) 3.908 %
+- `2w-T20-ratio-rising`: put sold 2026-10-22 at 3265.0 → 2026-11-23 (expiry) 3.908 %
 
 ### MCX puts sold near 3,700 in mid-Nov: the tree should avoid them
 

@@ -18,6 +18,8 @@ valuation_inputs.json (or --from); the MA is built only from revenue on or after
 ends on the last revenue day before t (the share files' lag). Decisions use t's close and are
 filled at t's close. Nothing is fitted on returns: the grid below is fixed in advance, and the
 train / test split (entries to TRAIN_END / after) only shows whether results hold up.
+Not point-in-time (POINT_IN_TIME_NOTE, printed in the report): Gate 3's inputs and the fit's
+start date are today's valuation_inputs.json for every day of the backtest.
 
 Grid (24): short window {10 sessions, the last 2 whole Mon–Fri weeks before t's week} ×
 T {10 %, 20 %} × Gate 2 {ratio, ratio AND regression, ratio OR regression} ×
@@ -65,6 +67,13 @@ CALL_MIN = 1.05           # covered calls at least 5 % above the price
 FACTOR_DRIFT = 0.02       # an option whose adjustment factor moves more than this is dropped
 TRAIN_END = "2026-06-30"
 EPISODE_GAP = 20          # entries more than this many sessions apart are separate episodes
+# The price and revenue fits have no look-ahead; these inputs do, so earlier results are not a
+# clean out-of-sample test. Written into backtest.json ("caveat") and backtest.md.
+POINT_IN_TIME_NOTE = ("Not point-in-time: every day uses today's valuation_inputs.json for Gate 3 "
+                      "(P/E, the next FY's other income, PAT margin, sessions and both discount rates) "
+                      "and for the fit's start date (regression_from, an analyst's later choice). "
+                      "The price and revenue fits use only sessions before each day, but these inputs "
+                      "were set later, so results before they were set are not a clean out-of-sample test.")
 
 
 @dataclass(frozen=True)
@@ -492,7 +501,8 @@ REPLAYS = {
 
 def run(start_override=None, data_dir=DATA, options_dir=OPTIONS_DIR):
     shares = shares_outstanding()
-    result = {"method": __doc__.split("\n\n")[1].strip(), "grid": [c.key for c in GRID], "names": {}}
+    result = {"method": __doc__.split("\n\n")[1].strip(), "caveat": POINT_IN_TIME_NOTE,
+              "grid": [c.key for c in GRID], "names": {}}
     sigs, all_trades = {}, {}
     for ex, sym in NAMES.items():
         v = valuation_inputs(ex, Path(data_dir) / "valuation_inputs.json")
@@ -524,7 +534,7 @@ def run(start_override=None, data_dir=DATA, options_dir=OPTIONS_DIR):
 
 
 def markdown(res):
-    L = ["# Trading-logic tree: walk-forward backtest", "", res["method"], ""]
+    L = ["# Trading-logic tree: walk-forward backtest", "", res["method"], "", f"**Caveat.** {res['caveat']}", ""]
     for sym, n in res["names"].items():
         L += [f"## {sym}", "",
               f"Fit from {n['fit_from']}; first signal {n['first_signal']}, first day with bands and option "
