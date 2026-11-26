@@ -21,9 +21,13 @@ function valuationInputsRows(qLabel, fy) {
   const y1 = valuationFYShort(fy), y0 = valuationFYShort(fy - 1);
   return [
     { sec: 'Inputs · <span data-vd-where>saved in this browser</span>' },
-    { key: 'adr', label: 'ADR estimate, ₹ Cr / session', step: 0.1, note: 'Regression and Ratio in the estimate model; blank = the 45 DMA' },
-    { key: 'g', label: 'QoQ ADR growth, %', step: 0.5, note: `each quarter from ${qLabel} to Q4 ${y1}, ADR model` },
+    { key: 'dma', type: 'choice', options: VALUATION_DMA_WINDOWS.map(w => [w, `${w} D`]), label: 'DMA table · ADR', note: 'Regression and Ratio at the last 45, 20 or 10 sessions' },
+    { key: 'g', label: 'DMA table · QoQ ADR growth, %', step: 0.5, note: `ADR model: ${qLabel} ADR to date grown each quarter to Q4 ${y1}` },
     { out: 'gA', label: 'Implied annual growth', note: '(1 + QoQ)⁴ − 1' },
+    { key: 'eb', type: 'choice', options: VALUATION_EST_BASES.map(b => [b, b === 'custom' ? 'Custom' : `${b.slice(3)} D`]), label: 'Estimate table · ADR', note: 'the 45, 20 or 10 DMA, or the custom ADR below' },
+    { key: 'adr', label: 'Custom ADR, ₹ Cr / session', step: 0.1, note: 'typing one selects Custom' },
+    { key: 'g2', label: 'Estimate table · QoQ ADR growth, %', step: 0.5, note: `ADR model: the estimate ADR grown each quarter to Q4 ${y1}` },
+    { out: 'gA2', label: 'Implied annual growth', note: '(1 + QoQ)⁴ − 1' },
     { key: 'pe0', label: 'P/E bear, ×', step: 1, note: `on ${y1}E EPS` },
     { key: 'pe1', label: 'P/E base, ×', step: 1 },
     { key: 'pe2', label: 'P/E bull, ×', step: 1 },
@@ -34,10 +38,13 @@ function valuationInputsRows(qLabel, fy) {
     { key: 'w2', label: 'Weight · ADR model, %', step: 5 },
     { out: 'wSum', label: 'Weight check', note: 'must be 100 %' },
     { sec: 'ADR reference · ₹ Cr / session at today’s rates' },
-    { out: 'adr45', label: 'Current 45 DMA ADR', note: 'last 45 sessions: the 45 DMA model' },
-    { out: 'qAdr', label: `${qLabel} ADR to date`, note: 'start of the ADR path' },
-    { out: 'adrFY', label: `${y1} average ADR`, note: 'ADR model' },
-    { out: 'vs45', label: 'ADR estimate vs 45 DMA' },
+    { out: 'adr45', label: '45 DMA ADR', note: 'last 45 sessions' },
+    { out: 'adr20', label: '20 DMA ADR', note: 'last 20 sessions' },
+    { out: 'adr10', label: '10 DMA ADR', note: 'last 10 sessions' },
+    { out: 'qAdr', label: `${qLabel} ADR to date`, note: 'start of the DMA table’s ADR path' },
+    { out: 'adrFY', label: `${y1} average ADR, DMA table`, note: 'ADR model' },
+    { out: 'adrFY2', label: `${y1} average ADR, estimate table`, note: 'ADR model' },
+    { out: 'vs45', label: 'Estimate ADR vs 45 DMA' },
     { sec: `Fixed · valuation_inputs.json` },
     { out: 'oi', label: `Other income ${y1}, ₹ Cr` },
     { out: 'margin', label: 'PAT margin' },
@@ -65,6 +72,7 @@ function valuationInputsCell(key, d, v, m) {
   const dash = '—';
   switch (key) {
     case 'gA': return fmtPct(Math.pow(1 + v.g / 100, 4) - 1);
+    case 'gA2': return fmtPct(Math.pow(1 + v.g2 / 100, 4) - 1);
     case 'wSum': {
       const s = v.w0 + v.w1 + v.w2;
       return Math.abs(s - 100) < 1e-9 ? valuationPct(s) : `<span class="rx-dn" title="The weights do not add to 100 %: the average divides by the weights of the methods with a value">${valuationPct(s)} ✕</span>`;
@@ -76,10 +84,14 @@ function valuationInputsCell(key, d, v, m) {
   }
   if (!c) return dash;
   switch (key) {
-    case 'adr45': return fmtNum(c.adr45, 2);
+    case 'adr45': case 'adr20': case 'adr10': {
+      const w = +key.slice(3);
+      return fmtNum(valuationDmaAdr(c, w), 2) + (c.nN && c.nN[w] < w ? ` <span class="rx-vi-sub">${c.nN[w]} sessions</span>` : '');
+    }
     case 'qAdr': return `${fmtNum(c.qAdr, 2)} <span class="rx-vi-sub">${c.qN} sessions</span>`;
-    case 'adrFY': return fmtNum(m.path.adr, 2);
-    case 'vs45': return v.adr == null ? '<span class="rx-vi-sub">no estimate</span>' : rxSignedPct(v.adr / c.adr45 - 1, 1);
+    case 'adrFY': return fmtNum(m.dma.path.adr, 2);
+    case 'adrFY2': return fmtNum(m.est.path.adr, 2);
+    case 'vs45': return m.est.basis.blank ? '<span class="rx-vi-sub">no custom ADR: the 45 DMA</span>' : rxSignedPct(m.est.adr / c.adr45 - 1, 1);
     case 'first': {
       const w = c.win, note = valuationWindowNote(w);
       if (!w.firstPoint) return note ? `${dash} <span class="rx-vi-sub" title="${escHtml(note)}">date not applied</span>` : dash;
@@ -98,7 +110,7 @@ function valuationInputsCell(key, d, v, m) {
   return dash;
 }
 
-// Value shown in an input: the ADR estimate to 2 decimals, blank when it is the 45 DMA;
+// Value shown in an input: the custom ADR to 2 decimals, blank when none is typed;
 // the data-from date as YYYY-MM-DD, blank for all data
 function valuationInputShown(v, key) {
   const x = v[key];
@@ -117,7 +129,7 @@ function valuationTargetTiles(list, defaults, overrides, shownEx) {
     const m = c ? valuationModel(c, v, SHARES_OUTSTANDING_CR[d.ex].value) : null;
     const t = m && m.est, avg = t && t.avg;
     return rxKpi(`${name} · base case target`, avg ? rxRupee(avg[1]) : '—',
-      avg ? `${d.c.cmp ? `Upside ${valuationUpHTML(avg[1], d.c.cmp)} · CMP ${rxRupee(d.c.cmp)}` : 'no CMP yet'}<br>Bear ${rxRupee(avg[0])} · Bull ${rxRupee(avg[2])} · ADR ${fmtNum(t.adr, 2)}${m.estIsDma ? ' (45 DMA)' : ''}`
+      avg ? `${d.c.cmp ? `Upside ${valuationUpHTML(avg[1], d.c.cmp)} · CMP ${rxRupee(d.c.cmp)}` : 'no CMP yet'}<br>Bear ${rxRupee(avg[0])} · Bull ${rxRupee(avg[2])} · ADR ${fmtNum(t.adr, 2)}${t.basis.custom && !t.basis.blank ? '' : ` (${t.basis.label})`}`
         : 'no method has a value', { accent: d.ex === shownEx });
   }).join('');
 }
@@ -163,8 +175,9 @@ function valuationSaveStatusHTML(S, ex) {
 }
 
 // Opens the drawer on one exchange's inputs. ctx: { ex, defaults, data (its
-// valuationExchange result), onChange (re-renders the Valuation Model) }
-function openValuationDrawer(ctx) {
+// valuationExchange result), onChange (re-renders the Valuation Model) }; focus: a selector for
+// the control to focus when it opens (default: the first)
+function openValuationDrawer(ctx, focus = null) {
   const { ex, defaults, data, onChange } = ctx;
   const name = SHARE_EXCHANGE_NAMES[ex];
   const latest = () => data.c && data.c.lastDate;
@@ -174,7 +187,10 @@ function openValuationDrawer(ctx) {
   let overrides = readValuationOverrides();
 
   // Sections: inputs and the data-from date in view; reference figures folded
-  const input = r => r.type === 'date'
+  const input = r => r.type === 'choice'
+    ? `<div class="rx-seg" role="group" aria-label="${escHtml(r.label)}" data-vd-choice="${r.key}">${r.options.map(([val, label]) =>
+        `<button type="button" data-value="${val}" aria-pressed="false">${label}</button>`).join('')}</div>`
+    : r.type === 'date'
     ? `<input class="rx-in rx-date-in" type="date"${anyC ? `${anyC.dataFirst ? ` min="${anyC.dataFirst}"` : ''} max="${anyC.lastDate}"` : ''} data-vd="${r.key}" aria-label="${escHtml(r.label)}">`
     : `<input class="rx-in rx-num-in" type="number" step="${r.step}" inputmode="decimal" data-vd="${r.key}" aria-label="${escHtml(r.label)}">`;
   const row = r => `<div class="rx-drawer-row"><span class="rx-dl">${r.label}${r.note ? `<small>${r.note}</small>` : ''}</span>
@@ -194,6 +210,7 @@ function openValuationDrawer(ctx) {
   const listener = () => refresh();
   const el = openRxDrawer({
     title: `${name} valuation inputs`,
+    focus,
     body: `<p class="rx-drawer-note" data-vd-note></p>
       <div class="rx-vi-access" data-vd-access></div>
       <div class="rx-vi-access rx-vi-unpub" data-vd-notice role="status" aria-live="polite"></div>
@@ -210,7 +227,7 @@ function openValuationDrawer(ctx) {
   function access() {
     const kind = valuationAccessKind(S), can = valuationCanEdit();
     el.querySelectorAll('[data-vd-where]').forEach(n => { n.textContent = valuationWhere(S.mode); });
-    el.querySelectorAll('input[data-vd]').forEach(i => { i.disabled = !can; });
+    el.querySelectorAll('input[data-vd], [data-vd-choice] button').forEach(i => { i.disabled = !can; });
     if (kind !== shownKind) {
       shownKind = kind;
       q('[data-vd-note]').textContent = kind === 'local'
@@ -273,11 +290,17 @@ function openValuationDrawer(ctx) {
       if (n) n.innerHTML = valuationInputsCell(r.out, { ...data, c }, v, m);
     });
     VALUATION_EDITABLE.forEach(k => {
+      const seg = q(`[data-vd-choice="${k}"]`);
+      if (seg) {
+        seg.classList.toggle('is-edited', edited.includes(k));
+        seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.value === String(v[k]))));
+        return;
+      }
       const i = q(`input[data-vd="${k}"]`);
       if (!i) return;
       i.classList.toggle('is-edited', edited.includes(k));
       if (document.activeElement !== i) i.value = valuationInputShown(v, k);
-      if (k === 'adr') i.placeholder = data.c ? fmtNum(data.c.adr45, 2) : '45 DMA';
+      if (k === 'adr') i.placeholder = 'none';
     });
     q('[data-vd-edited]').innerHTML = edited.length
       ? `${rxChip(`Edited: ${edited.map(k => VALUATION_INPUT_LABELS[k]).join(', ')}`, 'edit')} <button type="button" class="rx-btn" data-vd-reset${valuationCanEdit() ? '' : ' disabled title="Sign in to edit"'}>Reset ${name} to the defaults</button>`
@@ -313,10 +336,22 @@ function openValuationDrawer(ctx) {
     // From the inputs in use now, not this drawer's copy: a colleague's change merged since
     // (a 409) must not come back as an edit of ours
     overrides = setValuationOverride(readValuationOverrides(), defaults, ex, key, value);
+    // A custom ADR typed selects Custom for the estimate table
+    if (key === 'adr') overrides = setValuationOverride(overrides, defaults, ex, 'eb', 'custom');
     save();
   });
-  // Leaving a field shows the value in use (an unusable entry reverts); an ADR box left
-  // empty means the 45 DMA. A date input also fires change after each keystroke while it
+  // A choice (DMA window, estimate basis): saved on click
+  el.addEventListener('click', e => {
+    const b = e.target.closest && e.target.closest('[data-vd-choice] button[data-value]');
+    if (!b || b.getAttribute('aria-pressed') === 'true' || !valuationCanEdit()) return;
+    const key = b.closest('[data-vd-choice]').dataset.vdChoice;
+    const value = key === 'dma' ? +b.dataset.value : b.dataset.value;
+    if (!valuationInputOk(key, value, latest())) return;
+    overrides = setValuationOverride(readValuationOverrides(), defaults, ex, key, value);
+    save();
+  });
+  // Leaving a field shows the value in use (an unusable entry reverts); a custom ADR box
+  // left empty clears it (Custom then stands in with the 45 DMA). A date input also fires change after each keystroke while it
   // is edited (Chromium), so a half-typed date is left alone until focus leaves.
   el.addEventListener('change', e => {
     const i = e.target.closest && e.target.closest('input[data-vd]');

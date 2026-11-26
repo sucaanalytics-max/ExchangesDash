@@ -3299,6 +3299,9 @@ a.rx-link { display: inline; }
 
 /* Valuation Model tab (js/14-valuation.js): the two 3 × 3 triangulations side by side
    while both fit (stacked below ~1000 px of content), the collapsed workings */
+/* Quick-select under each triangulation table: its ADR and QoQ growth */
+.rx-val-qs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; padding: 4px 16px 10px; }
+.rx-val-qs .rx-grp { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .rx-val-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
 .rx-val-bar .rx-btn { margin-left: auto; }
 .rx-table.rx-xl.rx-val-tri td.rx-val-wx { color: var(--rx-muted); text-decoration: line-through; }
@@ -3786,6 +3789,8 @@ th[aria-sort="ascending"] .mtf-bk-sort::after { content: " ↑"; }
 .rx-drawer-row .rx-date-in { width: 150px; text-align: left; }
 .rx-drawer .rx-in { background: var(--rx-xl-key); border-color: var(--rx-xl-key-rule); color: var(--rx-xl-fill-ink); }
 .rx-drawer .rx-in.is-edited { border-color: #D9A54A; box-shadow: inset 3px 0 0 #D9A54A; }
+.rx-drawer .rx-seg.is-edited { border-color: #D9A54A; box-shadow: inset 3px 0 0 #D9A54A; }
+.rx-drawer .rx-seg button:disabled, .rx-val-qs .rx-seg button:disabled { cursor: not-allowed; opacity: .55; }
 .rx-drawer-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px; }
 .rx-drawer-note { padding: 10px 16px 0; color: var(--rx-muted); font-size: 12px; line-height: 1.45; margin: 0; }
 .rx-drawer .rx-how { padding: 8px 16px; }
@@ -3794,7 +3799,8 @@ body.rx-drawer-on { overflow: hidden; }
 @media (max-width: 640px) {
   .rx-drawer.rx { width: 100vw; border-left: 0; transform: translateY(16px); }
   .rx-drawer-row .rx-in { width: 110px; min-height: 44px; }
-  .rx-drawer-row:has(.rx-date-in) { grid-template-columns: minmax(0, 1fr); }
+  .rx-drawer-row:has(.rx-date-in), .rx-drawer-row:has(.rx-seg) { grid-template-columns: minmax(0, 1fr); }
+  .rx-drawer-row:has(.rx-seg) .rx-dv { text-align: left; }
   .rx-drawer-row:has(.rx-date-in) .rx-dv { text-align: left; }
   .rx-drawer-row .rx-date-in { width: 100%; max-width: 220px; }
 }
