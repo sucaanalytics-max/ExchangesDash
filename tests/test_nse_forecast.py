@@ -1,3 +1,5 @@
+import contextlib
+import io
 import unittest
 
 import helpers  # noqa: F401  (puts scripts/ on sys.path)
@@ -74,8 +76,35 @@ class OtherTransactionCharges(unittest.TestCase):
     def test_negative_gap_or_missing_days_gives_none(self):
         pnl = [self._pnl("Q1 FY 2027", 900), self._pnl("Q2 FY 2027", 2650)]
         daily = self._days("Q1 FY 2027", 4, 20, 50) + self._days("Q2 FY 2027", 7, 22, 40)
-        self.assertIsNone(nse.nse_other_txn_charges(pnl, daily))     # Q1 reported below the daily sum
-        self.assertIsNone(nse.nse_other_txn_charges(pnl[1:] + [self._pnl("Q3 FY 2027", 1)], daily[:5]))
+        with contextlib.redirect_stdout(io.StringIO()):                # their WARNINGs: test_none_is_announced_in_the_run_log
+            self.assertIsNone(nse.nse_other_txn_charges(pnl, daily))     # Q1 reported below the daily sum
+            self.assertIsNone(nse.nse_other_txn_charges(pnl[1:] + [self._pnl("Q3 FY 2027", 1)], daily[:5]))
+
+    def test_none_is_announced_in_the_run_log(self):
+        """A None drops ~₹45 Cr a quarter from the forecast: the run log must say which quarter and why."""
+        def log(*args):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                got = nse.nse_other_txn_charges(*args)
+            return got, out.getvalue()
+
+        pnl = [self._pnl("Q1 FY 2027", 900), self._pnl("Q2 FY 2027", 2650)]
+        daily = self._days("Q1 FY 2027", 4, 20, 50) + self._days("Q2 FY 2027", 7, 22, 40)
+        got, text = log(pnl, daily)
+        self.assertIsNone(got)
+        self.assertIn("WARNING: NSE other transaction charges not measured", text)
+        self.assertIn("Q1 FY 2027's reported transaction_rev ₹900.00 Cr is below the daily files' ₹1,000.00 Cr", text)
+        got, text = log(pnl, daily[20:])                               # Q1 has no daily rows
+        self.assertIsNone(got)
+        self.assertIn("Q1 FY 2027, a base quarter, has no daily rows", text)
+        got, text = log([], daily)
+        self.assertIsNone(got)
+        self.assertIn("no ratio model", text)
+        # A measured run stays quiet
+        ok = [self._pnl("Q1 FY 2027", 20 * 50 + 42), self._pnl("Q2 FY 2027", 22 * 40 + 50)]
+        got, text = log(ok, daily)
+        self.assertIsNotNone(got)
+        self.assertNotIn("WARNING", text)
 
     def test_special_sessions_count_as_revenue_not_sessions(self):
         # NSE's reported charges include a Muhurat; it must not read as other charges
@@ -130,7 +159,12 @@ class OtherTransactionCharges(unittest.TestCase):
         rows.append({"date": "2026-11-08", "day": "Sunday", "fy_quarter": "Q3 FY 2027", "fy_month": "Nov", "fy": "FY 2027",
                      "opt_rev": 19.33, "fut_rev": 0, "cash_rev": 0, "total_rev": 19.33})
         pnl = [self._pnl("Q1 FY 2027", 3000), self._pnl("Q2 FY 2027", 3100)]
-        p = nse.build_outputs(rows, pnl, [], {})["enriched"]["pnl_predictor"]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            p = nse.build_outputs(rows, pnl, [], {})["enriched"]["pnl_predictor"]
+        # no Q1 / Q2 daily rows here, so the other charges are not measured, and the log says so
+        self.assertIn("Q1 FY 2027, a base quarter, has no daily rows", out.getvalue())
+        self.assertEqual(p["other_txn_rev"], 0)
         self.assertEqual((p["trading_days_so_far"], p["daily_avg_rev"], p["special_rev"]), (30, 60, 19.33))
         # 30 sessions to Wed 11 Nov, then the weekdays to 31 Dec less 24 Nov and 25 Dec
         self.assertEqual(p["expected_trading_days"], 64)
