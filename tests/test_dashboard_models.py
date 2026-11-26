@@ -191,6 +191,19 @@ def _valuation_inputs_file():
     return json.loads((ROOT / "dashboard" / "data" / "valuation_inputs.json").read_text())
 
 
+def _valuation_inputs_16nov():
+    """The defaults file as it was on 16 Nov 2026, the date ValuationGoldenNumbers' figures come from: the
+    current file with the inputs the workbook changed by 25 Nov put back (every other value is unchanged)."""
+    f = _valuation_inputs_file()
+    f["discount_to_today_pct"] = 9
+    ex = f["exchanges"]
+    ex["bse"]["editable"]["adr_estimate_cr"] = 24
+    ex["mcx"]["editable"]["adr_estimate_cr"] = 14
+    ex["nse"]["editable"].update({"adr_estimate_cr": None, "qoq_growth_pct": 5})
+    ex["nse"]["fixed"]["pat_margin_pct"] = 58
+    return f
+
+
 @unittest.skipUnless(NODE, "node not installed")
 class ValuationGoldenNumbers(unittest.TestCase):
     """The workbook's Valuation Inputs sheet on 16 Nov 2026 (20261027_Exchanges_Dashboard.xlsx), through the
@@ -215,7 +228,7 @@ class ValuationGoldenNumbers(unittest.TestCase):
           const { v } = valuationInputsFor(d, DATA.o, DATA.ex);
           return { v, m: valuationModel(DATA.c, v, DATA.c.shares) };
         })()"""
-        return js_eval(VALUATION_JS, expr, {"ex": ex, "c": self.CTX[ex], "o": overrides or {}, "file": _valuation_inputs_file()})
+        return js_eval(VALUATION_JS, expr, {"ex": ex, "c": self.CTX[ex], "o": overrides or {}, "file": _valuation_inputs_16nov()})
 
     def close(self, got, want, delta=0.01):
         for i, (g, w) in enumerate(zip(got, want)):
@@ -233,13 +246,19 @@ class ValuationGoldenNumbers(unittest.TestCase):
         self.assertAlmostEqual(a["eps"], 117.7704, delta=0.0001)
         self.close(a["fwd"], [4710.82, 5299.67, 5888.52])
         self.close(a["now"], [3662.584193770785, 4120.407217992134, 4578.230242213482])
-        # Estimate 24: the sheet's rows C29:F31 (regression base only)
+        # Estimate 24: the sheet's rows C29:F31 (regression base only). The ADR model grows the
+        # estimate as Q3's ADR (the workbook's "Tusk Input" block, added after 16 Nov):
+        # 24 × 1.05² … 1.05⁵ averaged = 28.5115
         est = m["est"]
         self.assertEqual(est["adr"], 24)
         self.assertAlmostEqual(est["vals"]["reg"][1], 4138.333464120598, delta=0.01)
         self.close(est["vals"]["ratio"], [4204.800373273975, 4984.860064430118, 5764.91975558626])
-        self.close(est["vals"]["adr"], a["now"], 1e-9)
-        self.assertAlmostEqual(est["avg"][1], 4214.9193133937415, delta=0.01)   # E32
+        self.close([p["adr"] for p in m["pathEst"]["path"]], [24, 25.2, 26.46, 27.783, 29.17215, 30.6307575], 1e-9)
+        self.assertAlmostEqual(m["adrModelEst"]["adrFY"], 28.511476875, places=9)
+        self.close(est["vals"]["adr"], [3657.5602600498405, 4114.75529255607, 4571.950325062301])
+        self.close(est["vals"]["adr"], m["adrModelEst"]["now"], 1e-9)
+        self.assertAlmostEqual(est["avg"][1], 4212.375946947513, delta=0.01)
+        self.close(m["dma"]["vals"]["adr"], a["now"], 1e-9)   # the 45 DMA table keeps the ADR-to-date path
         # 45 DMA 21.2091
         dma = m["dma"]
         self.assertAlmostEqual(dma["vals"]["reg"][1], 3775.88, delta=0.01)
@@ -256,7 +275,8 @@ class ValuationGoldenNumbers(unittest.TestCase):
         self.close(a["now"], [3373.803705375013, 3785.2431816402586, 4196.682657905504])
         self.assertAlmostEqual(m["est"]["vals"]["reg"][1], 3365.3088401338523, delta=0.01)
         self.close(m["est"]["vals"]["ratio"], [3201.8517549597004, 3774.343242046283, 4346.8347291328655])
-        self.assertAlmostEqual(m["est"]["avg"][1], 3696.8963375013877, delta=0.01)   # E39
+        self.close(m["est"]["vals"]["adr"], [3610.059810228956, 4050.3110065983406, 4490.562202967725])   # from the estimate 14
+        self.assertAlmostEqual(m["est"]["avg"][1], 3802.9234674846202, delta=0.01)
         self.assertAlmostEqual(m["dma"]["vals"]["reg"][1], 3206.98, delta=0.01)
         self.close(m["dma"]["vals"]["ratio"], [3030.36, 3572.19, 4114.01])
         self.assertAlmostEqual(m["dma"]["avg"][1], 3584.3671954182473, delta=0.01)   # E40
@@ -268,6 +288,7 @@ class ValuationGoldenNumbers(unittest.TestCase):
         self.assertIsNone(v["adr"])   # the sheet's "n/a": the estimate model takes the 45 DMA
         self.assertTrue(m["estIsDma"])
         self.assertEqual(m["est"]["adr"], self.CTX["nse"]["adr45"])
+        self.assertEqual((m["pathEst"], m["adrModelEst"]), (m["path"], a))   # no estimate: one ADR model
         self.assertAlmostEqual(a["adrFY"], 77.42639289419103, places=9)
         self.assertAlmostEqual(a["total"], 25656.999044865184, delta=0.001)
         self.assertAlmostEqual(a["eps"], 60.125492711199215, delta=1e-6)
@@ -287,16 +308,84 @@ class ValuationGoldenNumbers(unittest.TestCase):
             self.assertAlmostEqual(reg[2], fit["intercept"] + fit["slope"] * (t["adr"] + 300 / fit["slope"]), places=6)
 
     def test_edits_move_only_their_methods(self):
-        """The ADR estimate moves Regression and Ratio in the estimate model only; QoQ growth and P/E the ADR model."""
+        """The ADR estimate moves the estimate table only (Regression, Ratio and its ADR model); QoQ growth and P/E the ADR models."""
         base = self.model("bse")["m"]
         est = self.model("bse", {"bse": {"adr": 26}})["m"]
         self.assertEqual(est["dma"], base["dma"])
         self.assertEqual(est["adrModel"], base["adrModel"])
         self.assertAlmostEqual(est["est"]["vals"]["reg"][1], 1021.435 + 129.8708 * 26, places=6)
+        self.assertGreater(est["adrModelEst"]["adrFY"], base["adrModelEst"]["adrFY"])
+        self.assertGreater(est["est"]["vals"]["adr"][1], base["est"]["vals"]["adr"][1])
+        self.assertAlmostEqual(est["adrModelEst"]["adrFY"] / base["adrModelEst"]["adrFY"], 26 / 24, places=12)
         grown = self.model("bse", {"bse": {"g": 6, "pe1": 50}})["m"]
         self.assertGreater(grown["adrModel"]["adrFY"], base["adrModel"]["adrFY"])
         self.assertAlmostEqual(grown["adrModel"]["fwd"][1], grown["adrModel"]["eps"] * 50, places=6)
         self.assertEqual(grown["dma"]["vals"]["reg"], base["dma"]["vals"]["reg"])
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class ValuationTuskInputGolden(unittest.TestCase):
+    """The workbook's ADR models on 25 Nov 2026 (20261027_Exchanges_Dashboard.xlsx): the "Tusk Input" block
+    (BSE!H30:K54, MCX!H28:K76, NSE!H15:K67), which grows the Valuation Inputs sheet's ADR estimate from Q3 and
+    feeds "Triangulated – Input", and, for MCX and NSE, the block that grows Q3's ADR to date (MCX!D28:F76,
+    NSE!D15:F67). Inputs as the workbook had them that day, passed in directly (not the defaults file)."""
+
+    START = {"q": 3, "fy": 2027}
+    CASES = {
+        # v: the sheet's inputs; qAdr: Q3 ADR to date; shares: the sheet's count (PAT ÷ EPS)
+        "bse": {"v": {"adr": 23, "g": 5, "pe0": 40, "pe1": 45, "pe2": 50, "w0": 45, "w1": 10, "w2": 45,
+                      "oi": 2363.6981805555542, "margin": 51, "days": 247, "d1": 18, "d2": 6.75},
+                "qAdr": 23.016149264285712, "shares": 9112.602352508678 * 0.51 / 113.9398961562715,
+                "estFY": 27.323498671875, "est": [3618.1446006834126, 4070.412675768839, 4522.680750854266]},
+        "mcx": {"v": {"adr": 13.8, "g": 7, "pe0": 41, "pe1": 46, "pe2": 51, "w0": 20, "w1": 40, "w2": 40,
+                      "oi": 291.2605346516155 + 175.32899999999995, "margin": 57, "days": 258, "d1": 18, "d2": 6.75},
+                "qAdr": 13.841979903794599, "shares": 2852.84468108895 / 112.08984811014203,
+                "estFY": 17.537353055415004, "est": [3638.348229370521, 4082.0492329522913, 4525.750236534062],
+                "dmaFY": 17.590702069478645, "dma": [3648.3815127343496, 4093.306087458051, 4538.230662181752]},
+        "nse": {"v": {"adr": 70, "g": 6, "pe0": 42, "pe1": 47, "pe2": 52, "w0": 0, "w1": 0, "w2": 100,
+                      "oi": 6532.68, "margin": 58.5, "days": 247, "d1": 18, "d2": 6.75},
+                "qAdr": 67.36969553182858, "shares": 247.5,
+                "estFY": 86.01807440800002, "est": [2189.2679901432502, 2449.895131826971, 2710.522273510691],
+                "dmaFY": 82.78587833001625, "dma": [2126.3500183445835, 2379.4869252903673, 2632.623832236151]},
+    }
+
+    def model(self, ex):
+        k = self.CASES[ex]
+        c = {"start": self.START, "qAdr": k["qAdr"], "adr45": k["qAdr"], "fit": None, "ratio": None}
+        return js_eval(VALUATION_JS, "valuationModel(DATA.c, DATA.v, DATA.shares)", {"c": c, "v": k["v"], "shares": k["shares"]})
+
+    def close(self, got, want, delta=1e-6):
+        for i, (g, w) in enumerate(zip(got, want)):
+            with self.subTest(i=i):
+                self.assertAlmostEqual(g, w, delta=delta)
+
+    def test_estimate_table_grows_the_estimate(self):
+        for ex, k in self.CASES.items():
+            with self.subTest(ex=ex):
+                m = self.model(ex)
+                self.assertFalse(m["estIsDma"])
+                self.assertAlmostEqual(m["pathEst"]["path"][0]["adr"], k["v"]["adr"], places=12)
+                self.assertAlmostEqual(m["adrModelEst"]["adrFY"], k["estFY"], places=9)
+                self.close(m["adrModelEst"]["now"], k["est"])
+                self.close(m["est"]["vals"]["adr"], k["est"])
+
+    def test_defaults_file_is_this_workbook(self):
+        """dashboard/data/valuation_inputs.json holds the same inputs (other income rounded to ₹0.0001 Cr)."""
+        d = js_eval(VALUATION_JS, "valuationDefaultsFrom(DATA)", _valuation_inputs_file())["ex"]
+        for ex, k in self.CASES.items():
+            for key, want in k["v"].items():
+                with self.subTest(ex=ex, key=key):
+                    self.assertAlmostEqual(d[ex][key], want, delta=0.0001)
+
+    def test_45_dma_table_grows_the_quarter_to_date(self):
+        # BSE's sheet starts this block from its 45 DMA (D31 = D29 × …), unlike MCX and NSE, which
+        # start from Q3's ADR to date as the dashboard does; so only MCX and NSE are checked here
+        for ex in ("mcx", "nse"):
+            k = self.CASES[ex]
+            with self.subTest(ex=ex):
+                m = self.model(ex)
+                self.assertAlmostEqual(m["adrModel"]["adrFY"], k["dmaFY"], places=9)
+                self.close(m["dma"]["vals"]["adr"], k["dma"])
 
 
 @unittest.skipUnless(NODE, "node not installed")
@@ -348,13 +437,13 @@ class ValuationInputs(unittest.TestCase):
     def test_file_parses(self):
         parsed = js_eval(VALUATION_JS, "valuationDefaultsFrom(DATA)", _valuation_inputs_file())
         self.assertEqual(parsed["fy"], 2028)
-        self.assertEqual(parsed["ex"]["bse"], {"adr": 24, "g": 5, "pe0": 40, "pe1": 45, "pe2": 50, "w0": 45, "w1": 10,
+        self.assertEqual(parsed["ex"]["bse"], {"adr": 23, "g": 5, "pe0": 40, "pe1": 45, "pe2": 50, "w0": 45, "w1": 10,
                                                "w2": 45, "from": "2025-01-01", "oi": 2363.6982, "margin": 51, "days": 247,
-                                               "d1": 18, "d2": 9})
+                                               "d1": 18, "d2": 6.75})
         # Regression data from: BSE 1 Jan 2025, MCX 1 Nov 2024, NSE all data
         self.assertEqual([parsed["ex"][ex]["from"] for ex in ("bse", "mcx", "nse")], ["2025-01-01", "2024-11-01", None])
         self.assertEqual((parsed["ex"]["mcx"]["oi"], parsed["ex"]["nse"]["oi"]), (466.5895, 6532.68))   # ₹467 / 6,533 Cr
-        self.assertIsNone(parsed["ex"]["nse"]["adr"])
+        self.assertEqual([parsed["ex"][ex]["adr"] for ex in ("bse", "mcx", "nse")], [23, 13.8, 70])
         for ex, w in parsed["ex"].items():
             with self.subTest(ex=ex):
                 self.assertEqual(w["w0"] + w["w1"] + w["w2"], 100)
@@ -383,7 +472,7 @@ class ValuationInputs(unittest.TestCase):
           const o = readValuationOverrides();
           const out = { bse: valuationInputsFor(d, o, 'bse'), mcx: valuationInputsFor(d, o, 'mcx'), nse: valuationInputsFor(d, o, 'nse') };
           // Typing the default back removes the edit; a new value adds one
-          const o2 = setValuationOverride(setValuationOverride(o, d, 'bse', 'pe1', 45), d, 'nse', 'adr', 70);
+          const o2 = setValuationOverride(setValuationOverride(o, d, 'bse', 'pe1', 45), d, 'nse', 'adr', 72);
           store.valuation_inputs_v1 = '{not json';
           const unreadable = readValuationOverrides();
           globalThis.localStorage = { getItem() { throw new Error('blocked'); } };
@@ -393,10 +482,10 @@ class ValuationInputs(unittest.TestCase):
         bse, mcx, nse = got["bse"], got["mcx"], got["nse"]
         self.assertEqual((bse["v"]["pe1"], bse["v"]["adr"], bse["v"]["w0"], bse["v"]["days"]), (48, None, 45, 247))
         self.assertEqual(bse["edited"], ["adr", "pe1"])
-        self.assertEqual((mcx["v"]["g"], mcx["v"]["adr"], mcx["edited"]), (7, 14, []))
+        self.assertEqual((mcx["v"]["g"], mcx["v"]["adr"], mcx["edited"]), (7, 13.8, []))
         self.assertEqual(nse["edited"], [])
         self.assertEqual(got["o2"]["bse"], {"adr": None, "w0": "x", "days": 300})
-        self.assertEqual(got["o2"]["nse"], {"adr": 70})
+        self.assertEqual(got["o2"]["nse"], {"adr": 72})
         self.assertEqual((got["unreadable"], got["blocked"]), ({}, {}))
 
     def test_defaults_report_a_failed_file(self):
@@ -467,7 +556,7 @@ class ValuationData(unittest.TestCase):
           const a = valuationAdrModel(d, 28.5637935609276, 40.7884);
           return { rows: valuationExcelRows(2028, d.d1, d.d2).map(r => r.label), cells: valuationExcelCells(a, d, 3920) };
         })()"""
-        got = js_eval(VALUATION_JS + ["fmtNum", "rxSignedPct", "valuationExcelRows", "valuationExcelCells"], expr, {"file": _valuation_inputs_file()})
+        got = js_eval(VALUATION_JS + ["fmtNum", "rxSignedPct", "valuationPct", "valuationFactor", "valuationExcelRows", "valuationExcelCells"], expr, {"file": _valuation_inputs_16nov()})
         self.assertEqual(got["rows"], ["ADR FY 28", "Other Income", "Total Income", "PAT Margin", "EPS", "PE",
                                        "Price Target FY 28", "Upside", "Discount 18 %", "Target Price FY 27",
                                        "Discount 9 %", "Target Price Current"])
@@ -477,6 +566,9 @@ class ValuationData(unittest.TestCase):
         self.assertEqual(c["fwd"], ["4,711", "5,300", "5,889"])
         self.assertEqual(c["up"], ["+20 %", "+35 %", "+50 %"])   # FY28 targets vs CMP 3,920
         self.assertEqual((c["d1"][1], c["d2"][1]), ("÷ 1.18", "÷ 1.09"))
+        # Discounts and margins with decimals keep them (the workbook's 6.75 % since Nov 2026)
+        got = js_eval(["fmtNum", "valuationPct", "valuationFactor"], "[valuationPct(6.75), valuationFactor(6.75), valuationPct(58.5), valuationFactor(18), valuationPct(51)]")
+        self.assertEqual(got, ["6.75 %", "1.0675", "58.5 %", "1.18", "51 %"])
         self.assertEqual(c["now"], ["3,663", "4,120", "4,578"])
 
 

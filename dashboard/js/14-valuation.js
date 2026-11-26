@@ -92,10 +92,12 @@ function safeHttpUrl(u) {
 //     that FY's four-quarter average × sessions + other income → × PAT margin ÷
 //     shares → EPS × P/E → next-FY-end target, ÷ (1 + 18 %) to this FY's end and
 //     ÷ (1 + 9 %) to today.
-// The two triangulations differ only in the ADR fed to Regression and Ratio: the
-// current 45-session ADR, or the ADR estimate typed in the inputs drawer
-// (blank = the 45-session ADR). The ADR model row is the same in both. Every ADR
-// is at today's rates, the basis the fits are built on (the whole dashboard is).
+// The two triangulations differ in their ADR. The 45 DMA table prices Regression and
+// Ratio at the current 45-session ADR and starts the ADR model from the quarter's ADR to
+// date; the estimate table takes the ADR estimate typed in the inputs drawer for both,
+// as the start quarter's ADR (the workbook's "Tusk Input" block). Blank = no estimate:
+// both tables are the 45 DMA one. Every ADR is at today's rates, the basis the fits are
+// built on (the whole dashboard is).
 // Inputs: the shared defaults in dashboard/data/valuation_inputs.json (hand-edited;
 // without it the tabs say so and show no targets), with this browser's edits from
 // the inputs drawer (js/18-valuation-inputs.js) on top.
@@ -289,14 +291,21 @@ function valuationTriangulate(vals, w) {
 // Both triangulations for one exchange. c: the data (valuationContextFor) — start quarter,
 // its ADR to date (qAdr), the 45-session ADR (adr45), the fit { intercept, slope, se } and
 // ratio { mean, sd } (either null); v: the inputs (valuationInputsFor); shares in Cr.
+// As in the workbook (its "Tusk Input" block), the ADR estimate is the start quarter's ADR
+// in the estimate table: Regression and Ratio are priced at it, and the ADR model grows it
+// to the next FY (pathEst / adrModelEst). The 45 DMA table's ADR model grows the quarter's
+// ADR to date (path / adrModel). Without an estimate both tables are the same.
 function valuationModel(c, v, shares) {
   const path = valuationAdrPath(c.start, c.qAdr, v.g);
   const adrModel = valuationAdrModel(v, path.adr, shares);
-  const tri = adr => {
-    const vals = { reg: valuationRegression(c.fit, adr), ratio: valuationRatio(c.ratio, adr), adr: adrModel.eps != null ? adrModel.now : null };
+  const estIsDma = v.adr == null;
+  const pathEst = estIsDma ? path : valuationAdrPath(c.start, v.adr, v.g);
+  const adrModelEst = estIsDma ? adrModel : valuationAdrModel(v, pathEst.adr, shares);
+  const tri = (adr, a) => {
+    const vals = { reg: valuationRegression(c.fit, adr), ratio: valuationRatio(c.ratio, adr), adr: a.eps != null ? a.now : null };
     return { adr, vals, ...valuationTriangulate(vals, [v.w0, v.w1, v.w2]) };
   };
-  return { path, adrModel, dma: tri(c.adr45), est: tri(v.adr ?? c.adr45), estIsDma: v.adr == null };
+  return { path, adrModel, pathEst, adrModelEst, dma: tri(c.adr45, adrModel), est: tri(v.adr ?? c.adr45, adrModelEst), estIsDma };
 }
 
 // The regression and ratio the valuation uses, fitted on the share file's data from `from`
@@ -402,7 +411,9 @@ async function valuationExchange(ex) {
 // ── Shared pieces of the two tabs ───────────────────────────────────────────
 const valuationFYShort = fy => `FY${String(fy).slice(-2)}`;
 // A weight or other whole-number percentage, with a decimal only when it has one
-const valuationPct = x => `${fmtNum(x, Number.isInteger(x) ? 0 : 1)} %`;
+const valuationPct = x => `${fmtNum(x, Number.isInteger(x) ? 0 : Number.isInteger(x * 10) ? 1 : 2)} %`;
+// 1 + a discount in %, to as many decimals as it needs (18 → 1.18, 6.75 → 1.0675)
+const valuationFactor = pct => { const f = 1 + pct / 100; return fmtNum(f, Math.min(4, Math.max(2, (String(+f.toFixed(4)).split('.')[1] || '').length))); };
 
 // Warning about the defaults: fixed inputs for another year
 function valuationDefaultsNotes(defaults, c) {
@@ -488,9 +499,9 @@ function valuationExcelRows(fy, d1, d2) {
     { key: 'pe', label: 'PE', block: 0, tint: 'green' },
     { key: 'fwd', label: `Price Target ${y1}`, block: 0, bold: true, boxed: true },
     { key: 'up', label: 'Upside', block: 0, tint: 'peach' },
-    { key: 'd1', label: `Discount ${fmtNum(d1, 0)} %`, block: 1 },
+    { key: 'd1', label: `Discount ${valuationPct(d1)}`, block: 1 },
     { key: 'mid', label: `Target Price ${y0}`, block: 1, bold: true },
-    { key: 'd2', label: `Discount ${fmtNum(d2, 0)} %`, block: 2 },
+    { key: 'd2', label: `Discount ${valuationPct(d2)}`, block: 2 },
     { key: 'now', label: 'Target Price Current', block: 2, bold: true },
   ];
 }
@@ -504,21 +515,22 @@ function valuationExcelCells(a, v, cmp) {
     adrFY: each(() => fmtNum(a.adrFY, 2)),
     oi: each(() => n0(a.oi)),
     total: each(() => n0(a.total)),
-    margin: each(() => `${fmtNum(a.margin, 0)} %`),
+    margin: each(() => valuationPct(a.margin)),
     eps: each(() => valuationNum(a.eps) ? fmtNum(a.eps, 2) : '—'),
     pe: each(i => `${fmtNum(a.pe[i], 0)}×`),
     fwd: each(i => n0(a.fwd[i])),
     up: each(i => a.fwd[i] != null && cmp ? rxSignedPct(a.fwd[i] / cmp - 1, 0) : '—'),
-    d1: each(() => `÷ ${fmtNum(1 + v.d1 / 100, 2)}`),
+    d1: each(() => `÷ ${valuationFactor(v.d1)}`),
     mid: each(i => n0(a.mid[i])),
-    d2: each(() => `÷ ${fmtNum(1 + v.d2 / 100, 2)}`),
+    d2: each(() => `÷ ${valuationFactor(v.d2)}`),
     now: each(i => n0(a.now[i])),
   };
 }
 
-function valuationExcelTable(m, v, cmp) {
-  const rows = valuationExcelRows(m.path.fy, v.d1, v.d2);
-  const cells = valuationExcelCells(m.adrModel, v, cmp);
+// a: valuationAdrModel's result for the next FY `fy`
+function valuationExcelTable(a, fy, v, cmp, aria) {
+  const rows = valuationExcelRows(fy, v.d1, v.d2);
+  const cells = valuationExcelCells(a, v, cmp);
   // the box edges a row's cells carry: top of a later block, bottom of a block or of a boxed row
   const edge = i => {
     const r = rows[i], prev = rows[i - 1], next = rows[i + 1];
@@ -536,7 +548,7 @@ function valuationExcelTable(m, v, cmp) {
     const gap = e.includes('rx-xl-t') ? '<tr class="rx-xl-gap" aria-hidden="true"><td colspan="4"></td></tr>' : '';
     return `${gap}<tr${cls ? ` class="${cls}"` : ''}><td class="rx-xl-lab${e}">${r.label}</td>${tds}</tr>`;
   }).join('');
-  return `<table class="rx-table rx-xl rx-val-tri" aria-label="ADR model ${valuationFYShort(m.path.fy)}, Bear / Base / Bull">
+  return `<table class="rx-table rx-xl rx-val-tri" aria-label="${escHtml(aria)}">
     <thead><tr><th scope="col" class="rx-xl-lab rx-xl-t">CMP ${rxRupee(cmp)}</th>${heads}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
@@ -565,12 +577,20 @@ function valuationTabHTML(ex, defaults, c0, analysts, open) {
   </div>`
     : `<div class="rx-row">
     ${triPanel(m.dma, `Triangulated · 45 DMA (ADR ${adrTxt(c.adr45)})`, `last ${c.n45} sessions${flagTags(c.flags)}`, '45 DMA triangulation')}
-    ${triPanel(m.est, `Triangulated · ADR estimate (ADR ${adrTxt(m.est.adr)})`, `your estimate${vs45}`, 'ADR estimate triangulation')}
+    ${triPanel(m.est, `Triangulated · ADR estimate (ADR ${adrTxt(m.est.adr)})`, `your estimate${vs45} · ADR model grown from it`, 'ADR estimate triangulation')}
   </div>`;
 
   // Workings: the ADR model block, the ADR path, the regression and ratio figures
   const fit = c.fit, ratio = c.ratio, win = c.win, winNote = valuationWindowNote(win);
-  const pathRows = m.path.path.map((p, i) => `<tr><td>${p.label}${i === 0 ? ` · to date${flagTags(c.flags)}` : ''}</td><td>${adrTxt(p.adr)}</td><td class="rx-src">${i === 0 ? `${c.qN} sessions` : `× ${fmtNum(1 + v.g / 100, 2)}`}</td></tr>`).join('');
+  // ADR path: from the quarter's ADR to date (45 DMA table) and, with an estimate, from it (estimate table)
+  const two = !m.estIsDma;
+  const pathRows = m.path.path.map((p, i) => `<tr><td>${p.label}${i === 0 ? ` · start${flagTags(c.flags)}` : ''}</td><td>${adrTxt(p.adr)}</td>${two ? `<td>${adrTxt(m.pathEst.path[i].adr)}</td>` : ''}<td class="rx-src">${i === 0 ? (two ? `to date (${c.qN} sessions) / your estimate` : `to date, ${c.qN} sessions`) : `× ${fmtNum(1 + v.g / 100, 2)}`}</td></tr>`).join('');
+  const excel = (a, label, aria) => `<h3 class="rx-lbl rx-val-h3">ADR model · ${fy1}E · ${label}</h3>
+        <div class="rx-scroll">${valuationExcelTable(a, m.path.fy, v, cmp, aria)}</div>`;
+  const excelBlocks = two
+    ? excel(m.adrModel, `45 DMA table · from ${qShort} ADR to date`, `ADR model ${fy1} from ${qShort} ADR to date, Bear / Base / Bull`)
+      + excel(m.adrModelEst, `estimate table · from your ADR estimate`, `ADR model ${fy1} from the ADR estimate, Bear / Base / Bull`)
+    : excel(m.adrModel, 'same in both tables', `ADR model ${fy1}, Bear / Base / Bull`);
   const regAt = (label, adr) => {
     const r = valuationRegression(fit, adr), k = valuationRatio(ratio, adr);
     return `<tr><td>${label}</td><td>${adrTxt(adr)}</td><td>${r ? `${fmtNum(r[0], 0)} / ${fmtNum(r[1], 0)} / ${fmtNum(r[2], 0)}` : '—'}</td><td>${k ? `${fmtNum(k[0], 0)} / ${fmtNum(k[1], 0)} / ${fmtNum(k[2], 0)}` : '—'}</td></tr>`;
@@ -579,18 +599,17 @@ function valuationTabHTML(ex, defaults, c0, analysts, open) {
     <summary class="rx-ph"><h2>How the figures are built</h2><span class="rx-meta">ADR model ${fy1}E, ADR path, regression and ratio</span></summary>
     <div class="rx-pb"><div class="rx-row">
       <div class="rx-col-half">
-        <h3 class="rx-lbl rx-val-h3">ADR model · ${fy1}E · same in both tables</h3>
-        <div class="rx-scroll">${valuationExcelTable(m, v, cmp)}</div>
-        <p class="rx-foot rx-val-p">ADR ₹ Cr / session × ${fmtNum(v.days, 0)} sessions + other income ₹${fmtNum(v.oi, 0)} Cr = total income; × PAT margin ÷ ${fmtNum(shares, 2)} Cr shares ${sharesChip(ex)} = EPS; × P/E = the ${fy1}-end target, discounted ${fmtNum(v.d1, 0)} % to ${valuationFYShort(m.path.fy - 1)} end and ${fmtNum(v.d2, 0)} % to today. Upside: the ${fy1}-end target vs CMP (${cmpWhen}).</p>
+        ${excelBlocks}
+        <p class="rx-foot rx-val-p">ADR ₹ Cr / session × ${fmtNum(v.days, 0)} sessions + other income ₹${fmtNum(v.oi, 0)} Cr = total income; × PAT margin ÷ ${fmtNum(shares, 2)} Cr shares ${sharesChip(ex)} = EPS; × P/E = the ${fy1}-end target, discounted ${valuationPct(v.d1)} to ${valuationFYShort(m.path.fy - 1)} end and ${valuationPct(v.d2)} to today. Upside: the ${fy1}-end target vs CMP (${cmpWhen}).</p>
       </div>
       <div class="rx-col-half">
         <h3 class="rx-lbl rx-val-h3">ADR path · ₹ Cr / session at today’s rates</h3>
         <div class="rx-scroll"><table class="rx-table">
-          <thead><tr><th scope="col">Quarter</th><th scope="col">ADR</th><th scope="col" class="rx-l">From</th></tr></thead>
+          <thead><tr><th scope="col">Quarter</th><th scope="col">${two ? 'From ADR to date' : 'ADR'}</th>${two ? '<th scope="col">From estimate</th>' : ''}<th scope="col" class="rx-l">From</th></tr></thead>
           <tbody>${pathRows}
-            <tr class="rx-sub"><td>${fy1} average</td><td>${adrTxt(m.path.adr)}</td><td class="rx-src">mean of its four quarters</td></tr>
+            <tr class="rx-sub"><td>${fy1} average</td><td>${adrTxt(m.path.adr)}</td>${two ? `<td>${adrTxt(m.pathEst.adr)}</td>` : ''}<td class="rx-src">mean of its four quarters</td></tr>
           </tbody></table></div>
-        <p class="rx-foot rx-val-p">${qShort} ADR to date, grown ${fmtNum(v.g, 1)} % a quarter (${fmtPct(Math.pow(1 + v.g / 100, 4) - 1)} a year).</p>
+        <p class="rx-foot rx-val-p">${qShort} ADR to date${two ? ` (45 DMA table) and your ADR estimate ${adrTxt(v.adr)} as ${qShort}’s ADR (estimate table)` : ''}, grown ${fmtNum(v.g, 1)} % a quarter (${fmtPct(Math.pow(1 + v.g / 100, 4) - 1)} a year).</p>
         <h3 class="rx-lbl rx-val-h3">Regression and ratio · ${win.from ? `${win.maWindow}-session fit, data from ${rxDate(win.from)}` : `published ${win.maWindow}-session fit`}</h3>
         <div class="rx-scroll"><table class="rx-table rx-wrap-lab">
           <tbody>
