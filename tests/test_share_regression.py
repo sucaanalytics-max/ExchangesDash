@@ -299,7 +299,8 @@ class RangeRefit(unittest.TestCase):
 # Chart.js drawing is stubbed out.
 TAB_JS = SHARE_RANGE_JS + [
     "latestShareRow", "SHARE_RANGE_MONTHS", "shareRangeStart", "filterShareSeries", "SHARE_EXCHANGE_NAMES",
-    "SHARE_MA_WINDOWS", "SHARE_LAGS", "shareRanges", "shareChecksHTML", "shareHeroHTML", "buildShareAnalysis",
+    "SHARE_MA_WINDOWS", "SHARE_LAGS", "shareRanges", "shareChecksHTML", "shareHeroHTML", "shareAbSeries", "shareAbStats",
+    "buildShareAnalysis",
     "rxPanel", "rxChip", "rxSeg", "rxOnSeg", "rxCheck", "rxAlert", "rxHow", "rxLegend", "rxSignedPct", "rxRupee",
     "rxDate", "rxCanvas", "escHtml", "fmtNum", "fmtChartDate", "RX", "RX_ICONS", "charts"]
 TAB_HARNESS = r"""(() => {
@@ -316,7 +317,9 @@ TAB_HARNESS = r"""(() => {
   globalThis.fmtTradeDate = iso => iso;
   const pick = v => clicks['[data-rx-seg="range"]']({ target: { closest: () => ({ getAttribute: () => 'false', dataset: { value: v } }) } });
   const shot = () => ({ hero: node('[data-rx="hero"]').innerHTML, checks: node('[data-rx="checks"]').innerHTML,
-    r2: node('[data-rx="r2"]').innerHTML, charts: blocks.map(b => b.style.display || '') });
+    r2: node('[data-rx="r2"]').innerHTML, charts: blocks.map(b => b.style.display || ''),
+    abMsg: node('[data-rx="abMsg"]').innerHTML, abHidden: node('[data-rx="abWrap"]').hidden,
+    abLeg: node('[data-rx="legAb"]').innerHTML, abNote: node('[data-rx="abNote"]').textContent });
   buildShareAnalysis('bse');
   const out = { fit: shot() };
   for (const v of RANGES) { pick(v); out[v] = shot(); }
@@ -488,6 +491,82 @@ class BseRevenueMerge(unittest.TestCase):
         self.assertEqual(bsa.merge_revenue(seed, pipeline), [("2025-10-20", 20.0), ("2025-10-23", 21.0)])
         self.assertEqual(bsa.merge_revenue({"2025-10-22": {"revenue_cr": 5.0}}, pipeline),
                          [("2025-10-20", 20.0), ("2025-10-22", 5.0), ("2025-10-23", 21.0)])
+
+
+AB_JS = ["shareAbSeries", "shareAbStats"]
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class ActualOverModel(unittest.TestCase):
+    """A/B: each close ÷ its fair value, with mean and σ over the fitted sessions."""
+
+    ROWS = [
+        {"date": "2025-01-01", "price": 110, "price_pred": 100, "in_fit": False},
+        {"date": "2025-01-02", "price": 90, "price_pred": 100, "in_fit": True},
+        {"date": "2025-01-03", "price": 105, "price_pred": 100, "in_fit": True},
+        {"date": "2025-01-06", "price": 100, "price_pred": None, "in_fit": True},   # no fair value: left out
+        {"date": "2025-01-07", "price": 120, "price_pred": 100, "in_fit": True},
+    ]
+
+    def test_series_is_close_over_fair_value(self):
+        ab = js_eval(AB_JS, "shareAbSeries(DATA)", self.ROWS)
+        self.assertEqual([r["date"] for r in ab], ["2025-01-01", "2025-01-02", "2025-01-03", "2025-01-07"])
+        for r, want in zip(ab, [1.1, 0.9, 1.05, 1.2]):
+            self.assertAlmostEqual(r["ab"], want)
+        self.assertEqual(js_eval(AB_JS, "shareAbSeries([{ date: 'x', price: 5, price_pred: 0 }, null])"), [])
+
+    def test_stats_cover_the_fitted_sessions_only(self):
+        st = js_eval(AB_JS, "shareAbStats(shareAbSeries(DATA), '2025-01-01')", self.ROWS)
+        fit = [0.9, 1.05, 1.2]
+        mean = sum(fit) / 3
+        self.assertAlmostEqual(st["mean"], mean)
+        self.assertAlmostEqual(st["sd"], math.sqrt(sum((v - mean) ** 2 for v in fit) / 3))
+        self.assertEqual(st["n"], 3)
+
+    def test_files_without_in_fit_use_the_regression_start(self):
+        rows = [{k: v for k, v in r.items() if k != "in_fit"} for r in self.ROWS]
+        st = js_eval(AB_JS, "shareAbStats(shareAbSeries(DATA), '2025-01-03')", rows)
+        self.assertEqual(st["n"], 2)
+        self.assertAlmostEqual(st["mean"], (1.05 + 1.2) / 2)
+
+    def test_fewer_than_two_gives_null(self):
+        self.assertIsNone(js_eval(AB_JS, "shareAbStats(shareAbSeries(DATA), '2025-01-07')", self.ROWS[-1:]))
+
+    def test_on_a_published_fit_the_mean_is_near_one(self):
+        dates, rev, prices = break_fixture()
+        out = sr.build_output(ticker="T", prices=prices, rev_rows=rev, reg_start=dates[300],
+                              window=5, ma_windows=[5], updated_at="x")
+        st = js_eval(SHARE_JS + AB_JS, "shareAbStats(shareAbSeries(computeShareModel(DATA, 5, 0).series), DATA.regression_start)", out)
+        self.assertAlmostEqual(st["mean"], 1, delta=0.01)
+        self.assertGreater(st["sd"], 0)
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class ActualOverModelTab(unittest.TestCase):
+    def run_tab(self, out):
+        return js_eval(TAB_JS, f"(globalThis.RANGES = [], {TAB_HARNESS})", out)["fit"]
+
+    def test_drawn_with_a_fair_value(self):
+        dates, rev, prices = break_fixture()
+        out = sr.build_output(ticker="T", prices=prices, rev_rows=rev, reg_start=dates[300],
+                              window=5, ma_windows=[5], updated_at="x")
+        out["ma_window"] = 10
+        tab = self.run_tab(out)
+        self.assertEqual(tab["abMsg"], "")
+        self.assertFalse(tab["abHidden"])
+        self.assertIn("A/B", tab["abLeg"])
+        self.assertIn("At the model 1.00×", tab["abLeg"])
+        self.assertIn("Mean over the fit", tab["abNote"])
+
+    def test_withheld_fair_value_says_why(self):
+        dates, rev, prices = break_fixture()
+        out = sr.build_output(ticker="T", prices=prices, rev_rows=rev, reg_start=dates[-40],
+                              window=5, ma_windows=[5], updated_at="x")   # under 60 sessions: withheld
+        out["ma_window"] = 10
+        tab = self.run_tab(out)
+        self.assertTrue(tab["abHidden"])
+        self.assertIn("No fair value for this window", tab["abMsg"])
+        self.assertEqual(tab["abLeg"], "")
 
 
 if __name__ == "__main__":

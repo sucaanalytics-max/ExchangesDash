@@ -1,0 +1,103 @@
+name: Options History
+
+# Daily closes of NSE stock futures and options for BSE and MCX (scripts/stock_options_history.py),
+# saved to data/options/<SYMBOL>/YYYY-MM.csv for the trading-logic backtest
+# (scripts/signal_tree_backtest.py). NSE posts the F&O bhavcopy in the evening; each run fetches
+# every trading day still missing (newest first, 40 a run), so a run GitHub starts late or drops
+# is caught up by the next and no Vercel Cron slot is needed. A manual run with retry = true asks
+# again for days marked unavailable. Its commits ("📈 Options history: …") touch nothing under
+# dashboard/ and never trigger a Vercel build (vercel-ignore-build.sh diffs dashboard/ only).
+
+on:
+  schedule:
+    - cron: '30 13 * * 1-5'   # 19:00 IST Mon–Fri, after NSE posts the day's F&O bhavcopy
+  workflow_dispatch:
+    inputs:
+      max_days:
+        description: 'Most days to fetch in this run (newest missing first; 700 = the whole history)'
+        required: false
+        default: '40'
+      retry:
+        description: 'Ask again for days marked unavailable'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  save:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-options-${{ hashFiles('requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-options-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Save the contracts
+        id: save
+        env:
+          MAX_DAYS: ${{ github.event.inputs.max_days || '40' }}
+          RETRY: ${{ github.event.inputs.retry || 'false' }}
+        run: |
+          case "$MAX_DAYS" in ''|*[!0-9]*) echo "::error::max_days must be a whole number, got '$MAX_DAYS'"; exit 1 ;; esac
+          ARGS="--max-days $MAX_DAYS"
+          [ "$RETRY" = "true" ] && ARGS="$ARGS --retry"
+          python scripts/stock_options_history.py $ARGS
+
+      - name: Commit and push
+        if: steps.save.outputs.added_days != '0'
+        env:
+          LATEST: ${{ steps.save.outputs.latest }}
+          DAYS: ${{ steps.save.outputs.added_days }}
+        run: |
+          git config user.name "Research-Tusk"
+          git config user.email "research@tuskinvest.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git add data/options
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "📈 Options history: ${LATEST:-unavailable days} — ${DAYS:-0} day(s)"
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            echo "Push rejected (a concurrent job likely pushed first) — retrying with rebase, attempt $i…"
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; echo "::error::Rebase conflict with origin/main"; exit 1; }
+            sleep $((RANDOM % 5 + 1))
+          done
+          echo "::error::Push still rejected after 5 attempts — the contracts were NOT saved"
+          exit 1
+
+      - name: Summary
+        if: always()
+        env:
+          LATEST: ${{ steps.save.outputs.latest }}
+          DAYS: ${{ steps.save.outputs.added_days }}
+          ROWS: ${{ steps.save.outputs.added_rows }}
+        run: |
+          {
+            echo "### Options history"
+            echo "- **Added:** ${ROWS:-0} rows over ${DAYS:-0} day(s); newest ${LATEST:-none}"
+            echo "- **Unavailable:** $(python3 -c "import json;print(len(json.load(open('data/options/unavailable.json'))['unavailable']))" 2>/dev/null || echo 0) day(s)"
+          } >> "$GITHUB_STEP_SUMMARY"
