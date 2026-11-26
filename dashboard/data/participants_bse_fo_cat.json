@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-25T15:32:18Z",
+ "updated_at": "2026-11-26T21:50:14Z",
  "source": {
   "key": "bse_fo_cat",
   "name": "BSE Derivatives - Investor Categorywise Turnover",
@@ -787,7 +787,8 @@
   {"date": "2026-11-19", "tables": {"Investor categorywise turnover, equity derivatives": {"fields": ["Buy (₹ Cr)", "Sell (₹ Cr)"], "rows": {"Proprietary": [43966318.02, 43928842.12], "Mutual Funds": [494.63, 519.96], "Others": [26999910.24, 27054376.86], "FII / FPI": [4098901.98, 4081886.42]}}}, "fetched_at": "2026-11-19T15:32:05Z", "parser": 1},
   {"date": "2026-11-20", "tables": {"Investor categorywise turnover, equity derivatives": {"fields": ["Buy (₹ Cr)", "Sell (₹ Cr)"], "rows": {"Proprietary": [1547152.41, 1558670.7], "Mutual Funds": [null, null], "Others": [1169239.34, 1154791.91], "FII / FPI": [216640.15, 219569.29]}}}, "fetched_at": "2026-11-20T12:32:01Z", "parser": 1},
   {"date": "2026-11-23", "tables": {"Investor categorywise turnover, equity derivatives": {"fields": ["Buy (₹ Cr)", "Sell (₹ Cr)"], "rows": {"Proprietary": [2039296.87, 2028886.35], "Mutual Funds": [null, null], "Others": [1443130.71, 1454548.69], "FII / FPI": [337656.81, 336649.35]}}}, "fetched_at": "2026-11-23T12:31:56Z", "parser": 1},
-  {"date": "2026-11-25", "tables": {"Investor categorywise turnover, equity derivatives": {"fields": ["Buy (₹ Cr)", "Sell (₹ Cr)"], "rows": {"Proprietary": [14525296.84, 14522131.1], "Mutual Funds": [125.69, 50.71], "Others": [11972755.17, 11961831.29], "FII / FPI": [1923063.43, 1937228.03]}}}, "fetched_at": "2026-11-25T15:32:18Z", "parser": 1}
+  {"date": "2026-11-25", "tables": {"Investor categorywise turnover, equity derivatives": {"fields": ["Buy (₹ Cr)", "Sell (₹ Cr)"], "rows": {"Proprietary": [14525296.84, 14522131.1], "Mutual Funds": [125.69, 50.71], "Others": [11972755.17, 11961831.29], "FII / FPI": [1923063.43, 1937228.03]}}}, "fetched_at": "2026-11-25T15:32:18Z", "parser": 1},
+  {"date": "2026-11-26", "tables": {"Investor categorywise turnover, equity derivatives": {"fields": ["Buy (₹ Cr)", "Sell (₹ Cr)"], "rows": {"Proprietary": [54396351.06, 54356137.27], "Mutual Funds": [203.0, 277.83], "Others": [31251871.99, 31313201.96], "FII / FPI": [5663174.59, 5641983.58]}}}, "fetched_at": "2026-11-26T21:50:14Z", "parser": 1}
  ],
  "months_read": {
   "2023-10": 20,
