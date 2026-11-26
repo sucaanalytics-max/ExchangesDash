@@ -467,11 +467,15 @@ def hold_back_missing_cash(new_parsed, cash_dates, today):
 def hold_back_missing_fo(rows, today, what="holding back"):
     """Drop recent cash-only days (F&O not posted yet): new ones are stored, and
     stored ones published, on a later run once both parts are in. Older ones are
-    kept (F&O corrected later, as before)."""
+    kept (F&O corrected later, as before). Regular sessions only: a Muhurat or
+    DR-test day (trading_calendar) is kept, since this runs before
+    build_outputs moves those into special_sessions, and dropping one would hide
+    it there too; it is stored and corrected like an older day."""
     kept, held = [], []
     for r in rows:
         recent = (today - datetime.strptime(r["date"], "%Y-%m-%d")).days <= FO_HOLD_BACK_DAYS
-        if recent and missing_parts(r) == "fo":
+        special = trading_calendar.special_session("bse", r["date"])
+        if recent and not special and missing_parts(r) == "fo":
             held.append(r["date"])
         else:
             kept.append(r)

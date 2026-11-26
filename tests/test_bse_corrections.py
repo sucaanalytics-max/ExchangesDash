@@ -41,6 +41,13 @@ class IncompleteDays(unittest.TestCase):
         kept = bse.hold_back_missing_fo(rows, today=today)
         self.assertEqual([r["date"] for r in kept], ["2026-10-01", "2026-11-23"])   # an old gap is kept
 
+    def test_hold_back_skips_special_sessions(self):
+        # a cash-only Muhurat day stays in, so build_outputs still lists it in special_sessions
+        today = datetime(2026, 11, 9, 16, 37)
+        rows = [stored("2026-11-08", 0, 0.2), stored("2026-11-09", 0, 1.0)]
+        kept = bse.hold_back_missing_fo(rows, today=today)
+        self.assertEqual([r["date"] for r in kept], ["2026-11-08"])
+
     def test_corrections_need_both_parts(self):
         existing = [stored("2026-09-08", 7, 0), stored("2026-06-15", 6, 0), stored("2026-10-01", 0, 0.6)]
         fresh = [stored("2026-09-08", 7, 0.7077), stored("2026-06-15", 6, 0), stored("2026-10-01", 9, 0.6)]
