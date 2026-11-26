@@ -528,10 +528,21 @@ def get_supabase_client():
     from supabase import create_client
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def get_existing_dates(supabase):
-    """Get all existing dates from nse_daily table."""
-    result = supabase.table("nse_daily").select("date").execute()
-    return {row["date"] for row in result.data}
+def get_existing_dates(supabase, batch_size=1000):
+    """Every date stored in nse_daily, read in pages: the API returns at most
+    1,000 rows a request, so a single select would miss dates once the table
+    holds more."""
+    dates, offset = set(), 0
+    while True:
+        result = (supabase.table("nse_daily")
+                  .select("date")
+                  .order("date")
+                  .range(offset, offset + batch_size - 1)
+                  .execute())
+        dates.update(row["date"] for row in result.data)
+        if len(result.data) < batch_size:
+            return dates
+        offset += batch_size
 
 def upsert_daily_records(supabase, records):
     """Upsert parsed daily records into Supabase."""
@@ -1010,10 +1021,17 @@ def nse_other_txn_charges(pnl_history, daily, special_sessions=None):
     Our daily sum fell short of reported transaction charges by ₹27–50 Cr a
     quarter from Q3 FY 2025 (flat fees) to Q2 FY 2027; NSE's own model types
     these charges in (₹39 Cr in Q1 FY 2027, ₹49 Cr in Q2). Returns None when a
-    base quarter has no daily rows or a negative gap."""
+    base quarter has no daily rows or a negative gap, and prints a WARNING
+    naming the quarter and the reason: the forecast then leaves these charges
+    out (about ₹45 Cr a quarter in FY 2027), which must not pass unnoticed."""
+    def missing(reason):
+        print(f"WARNING: NSE other transaction charges not measured ({reason}); "
+              "the forecast leaves them out (0 a session)")
+        return None
+
     m = nse_ratio_model(pnl_history)
     if not m:
-        return None
+        return missing("no ratio model: no reported quarter with a revenue split, or one of its ratios is missing")
     base = set(m["base_quarters"])
     def in_base(rows):
         return reprice_date_effective([d for d in (rows or []) if d.get("fy_quarter") in base])
@@ -1032,8 +1050,13 @@ def nse_other_txn_charges(pnl_history, daily, special_sessions=None):
     for q in m["base_quarters"]:
         daily_sum, days = by_q.get(q, (0.0, 0))
         daily_sum += special.get(q, 0.0)
-        if not days or q not in reported or reported[q] < daily_sum:
-            return None
+        if not days:
+            return missing(f"{q}, a base quarter, has no daily rows")
+        if q not in reported:
+            return missing(f"{q}, a base quarter, has no reported transaction_rev")
+        if reported[q] < daily_sum:
+            return missing(f"{q}'s reported transaction_rev ₹{reported[q]:,.2f} Cr is below "
+                           f"the daily files' ₹{daily_sum:,.2f} Cr")
         per_q.append({"quarter": q, "reported": round(reported[q], 2), "daily_sum": round(daily_sum, 2),
                       "special_rev": round(special.get(q, 0.0), 2),
                       "days": days, "per_day": round((reported[q] - daily_sum) / days, 4)})

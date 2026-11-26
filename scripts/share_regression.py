@@ -29,6 +29,7 @@ toggles; tests/test_share_regression.py checks the two agree.
 import bisect
 import json
 import math
+from datetime import datetime, time, timedelta, timezone
 
 import numpy as np
 
@@ -40,6 +41,9 @@ MIN_SPREAD     = 0.10   # (max - min) / mean of the revenue MA over the window
 HOLDOUT_SHARE  = 0.20   # last 20 % of the window is the out-of-sample test
 MIN_HOLDOUT    = 10
 
+IST            = timezone(timedelta(hours=5, minutes=30))
+SESSION_CLOSE  = time(16, 0)   # IST; EOD is 16:00, after SEBI's closing auction
+
 
 def drop_special_sessions(prices, exchange):
     """(prices without the exchange's Muhurat / DR-test sessions, the dates dropped).
@@ -48,6 +52,21 @@ def drop_special_sessions(prices, exchange):
     session count and average (trading_calendar.SPECIAL_SESSIONS)."""
     dropped = sorted(d for d in prices if trading_calendar.special_session(exchange, d))
     return {d: p for d, p in prices.items() if d not in dropped}, dropped
+
+
+def drop_unfinished_session(prices, now=None):
+    """(prices without today's bar while today's session is still trading, the dates
+    dropped). Before 16:00 IST, yfinance's (and screener.in's) row dated today is
+    the last traded price, not a close: stored, it would become `latest` and a
+    regression point, and the dashboard would show it as the day's close instead of
+    pairing the live quote with the revenue MA (01-data.js applyLiveStockPrice).
+    From 16:00 IST today's row is kept; earlier dates are never touched.
+    `now` (an aware datetime, default the wall clock) is for tests."""
+    now_ist = (now or datetime.now(timezone.utc)).astimezone(IST)
+    today = now_ist.date().isoformat()
+    if now_ist.time() >= SESSION_CLOSE or today not in prices:
+        return dict(prices), []
+    return {d: p for d, p in prices.items() if d != today}, [today]
 
 
 def revenue_ma(rev_rows, window):

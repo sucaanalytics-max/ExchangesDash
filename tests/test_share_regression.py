@@ -3,7 +3,7 @@ import math
 import random
 import tempfile
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from helpers import NODE, ROOT, js_eval
@@ -431,6 +431,47 @@ class SpecialSessionPrices(unittest.TestCase):
         self.assertEqual(dropped, ["2025-10-21"])
         self.assertIn("2024-03-02", kept)
         self.assertEqual(prices["2025-10-21"], 11.0)                    # input left alone
+
+
+class UnfinishedSessionPrices(unittest.TestCase):
+    """A run before 16:00 IST must not store yfinance's in-progress bar for today as
+    that day's close (25 Nov 2026: the 11:52 IST manual run stored mid-session prices)."""
+
+    PRICES = {"2026-11-21": 3700.0, "2026-11-24": 3790.0, "2026-11-25": 3828.0}
+
+    @staticmethod
+    def at(hh, mm, day=25):          # IST wall clock on 25 Nov 2026, as an aware UTC datetime
+        return datetime(2026, 11, day, hh, mm, tzinfo=sr.IST).astimezone(timezone.utc)
+
+    def test_before_close_drops_today(self):
+        for hh, mm in [(0, 0), (9, 15), (11, 52), (15, 59)]:
+            kept, dropped = sr.drop_unfinished_session(self.PRICES, now=self.at(hh, mm))
+            self.assertEqual(dropped, ["2026-11-25"], (hh, mm))
+            self.assertEqual(kept, {"2026-11-21": 3700.0, "2026-11-24": 3790.0})
+        self.assertIn("2026-11-25", self.PRICES)                        # input left alone
+
+    def test_from_close_keeps_today(self):
+        for hh, mm in [(16, 0), (16, 1), (23, 59)]:
+            kept, dropped = sr.drop_unfinished_session(self.PRICES, now=self.at(hh, mm))
+            self.assertEqual((kept, dropped), (self.PRICES, []), (hh, mm))
+
+    def test_today_is_the_ist_date(self):
+        # 20:00 UTC on 24 Nov is 01:30 IST on 25 Nov: 25 Nov's session hasn't opened.
+        kept, dropped = sr.drop_unfinished_session(
+            self.PRICES, now=datetime(2026, 11, 24, 20, 0, tzinfo=timezone.utc))
+        self.assertEqual(dropped, ["2026-11-25"])
+        # 10:30 UTC on 25 Nov is 16:00 IST: closed.
+        kept, dropped = sr.drop_unfinished_session(
+            self.PRICES, now=datetime(2026, 11, 25, 10, 30, tzinfo=timezone.utc))
+        self.assertEqual(dropped, [])
+
+    def test_earlier_dates_always_kept(self):
+        prices = {"2026-11-21": 3700.0, "2026-11-24": 3790.0}      # no row for today yet
+        for hh, mm in [(10, 0), (17, 0)]:
+            kept, dropped = sr.drop_unfinished_session(prices, now=self.at(hh, mm))
+            self.assertEqual((kept, dropped), (prices, []))
+        kept, dropped = sr.drop_unfinished_session(self.PRICES, now=self.at(10, 0, day=26))
+        self.assertEqual((kept, dropped), (self.PRICES, []))           # 25 Nov is yesterday
 
 
 class BseRevenueMerge(unittest.TestCase):

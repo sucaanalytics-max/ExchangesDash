@@ -424,7 +424,7 @@ function rebuildAll() {
   const common = [updateSnapshotNotice, buildFeeNote, buildRevenueSummary, buildLiveCards, buildNseCommodityMemo];
   const byExchange = {
     nsebse: [() => buildMarketSharePanel(['nse', 'bse']), buildMarketShareTrend, buildContractsPremium],
-    all:    [() => buildMarketSharePanel(['nse', 'bse', 'mcx']), buildContractsPremium],
+    all:    [() => buildMarketSharePanel(['nse', 'bse', 'mcx']), buildContractsPremium, buildSignals],
     nse:    [() => buildRevenuePredictor('nse'), () => buildValuation('nse'), () => buildShareAnalysis('nse'),
              () => buildLivePredictor('nse'), buildContractsPremium, () => buildParticipants('nse')],
     bse:    [() => buildRevenuePredictor('bse'), () => buildShareAnalysis('bse'), () => buildValuation('bse'),

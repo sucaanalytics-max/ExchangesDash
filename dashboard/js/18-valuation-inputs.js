@@ -17,7 +17,7 @@ function valuationInputsRows(qLabel, fy) {
   const y1 = valuationFYShort(fy), y0 = valuationFYShort(fy - 1);
   return [
     { sec: 'Inputs · saved in this browser' },
-    { key: 'adr', label: 'ADR estimate, ₹ Cr / session', step: 0.1, note: 'Regression and Ratio in the estimate model; blank = the 45 DMA' },
+    { key: 'adr', label: 'ADR estimate, ₹ Cr / session', step: 0.1, note: `${qLabel}’s ADR in the estimate table: Regression, Ratio and the ADR model’s start; blank = no estimate (the 45 DMA table only)` },
     { key: 'g', label: 'QoQ ADR growth, %', step: 0.5, note: `each quarter from ${qLabel} to Q4 ${y1}, ADR model` },
     { out: 'gA', label: 'Implied annual growth', note: '(1 + QoQ)⁴ − 1' },
     { key: 'pe0', label: 'P/E bear, ×', step: 1, note: `on ${y1}E EPS` },
@@ -29,8 +29,9 @@ function valuationInputsRows(qLabel, fy) {
     { out: 'wSum', label: 'Weight check', note: 'must be 100 %' },
     { sec: 'ADR reference · ₹ Cr / session at today’s rates' },
     { out: 'adr45', label: 'Current 45 DMA ADR', note: 'last 45 sessions: the 45 DMA model' },
-    { out: 'qAdr', label: `${qLabel} ADR to date`, note: 'start of the ADR path' },
-    { out: 'adrFY', label: `${y1} average ADR`, note: 'ADR model' },
+    { out: 'qAdr', label: `${qLabel} ADR to date`, note: 'start of the 45 DMA table’s ADR path' },
+    { out: 'adrFY', label: `${y1} average ADR, from ADR to date`, note: 'ADR model, 45 DMA table' },
+    { out: 'adrFYEst', label: `${y1} average ADR, from the estimate`, note: 'ADR model, estimate table' },
     { out: 'vs45', label: 'ADR estimate vs 45 DMA' },
     { sec: `Fixed · valuation_inputs.json` },
     { out: 'oi', label: `Other income ${y1}, ₹ Cr` },
@@ -66,17 +67,18 @@ function valuationInputsCell(key, d, v, m) {
       return Math.abs(s - 100) < 1e-9 ? valuationPct(s) : `<span class="rx-dn" title="The weights do not add to 100 %: the average divides by the weights of the methods with a value">${valuationPct(s)} ✕</span>`;
     }
     case 'oi': return fmtNum(v.oi, 0);
-    case 'margin': return `${fmtNum(v.margin, 0)} %`;
+    case 'margin': return valuationPct(v.margin);
     case 'days': return fmtNum(v.days, 0);
     case 'shares': return fmtNum(SHARES_OUTSTANDING_CR[d.ex].value, 2);
-    case 'd1': return `${fmtNum(v.d1, 0)} %`;
-    case 'd2': return `${fmtNum(v.d2, 0)} %`;
+    case 'd1': return valuationPct(v.d1);
+    case 'd2': return valuationPct(v.d2);
   }
   if (!c) return dash;
   switch (key) {
     case 'adr45': return fmtNum(c.adr45, 2);
     case 'qAdr': return `${fmtNum(c.qAdr, 2)} <span class="rx-vi-sub">${c.qN} sessions</span>`;
     case 'adrFY': return fmtNum(m.path.adr, 2);
+    case 'adrFYEst': return v.adr == null ? '<span class="rx-vi-sub">no estimate</span>' : fmtNum(m.pathEst.adr, 2);
     case 'vs45': return v.adr == null ? '<span class="rx-vi-sub">no estimate</span>' : rxSignedPct(v.adr / c.adr45 - 1, 1);
     case 'first': {
       const w = c.win, note = valuationWindowNote(w);
