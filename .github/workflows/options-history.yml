@@ -6,7 +6,8 @@ name: Options History
 # every trading day still missing (newest first, 40 a run), so a run GitHub starts late or drops
 # is caught up by the next and no Vercel Cron slot is needed. A manual run with retry = true asks
 # again for days marked unavailable. Its commits ("📈 Options history: …") touch nothing under
-# dashboard/ and never trigger a Vercel build (vercel-ignore-build.sh diffs dashboard/ only).
+# dashboard/ and never trigger a Vercel build: vercel-ignore-build.sh lists the prefix with the other
+# bot data commits, so a run does not deploy exchange data still waiting for the 15:30 UTC [deploy].
 
 on:
   schedule:

@@ -77,7 +77,8 @@ class VercelIgnoreBuild(unittest.TestCase):
                     "📡 Live update: 2026-10-19 09:15 UTC",
                     "📡 BSE Live update: 2026-10-19 09:15 UTC",
                     "📡 MCX Live update: 2026-10-19 09:15 UTC",
-                    "📈 Intraday prices: 2026-11-23 — 1 session(s)"]:
+                    "📈 Intraday prices: 2026-11-23 — 1 session(s)",
+                    "📈 Options history: 2026-11-25 — 1 day(s)"]:
             with self.subTest(msg=msg):
                 self.assertEqual(self.run_script(self.data_commit(msg)), SKIP)
 
@@ -90,6 +91,14 @@ class VercelIgnoreBuild(unittest.TestCase):
         self.assertEqual(self.run_script(msg), SKIP)
         # Without the bot message the undeployed exchange data would go out with it.
         self.assertEqual(self.run_script("Save intraday prices"), BUILD)
+
+    def test_options_history_over_undeployed_bot_data_skips(self):
+        # options-history.yml commits at 13:30 UTC, when the 12:30 UTC slot's exchange data
+        # is usually still waiting for the 15:30 UTC [deploy]: it must not deploy it early.
+        self.data_commit("📊 NSE update: 2026-11-25 — 1 new day(s)")
+        msg = "📈 Options history: 2026-11-25 — 1 day(s)"
+        self.commit(msg, **{"data/options/MCX/2026-11.csv": "date,type\n"})
+        self.assertEqual(self.run_script(msg), SKIP)
 
     def test_deploy_marker_builds(self):
         self.data_commit("📊 NSE update: 2026-10-19 — 1 new day(s)")
