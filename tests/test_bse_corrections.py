@@ -34,6 +34,20 @@ class IncompleteDays(unittest.TestCase):
         kept = bse.hold_back_missing_cash(rows, cash_dates={"2026-10-15"}, today=today)
         self.assertEqual([r["date"] for r in kept], ["2026-09-08", "2026-10-15"])
 
+    def test_hold_back_only_recent_days_without_fo(self):
+        # 25 Nov 2026: stored at 16:37 IST before BSE posted its F&O file
+        today = datetime(2026, 11, 25, 16, 37)
+        rows = [stored("2026-11-25", 0, 1.0773), stored("2026-10-01", 0, 0.6), stored("2026-11-23", 8.5, 1.05)]
+        kept = bse.hold_back_missing_fo(rows, today=today)
+        self.assertEqual([r["date"] for r in kept], ["2026-10-01", "2026-11-23"])   # an old gap is kept
+
+    def test_hold_back_skips_special_sessions(self):
+        # a cash-only Muhurat day stays in, so build_outputs still lists it in special_sessions
+        today = datetime(2026, 11, 9, 16, 37)
+        rows = [stored("2026-11-08", 0, 0.2), stored("2026-11-09", 0, 1.0)]
+        kept = bse.hold_back_missing_fo(rows, today=today)
+        self.assertEqual([r["date"] for r in kept], ["2026-11-08"])
+
     def test_corrections_need_both_parts(self):
         existing = [stored("2026-09-08", 7, 0), stored("2026-06-15", 6, 0), stored("2026-10-01", 0, 0.6)]
         fresh = [stored("2026-09-08", 7, 0.7077), stored("2026-06-15", 6, 0), stored("2026-10-01", 9, 0.6)]
@@ -132,6 +146,55 @@ class ShadowModeRun(unittest.TestCase):
         self.assertGreater(out[old_gap]["cash_rev"], 0)            # corrected
         self.assertNotIn(recent, out)                              # held back: no cash yet
         self.assertEqual(len(out), len(days) - 1)
+
+    def test_recent_day_without_fo_is_unpublished_until_fo_posts(self):
+        """The most recent day was stored cash-only (its F&O file had not posted):
+        while F&O is still missing it stays out of the published file, and once
+        F&O posts it comes back complete."""
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "data").mkdir(); (tmp / "dashboard" / "data").mkdir(parents=True)
+        days = weekdays_back(30, datetime.now())
+        recent = days[-1].strftime("%Y-%m-%d")
+
+        def fo_rec(d):
+            return {"date": d, "futures_turnover": 1000, "options_premium_turnover": 10000,
+                    "options_notional_turnover": 1e6, "total_contracts": 10, "total_turnover": 1e6}
+
+        def cash_rec(d):
+            return {"date": d, "traded_value": 8000, "securities_traded": 1, "no_of_trades": 1, "traded_quantity": 1}
+
+        def complete(d):
+            row = {k: v for k, v in bse.parse_fo_record(fo_rec(d)).items() if k != "_dt"}
+            cash = bse.parse_cash_record(cash_rec(d))
+            row.update({"cash_traded_value": cash["cash_traded_value"], "cash_securities": 0, "cash_trades": 0,
+                        "cash_quantity": 0, "cash_rev": cash["cash_rev"]})
+            row["total_rev"] = round(row["fo_rev"] + row["cash_rev"], 4)
+            return row
+
+        cash_only = dict(complete(recent), fut_rev=0, opt_rev=0.0, fo_rev=0.0, futures_turnover=0,
+                         options_premium_turnover=0, options_notional_turnover=0, total_contracts=0, total_turnover=0)
+        cash_only["total_rev"] = cash_only["cash_rev"]
+        existing = [complete(dt.strftime("%Y-%m-%d")) for dt in days[:-1]] + [cash_only]
+        (tmp / "data" / "bse_dashboard_data.json").write_text(json.dumps({"daily_all": existing}))
+
+        def run(fo_days):
+            saved = (bse.DATA_DIR, bse.DASHBOARD_DIR, bse.fetch_bse_fo_data, bse.fetch_bse_cash_data, bse.SUPABASE_URL)
+            bse.DATA_DIR, bse.DASHBOARD_DIR, bse.SUPABASE_URL = tmp / "data", tmp / "dashboard", ""
+            bse.fetch_bse_fo_data = lambda: [fo_rec(dt.strftime("%Y-%m-%d")) for dt in fo_days]
+            bse.fetch_bse_cash_data = lambda extra=(): [cash_rec(dt.strftime("%Y-%m-%d")) for dt in days]
+            try:
+                bse.main()
+            finally:
+                bse.DATA_DIR, bse.DASHBOARD_DIR, bse.fetch_bse_fo_data, bse.fetch_bse_cash_data, bse.SUPABASE_URL = saved
+            return {r["date"]: r for r in json.loads((tmp / "data" / "bse_dashboard_data.json").read_text())["daily_all"]}
+
+        out = run(days[:-1])                    # F&O still missing for the recent day
+        self.assertNotIn(recent, out)
+        self.assertEqual(len(out), len(days) - 1)
+        out = run(days)                         # F&O has posted
+        self.assertGreater(out[recent]["fo_rev"], 0)
+        self.assertGreater(out[recent]["cash_rev"], 0)
+        self.assertEqual(len(out), len(days))
 
     def test_gap_older_than_the_fo_window(self):
         """The stored day missing cash is older than the F&O fetch (45 days),
