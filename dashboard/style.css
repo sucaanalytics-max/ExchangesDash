@@ -334,7 +334,7 @@ html, body {
 
 .sidebar-footer a {
   font-size: var(--text-xs);
-  color: var(--color-text-faint);
+  color: var(--color-text-muted);
   text-decoration: none;
 }
 .sidebar-footer a:hover {
@@ -888,7 +888,7 @@ span.neutral {
   border-radius: 2px;
   background: #eceeef;
   color: #5b5f66;
-  font: 700 10px/1 var(--font-display);
+  font: 700 11px/1 var(--font-display);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   white-space: nowrap;
@@ -954,7 +954,7 @@ span.neutral {
   justify-content: space-between;
   gap: 8px;
   margin-top: 6px;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--color-text-muted);
 }
 .lvc-foot > span:last-child { white-space: nowrap; }
@@ -1136,7 +1136,7 @@ span.neutral {
 
 .xl-seg-unit {
   font-weight: 400;
-  opacity: 0.7;
+  opacity: 0.9;
   letter-spacing: 0.02em;
   text-transform: none;
   font-size: 11px;
@@ -1147,6 +1147,10 @@ span.neutral {
   display: flex;
   align-items: flex-start;
   overflow-x: auto;
+  /* Named container: below ~1200px of row width the period table's narrow
+     columns clip ("Expiries", "vs 45D", "FY 2027 September"); see the
+     @container rules before the phone block */
+  container: xlrow / inline-size;
 }
 
 /* LEFT: period sections — fixed ~34% of content width (three roughly-equal columns) */
@@ -2651,7 +2655,7 @@ span.pr-neu {
 }
 .l5-i {
   margin-left: 3px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--color-text-muted);
 }
 .l5-mix {
@@ -2662,7 +2666,7 @@ span.pr-neu {
   background: var(--color-warning-bg, rgba(165, 96, 0, 0.08));
   box-shadow: inset 0 0 0 1px var(--color-warning);
   color: var(--color-warning);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   line-height: 1.5;
   white-space: nowrap;
@@ -2676,10 +2680,40 @@ span.pr-neu {
 }
 .exp-diff-row td { background: var(--color-warning-bg, rgba(165, 96, 0, 0.08)); }
 .exp-partial {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--color-text-muted);
   white-space: nowrap;
 }
+/* Narrow rows (a 1280–1440px-wide window, or a TV set to 1280×720): the
+   period table's columns are too narrow for "Expiries", "vs 45D" and the
+   longest month labels, so it takes a little more of the row, says "Exp" and
+   stacks a combined N/B count, as on phones. Phones' own rules below win. */
+@container xlrow (max-width: 1199px) {
+  .xl-has-exp .xl-col-period,
+  .xl-exp-multi .xl-col-period { width: 41%; }
+  .xl-has-exp .xl-col-val,
+  .xl-exp-multi .xl-col-val    { width: 18%; }
+  .xl-has-exp .xl-col-chg1,
+  .xl-exp-multi .xl-col-chg1   { width: 14%; }
+  .xl-has-exp .xl-col-chg2,
+  .xl-exp-multi .xl-col-chg2   { width: 15%; }
+  .xl-has-exp .xl-col-exp,
+  .xl-exp-multi .xl-col-exp    { width: 12%; }
+  /* qualified: the plain .exp-hdr-short { display: none } comes later */
+  .xl-period-table .exp-hdr-long { display: none; }
+  .xl-period-table .exp-hdr-short { display: inline; }
+  .xl-period-table .exp-count { display: inline-block; vertical-align: middle; }
+  .xl-period-table .exp-count > span { display: block; line-height: 1.25; }
+  .xl-period-table .exp-count > .exp-sep { display: none; }
+  .xl-period-table td.xl-exp { padding-left: 2px; padding-right: 2px; }
+}
+/* Side by side only (above 900px the three tables share the row) */
+@media (min-width: 901px) {
+  @container xlrow (max-width: 1199px) {
+    .xl-main-row > .xl-period-table { flex-basis: 36%; width: 36%; }
+  }
+}
+
 /* Phones: "Exp" header, and a combined count stacks N over B, so the column
    stays narrow enough for the period selects */
 .exp-hdr-short { display: none; }
@@ -3019,7 +3053,7 @@ span.pr-neu {
 .rx-chip {
   display: inline-block;
   font-family: var(--font-display);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 500;
   line-height: 1.6;
   letter-spacing: 0.04em;
@@ -3407,7 +3441,7 @@ details.rx-val-how:not([open]) > summary { border-bottom: 0; }
 .mtf-sum-panel .weekday-wire-table th { padding: 3px 2px; }
 .mtf-sum-panel .weekday-wire-table td.wire-value { white-space: nowrap; padding-right: 4px; }
 .mtf-sum-panel .weekday-wire-table td.wire-delta { padding: 3px 2px; font-size: 11.5px; white-space: nowrap; }
-.mtf-sum-from, .mtf-sum-date { font-size: 10.5px; font-weight: 400; color: var(--color-text-muted); white-space: nowrap; }
+.mtf-sum-from, .mtf-sum-date { font-size: 11px; font-weight: 400; color: var(--color-text-muted); white-space: nowrap; }
 .mtf-sum-muted { color: var(--color-text-secondary); font-size: 11.5px; }
 .mtf-sum-share { margin-top: var(--space-4); padding: 0; }
 .mtf-sum-notes { margin: var(--space-3) 0 0; padding-left: 18px; display: grid; gap: 3px; font-size: 12px; color: var(--color-text-muted); }
@@ -3456,7 +3490,7 @@ th[aria-sort="ascending"] .mtf-bk-sort::after { content: " ↑"; }
 .mtf-bk-row.is-open td { background: var(--rx-sunk); border-bottom-color: transparent; }
 .mtf-bk-rank { color: var(--rx-muted); width: 24px; }
 .mtf-bk-table td.mtf-bk-name { min-width: 150px; }
-.mtf-bk-table td.mtf-bk-name .rx-chip { font-size: 9.5px; margin-left: 2px; }
+.mtf-bk-table td.mtf-bk-name .rx-chip { font-size: 10.5px; margin-left: 2px; }
 .mtf-bk-sharecell { width: 34%; min-width: 220px; }
 .mtf-bk-barcell { display: flex; align-items: center; gap: 8px; }
 .mtf-bk-val { flex: 0 0 56px; text-align: right; font-weight: 600; }
@@ -3470,7 +3504,7 @@ th[aria-sort="ascending"] .mtf-bk-sort::after { content: " ↑"; }
 .mtf-bk-asof { color: var(--rx-muted); }
 .mtf-bk-asof.is-odd { color: var(--rx-ink); font-weight: 600; }
 .mtf-bk-table .rx-chip, .mtf-bk-qtable .rx-chip { white-space: nowrap; }
-.mtf-bk-asof .rx-chip { font-size: 9.5px; margin-left: 4px; }
+.mtf-bk-asof .rx-chip { font-size: 10.5px; margin-left: 4px; }
 .mtf-bk-table a, .mtf-bk-detail a, .mtf-bk-srcs a { color: var(--rx-ink); text-decoration: underline; text-decoration-color: var(--rx-rule-2); text-underline-offset: 2px; }
 .mtf-bk-table a:hover, .mtf-bk-detail a:hover { text-decoration-color: currentColor; }
 .mtf-bk-doc { font-size: 12px; }
@@ -3505,10 +3539,10 @@ th[aria-sort="ascending"] .mtf-bk-sort::after { content: " ↑"; }
 .mtf-bk-card-h .mtf-bk-sw { width: 12px; margin-right: 2px; }
 .mtf-bk-card-v { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mtf-bk-card-s { display: flex; align-items: center; gap: 6px; margin: 2px 0 2px; font-size: 10.5px; color: var(--rx-muted); min-height: 18px; }
-.mtf-bk-card-s .rx-chip { font-size: 9px; }
+.mtf-bk-card-s .rx-chip { font-size: 10px; }
 /* Share by quarter end: highlight table */
 .mtf-bk-qtable td.mtf-bk-none { color: var(--rx-muted); }
-.mtf-bk-qtable td .rx-chip { margin-left: 4px; font-size: 9.5px; }
+.mtf-bk-qtable td .rx-chip { margin-left: 4px; font-size: 10.5px; }
 .mtf-bk-qpp { display: inline-block; min-width: 34px; margin-left: 6px; font-size: 10.5px; text-align: right; }
 .rx-table tbody tr:hover td.mtf-bk-hl { filter: brightness(0.97); }
 .mtf-bk-srcs td.rx-wrap { min-width: 180px; font-size: 12px; }
@@ -3741,7 +3775,7 @@ th[aria-sort="ascending"] .mtf-bk-sort::after { content: " ↑"; }
 .rx-table.vix-sens tr.vix-outside td { color: var(--vix-outside-ink); }
 .rx-table.vix-sens tr.vix-outside td.rx-strong { font-weight: 400; }
 .vix-tag { margin-left: 4px; font-size: 11px; font-weight: 400; color: var(--rx-muted); }
-.rx-table.vix-weekly .rx-chip { margin-left: 6px; font-size: 10px; }
+.rx-table.vix-weekly .rx-chip { margin-left: 6px; font-size: 10.5px; }
 /* β and n stay lower case: the chip's capitals would turn β into a Latin B */
 .vix-fit .rx-chip { text-transform: none; }
 @media (max-width: 640px) {

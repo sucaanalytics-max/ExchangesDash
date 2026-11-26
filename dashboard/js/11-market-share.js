@@ -548,8 +548,8 @@ function buildMarketShareChartImgs(nseRaw, bseRaw) {
         ]
       },
       options: {
-        animation: false, plugins: { legend: { labels: { font: { size: 10 } } } },
-        scales: { x: { ticks: { maxTicksLimit: 10, font: { size: 9 } } }, y: { min: 0, max: 100, ticks: { callback: v => v + ' %', font: { size: 9 } } } }
+        animation: false, plugins: { legend: { labels: { font: { size: 11 } } } },
+        scales: { x: { ticks: { maxTicksLimit: 10, font: { size: 10 } } }, y: { min: 0, max: 100, ticks: { callback: v => v + ' %', font: { size: 10 } } } }
       }
     }
   });
