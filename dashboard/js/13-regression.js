@@ -286,6 +286,24 @@ function shareRatioStats(series, regStart) {
   return { mean, sd };
 }
 
+// Actual ÷ model (A/B): each session's close ÷ its fair value, [{ date, ab, price,
+// price_pred, in_fit }], only where the model gives a positive fair value
+function shareAbSeries(series) {
+  return (series || []).filter(r => r && r.price > 0 && r.price_pred > 0)
+    .map(r => ({ date: r.date, ab: r.price / r.price_pred, price: r.price, price_pred: r.price_pred, in_fit: r.in_fit }));
+}
+
+// Mean and population σ of A/B over the sessions in the fit ({ mean, sd, n }),
+// or null below 2. A least-squares fit's errors average 0 in ₹, so the mean is
+// close to 1 but not exactly 1.
+function shareAbStats(ab, regStart) {
+  const fit = (ab || []).filter(r => (r.in_fit === undefined ? r.date >= regStart : r.in_fit));
+  if (fit.length < 2) return null;
+  const mean = fit.reduce((a, r) => a + r.ab, 0) / fit.length;
+  const sd = Math.sqrt(fit.reduce((a, r) => a + (r.ab - mean) ** 2, 0) / fit.length);
+  return { mean, sd, n: fit.length };
+}
+
 // Standard error of estimate (₹) of a fit `reg` ({ slope, intercept }) over the
 // rows it was fitted on: √(Σ residual² ÷ (n − 2)); { se, n }, or null below 3 rows
 function shareResidualSE(series, reg, regStart) {
@@ -446,6 +464,10 @@ function buildShareAnalysis(ex) {
       right: `<span data-rx="legPrice"></span>`,
       body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas(id('Price'))}<div data-rx="residWrap">${rxCanvas(id('Resid'))}</div></div>`,
       foot: `<span data-rx="residNote"></span>` })}
+    ${rxPanel({ title: 'Actual ÷ model (A/B)', meta: `close ÷ fair value · 1.00× = at the model · <span data-rx="abSpan"></span>`, attrs: 'data-rx-chartblock',
+      right: `<span data-rx="legAb"></span>`,
+      body: `<div data-rx="abMsg"></div><div class="rx-pb" style="padding-bottom:4px" data-rx="abWrap">${rxCanvas(id('Ab'))}</div>`,
+      foot: `<span data-rx="abNote"></span>` })}
     <div class="rx-row" data-rx-chartblock>
       ${rxPanel({ cls: 'rx-col-half', title: `Price ÷ revenue MA<span data-rx="w"></span>`, meta: 'mean ± 1σ and ± 2σ over the fitted range',
         body: `<div class="rx-pb" style="padding-bottom:4px">${rxCanvas(id('Ratio'))}</div><div class="rx-chart-note" data-rx="legRatio"></div>` })}
@@ -486,7 +508,7 @@ function buildShareAnalysis(ex) {
   function renderCharts() {
     const d = model(state.dma, state.lag);
     const fit = fitScope();
-    ['shPrice', 'shResid', 'shRatio', 'shScatter', 'shIndex'].forEach(k => { if (charts[k]) { charts[k].destroy(); delete charts[k]; } });
+    ['shPrice', 'shResid', 'shAb', 'shRatio', 'shScatter', 'shIndex'].forEach(k => { if (charts[k]) { charts[k].destroy(); delete charts[k]; } });
     const view = d ? filterShareSeries(d.series, state.range, regStart) : [];
     // No model for this range (renderText says why): hide the charts rather than leave stale legends
     el.querySelectorAll('[data-rx-chartblock]').forEach(n => { n.style.display = view.length ? '' : 'none'; });
@@ -543,6 +565,8 @@ function buildShareAnalysis(ex) {
       });
       rxFixHeight(charts.shResid);
     }
+
+    drawAb(d, view, fit, labels, dateTitle);
 
     const rs = shareRatioStats(d.series, fit.from);
     if (rs) {
@@ -650,6 +674,73 @@ function buildShareAnalysis(ex) {
       { label: `Share price ${fmtNum(pIdx[pIdx.length - 1], 0)}`, color: RX.ink, kind: 'line' },
       { label: `Revenue MA${w} ${fmtNum(mIdx[mIdx.length - 1], 0)}`, color: RX.rev, kind: 'line' },
     ]);
+  }
+
+  // Actual ÷ model: the close over the fair value of the model picked in the bar,
+  // with ± 1σ / ± 2σ of A/B over the fitted sessions. Hidden, with the reason,
+  // when the fair value is withheld for this window.
+  function drawAb(d, view, fit, labels, dateTitle) {
+    const all = shareAbSeries(d.series);
+    const st = shareAbStats(all, fit.from);
+    const byDate = new Map(all.map(r => [r.date, r]));
+    const rowsAb = view.map(r => byDate.get(r.date) || null);
+    const shown = rowsAb.filter(Boolean);
+    const lat = s.latest || {};
+    const liveAb = lat.is_live && d.live && d.live.price_pred > 0 && lat.price_actual > 0 ? lat.price_actual / d.live.price_pred : null;
+    q('abWrap').hidden = !shown.length || !st;
+    if (!shown.length || !st) {
+      const why = d.meth && d.meth.gate_reasons && d.meth.gate_reasons.length ? d.meth.gate_reasons.join('; ') : 'the fit does not pass the significance checks';
+      q('abMsg').innerHTML = `<div class="rx-pb">${rxAlert(`No fair value for this window, so no A/B: ${escHtml(why)}.`, 'info')}</div>`;
+      q('legAb').innerHTML = ''; q('abSpan').textContent = ''; q('abNote').textContent = '';
+      return;
+    }
+    q('abMsg').innerHTML = '';
+    q('abSpan').textContent = `bands: ± 1σ and ± 2σ over the fit, ${fmtNum(st.n, 0)} sessions`;
+    const x = v => `${fmtNum(v, 2)}×`;
+    const pct = v => `${v >= 1 ? '+' : '−'}${Math.abs((v - 1) * 100).toFixed(1)} %`;
+    const zOf = v => (st.sd > 0 ? (v - st.mean) / st.sd : 0);
+    const flat = v => view.map(() => v);
+    const band = (lbl, v, fill, bg) => ({ label: lbl, data: flat(v), borderWidth: 0, pointRadius: 0, fill, backgroundColor: bg, tension: 0 });
+    const ab = rowsAb.map(r => (r ? r.ab : null));
+    rxChart('shAb', id('Ab'), 220, {
+      type: 'line',
+      data: { labels, datasets: [
+        band('+2σ', st.mean + 2 * st.sd, { target: 4 }, 'rgba(43, 92, 200, 0.07)'),
+        band('+1σ', st.mean + st.sd, { target: 3 }, 'rgba(43, 92, 200, 0.12)'),
+        { label: 'At the model', data: flat(1), borderColor: RX.model, borderWidth: 1.25, borderDash: [5, 3], pointRadius: 0, fill: false },
+        band('−1σ', st.mean - st.sd, false, 'transparent'),
+        band('−2σ', st.mean - 2 * st.sd, false, 'transparent'),
+        { label: 'A/B', data: ab, borderColor: RX.ink, borderWidth: 1.75, pointRadius: 0, tension: 0, fill: false, spanGaps: true },
+      ] },
+      options: {
+        interaction: { mode: 'index', intersect: false },
+        plugins: { tooltip: {
+          filter: item => item.datasetIndex === 5 && item.raw != null,
+          callbacks: {
+            title: dateTitle,
+            label: ctx => { const z = zOf(ctx.raw); return ` A/B ${x(ctx.raw)} (${pct(ctx.raw)} vs model, ${z >= 0 ? '+' : '−'}${Math.abs(z).toFixed(1)}σ)`; },
+            footer: items => { const r = rowsAb[items[0].dataIndex]; return r ? `Close ₹${fmtNum(r.price, 0)} · model ₹${fmtNum(r.price_pred, 0)}` : ''; },
+          },
+        } },
+        scales: {
+          x: { grid: { display: false }, ticks: { maxTicksLimit: 8, maxRotation: 0, autoSkip: true } },
+          y: { grace: '4%', ticks: { callback: v => fmtNum(v, 2) + '×' } },
+        },
+      },
+    });
+    rxFixHeight(charts.shAb);
+    const last = shown[shown.length - 1];
+    q('legAb').innerHTML = rxLegend([
+      { label: `A/B ${x(last.ab)} (${fmtTradeDate(last.date)})`, color: RX.ink, kind: 'line' },
+    ].concat(liveAb != null ? [{ label: `Live ${x(liveAb)}`, color: '#FFFFFF', style: `border:2px solid ${RX.ink};border-radius:50%;width:11px;height:11px` }] : [], [
+      { label: `± 1σ (${x(st.mean - st.sd)}–${x(st.mean + st.sd)})`, color: 'rgba(43, 92, 200, 0.19)' },
+      { label: `± 2σ`, color: 'rgba(43, 92, 200, 0.07)', style: 'box-shadow:inset 0 0 0 1px #DCE5F7' },
+      { label: 'At the model 1.00×', color: RX.model, kind: 'dash' },
+    ]));
+    const h = d.meth && d.meth.holdout;
+    q('abNote').textContent = `Above 1.00× the close is above the regression's fair value; below, under it. Mean over the fit ${x(st.mean)}, σ ${fmtNum(st.sd, 3)}.`
+      + (h ? ` Out of sample the model's typical miss is ${h.mape_pct.toFixed(1)} %${h.beats_naive ? '' : ', worse than "price unchanged"'}.` : '')
+      + (liveAb != null ? ` Live: ${x(liveAb)} against the fair value at the MA to the session before today, as in the headline.` : '');
   }
 
   rxOnSeg(el, 'dma', v => { state.dma = +v; renderText(); renderCharts(); });
