@@ -1,0 +1,5 @@
+{
+ "note": "unavailable: trading days NSE served no F&O bhavcopy for (asked again with --retry); empty: days whose file had none of the symbols (e.g. BSE before it joined F&O, when MCX was also missing)",
+ "unavailable": [],
+ "empty": []
+}
