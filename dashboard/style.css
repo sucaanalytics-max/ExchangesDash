@@ -2924,15 +2924,74 @@ span.pr-neu {
 .glance-chg--flat,
 .glance-chg--na   { color: var(--color-text-muted); }
 
-.glance-dow {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 4px;
-  text-align: center;
+/* Revenue Summary on the phone (glanceSummaryCard): the desktop block's look —
+   red title strip, black section bars, the Excel % chips (.xl-chg) */
+.glance-sum { padding: 0 0 10px; border-top: none; overflow: hidden; }
+.glance-seg { display: flex; padding: 10px 12px 8px; gap: 0; }
+.glance-seg-btn {
+  flex: 1;
+  min-height: 36px;
+  padding: 0 4px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
 }
-.glance-dow-day { font-size: 11px; font-weight: 700; color: var(--color-text-muted); text-transform: uppercase; }
-.glance-dow-val { font-size: 15px; font-weight: 600; margin: 2px 0 4px; font-variant-numeric: tabular-nums; }
-.glance-dow .glance-chg { font-size: 11px; padding: 1px 4px; }
+.glance-seg-btn + .glance-seg-btn { border-left: none; }
+.glance-seg-btn.active { background: var(--color-text); border-color: var(--color-text); color: var(--color-surface); }
+.glance-sum-title {
+  background: var(--color-primary);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  padding: 7px 12px;
+}
+.glance-sum-title span { font-weight: 400; letter-spacing: .02em; text-transform: none; opacity: .9; margin-left: 6px; }
+.glance-sum-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.glance-sum-c-val { width: 64px; }
+.glance-sum-c-chg { width: 60px; }
+.glance-sum-table th {
+  background: #050505;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 6px;
+  border: 1px solid #e31b23;
+  white-space: nowrap;
+  text-align: right;
+}
+.glance-sum-table th:first-child { text-align: left; }
+.glance-sum-table td {
+  padding: 6px 6px;
+  border-bottom: 1px solid var(--color-divider, var(--color-border));
+  text-align: right;
+  color: var(--color-text);
+  height: 32px;
+  box-sizing: border-box;
+}
+.glance-sum-table td:first-child { text-align: left; padding-left: 10px; }
+.glance-sum-table td:has(> .xl-chg) { padding: 0; }
+.glance-sum-table .xl-chg { font-size: 13px; }
+.glance-sum-cur td:first-child { font-weight: 700; }
+.glance-sum-muted td:first-child { color: var(--color-text-muted); font-size: 12px; }
+.glance-sum-days { margin-top: 10px; }
+.glance-sum-days th { padding: 4px 3px; }
+.glance-sum-days td { padding: 6px 3px; }
+.glance-sum-days td:first-child { font-weight: 700; width: 44px; }
+.glance-sum-days th:first-child { width: 44px; }
+.glance-sum-strong { font-weight: 600; }
+.glance-sum .glance-sub { padding: 6px 12px 0; }
 
 .glance-loading { padding: 32px 0; text-align: center; color: var(--color-text-muted); }
 

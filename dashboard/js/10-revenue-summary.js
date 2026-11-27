@@ -588,9 +588,8 @@ function tailFlags(from, to, segKey) {
 // The 125 trading days ending at a month's last trading day (as getM6mAvg)
 function m6Flags(monthLabel, segKey) {
   return sourcesFlags(src => {
-    const daily = src.daily_all;
-    const endIdx = daily.reduce((last, r, i) => r.fy_month === monthLabel ? i : last, -1);
-    return endIdx < 0 ? NO_FLAGS : rowsFlags(daily.slice(Math.max(0, endIdx - 124), endIdx + 1), segKey);
+    const window = m6WindowOf(src.daily_all, monthLabel);
+    return window ? rowsFlags(window, segKey) : NO_FLAGS;
   });
 }
 
@@ -750,32 +749,49 @@ const CMP_MODELLED_SPAN = `<span class="xl-chg xl-neu cmp-na" title="${MCX_MODEL
 const CMP_MODELLED_TD = `<td class="wire-delta neutral cmp-na" title="${MCX_MODELLED_TITLE}">—</td>`;
 
 // ── Simple avg getters (no derived comparisons) ───────────────────────────────
+// Pure cores over one exchange's rows (rf = getRevFieldObj(segKey)), shared by
+// the getters below and the phone glance's summary (rsPhoneSummary)
+function fyAvgOf(quarterly, fyStr, rf) {
+  const quarters = quarterly.filter(q => q.quarter.endsWith(fyStr));
+  if (!quarters.length) return null;
+  const rev  = quarters.reduce((s, q) => s + (q[rf.qField] || 0), 0);
+  const days = quarters.reduce((s, q) => s + (q.days || q.trading_days || 1), 0);
+  return rev / days;
+}
+
+function qAvgOf(q, rf) {
+  return q ? q[rf.qField] / (q.days || q.trading_days || 1) : null;
+}
+
+function mAvgOf(m, rf) {
+  return m ? m[rf.mField] / (m.trading_days || m.days || 1) : null;
+}
+
+// The 125 trading days ending at the month's last trading day (null without one)
+function m6WindowOf(daily, monthLabel) {
+  const endIdx = daily.reduce((last, r, i) => r.fy_month === monthLabel ? i : last, -1);
+  return endIdx < 0 ? null : daily.slice(Math.max(0, endIdx - 124), endIdx + 1);
+}
+
+function m6AvgOf(daily, monthLabel, rf) {
+  const window = m6WindowOf(daily, monthLabel);
+  return window ? window.reduce((s, r) => s + (r[rf.dField] || 0), 0) / window.length : null;
+}
+
 function getFYAvg(fyStr, segKey) {
   const rf = getRevFieldObj(segKey);
-  const value = sumOverSources(src => {
-    const quarters = src.quarterly.filter(q => q.quarter.endsWith(fyStr));
-    if (!quarters.length) return null;
-    const rev  = quarters.reduce((s, q) => s + (q[rf.qField] || 0), 0);
-    const days = quarters.reduce((s, q) => s + (q.days || q.trading_days || 1), 0);
-    return rev / days;
-  });
+  const value = sumOverSources(src => fyAvgOf(src.quarterly, fyStr, rf));
   return value == null ? null : { label: fyStr, value };
 }
 
 function getQAvg(qIdx, segKey) {
-  const rf = getRevFieldObj(segKey);
-  const q  = rsData().quarterly[qIdx];
-  if (!q) return null;
-  const days = q.days || q.trading_days || 1;
-  return { label: q.quarter, value: q[rf.qField] / days };
+  const q = rsData().quarterly[qIdx];
+  return q ? { label: q.quarter, value: qAvgOf(q, getRevFieldObj(segKey)) } : null;
 }
 
 function getMAvg(mIdx, segKey) {
-  const rf = getRevFieldObj(segKey);
-  const m  = rsData().monthly[mIdx];
-  if (!m) return null;
-  const days = m.trading_days || m.days || 1;
-  return { label: m.month, value: m[rf.mField] / days };
+  const m = rsData().monthly[mIdx];
+  return m ? { label: m.month, value: mAvgOf(m, getRevFieldObj(segKey)) } : null;
 }
 
 // "Avg 6M (125 days)": average of the last 125 trading days ending at the
@@ -789,13 +805,7 @@ function getM6mAvg(mIdx, segKey) {
   const rf = getRevFieldObj(segKey);
   const m  = rsData().monthly[mIdx];
   if (!m) return null;
-  return sumOverSources(src => {
-    const daily  = src.daily_all;
-    const endIdx = daily.reduce((last, r, i) => r.fy_month === m.month ? i : last, -1);
-    if (endIdx < 0) return null;
-    const window = daily.slice(Math.max(0, endIdx - 124), endIdx + 1);
-    return window.reduce((s, r) => s + (r[rf.dField] || 0), 0) / window.length;
-  });
+  return sumOverSources(src => m6AvgOf(src.daily_all, m.month, rf));
 }
 
 // ── Per-row render functions ──────────────────────────────────────────────────
@@ -1151,6 +1161,124 @@ function xlSegmentBlock(segData, label, segKey, fyOpts, qOpts, mOpts) {
 
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
+// FY labels in the quarterly rows, newest first
+function rsFYList(quarterly) {
+  const fys = [];
+  quarterly.forEach(q => {
+    const m = q.quarter.match(/FY \d{4}/);
+    if (m && !fys.includes(m[0])) fys.push(m[0]);
+  });
+  return fys.reverse();
+}
+
+// The rows the summary opens on (the phone glance shows only these): this FY
+// and the last; the latest three quarters and the same quarter a year earlier;
+// the latest three months. Quarter and month entries are indices into the
+// (oldest-first) quarterly / monthly rows.
+function rsDefaultRows(quarterly, monthly) {
+  const fys = rsFYList(quarterly);
+  const nQ = quarterly.length;
+  const q0 = nQ - 1;
+  const curQNum = (quarterly[q0]?.quarter || '').match(/^Q(\d)/)?.[1];
+  let qYoY = Math.max(0, nQ - 5);
+  if (curQNum) {
+    for (let i = q0 - 1; i >= 0; i--) {
+      if (quarterly[i].quarter.startsWith('Q' + curQNum + ' ')) { qYoY = i; break; }
+    }
+  }
+  return {
+    fy: [fys[0] || 'FY 2027', fys[1] || 'FY 2026'],
+    q: [q0, Math.max(0, nQ - 2), Math.max(0, nQ - 3), qYoY],
+    m: defaultMonthIdxs(monthly.length),
+  };
+}
+
+// ── The phone glance's summary (renderGlance, 02-banner-glance.js) ───────────
+// The desktop block's figures at its default rows, for one exchange's own
+// dashboard and enriched files (MARKET_RAW / MARKET_DATA), so it never depends
+// on the page's DATA or currentExchange. Same cores, comparisons and modelled
+// rules as renderFYRow / renderQRow / renderMRow and xlSegmentBlock: a row's
+// % chg is (row 0 − row) ÷ row; Avg 6M's is row 0's month against it; a
+// comparison touching modelled MCX days is null with `na` set. Null when the
+// segment has no data.
+const RS_PHONE_SEGS = { total: 'summary_total', options: 'seg_options', futures: 'seg_futures', cash: 'seg_cash' };
+
+function rsPhoneSummary(ex, raw, enr, segKey) {
+  const seg = enr && enr[RS_PHONE_SEGS[segKey]];
+  const quarterly = raw?.quarterly || [], monthly = raw?.monthly || [], daily = raw?.daily_all || [];
+  if (!seg || !seg.weekly || !quarterly.length || !monthly.length) return null;
+  const rf = getRevFieldObj(segKey);
+  const defs = rsDefaultRows(quarterly, monthly);
+  const cmp = (cur, ref, flags, refFlags) => anyModelled(flags, refFlags)
+    ? { chg: null, na: true }
+    : { chg: ref != null && cur != null ? (ref - cur) / cur : null, na: false };
+
+  // FY, Quarter, Month: row 0 is the reference for the rows under it
+  const periodRows = list => list.map((p, i) => {
+    const row = { label: p.label, value: p.value, flags: p.flags, cur: i === 0 };
+    if (i > 0) Object.assign(row, cmp(p.value, list[0].value, p.flags, list[0].flags));
+    return row;
+  });
+  const fyRows = periodRows(defs.fy.map(fy => ({
+    label: fy, value: fyAvgOf(quarterly, fy, rf),
+    flags: mergeFlags(quarterly.filter(q => q.quarter.endsWith(fy)).map(q => periodFlags(q, segKey))),
+  })));
+  const qRows = periodRows(defs.q.map(i => quarterly[i]).filter(Boolean).map(q => ({
+    label: q.quarter, value: qAvgOf(q, rf), flags: periodFlags(q, segKey),
+  })));
+  const mRows = periodRows(defs.m.map(i => monthly[i]).filter(Boolean).map(m => ({
+    label: m.month, value: mAvgOf(m, rf), flags: periodFlags(m, segKey),
+  })));
+  const m0 = mRows[0];
+  if (m0) {
+    const win = m6WindowOf(daily, m0.label);
+    const avg = m6AvgOf(daily, m0.label, rf);
+    const avgFlags = win ? rowsFlags(win, segKey) : NO_FLAGS;
+    const na = anyModelled(m0.flags, avgFlags);
+    mRows.push({ label: AVG_6M_LABEL, value: avg, flags: avgFlags, muted: true, na,
+      chg: na || avg == null || m0.value == null ? null : (m0.value - avg) / avg });
+  }
+
+  // Week: the enriched file's trailing windows; Last 20 from the daily rows
+  // when the file lacks it (as buildRevenueSummary fills it)
+  const w = seg.weekly;
+  const l5 = w.last5 || {}, p5 = w.prev5 || {}, w45 = w.last45 || {};
+  let w20 = w.last20 && w.last20.value;
+  if (w20 == null) {
+    const d20 = (raw.daily || []).slice(-20);
+    w20 = d20.length ? Math.round(d20.reduce((a, r) => a + (r[rf.dField] || 0), 0) / d20.length * 10000) / 10000 : 0;
+  }
+  const tail = (from, to) => rowsFlags(daily.slice(from, to), segKey);
+  const f5 = tail(-5), fp5 = tail(-10, -5), f20 = tail(-20), f45 = tail(-45);
+  const dow = seg.day_of_week || {};
+  const wdFlags = (d, n) => rowsFlags(daily.filter(r => r.day === d).slice(-n), segKey);
+  const monFriAvg = WEEKDAYS.reduce((a, d) => a + ((dow[d] || {}).latest || 0), 0) / WEEKDAYS.length;
+  const naWow = anyModelled(f5, fp5), na45 = anyModelled(f45);
+  const b = lastFiveBreakdown(segKey, [{ exchange: ex, daily_all: daily }])[0];
+  const weekRows = [
+    { label: 'Last 5 Days', value: l5.value, flags: f5, cur: true, l5: true,
+      chg: naWow ? null : l5.wow, na: naWow, chg2: na45 ? null : l5.wo10w, na2: na45 },
+    { label: 'Prev 5 Days', value: p5.value, flags: fp5 },
+    { label: 'Last 20 Days', value: w20, flags: f20 },
+    { label: 'Last 45 Days', value: w45.value, flags: f45 },
+    { label: 'Mon–Fri Avg (Latest)', value: monFriAvg, flags: mergeFlags(WEEKDAYS.map(d => wdFlags(d, 1))) },
+  ];
+
+  const days = WEEKDAYS.map(d => {
+    const dd = dow[d] || {};
+    const f3 = wdFlags(d, 3), f10 = wdFlags(d, 10);
+    return { day: d, latest: dd.latest, avg3: dd.avg_3d, avg10: dd.avg_10d, flags: wdFlags(d, 1),
+      flags3: f3, flags10: f10,
+      do3d: anyModelled(f3) ? null : dd.do3d, na3: anyModelled(f3),
+      do10d: anyModelled(f10) ? null : dd.do10d, na10: anyModelled(f10) };
+  });
+
+  return {
+    fy: fyRows, q: qRows, m: mRows, week: weekRows, days,
+    l5Repeats: b ? b.repeats : [], l5Missing: b ? b.missing : [], l5List: b ? [b] : [],
+  };
+}
+
 function buildRevenueSummary() {
   // The week-on-week ADR and VIX panels below the sub-tabs are cross-exchange and
   // load their own data (22-weekly-adr.js, 21-vix.js); not awaited
@@ -1174,12 +1302,7 @@ function buildRevenueSummary() {
   if (!pageData.quarterly?.length || !pageData.monthly?.length) return;
 
   // Build option lists (no pre-selected — set via JS after render)
-  const fySet = [];
-  pageData.quarterly.forEach(q => {
-    const m = q.quarter.match(/FY \d{4}/);
-    if (m && !fySet.includes(m[0])) fySet.push(m[0]);
-  });
-  fySet.reverse(); // newest first
+  const fySet = rsFYList(pageData.quarterly);
   const fyOpts = fySet.map(fy => `<option value="${fy}">${fy}</option>`).join('');
 
   const allQ  = pageData.quarterly;
@@ -1233,20 +1356,10 @@ function buildRevenueSummary() {
   });
 
   // Default row values
-  const defFY0 = fySet[0] || 'FY 2027';
-  const defFY1 = fySet[1] || 'FY 2026';
-  const defQ0  = nQ - 1;
-  const defQ1  = Math.max(0, nQ - 2);
-  const defQ2  = Math.max(0, nQ - 3);
-  // Same Q number as current, one year earlier
-  const curQNum = (allQ[defQ0]?.quarter || '').match(/^Q(\d)/)?.[1];
-  let defQ3 = Math.max(0, nQ - 5);
-  if (curQNum) {
-    for (let i = defQ0 - 1; i >= 0; i--) {
-      if (allQ[i].quarter.startsWith('Q' + curQNum + ' ')) { defQ3 = i; break; }
-    }
-  }
-  const [defM0, defM1, defM2] = defaultMonthIdxs(nM);
+  const defs = rsDefaultRows(allQ, allM);
+  const [defFY0, defFY1] = defs.fy;
+  const [defQ0, defQ1, defQ2, defQ3] = defs.q;
+  const [defM0, defM1, defM2] = defs.m;
 
   // Set select values then render data
   XL_SEGS.forEach(sk => {

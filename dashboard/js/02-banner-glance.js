@@ -147,9 +147,9 @@ async function updateLatestRevBanner() {
 // GLANCE VIEW (phones)
 // ========================
 // The default screen at ≤640 px: one card stack per exchange (today's live
-// revenue and its age, predicted end of day, last 5 days vs the 5 before,
-// quarter to date with QoQ / YoY, a weekday strip, share price against the
-// regression fair value), with its own exchange switch and a link to the full
+// revenue and its age, predicted end of day, the Revenue Summary block at its
+// default rows per segment, share price against the regression fair value),
+// with its own exchange switch and a link to the full
 // dashboard. It reads the preloaded MARKET_DATA / MARKET_RAW caches and the
 // live files, so it never waits for the full view's tabs to build. A viewer
 // who picks "Full view" keeps it on later visits (localStorage).
@@ -324,6 +324,86 @@ function glanceShareCard(ex, share) {
     ${fv}`);
 }
 
+// The desktop Revenue Summary block at its default rows (rsPhoneSummary,
+// 10-revenue-summary.js), with Total / Options / Futures / Cash pills. The
+// segment is remembered per viewer; a pill redraws only this card.
+const GLANCE_SEG_KEY = 'exchangesdash.glanceSeg';
+const GLANCE_SEG_LABELS = { total: 'Total', options: 'Options', futures: 'Futures', cash: 'Cash' };
+let GLANCE_SEG = (() => {
+  try { const v = localStorage.getItem(GLANCE_SEG_KEY); return GLANCE_SEG_LABELS[v] ? v : 'total'; } catch (e) { return 'total'; }
+})();
+
+function glanceSumVal(v, flags) {
+  return `<span class="xl-num">${wireVal(v, 2)}</span>${flagTags(flags)}`;
+}
+
+function glanceSumChg(v, na) {
+  return na ? CMP_MODELLED_SPAN : wireChg(v);
+}
+
+function glanceSummaryCard(ex, raw, enr) {
+  // A segment with no data, or only zeros (MCX's file carries an empty cash segment), gets no pill
+  const avail = Object.keys(GLANCE_SEG_LABELS).filter(k => {
+    const s = rsPhoneSummary(ex, raw, enr, k);
+    return s && [...s.fy, ...s.q, ...s.m, ...s.week].some(r => r.value);
+  });
+  if (!avail.length) return '';
+  const seg = avail.includes(GLANCE_SEG) ? GLANCE_SEG : avail[0];
+  const m = rsPhoneSummary(ex, raw, enr, seg);
+  const pills = avail.length > 1 ? `<div class="glance-seg" role="group" aria-label="Segment">${avail.map(k =>
+    `<button type="button" class="glance-seg-btn${k === seg ? ' active' : ''}" data-glance-seg="${k}" aria-pressed="${k === seg}">${GLANCE_SEG_LABELS[k]}</button>`).join('')}</div>` : '';
+
+  const hdr = (cells) => `<tr class="glance-sum-hdr">${cells.map(c => `<th>${c}</th>`).join('')}</tr>`;
+  const l5Chip = m.l5Repeats.length
+    ? `<span class="l5-glance-note">${m.l5Repeats.map(r => `${r.n}× ${r.day.slice(0, 3)}`).join(', ')}${m.l5Missing.length ? `, no ${m.l5Missing.map(d => d.slice(0, 3)).join('/')}` : ''}</span>` : '';
+  const row = r => `<tr class="${r.cur ? 'glance-sum-cur' : ''}${r.muted ? ' glance-sum-muted' : ''}">
+      <td>${r.label}${r.l5 ? l5Chip : ''}</td>
+      <td>${glanceSumVal(r.value, r.flags)}</td>
+      <td>${r.cur && !r.l5 ? '' : (r.chg !== undefined || r.na ? glanceSumChg(r.chg, r.na) : '')}</td>
+      <td>${r.chg2 !== undefined || r.na2 ? glanceSumChg(r.chg2, r.na2) : ''}</td>
+    </tr>`;
+  const section = (title, cols, rows) => `<tbody>${hdr([title, ...cols])}${rows.map(row).join('')}</tbody>`;
+
+  const dayRows = m.days.map(d => `<tr>
+      <td>${d.day.slice(0, 3)}</td>
+      <td class="glance-sum-strong">${wireVal(d.latest, 1)}${flagTags(d.flags)}</td>
+      <td>${wireVal(d.avg3, 1)}</td>
+      <td>${wireVal(d.avg10, 1)}</td>
+      <td>${glanceSumChg(d.do3d, d.na3)}</td>
+      <td>${glanceSumChg(d.do10d, d.na10)}</td>
+    </tr>`).join('');
+
+  const unit = `₹ Cr · daily avg · ${FEE_BASIS_SHORT[feeBasisOf(ex)]}`;
+  return `<section class="glance-card glance-sum">
+    ${pills}
+    <div class="glance-sum-title">${GLANCE_SEG_LABELS[seg]} revenue <span>${unit}</span></div>
+    <table class="glance-sum-table">
+      <colgroup><col><col class="glance-sum-c-val"><col class="glance-sum-c-chg"><col class="glance-sum-c-chg"></colgroup>
+      ${section('Financial Year', ['Total', '% chg', ''], m.fy)}
+      ${section('Quarter', ['Val', '% chg', ''], m.q)}
+      ${section('Month', ['Val', '% chg', ''], m.m)}
+      ${section('Week', ['Val', 'WoW', 'vs 45D'], m.week)}
+    </table>
+    <table class="glance-sum-table glance-sum-days">
+      <thead>${hdr(['Day', 'Latest', 'Avg 3', 'Avg 10', 'Do 3D', 'Do 10D'])}</thead>
+      <tbody>${dayRows}</tbody>
+    </table>
+    <div class="glance-sub">Do 3D / Do 10D: the latest day against the average of the last 3 / 10 of that weekday.</div>
+  </section>`;
+}
+
+function attachGlanceSegHandlers(el) {
+  el.querySelectorAll('[data-glance-seg]').forEach(b => b.addEventListener('click', () => {
+    GLANCE_SEG = b.dataset.glanceSeg;
+    try { localStorage.setItem(GLANCE_SEG_KEY, GLANCE_SEG); } catch (e) { /* not remembered */ }
+    const box = document.getElementById('glanceSummary');
+    const ex = GLANCE_EX;
+    if (!box || !MARKET_DATA[ex] || !MARKET_RAW[ex]) return;
+    box.innerHTML = glanceSummaryCard(ex, MARKET_RAW[ex], MARKET_DATA[ex]);
+    attachGlanceSegHandlers(box);
+  }));
+}
+
 async function renderGlance() {
   const el = document.getElementById('glanceView');
   if (!el || !glanceActive()) return;
@@ -349,48 +429,13 @@ async function renderGlance() {
     return;
   }
 
-  const F = reportFlagsFor(raw);
-  const tg = f => reportTags(f, false);
-  const s = enr.summary_total || {};
-  const l5 = s.weekly?.last5 || {}, p5 = s.weekly?.prev5 || {};
-  const qc = s.quarterly?.current || {}, qp = s.quarterly?.previous || {}, q2 = s.quarterly?.prev2 || {};
-  const qRow = (raw.quarterly || []).find(q => q.quarter === qc.label);
-  const f5 = F.tail(-5, undefined, 'total'), fp5 = F.tail(-10, -5, 'total');
-  const fqc = F.q(qc.label, 'total'), fqp = F.q(qp.label, 'total'), fq2 = F.q(q2.label, 'total');
-
-  // One of each weekday (latest Mon–Fri), and which weekday the last 5 repeat (hover elsewhere; phones need it shown)
-  const l5b = lastFiveBreakdown('total', [{ exchange: ex, daily_all: raw.daily_all || [] }])[0];
-  const l5Note = l5b.repeats.length
-    ? l5b.repeats.map(r => `${r.n}× ${r.day.slice(0, 3)}`).join(', ') + (l5b.missing.length ? `, no ${l5b.missing.map(d => d.slice(0, 3)).join('/')}` : '')
-    : '';
-  const weekCard = glanceCard('Last 5 trading days', `
-    <div class="glance-big">₹${fmtNum(l5.value, 1)}<span class="glance-unit"> Cr/day</span>${tg(f5)}</div>
-    <div class="glance-row"><span>Previous 5 days</span><strong>₹${fmtNum(p5.value, 1)}${tg(fp5)}</strong></div>
-    <div class="glance-row"><span>Change</span>${glanceBadge(l5.wow, anyModelled(f5, fp5))}</div>
-    <div class="glance-row"><span>Mon–Fri latest avg${l5Note ? `<span class="l5-glance-note">${l5Note}</span>` : ''}</span><strong>₹${fmtNum(l5b.avgLatest, 1)}</strong></div>`);
-
-  const qtdCard = glanceCard(`Quarter to date · ${qc.label || '—'}`, `
-    <div class="glance-big">₹${fmtNum(qc.value, 1)}<span class="glance-unit"> Cr/day</span>${tg(fqc)}</div>
-    <div class="glance-sub">${qRow ? (qRow.days || qRow.trading_days) + ' trading days' : ''}</div>
-    <div class="glance-row"><span>vs ${qp.label || 'previous quarter'} (QoQ)</span>${glanceBadge(qc.qoq, anyModelled(fqc, fqp))}</div>
-    <div class="glance-row"><span>vs ${q2.label || 'a year earlier'} (YoY)</span>${glanceBadge(qc.yoy, anyModelled(fqc, fq2))}</div>`);
-
-  const dow = s.day_of_week || {};
-  const strip = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'].map(d => {
-    const v = dow[d] || {};
-    const f3 = F.weekday(d, 3, 'total');
-    return `<div class="glance-dow-cell"><div class="glance-dow-day">${d.slice(0, 3)}</div>
-      <div class="glance-dow-val">${fmtNum(v.latest, 1)}</div>${glanceBadge(v.do3d, anyModelled(f3))}</div>`;
-  }).join('');
-  const dowCard = glanceCard('Day of week · latest ₹ Cr, vs last 3', `<div class="glance-dow">${strip}</div>`);
-
   const feeLine = hasFeeVariant(ex)
     ? 'Fees at today\'s rates.'
     : 'MCX: source values.';
 
   el.innerHTML = switcher
     + glanceTodayCard(ex, lf.live, lf.hourly, raw)
-    + weekCard + qtdCard + dowCard
+    + `<div id="glanceSummary">${glanceSummaryCard(ex, raw, enr)}</div>`
     + glanceShareCard(ex, share)
     + `<p class="glance-foot">${feeLine} Data to ${fmtTradeDate((raw.daily_all || []).slice(-1)[0]?.date, true)}. <button type="button" class="glance-link" data-glance-full>Open the full dashboard</button></p>`;
   attachGlanceHandlers(el);
@@ -403,6 +448,7 @@ function attachGlanceHandlers(el) {
     renderGlance();
   }));
   el.querySelectorAll('[data-glance-full]').forEach(b => b.addEventListener('click', () => exitGlance(true)));
+  attachGlanceSegHandlers(el);
   el.querySelectorAll('[data-glance-retry]').forEach(b => b.addEventListener('click', () => renderGlance()));
 }
 
