@@ -66,12 +66,12 @@
     }
   ],
   "india_vix": {
-    "last": 16.71,
-    "previous_close": 16.84,
-    "change": -0.13,
-    "pct_change": -0.77,
-    "as_of": "2026-11-27T04:10:24Z",
-    "source": "nse",
-    "trade_date": "2026-11-27"
+    "last": 16.68,
+    "previous_close": 16.85,
+    "change": -0.17,
+    "pct_change": -1.01,
+    "as_of": "2026-11-27T04:15:32Z",
+    "source": "yfinance",
+    "trade_date": null
   }
 }
