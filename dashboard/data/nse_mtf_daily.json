@@ -1,5 +1,5 @@
 {
- "updated_at": "2026-11-26T19:15:32Z",
+ "updated_at": "2026-11-27T19:15:38Z",
  "unit": "INR crore",
  "source": "https://nsearchives.nseindia.com/content/equities/mrg_trading_DDMMYY.zip",
  "note": "NSE 'Net scripwise outstanding at the end of the day' (closing_cr in mtf_daily.json; NSE's revised figures once it republishes a date), keyed on the reporting date. Written by scripts/mtf_pipeline.py.",
@@ -1225,6 +1225,7 @@
   {"date": "2026-11-19", "book_cr": 146609.6364},
   {"date": "2026-11-20", "book_cr": 146607.3907},
   {"date": "2026-11-23", "book_cr": 148334.5279},
-  {"date": "2026-11-25", "book_cr": 147445.8897}
+  {"date": "2026-11-25", "book_cr": 147445.8897},
+  {"date": "2026-11-26", "book_cr": 147018.602}
  ]
 }
