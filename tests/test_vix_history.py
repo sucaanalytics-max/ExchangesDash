@@ -121,9 +121,12 @@ class Doc(unittest.TestCase):
             self.assertEqual(out.read_text(), first)
 
     def test_fetch_leaves_out_todays_unfinished_bar(self):
-        import pandas as pd
-        idx = pd.DatetimeIndex(["2026-11-25", "2026-11-26"]).tz_localize("Asia/Kolkata")
-        hist = pd.DataFrame({"Close": [17.67, 16.9]}, index=idx)
+        # A stand-in for yfinance's frame keeps pandas out (CI does not install it):
+        # iterrows() over tz-aware IST midnights, as yfinance indexes ^INDIAVIX
+        ist = timezone(timedelta(hours=5, minutes=30))
+        hist = mock.Mock()
+        hist.iterrows.return_value = [(datetime(2026, 11, 25, tzinfo=ist), {"Close": 17.67}),
+                                      (datetime(2026, 11, 26, tzinfo=ist), {"Close": 16.9})]
         fake = mock.Mock()
         fake.Ticker.return_value.history.return_value = hist
         with mock.patch.dict("sys.modules", {"yfinance": fake}):
