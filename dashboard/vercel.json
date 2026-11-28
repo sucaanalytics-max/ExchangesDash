@@ -1,5 +1,10 @@
 {
   "ignoreCommand": "bash vercel-ignore-build.sh",
+  "functions": {
+    "api/brokers.js": {
+      "regions": ["bom1"]
+    }
+  },
   "crons": [
     {
       "path": "/api/trigger-live-polls",
@@ -68,7 +73,7 @@
       "headers": [
         {
           "key": "Cache-Control",
-          "value": "public, max-age=60, s-maxage=300, stale-while-revalidate=600"
+          "value": "public, max-age=60, s-maxage=300, stale-while-revalidate=3600"
         }
       ]
     },

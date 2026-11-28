@@ -108,14 +108,17 @@ function brkFetchPatient(view, mode, onSlow, broker = BRK_BROKER.id) {
 function brkSection(tab) { return brokerSection(BRK_BROKER.view, tab); }
 
 // A view's load(): the broker list once (to check the broker is active in
-// sb_brokers), then the Summary of its latest live run; daily and
-// calibration load when their tab is shown. A broker without a published run
-// comes back with summary.run === null. Nothing changes once owns() is false.
+// sb_brokers) and the Summary of its latest live run, asked for together;
+// daily and calibration load when their tab is shown. A broker without a
+// published run comes back with summary.run === null. Nothing changes once
+// owns() is false.
 async function brkLoad(def, mode, owns = () => true) {
+  const summaryReq = brkFetch('summary', mode, def.broker);
+  summaryReq.catch(() => {});                       // awaited below, once the broker is known
   const brokers = BRK.brokers || (await brkFetch('brokers', mode, def.broker)).brokers;
   const b = brokers.find(x => x.broker_id === def.broker);
   if (!b) throw new Error(`${def.label} is not an active broker in sb_brokers`);
-  const summary = await brkFetch('summary', mode, def.broker);
+  const summary = await summaryReq;
   if (!owns()) return;
   BRK_BROKER = { id: def.broker, name: b.label, view: def.view };
   BRK = { ...BRK, brokers, mode, summary, daily: null, calib: null, prices: null, sel: summary.run ? {
