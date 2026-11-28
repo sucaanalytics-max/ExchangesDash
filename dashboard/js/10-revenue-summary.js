@@ -1281,9 +1281,10 @@ function rsPhoneSummary(ex, raw, enr, segKey) {
 
 function buildRevenueSummary() {
   // The week-on-week ADR and VIX panels below the sub-tabs are cross-exchange and
-  // load their own data (22-weekly-adr.js, 21-vix.js); not awaited
+  // load their own data (22-weekly-adr.js, 21-vix.js, 25-vix-history.js); not awaited
   buildWeeklyAdrPanel().catch(err => console.warn('Weekly ADR panel failed:', err));
   buildVixPanel().catch(err => console.warn('VIX panel failed:', err));
+  buildVixHistoryPanel().catch(err => console.warn('VIX history panel failed:', err));
   // Revenue, or the contracts view in Contracts mode (cached per exchange and data)
   RS_VIEW = contractsPageView();
   syncRevUnitControls();

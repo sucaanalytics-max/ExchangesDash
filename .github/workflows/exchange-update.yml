@@ -92,6 +92,12 @@ jobs:
           PIPELINE_SOURCE: ${{ vars.PIPELINE_SOURCE }}
         run: python scripts/nse_pipeline.py
 
+      # India VIX's last 10 years of daily closes, mean and σ (Revenue Summary's
+      # mean ± σ chart); rewritten only when the closes change, and never holds back NSE's data
+      - name: India VIX history
+        continue-on-error: true
+        run: python scripts/india_vix_history.py
+
       - name: Check if new data was added
         id: check_new
         run: |
@@ -109,6 +115,7 @@ jobs:
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
           git add data/dashboard_data.json data/enriched_data.json dashboard/data/nse_dashboard_data.json dashboard/data/nse_enriched_data.json \
             dashboard/data/nse_dashboard_data_eff.json dashboard/data/nse_enriched_data_eff.json
+          if [ -f dashboard/data/india_vix_history.json ]; then git add dashboard/data/india_vix_history.json; fi
           git diff --cached --quiet || git commit -m "📊 NSE update: $(date +%Y-%m-%d) — ${{ steps.check_new.outputs.new_days }} new or changed day(s)"
           for i in 1 2 3 4 5; do
             git push && exit 0

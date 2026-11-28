@@ -139,6 +139,8 @@
       <div id="weeklyAdrPanel" class="rx"></div>
       <!-- India VIX sensitivity and week-on-week VIX: NSE, BSE, MCX and Total in every view (buildVixPanel in js/21-vix.js) -->
       <div id="vixPanel" class="rx"></div>
+      <!-- India VIX: 10-year daily closes with mean and ±1σ / ±2σ bands, in every view (buildVixHistoryPanel in js/25-vix-history.js) -->
+      <div id="vixHistoryPanel" class="rx"></div>
       <!-- Fee basis in use, method, and what "modelled" means -->
       <div class="fee-note" id="feeModeNote" hidden></div>
       <!-- NSE view only: NSE's commodity charges, a memo kept out of every total (buildNseCommodityMemo in js/19-mcx-competition.js) -->
@@ -260,6 +262,7 @@
 <script src="./js/22-weekly-adr.js"></script>
 <script src="./js/23-contracts-view.js"></script>
 <script src="./js/24-signals.js"></script>
+<script src="./js/25-vix-history.js"></script>
 <script src="./js/30-brokers.js"></script>
 <script src="./js/31-brokers-price.js"></script>
 <script src="./js/32-brokers-fo-drivers.js"></script>

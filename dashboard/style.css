@@ -3827,6 +3827,12 @@ th[aria-sort="ascending"] .mtf-bk-sort::after { content: " ↑"; }
 .vix-chg--dn { color: var(--vix-dn); }
 #vixPanel { margin-top: var(--space-4); }
 #vixPanel:empty { display: none; }
+/* India VIX: 10-year mean ± σ (js/25-vix-history.js), below #vixPanel */
+#vixHistoryPanel { margin-top: var(--space-4); }
+#vixHistoryPanel:empty { display: none; }
+#vixHistoryPanel .rx-legend { margin-bottom: 8px; }
+/* σ and z stay lower case: the chip's capitals would turn σ into Σ */
+#vixHistoryPanel .rx-chip { text-transform: none; }
 .rx-table.vix-sens tr.vix-today td { background: var(--vix-today-bg); font-weight: 600; }
 .rx-table.vix-sens tr.vix-today td:first-child { box-shadow: inset 3px 0 0 var(--vix-today-rule); }
 .rx-table.vix-sens tbody tr.vix-today:hover td { background: var(--vix-today-bg); }
