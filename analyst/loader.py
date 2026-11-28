@@ -320,6 +320,16 @@ def _participants_monthly(d):
     return out
 
 
+def _india_vix(d):
+    return [{"date": date, "vix": close} for date, close in d.get("daily", [])]
+
+
+def _india_vix_window(d):
+    """india_vix_history's window and its stats, kept in meta["window"]."""
+    return {"window": {"source": d.get("source"), "years": d.get("window_years"),
+                       "from": d.get("from"), "to": d.get("to"), **(d.get("stats") or {})}}
+
+
 def _none(_d):
     return []
 
@@ -406,9 +416,12 @@ PARTICIPANT_SOURCES = ["nse_fo_oi", "nse_fo_vol", "nse_fii_fo", "nse_cm_cat", "n
 REGISTRY = {}
 
 
-def _reg(name, path, extract, desc, unit=None, date_key="date", caveats=None, optional=False):
+def _reg(name, path, extract, desc, unit=None, date_key="date", caveats=None, optional=False,
+         extra_meta=None):
+    """extra_meta: raw file → dict merged into the Dataset's meta (file-level figures)."""
     REGISTRY[name] = {"path": path, "extract": extract, "desc": desc, "unit": unit,
-                      "date_key": date_key, "caveats": caveats, "optional": optional}
+                      "date_key": date_key, "caveats": caveats, "optional": optional,
+                      "extra_meta": extra_meta}
 
 
 for _ex, _label in (("nse", "NSE"), ("bse", "BSE"), ("mcx", "MCX")):
@@ -495,6 +508,15 @@ _reg("participants_monthly", f"{D}participants_monthly.json", _participants_mont
      "The Participants tab's views by month (value, share) and Market Pulse's monthly shares", None,
      date_key="month")
 
+_reg("india_vix_history", f"{D}india_vix_history.json", _india_vix,
+     "India VIX daily closes over the last 10 years (Yahoo ^INDIAVIX), the Revenue Summary chart's input",
+     "index points", extra_meta=_india_vix_window,
+     caveats=_static("Yahoo's feed, the same as nse_daily's `vix`, which re-checks only its last 10 days "
+                     "each run, so an older close Yahoo has since revised can differ there.",
+                     "A rolling 10-year window: rows older than 10 years before the latest close drop "
+                     "off. The window's n, mean, sample sd and the latest close's z and pct_below are "
+                     "in meta['window'] (raw['stats'])."))
+
 _reg("valuation_inputs", f"{D}valuation_inputs.json", _none,
      "Shared valuation defaults (hand-edited); use .raw", None, date_key=None)
 _reg("signal_tree_backtest", "data/signal_tree/backtest.json", _none,
@@ -573,6 +595,8 @@ class Snapshot:
         caveats = spec["caveats"](rows, raw) if spec["caveats"] else []
         meta = self._meta(name, spec["desc"], spec["unit"], [spec["path"]], rows, spec["date_key"],
                           raw, caveats)
+        if spec["extra_meta"]:
+            meta.update(spec["extra_meta"](raw))
         return Dataset(name, rows, meta, raw)
 
     def _load_csv_dir(self, name, path, desc, date_key):

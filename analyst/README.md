@@ -12,6 +12,7 @@ The pipelines (GitHub Actions) commit their output to this repository several ti
 | NSE vs MCX commodity derivatives | loader (`nse_commodity_*`) | each MCX run | |
 | MTF book (NSE, BSE, combined), per stock, brokers' books | loader (`mtf_*`) | each run, plus 00:45 IST | Supabase `mtf.*`: a Sep 2026 snapshot, not granted |
 | Participant-wise data (NSE, BSE, NSDL, Market Pulse) | loader (`participants_*`) | each run | |
+| India VIX daily closes, last 10 years (with the window's mean, sample σ and the latest z) | loader (`india_vix_history`) | each NSE run (00:30 / 12:30 / 15:30 UTC), rewritten only when a close changes | |
 | Share-price regressions | loader (`*_share_series`, `*_share_revenue`) | after each daily job | |
 | 5-minute bars (21 capital-market stocks, Nifty, Bank Nifty, VIX) | loader (`intraday_5m`) | 17:17 IST, Mon–Fri | |
 | NSE F&O history for BSE and MCX stock options | loader (`options:BSE`, `options:MCX`) | 19:00 IST, Mon–Fri | lands on `main` with PR #134 |
@@ -92,6 +93,7 @@ Units: ₹ Cr unless stated; dates are IST trading dates (`YYYY-MM-DD`); FY is I
 | `nse_daily_eff`, `bse_daily_eff` (+ monthly / quarterly) | as `*_daily`, re-priced at the rule in force each day | `fee_basis`, `fee_basis_by_product` (`flat`, `slab_estimate`, `calibrated`, `calibrated_provisional`) |
 | `nse_pnl`, `nse_pnl_fy` | NSE P&L by quarter / FY | `is_predicted` marks the forecast; reported quarters come from results filings |
 | `{nse,bse,mcx}_share_series` | price vs the previous session's revenue MA | `price`, `rev_ma`, `revenue_cr`, `price_pred` (null unless the fit holds); `.raw["regression"]`, `["methodology"]` |
+| `india_vix_history` | one per India VIX close over the last 10 years (about 2,450) | `date`, `vix` (index points). Yahoo's ^INDIAVIX feed, the same as `nse_daily`'s `vix`, but back 10 years rather than to Apr 2023 (`nse_daily` re-checks only its last 10 days, so an older close Yahoo later revised can differ there). The window (`from`, `to`, `n`, `mean`, sample `sd`, `latest` with `z` and `pct_below`) is in `.meta["window"]` |
 | `nse_commodity_daily` (`_monthly`, `_quarterly`) | one per (day, side `nse`/`mcx`, underlying) | `fut_contracts`, `fut_notional_cr`, `opt_contracts`, `opt_notional_cr`, `opt_premium_cr`, `txn_rev_cr` (today's rates), `nse_option_expiry` (null = unknown) |
 | `nse_commodity_charges` | NSE commodity charges per day | today's rates / the rule then in force; never part of NSE `total_rev` |
 | `mtf_nse` | NSE MTF book per reporting date | `opening_cr`, `fresh_cr`, `liquidated_cr`, `closing_cr`, `securities`, `flags`, `revised` |
