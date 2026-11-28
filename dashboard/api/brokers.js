@@ -51,8 +51,11 @@
 
 const DEFAULT_URL = 'https://everjfpbnlbcpuarnhob.supabase.co';
 const PAGE = 1000;
-// Edge cache for every 200; dashboard/vercel.json sets the same for /api/brokers
-const CACHE_CONTROL = 'public, max-age=60, s-maxage=300, stale-while-revalidate=600';
+// Edge cache for every 200; dashboard/vercel.json sets the same for /api/brokers.
+// Runs are published once a day, so a copy up to an hour old is served at once
+// while the edge refreshes it. The function runs in bom1 (vercel.json `functions`),
+// next to the Supabase project (ap-south-1): from iad1 every read crossed the world.
+const CACHE_CONTROL = 'public, max-age=60, s-maxage=300, stale-while-revalidate=3600';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 // Daily segments behind each Summary panel (engine: src/engine/summary_periods.py).
@@ -83,20 +86,39 @@ async function sb(path, opts = {}) {
   return rows;
 }
 
-async function sbFetch(path, { all = false } = {}) {
+// One page of rows; with count, also the total row count PostgREST reports in
+// Content-Range ("0-999/1869"), null when it doesn't say
+async function sbPage(path, from, count) {
   const base = process.env.BROKERS_SUPABASE_URL || DEFAULT_URL;
   const key = process.env.BROKERS_SUPABASE_KEY;
   if (!key) throw Object.assign(new Error('BROKERS_SUPABASE_KEY is not set'), { status: 500 });
-  const out = [];
-  for (let from = 0; ; from += PAGE) {
-    const res = await fetch(`${base}/rest/v1/${path}`, {
-      headers: { apikey: key, Accept: 'application/json', Range: `${from}-${from + PAGE - 1}` },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!res.ok) throw Object.assign(new Error(`Supabase returned ${res.status} for ${path.split('?')[0]}`), { status: 502, supabaseStatus: res.status });
-    const rows = await res.json();
+  const res = await fetch(`${base}/rest/v1/${path}`, {
+    headers: { apikey: key, Accept: 'application/json', Range: `${from}-${from + PAGE - 1}`, ...(count ? { Prefer: 'count=exact' } : {}) },
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw Object.assign(new Error(`Supabase returned ${res.status} for ${path.split('?')[0]}`), { status: 502, supabaseStatus: res.status });
+  const range = count && res.headers && typeof res.headers.get === 'function' ? res.headers.get('content-range') : null;
+  const m = /\/(\d+)$/.exec(range || '');
+  return { rows: await res.json(), total: m ? +m[1] : null };
+}
+
+// Every row (all) or the first page. The first page asks for the total, so the
+// remaining pages are fetched at once rather than one after another (summary
+// cells and daily revenue run to 2–4 pages a run); without a total, page by page.
+async function sbFetch(path, { all = false } = {}) {
+  const first = await sbPage(path, 0, all);
+  if (!all || first.rows.length < PAGE) return first.rows;
+  const out = [...first.rows];
+  if (first.total != null) {
+    const froms = [];
+    for (let from = PAGE; from < first.total; from += PAGE) froms.push(from);
+    (await Promise.all(froms.map(from => sbPage(path, from, false)))).forEach(p => out.push(...p.rows));
+    return out;
+  }
+  for (let from = PAGE; ; from += PAGE) {
+    const { rows } = await sbPage(path, from, false);
     out.push(...rows);
-    if (!all || rows.length < PAGE) return out;
+    if (rows.length < PAGE) return out;
   }
 }
 
@@ -204,16 +226,17 @@ function openPeriods(asOf, foDates) {
   return out;
 }
 
-// Each segment's last day up to the as-of date: from the recent window, or, for a
-// segment with no day in it, its own latest row (none: the broker doesn't publish it)
-async function segmentLastDays(run, recent) {
-  const last = {};
-  recent.forEach(r => { if (!(last[r.segment] >= r.trade_date)) last[r.segment] = r.trade_date; });
-  const missing = [...new Set(Object.values(PANEL_SEGMENTS).flat())].filter(s => !last[s]);
-  const found = await Promise.all(missing.map(s =>
-    sb(`sb_daily_revenue?select=trade_date&run_id=eq.${run.run_id}&segment=eq.${s}&trade_date=lte.${run.as_of_date}&order=trade_date.desc&limit=1`)));
-  found.forEach((rows, i) => { if (rows[0]) last[missing[i]] = rows[0].trade_date; });
-  return last;
+// Each segment's last day up to the as-of date (none: the broker doesn't publish it).
+// Asked per segment alongside the Summary's other reads, not after them.
+const SEGMENTS = [...new Set(Object.values(PANEL_SEGMENTS).flat())];
+function segmentLastDays(run) {
+  return Promise.all(SEGMENTS.map(s =>
+    sb(`sb_daily_revenue?select=trade_date&run_id=eq.${run.run_id}&segment=eq.${s}&trade_date=lte.${run.as_of_date}&order=trade_date.desc&limit=1`)))
+    .then(found => {
+      const last = {};
+      found.forEach((rows, i) => { if (rows[0]) last[SEGMENTS[i]] = rows[0].trade_date; });
+      return last;
+    });
 }
 
 async function findRun(broker, mode, runId) {
@@ -227,11 +250,12 @@ async function summary(run) {
   const asOf = run.as_of_date;
   const since = new Date(Date.parse(asOf + 'T00:00:00Z') - 120 * 86400000).toISOString().slice(0, 10);
   const fyStart = `${periodsOf(asOf).fy - 1}-04-01`;
-  const [cells, projected, recent, foDays] = await Promise.all([
+  const [cells, projected, recent, foDays, last] = await Promise.all([
     sb(`sb_summary_cells?select=panel,period_type,period_key,table_name,row_label,value,comparison,comp_value,note&run_id=eq.${r}`, { all: true }),
     sb(`sb_daily_revenue?select=trade_date,segment&run_id=eq.${r}&regime=neq.actual`, { all: true }),
     sb(`sb_daily_revenue?select=trade_date,segment&run_id=eq.${r}&trade_date=gte.${since}&trade_date=lte.${asOf}`, { all: true }),
     sb(`sb_daily_revenue?select=trade_date&run_id=eq.${r}&segment=eq.fo&trade_date=gte.${fyStart}&trade_date=lte.${asOf}&order=trade_date`, { all: true }),
+    segmentLastDays(run),
   ]);
   const regime = regimeFinder(recent, projected);
   const num = v => (v == null ? null : Number(v));
@@ -244,7 +268,7 @@ async function summary(run) {
   out.forEach(c => keys[c.period_type]?.add(c.period_key));
   const sorted = s => [...s].sort((a, b) => periodKey(b) - periodKey(a));
   const panels = PANEL_ORDER.filter(p => out.some(c => c.panel === p));
-  const through = panelsThrough(await segmentLastDays(run, recent), recent);
+  const through = panelsThrough(last, recent);
   return { run, panels, periods: { FY: sorted(keys.FY), Q: sorted(keys.Q), M: sorted(keys.M) },
     open: openPeriods(asOf, foDays.map(x => x.trade_date)), cells: out, through };
 }
@@ -308,6 +332,41 @@ async function brokers() {
   });
 }
 
+// A view's data for a broker, everything but the broker record: read while the
+// broker list loads (the broker is checked against it before anything is sent)
+async function viewData(view, broker, mode, runId) {
+  const num = v => (v == null ? null : Number(v));
+  if (view === 'prices') {
+    let rows = [];
+    try {
+      rows = await sb(`sb_share_prices?select=trade_date,ticker,close,adj_close&broker_id=eq.${broker}&order=trade_date`, { all: true });
+    } catch (err) {
+      if (err.supabaseStatus !== 404) throw err;   // the table does not exist yet
+    }
+    return { prices: rows.map(r => ({ ...r, close: num(r.close), adj_close: num(r.adj_close) })) };
+  }
+  if (view === 'pat') return patLines(broker, mode, runId);
+  if (view === 'valuation') return valuationLines(broker, mode, runId);
+  const run = await findRun(broker, mode, runId);
+  if (!run) return { run: null };
+  if (view === 'summary') return summary(run);
+  if (view === 'daily') {
+    return { run, rows: (await sb(`sb_daily_revenue?select=trade_date,segment,orders_mn,revenue_cr,regime&run_id=eq.${run.run_id}&order=trade_date`, { all: true }))
+      .map(r => ({ ...r, orders_mn: num(r.orders_mn), revenue_cr: num(r.revenue_cr) })) };
+  }
+  if (view === 'calendar') {
+    // Equity trading days per FY as far as sb_calendar runs (PAT Predictor context)
+    const days = {}, last = {};
+    (await sb('sb_calendar?select=trade_date,fy,is_equity_day&order=trade_date', { all: true })).forEach(r => {
+      if (r.is_equity_day) days[r.fy] = (days[r.fy] || 0) + 1;
+      last[r.fy] = r.trade_date;
+    });
+    return { run, fy: Object.keys(days).sort().map(fy => ({ fy, equity_days: days[fy], through: last[fy] })) };
+  }
+  return { run, rows: (await sb(`sb_calibration?select=segment,period_type,period_key,param,value,regime,rule,source_periods&run_id=eq.${run.run_id}`, { all: true }))
+    .map(r => ({ ...r, value: num(r.value) })) };
+}
+
 module.exports = async function handler(req, res) {
   const broker = String(req.query.broker || 'ANGELONE').toUpperCase();
   const mode = String(req.query.mode || 'live').toLowerCase();
@@ -317,6 +376,9 @@ module.exports = async function handler(req, res) {
     || !['summary', 'daily', 'calibration', 'calendar', 'brokers', 'prices', 'pat', 'valuation'].includes(view) || (runId && !UUID.test(runId))) {
     return res.status(400).json({ error: 'Invalid broker, mode, view or run param' });
   }
+  // The broker list and the view's own reads go to Supabase together: one wait, not two
+  const data = view === 'brokers' ? null : viewData(view, broker, mode, runId);
+  if (data) data.catch(() => {});                  // awaited below, unless the broker is unknown
   try {
     const list = await brokers();
     res.setHeader('Content-Type', 'application/json');
@@ -326,51 +388,13 @@ module.exports = async function handler(req, res) {
     }
     const known = list.find(b => b.broker_id === broker);
     if (!known) return res.status(404).json({ error: `Unknown or inactive broker ${broker}`, code: 'unknown_broker' });
-    if (view === 'prices') {
-      let rows = [];
-      try {
-        rows = await sb(`sb_share_prices?select=trade_date,ticker,close,adj_close&broker_id=eq.${broker}&order=trade_date`, { all: true });
-      } catch (err) {
-        if (err.supabaseStatus !== 404) throw err;   // the table does not exist yet
-      }
-      const num = v => (v == null ? null : Number(v));
-      res.setHeader('Cache-Control', CACHE_CONTROL);
-      return res.status(200).json({ broker: known, prices: rows.map(r => ({ ...r, close: num(r.close), adj_close: num(r.adj_close) })) });
-    }
-    if (view === 'pat') {
-      res.setHeader('Cache-Control', CACHE_CONTROL);
-      return res.status(200).json({ broker: known, ...await patLines(broker, mode, runId) });
-    }
-    if (view === 'valuation') {
-      res.setHeader('Cache-Control', CACHE_CONTROL);
-      return res.status(200).json({ broker: known, ...await valuationLines(broker, mode, runId) });
-    }
-    const run = await findRun(broker, mode, runId);
+    const body = await data;
+    res.setHeader('Cache-Control', CACHE_CONTROL);
+    if (view === 'prices' || view === 'pat' || view === 'valuation') return res.status(200).json({ broker: known, ...body });
     // A broker can be listed before its first run is published (facts awaiting
     // review): say so in a 200, so the page can show it rather than fail
-    if (!run) {
-      res.setHeader('Cache-Control', CACHE_CONTROL);
-      return res.status(200).json({ broker: known, run: null, reason: `No successful ${runId ? 'run ' + runId : mode + ' run'} published for ${known.label} yet` });
-    }
-    let body;
-    if (view === 'summary') body = { broker: known, ...await summary(run) };
-    else if (view === 'daily') {
-      body = { run, rows: (await sb(`sb_daily_revenue?select=trade_date,segment,orders_mn,revenue_cr,regime&run_id=eq.${run.run_id}&order=trade_date`, { all: true }))
-        .map(r => ({ ...r, orders_mn: r.orders_mn == null ? null : Number(r.orders_mn), revenue_cr: r.revenue_cr == null ? null : Number(r.revenue_cr) })) };
-    } else if (view === 'calendar') {
-      // Equity trading days per FY as far as sb_calendar runs (PAT Predictor context)
-      const days = {}, last = {};
-      (await sb('sb_calendar?select=trade_date,fy,is_equity_day&order=trade_date', { all: true })).forEach(r => {
-        if (r.is_equity_day) days[r.fy] = (days[r.fy] || 0) + 1;
-        last[r.fy] = r.trade_date;
-      });
-      body = { run, fy: Object.keys(days).sort().map(fy => ({ fy, equity_days: days[fy], through: last[fy] })) };
-    } else {
-      body = { run, rows: (await sb(`sb_calibration?select=segment,period_type,period_key,param,value,regime,rule,source_periods&run_id=eq.${run.run_id}`, { all: true }))
-        .map(r => ({ ...r, value: r.value == null ? null : Number(r.value) })) };
-    }
-    res.setHeader('Cache-Control', CACHE_CONTROL);
-    return res.status(200).json(body);
+    if (!body.run) return res.status(200).json({ broker: known, run: null, reason: `No successful ${runId ? 'run ' + runId : mode + ' run'} published for ${known.label} yet` });
+    return res.status(200).json(view === 'summary' ? { broker: known, ...body } : body);
   } catch (err) {
     return res.status(err.status || 502).json({ error: err.message });
   }
