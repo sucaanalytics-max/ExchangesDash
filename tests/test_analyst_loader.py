@@ -69,6 +69,12 @@ class Fixture(unittest.TestCase):
         write(r, "dashboard/data/participants_nse_pulse.json", {"editions": [
             {"edition": "2026-01", "tables": {"Cash (%)": {"months": ["Dec-25", "Nov-25"],
                                                            "rows": {"DIIs": {"Dec-25": 14.0, "Nov-25": 13.0}}}}}]})
+        write(r, "dashboard/data/india_vix_history.json", {
+            "source": "Yahoo Finance ^INDIAVIX (yfinance), daily close", "window_years": 10,
+            "from": "2016-01-04", "to": "2026-01-01",
+            "stats": {"n": 2, "mean": 15.0, "sd": 1.4142,
+                      "latest": {"date": "2026-01-01", "vix": 16.0, "z": 0.7071, "pct_below": 0.5}},
+            "daily": [["2016-01-04", 14.0], ["2026-01-01", 16.0]]})
         write(r, "data/intraday/5m/2026-01.csv",
               "ts,symbol,open,high,low,close,volume\n2026-01-01 09:15,BSE.NS,1,2,0.5,1.5,\n")
         git(r, "add", "-A")
@@ -156,6 +162,17 @@ class Fixture(unittest.TestCase):
         pulse = s.load("participants_nse_pulse").rows
         self.assertIn({"edition": "2026-01", "table": "Cash (%)", "category": "DIIs",
                        "field": "Nov-25", "value": 13.0}, pulse)
+
+    def test_india_vix_rows_and_window_meta(self):
+        ds = self.snap().load("india_vix_history")
+        self.assertEqual(ds.rows, [{"date": "2016-01-04", "vix": 14.0},
+                                   {"date": "2026-01-01", "vix": 16.0}])
+        self.assertEqual((ds.meta["first_date"], ds.meta["last_date"]), ("2016-01-04", "2026-01-01"))
+        w = ds.meta["window"]
+        self.assertEqual((w["years"], w["from"], w["to"], w["n"], w["sd"]),
+                         (10, "2016-01-04", "2026-01-01", 2, 1.4142))
+        self.assertEqual(w["latest"]["z"], 0.7071)
+        self.assertTrue(any("nse_daily" in c for c in ds.meta["caveats"]))
 
     def test_csv_numbers_and_blanks(self):
         r = self.snap().load("intraday_5m").rows[0]

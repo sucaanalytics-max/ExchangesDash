@@ -6,7 +6,8 @@
       "Read(**/data/*_live*.json)",
       "Read(**/data/*_hourly*.json)",
       "Read(**/data/mtf_*.json)",
-      "Read(**/data/participants_*.json)"
+      "Read(**/data/participants_*.json)",
+      "Read(**/data/india_vix_history.json)"
     ]
   },
   "hooks": {
